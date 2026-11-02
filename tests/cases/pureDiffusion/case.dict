@@ -1,0 +1,37 @@
+// 1D steady diffusion (Poisenne analog): phi = 0, linear analytic profile.
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (50 1 1);
+
+    xmin  { name left;    type wall;    }
+    xmax  { name right;   type wall;    }
+    ymin  { name bottom;  type wall;    }
+    ymax  { name top;     type wall;    }
+    zmin  { name front;   type inlet;   }
+    zmax  { name back;    type outlet;  }
+}
+
+velocity    (0 0 0);
+diffusivity 1.0;
+initialValue 0;
+
+patches
+{
+    front { type fixedValue; value 0; }
+    back  { type fixedValue; value 1; }
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+output
+{
+    vtk out_poisson.vtu;
+}

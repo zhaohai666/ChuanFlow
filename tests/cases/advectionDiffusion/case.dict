@@ -1,0 +1,38 @@
+// Steady 1D advection-diffusion in a duct: D T'' = U T'.
+// Analytic profile compared by tests/check_scalar_profile.py
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (100 1 1);
+
+    xmin  { name inlet;   type inlet;   }
+    xmax  { name outlet;  type outlet;  }
+    ymin  { name bottom;  type wall;    }
+    ymax  { name top;     type wall;    }
+    zmin  { name front;   type symmetry;}
+    zmax  { name back;    type symmetry;}
+}
+
+velocity    (0.1 0 0);
+diffusivity 0.01;
+initialValue 0;
+
+patches
+{
+    inlet  { type fixedValue;   value 1; }
+    outlet { type fixedValue;   value 0; }
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+output
+{
+    vtk out_advection.vtu;
+}

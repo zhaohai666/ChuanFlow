@@ -1,0 +1,51 @@
+// Steady planar channel (Poiseuille) driven by inlet velocity, outlet p = 0.
+// Compared against the analytic parabolic profile downstream of the entry
+// length by tests/check_poiseuille.py
+block
+{
+    min   (0 0 0);
+    max   (4 0.2 0.1);
+    cells (100 20 1);
+
+    xmin  { name inlet;   type inlet;    }
+    xmax  { name outlet;  type outlet;   }
+    ymin  { name bottom;  type wall;     }
+    ymax  { name top;     type wall;     }
+    zmin  { name front;   type symmetry; }
+    zmax  { name back;    type symmetry; }
+}
+
+nu 0.01;
+
+patches
+{
+    inlet  { U (0.1 0 0); UType fixedValue;  pType zeroGradient; }
+    outlet { UType zeroGradient; p 0;        pType fixedValue;   }
+    bottom { U (0 0 0);   UType fixedValue;  pType zeroGradient; }
+    top    { U (0 0 0);   UType fixedValue;  pType zeroGradient; }
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+simple
+{
+    maxIterations 1600;
+    continuityTol 1e-6;
+    // Classic SIMPLE with momentum under-relaxation leaves a lag floor in
+    // the predictor-continuity residual; |p'| decay is the true outer
+    // convergence signal, so the case stops on it.
+    pcorrTol      1.4e-4;
+    relaxU        0.9;
+    relaxP        0.8;
+}
+
+output
+{
+    vtk out_poiseuille.vtu;
+}

@@ -11,6 +11,12 @@ target_compile_definitions(network_tests PRIVATE
     CF_CASE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases")
 add_test(NAME network.unit COMMAND network_tests)
 
+add_executable(transient_tests unit/transientTests.cpp)
+target_link_libraries(transient_tests PRIVATE cf1d)
+target_compile_definitions(transient_tests PRIVATE
+    CF_CASE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases")
+add_test(NAME transient.unit COMMAND transient_tests)
+
 # ---- analytic verification cases ----
 add_test(
     NAME verify.advectionDiffusion
@@ -42,6 +48,18 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetwork/case.dict)
 
+foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug")
+    list(GET tmode 0 mode)
+    list(GET tmode 1 Mode)
+    add_test(
+        NAME verify.transient${Mode}
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_transient.py
+            $<TARGET_FILE:chflow-1d-transient>
+            ${CMAKE_CURRENT_SOURCE_DIR}/cases/transient${Mode}/case.dict
+            ${mode})
+endforeach()
+
 if(CHFLOW_PYTHON_BINDINGS)
     add_test(
         NAME python.bindings
@@ -65,4 +83,11 @@ if(CARGO_EXECUTABLE)
             -- run steady ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetwork/case.dict)
     set_tests_properties(cli.runSteady PROPERTIES
         ENVIRONMENT "CHUANFLOW_BIN_DIR=$<TARGET_FILE_DIR:chflow-1d-steady>")
+    add_test(NAME cli.runTransient
+        COMMAND ${CARGO_EXECUTABLE} run --offline --quiet
+            --manifest-path ${PROJECT_SOURCE_DIR}/cli/Cargo.toml
+            --target-dir ${CMAKE_BINARY_DIR}/cli
+            -- run transient ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientBlowdown/case.dict)
+    set_tests_properties(cli.runTransient PROPERTIES
+        ENVIRONMENT "CHUANFLOW_BIN_DIR=$<TARGET_FILE_DIR:chflow-1d-transient>")
 endif()

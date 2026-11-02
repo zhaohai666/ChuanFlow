@@ -1,0 +1,34 @@
+// M2 verification case A: pressurised tank draining through a laminar line
+// into a fixed-pressure terminal. The (Q, p) implicit-Euler system is 2x2
+// linear here, so tests/check_transient.py replicates it exactly and also
+// checks the physical slow-time-constant decay exp(-t/(R*C)).
+fluid
+{
+    rho 850;
+    mu  0.1;
+}
+
+nodes
+{
+    TANK
+    {
+        volume 1.0;
+        bulkModulus 2.0e8;   // compliance C = V/K = 5e-9 m3/Pa
+        pressure 5.0e5;
+        liquidFraction 1.0;
+    }
+    OUT { fixedPressure 0.0; }
+}
+
+pipes
+{
+    // R = 128 mu L / (pi D^4) = 2.5465e10 Pa.s/m3, laminar (Re ~ 100)
+    LINE { from TANK; to OUT; length 1000; diameter 0.02; roughness 0; elevation 0; }
+}
+
+time
+{
+    dt 0.05;
+    endTime 5.0;
+    reportEvery 1;
+}

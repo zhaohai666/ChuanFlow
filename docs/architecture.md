@@ -1,8 +1,9 @@
 # ChuanFlow 架构说明（当前实现）
 
-> 本文档描述仓库中已经落地的部分：`src/common` 基础层、`src/1d` 一维稳态管网
-> 内核（M1）与 `src/3d` 三维 FVM 内核。
-> README 中的 1D 瞬态 / PVT / 耦合 / GUI 等模块属于路线图（M1 后续与 M2–M6），尚未实现。
+> 本文档描述仓库中已经落地的部分：`src/common` 基础层、`src/1d` 一维管网
+> 内核（M1 稳态 + M2 首增量：瞬态水力 / 持液率输运 / 水合物动力学）与
+> `src/3d` 三维 FVM 内核，以及 `src/bindings` Python 绑定与 `cli/` Rust 入口。
+> README 中的 PVT / 1D↔3D 耦合 / GUI 等模块属于路线图（M3–M6），尚未实现。
 >
 > ChuanFlow 不是 OpenFOAM 的 Fork：以下设计参考了 OpenFOAM-dev 的工程思想
 > （网格拓扑、场分层、fvc/fvm 分离、SIMPLE 算法回路），但所有数据结构、离散
@@ -11,13 +12,13 @@
 ## 1. 总体分层
 
 ```
-apps (chflow-1d-steady / chflow-scalar-transport / chflow-simple-foam)
-  ├── src/1d          一维稳态管网内核（节点法水力计算，对标 Pipesim 的基础能力）
+apps (chflow-1d-steady / chflow-1d-transient / chflow-scalar-transport / chflow-simple-foam)
+  ├── src/1d          一维管网内核（M1 稳态节点法 + M2 瞬态/持液率/水合物）
   │      ├── src/bindings  pybind11 模块 chflow_core（Python 包 python/chflow）
   │      └── src/common  基础层（字典解析、日志/异常）
   └── src/3d          三维 FVM 内核（mesh / fields / discrete / solvers / io）
         └── src/common  基础层（向量、Field 容器、稀疏矩阵+Krylov求解、字典解析、日志/异常）
-cli/  Rust 自动化入口 chuanflow（run steady <case.dict>，定位并转发引擎二进制）
+cli/  Rust 自动化入口 chuanflow（run steady|transient <case.dict>，定位并转发引擎二进制）
 ```
 
 内核零第三方依赖：纯 C++20 + 标准库，CMake ≥ 3.24 构建，测试用 CTest +
@@ -43,7 +44,9 @@ Python 标准库脚本校验（无外部测试框架）。
   `ω = (t,s)/(t,t)`、`x += ω·sh`、`r = s − ω·t`；
 - `infNorm` 对 NaN 返回 NaN（否则全 NaN 残差会被误报为 0 并“收敛”）。
 
-## 3. src/1d 一维稳态管网内核（M1）
+## 3. src/1d 一维管网内核
+
+### 3.1 稳态节点法（M1）
 
 单相节点法（node model）管网水力计算：未知量是各节点压力，每条管道给出
 流量—压降本构，整体用阻尼 Newton 求解。
@@ -66,19 +69,64 @@ Python 标准库脚本校验（无外部测试框架）。
 
 M1 剩余的井筒/热力耦合与环路迭代（对标完整 Pipesim）尚未实现。
 
-### 3.1 Python 绑定 `src/bindings` + `python/chflow`
+### 3.2 瞬态水力 + 持液率输运 + 水合物动力学（M2 首增量）
+
+`src/1d/include/cf/1d/Transient.h` + `src/1d/src/transient.cpp`。未知量向量
+`x = [Q_1..Q_P, p_free]`（管流 + 自由节点压力）**同时** Newton 求解，
+隐式 Euler：
+
+- **管道动量**：`I·(Q − Q_n)/dt = p_from − p_to − ρg·dz − F(Q)`，
+  惯性 `I = ρL/A`；摩阻 `F(Q)` 直接调用稳态内核同一套 Churchill 关联式，
+  并做成 Q 的奇函数（反向流同号阻力）。雅可比对角 `I/dt + F'(Q)`，
+  `F'` 用中心差分并下限约束到层流斜率的 0.2 倍，避免 Q→0 时雅可比退化；
+- **节点压缩性**：`(p − p_n)·V/(K·dt) = Σ q_in + q_src`，`K` 为混合物体积
+  模量；`K = 0` 退化为不可压端口，该行改为代数约束 `Σ q = 0`。定压节点是
+  无穷 Dirichlet 水库，不参与体积累积；
+- **收敛**：≤60 次 Newton，逐行按自身量级缩放残差（分母 +1 防零），
+  `maxRel < 1e-11`；
+- **持液率（drift-flux 段塞）输运**：对旧 α 做快照的显式上游差分
+  `α_i^{n+1} = α_i + (Q·dt/V)(α_{i−1} − α_i)`，即一串全混釜（CSTR）级联——
+  这个递推本身就是可复现的参考解，测试按 1e-9 对比；
+- **水合物动力学**：`h = V_h/(V_L + V_h)`，`dh/dt = k(1 − h)`
+  ⇒ `dV_L/dt = −k·V_L`，用积分因子精确积分
+  `V_L^{n+1} = V_L·e^{−k·dt}`、`V_h = V_total − V_L`（体积守恒的
+  液→水合物转移），因此**任意 dt 都无离散误差**；
+- **应用** `chflow-1d-transient <case.dict>`：输出
+  `t …` / `node <n> p … alpha … hydrate …` / `pipe <n> Q …`（12 位有效数字）。
+
+字典语法见 `Transient.h` 末尾注释（`nodes{}` 增
+`volume/bulkModulus/fixedPressure/liquidFraction/hydrateFraction/hydrateRate`，
+`pipes{}` 增 `initialFlow`，新增 `time{ dt; endTime; reportEvery; }`）。
+
+三个已验证的物理回归（`tests/check_transient.py`）：
+
+| 算例 | 校验内容 |
+|---|---|
+| `transientBlowdown` | 罐排气：同时刻隐式 Euler 2×2 闭式递推（1e-9）+ 连续包络 `exp(−t/RC)`（2%）|
+| `transientRlc` | 两柔性节点 + 惯性管 = RLC 欠阻尼振荡：首个流量峰的时间与幅值（3%）、≥4 次符号翻转、封闭系统液量守恒 |
+| `transientSlug` | 段塞推进：串联管层流流量（1e-3）+ CSTR 级联递推（1e-9）|
+
+尚未实现（M2 后续增量）：真两相动量交换（气/液各自动量方程）、非等温与
+成核/生长动力学、液膜夹带与段塞合并破碎、管件/阀门模型。
+
+### 3.3 Python 绑定 `src/bindings` + `python/chflow`
 pybind11（FetchContent v2.13.6，`-DCHFLOW_WITH_PYTHON=ON`，缺少 Python
 开发头文件时自动跳过）。模块 `chflow_core` 导出
 `OneDNetwork / NetworkPipe / FluidProperties / SteadyControls /
 SteadyNetworkResult / PipeFlowResult` 与 `solve_steady_network /
-load_network / load_steady_controls / churchill_friction`；C++ 侧的
+load_network / load_steady_controls / churchill_friction`；瞬态侧导出
+`TransientCase / TransientNodeConfig / TransientPipeConfig / TransientSource /
+TransientSample / TransientSeries / TransientTimeControls`、可单步推进的
+`TransientNetwork(step/time/…)` 以及 `run_transient / hydrate_kinetics_step /
+load_transient_case / load_transient_controls`。C++ 侧的
 `cf::Error` 自动转成 Python `RuntimeError`。Python 包 `chflow` 只是
 再导出层。求解调用释放 GIL。
 
-### 3.2 CLI `cli/`（Rust）
+### 3.4 CLI `cli/`（Rust）
 零依赖 std-only 二进制 `chuanflow`：
-`chuanflow run steady <case.dict>` 通过 `$CHUANFLOW_BIN_DIR`（或 PATH）
-定位 `chflow-1d-steady` 并转发 stdout/退出码；`chuanflow version`。
+`chuanflow run steady|transient <case.dict>` 通过 `$CHUANFLOW_BIN_DIR`（或 PATH）
+定位 `chflow-1d-steady` / `chflow-1d-transient` 并转发 stdout/退出码；
+`chuanflow version`。
 定位为自动化入口（HPC/CI），不做计算。
 
 ## 4. src/3d 三维内核
@@ -168,15 +216,21 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
 - `tests/unit/networkTests.cpp`（CTest `network.unit`）：Churchill 层流极限
   64/Re、单层流管 Hagen-Poiseuille 正/反流、静水平衡（dp=ρg·dz→Q=0）、
   单井 Newton 闭式解、对称 Y 分流、case.dict 解析与求解；
-- `tests/cases/*`：四个物理回归算例 + `tests/check_*.py` 断言：
+- `tests/unit/transientTests.cpp`（CTest `transient.unit`）：水合物动力学
+  精确指数（1e-12）、单步 2×2 隐式 Euler 闭式对照（1e-10）、静止平衡、
+  无速率时相不变、带速率时液量指数衰减、slug case.dict 往返与级联递推；
+- `tests/cases/*`：七个物理回归算例 + `tests/check_*.py` 断言：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
+  - `transientBlowdown` / `transientRlc` / `transientSlug`（见 3.2）
   - `advectionDiffusion`（Pe=10 一维对流扩散，解析解对比）
   - `pureDiffusion`（Laplace/Poisson，线性场精确再现）
   - `poiseuilleChannel`（平面渠道 Poiseuille：抛物线剖面、通量守恒、
     `v≈0`、中心线与解析压降对比；SIMPLE 收敛约 1500 外迭代 / 37 s）
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
-  构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；
-- `cli`（CTest `cli.unit` + `cli.runSteady`）：cargo 参数解析单测 +
-  通过 CLI 端到端跑稳态管网冒烟测试（存在 cargo 时才注册）；
+  构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
+  罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`
+  结果一致、水合物动力学指数；
+- `cli`（CTest `cli.unit` + `cli.runSteady` + `cli.runTransient`）：cargo
+  参数解析单测 + 通过 CLI 端到端跑稳态/瞬态管网冒烟测试（存在 cargo 时才注册）；
 - 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`

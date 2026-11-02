@@ -24,6 +24,13 @@ ctest --test-dir build --output-on-failure   # 全量回归（poiseuille 算例�
 python3 tests/check_poiseuille.py \
     "$PWD/build/src/3d/apps/chflow-simple-foam" \
     "$PWD/tests/cases/poiseuilleChannel/case.dict"
+
+# 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
+# blowdown / rlc / slug 三种解析对照模式
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict
+python3 tests/check_transient.py \
+    "$PWD/build/src/1d/apps/chflow-1d-transient" \
+    "$PWD/tests/cases/transientBlowdown/case.dict" blowdown
 ```
 
 ## 2. 代码规范

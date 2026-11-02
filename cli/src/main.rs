@@ -18,13 +18,13 @@ enum Command2 {
 fn parse(args: &[String]) -> Result<Command2, String> {
     match args.first().map(String::as_str) {
         None | Some("help") | Some("--help") => Err(
-            "usage: chuanflow version | chuanflow run steady <case.dict>".to_string(),
+            "usage: chuanflow version | chuanflow run steady|transient <case.dict>".to_string(),
         ),
         Some("version") => Ok(Command2::Version),
         Some("run") => {
             let engine = match args.get(1).map(String::as_str) {
                 Some("steady") => "chflow-1d-steady",
-                Some("transient") => return Err("1D transient solver is on the roadmap (M2)".into()),
+                Some("transient") => "chflow-1d-transient",
                 other => {
                     return Err(format!("unknown engine '{}': expected steady|transient", other.unwrap_or("<none>")))
                 }
@@ -95,13 +95,25 @@ mod tests {
     }
 
     #[test]
+    fn run_transient_parses() {
+        let got = parse(&[
+            "run".to_string(),
+            "transient".to_string(),
+            "case.dict".to_string(),
+        ]);
+        assert_eq!(
+            got,
+            Ok(Command2::Run { engine: "chflow-1d-transient".into(), case: "case.dict".into() })
+        );
+    }
+
+    #[test]
     fn rejects_bad_usage() {
         assert!(parse(&[]).is_err());
         assert!(parse(&["run".to_string()]).is_err());
         assert!(parse(&["run".to_string(), "mesh".to_string()]).is_err());
         assert!(parse(&["run".to_string(), "steady".to_string()]).is_err());
         assert!(parse(&["transient".to_string(), "case".to_string()]).is_err());
-        assert!(parse(&["run".to_string(), "transient".to_string(), "c".to_string()]).is_err());
     }
 
     #[test]

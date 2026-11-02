@@ -127,12 +127,18 @@ print(result.pressure_profile)
 - **egui + Tauri**：跨平台桌面GUI
 
 ## 🚀 开发路线（Milestone）
-- M1：一维稳态管网求解器 + Python绑定 + CLI，对标基础Pipesim算例，完成基准校验
-- M2：一维瞬态多相求解，实现段塞基础模型、水合物计算，对标OLGA简单工况
-- M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行
+- M1：一维稳态管网求解器 + Python绑定 + CLI，对标基础Pipesim算例，完成基准校验 ✅
+- M2：一维瞬态多相求解，实现段塞基础模型、水合物计算，对标OLGA简单工况 🚧
+  （瞬态水力 + 段塞持液率输运 + 水合物等温动力学 + 3 个解析回归已落地，
+  真两相动量交换与热力耦合待做）
+- M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 🚧
+  （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE + blockMesh/vtu IO 已落地，
+  k-ε、Gmsh 读入、MPI 待做）
 - M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口
 - M5：Tauri GUI 管网编辑器、实时曲线面板
 - M6：Kokkos GPU 加速、更多工业模型扩充
+
+已落地部分的实现细节与概念映射见 [docs/architecture.md](docs/architecture.md)。
 
 ## 📌 相关项目说明 & 免责
 - ChuanFlow **借鉴 OpenFOAM-dev 的有限体积框架设计思路**，属于学习参考架构思想；**不包含 OpenFOAM 源码**，不衍生自 OpenFOAM；

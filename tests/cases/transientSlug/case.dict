@@ -1,0 +1,36 @@
+// M2 verification case C: liquid slug tracking along a gas-filled line at
+// constant flow. Nodes between the ports are incompressible (bulkModulus 0,
+// so continuity enforces a steady Q); the mobile-liquid fraction is advected
+// with pure volume delays, giving an exact piecewise-linear reference for
+// tests/check_transient.py.
+fluid
+{
+    rho 850;
+    mu  0.1;
+}
+
+nodes
+{
+    IN  { fixedPressure 6.0e5; volume 1.0; liquidFraction 1.0; }
+    N1  { volume 1.0; bulkModulus 0.0; pressure 3.0e5; liquidFraction 1.0; }
+    N2  { volume 1.0; bulkModulus 0.0; pressure 3.0e5; liquidFraction 0.0; }
+    N3  { volume 1.0; bulkModulus 0.0; pressure 3.0e5; liquidFraction 0.0; }
+    N4  { volume 1.0; bulkModulus 0.0; pressure 3.0e5; liquidFraction 0.0; }
+    OUT { fixedPressure 0.0; volume 1.0; liquidFraction 0.0; }
+}
+
+pipes
+{
+    PA { from IN; to N1; length 100; diameter 0.02; roughness 0; elevation 0; }
+    PB { from N1; to N2; length 100; diameter 0.02; roughness 0; elevation 0; }
+    PC { from N2; to N3; length 100; diameter 0.02; roughness 0; elevation 0; }
+    PD { from N3; to N4; length 100; diameter 0.02; roughness 0; elevation 0; }
+    PE { from N4; to OUT; length 100; diameter 0.02; roughness 0; elevation 0; }
+}
+
+time
+{
+    dt 5000;
+    endTime 1000000;
+    reportEvery 1;
+}

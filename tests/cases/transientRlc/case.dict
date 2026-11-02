@@ -1,0 +1,29 @@
+// M2 verification case B: inertial sloshing between two compliant nodes.
+// The laminar RLC analogy gives an exact underdamped ODE for Q(t);
+// tests/check_transient.py compares first-peak timing and amplitude.
+// Geometric values chosen so the peak Re stays laminar (~1400). The
+// 50% gas cushion supplies the compliance the liquid-only nodes cannot.
+fluid
+{
+    rho 850;
+    mu  0.1;
+}
+
+nodes
+{
+    A { volume 1.0; bulkModulus 1.0e8; pressure 2.0e5; liquidFraction 0.5; }
+    B { volume 1.0; bulkModulus 1.0e8; pressure 1.0e5; liquidFraction 0.5; }
+}
+
+pipes
+{
+    // I = rho L / area = 1.0e6 kg/m4, R = 1.398e6 Pa.s/m3
+    CROSS { from A; to B; length 2.49; diameter 0.0519; roughness 0; elevation 0; }
+}
+
+time
+{
+    dt 0.0001;
+    endTime 1.5;
+    reportEvery 10;
+}

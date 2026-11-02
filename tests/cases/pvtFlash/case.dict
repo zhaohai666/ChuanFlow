@@ -1,0 +1,30 @@
+// Unified PVT layer: a four-component natural-gas / condensate feed flashed
+// at one temperature over a pressure sweep, plus its bubble point and a
+// tabulated liquid density. Everything the checks assert follows from the
+// Peng-Robinson state function itself (see docs/architecture.md).
+
+temperature 320.0;
+
+pressures (1.0e6 4.0e6 1.2e7);
+
+composition
+{
+    methane   0.34;
+    ethane    0.18;
+    propane   0.26;
+    nPentane  0.22;
+}
+
+solve
+{
+    tol 1.0e-12;
+    maxIter 500;
+    bubblePoint yes;
+}
+
+table
+{
+    property liquidDensity;
+    pressures (2.0e6 4.0e6 6.0e6);
+    temperatures (310.0 320.0 330.0);
+}

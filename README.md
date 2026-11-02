@@ -58,6 +58,11 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 - 水合物生成/分解动力学模型
 - PVT 数据表插值
 > 一维管网持液率、压力损失、三维CFD相界面计算全部调用此模块，保证耦合仿真一致性。
+>
+> 首版已落地：纯组分与多组分的 Peng-Robinson 状态方程（密度、压缩因子、逸度系数）、
+> 多组分等温 TP 闪蒸、混合物泡点、PVT 双线性表插值，以及 `chflow-pvt` 应用与
+> `chflow.tp_flash` Python 接口；黑油分离器、黏度/导热/表面张力关联式、
+> 水合物相平衡与生成条件仍待实现。
 
 #### 3. 一维求解层 `src/1d`
 独立子系统，分为稳态求解器与瞬态求解器：
@@ -88,6 +93,7 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 # 示例
 chuanflow run steady case.yaml
 chuanflow run transient case.yaml
+chuanflow run pvt case.dict
 chuanflow mesh convert gmsh.msh chuan.cmesh
 chuanflow post extract pressure along-pipe
 ```
@@ -134,6 +140,11 @@ print(result.pressure_profile)
 - M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 🚧
   （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE + blockMesh/vtu IO 已落地，
   k-ε、Gmsh 读入、MPI 待做）
+- 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
+  （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
+  `chflow-pvt` 应用 + Python 绑定 + CLI 已落地，EOS 内部不变量与解析回归全绿；
+  水合物相平衡/生成条件、黏度与界面张力、非等温闪蒸、以及把密度实时供给
+  1D/3D 求解器待做）
 - M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口
 - M5：Tauri GUI 管网编辑器、实时曲线面板
 - M6：Kokkos GPU 加速、更多工业模型扩充

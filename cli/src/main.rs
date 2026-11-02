@@ -18,15 +18,16 @@ enum Command2 {
 fn parse(args: &[String]) -> Result<Command2, String> {
     match args.first().map(String::as_str) {
         None | Some("help") | Some("--help") => Err(
-            "usage: chuanflow version | chuanflow run steady|transient <case.dict>".to_string(),
+            "usage: chuanflow version | chuanflow run steady|transient|pvt <case.dict>".to_string(),
         ),
         Some("version") => Ok(Command2::Version),
         Some("run") => {
             let engine = match args.get(1).map(String::as_str) {
                 Some("steady") => "chflow-1d-steady",
                 Some("transient") => "chflow-1d-transient",
+                Some("pvt") => "chflow-pvt",
                 other => {
-                    return Err(format!("unknown engine '{}': expected steady|transient", other.unwrap_or("<none>")))
+                    return Err(format!("unknown engine '{}': expected steady|transient|pvt", other.unwrap_or("<none>")))
                 }
             };
             let case = args
@@ -104,6 +105,19 @@ mod tests {
         assert_eq!(
             got,
             Ok(Command2::Run { engine: "chflow-1d-transient".into(), case: "case.dict".into() })
+        );
+    }
+
+    #[test]
+    fn run_pvt_parses() {
+        let got = parse(&[
+            "run".to_string(),
+            "pvt".to_string(),
+            "case.dict".to_string(),
+        ]);
+        assert_eq!(
+            got,
+            Ok(Command2::Run { engine: "chflow-pvt".into(), case: "case.dict".into() })
         );
     }
 

@@ -1,16 +1,24 @@
-"""ChuanFlow Python package (README M1/M2 binding layer).
+"""ChuanFlow Python package (README M1/M2 binding layer + shared PVT layer).
 
-The heavy lifting lives in the C++ kernel; this package re-exports the
-pybind11 module `chflow_core` (built by the ChuanFlow CMake tree) with a
-Python API. Put both this directory's parent and the build output
-directory on PYTHONPATH (CTest does this for the regression test).
+The heavy lifting lives in the C++ kernels (1D network, transient, PVT); this
+package re-exports the pybind11 module `chflow_core` (built by the ChuanFlow
+CMake tree) with a Python API. Put both this directory's parent and the build
+output directory on PYTHONPATH (CTest does this for the regression test).
 """
 
 from chflow_core import (  # noqa: F401
+    BilinearTable,
+    Component,
+    EosState,
+    FlashCase,
+    FlashControls,
+    FlashResult,
     FluidProperties,
+    Mixture,
     NetworkPipe,
     OneDNetwork,
     PipeFlowResult,
+    RootPreference,
     SteadyControls,
     SteadyNetworkResult,
     TransientCase,
@@ -21,22 +29,40 @@ from chflow_core import (  # noqa: F401
     TransientSeries,
     TransientSource,
     TransientTimeControls,
+    bubble_pressure,
     churchill_friction,
+    component,
     hydrate_kinetics_step,
+    liquid_density_table,
+    load_flash_case,
     load_network,
     load_steady_controls,
     load_transient_case,
     load_transient_controls,
+    peng_robinson_state,
+    pure_vapor_pressure,
     run_transient,
     solve_steady_network,
+    tp_flash,
+    vapour_density_table,
+    vapour_fraction_table,
+    wilson_k,
 )
 
 __all__ = [
+    "BilinearTable",
+    "Component",
+    "EosState",
+    "FlashCase",
+    "FlashControls",
+    "FlashResult",
     "FluidProperties",
+    "Mixture",
     "NetworkPipe",
     "OneDNetwork",
-    "SteadyControls",
     "PipeFlowResult",
+    "RootPreference",
+    "SteadyControls",
     "SteadyNetworkResult",
     "TransientCase",
     "TransientNetwork",
@@ -46,12 +72,22 @@ __all__ = [
     "TransientSeries",
     "TransientSource",
     "TransientTimeControls",
+    "bubble_pressure",
     "churchill_friction",
+    "component",
     "hydrate_kinetics_step",
+    "liquid_density_table",
+    "load_flash_case",
     "load_network",
     "load_steady_controls",
     "load_transient_case",
     "load_transient_controls",
+    "peng_robinson_state",
+    "pure_vapor_pressure",
     "run_transient",
     "solve_steady_network",
+    "tp_flash",
+    "vapour_density_table",
+    "vapour_fraction_table",
+    "wilson_k",
 ]

@@ -62,7 +62,6 @@ polyMesh BlockMesh::create(const Vector& min, const Vector& max,
             for (label i = 0; i <= nx; ++i)
                 points[static_cast<std::size_t>(pointAt(i, j, k))] = coordAt(i, j, k);
 
-    const label nCells = nx * ny * nz;
     auto cellId = [&](label i, label j, label k)
     {
         return static_cast<label>(static_cast<std::size_t>(i)

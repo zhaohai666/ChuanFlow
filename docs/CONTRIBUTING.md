@@ -31,6 +31,13 @@ python3 tests/check_poiseuille.py \
 python3 tests/check_transient.py \
     "$PWD/build/src/1d/apps/chflow-1d-transient" \
     "$PWD/tests/cases/transientBlowdown/case.dict" blowdown
+
+# 统一物性层：app 按 case.dict 的压力列表逐个闪蒸 + 泡点 + 制表，
+# check_pvt.py 校验热力学恒等式（物料衡算、逸度相等、包络塌陷、表 vs 直接求值）
+./build/src/pvt/apps/chflow-pvt tests/cases/pvtFlash/case.dict
+python3 tests/check_pvt.py \
+    "$PWD/build/src/pvt/apps/chflow-pvt" \
+    "$PWD/tests/cases/pvtFlash/case.dict"
 ```
 
 ## 2. 代码规范

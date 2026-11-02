@@ -3,6 +3,8 @@
 #include <cmath>
 #include <ostream>
 
+#include "cf/common/Labels.h"
+
 namespace cf
 {
 
@@ -90,7 +92,6 @@ T doubleContract(const Tensor3<T>& a, const Tensor3<T>& b)
          + a.zx * b.zx + a.zy * b.zy + a.zz * b.zz;
 }
 
-using scalar = double;
 using Vector = Vector3<scalar>;
 using Tensor = Tensor3<scalar>;
 

@@ -1,4 +1,5 @@
-"""Python binding regression for the 1D kernels (M1 steady, M2 transient).
+"""Python binding regression for the 1D kernels and the PVT layer
+(M1 steady, M2 transient, shared src/pvt).
 
 Run through CTest as `python.bindings` (PYTHONPATH is set by CMake to the
 package dir and the chflow_core module dir). Compares against the exact
@@ -118,6 +119,83 @@ class TestTransientBindings(unittest.TestCase):
         for a, b in zip(sim.liquid_fractions(), last.liquid_fraction):
             self.assertTrue(math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12))
         self.assertEqual(sum(sim.hydrate_volumes()), 0.0)
+
+
+class TestPvtBindings(unittest.TestCase):
+    """README: src/pvt is the shared property layer - check the binding can
+    reproduce the EOS invariants the C++ regression tests assert."""
+
+    CASE = os.path.join(CASE_DIR, "pvtFlash", "case.dict")
+
+    def feed(self):
+        mix = chflow.Mixture()
+        for name, frac in (("methane", 0.34), ("ethane", 0.18),
+                           ("propane", 0.26), ("nPentane", 0.22)):
+            mix.add(chflow.component(name), frac)
+        return mix
+
+    def test_unknown_component_raises(self):
+        with self.assertRaises(RuntimeError):
+            chflow.component("unobtainium")
+
+    def test_critical_point_compressibility(self):
+        c = chflow.component("methane")
+        st = chflow.peng_robinson_state(self.single(c), c.tc, c.pc,
+                                        chflow.RootPreference.lowest_gibbs)
+        self.assertLess(abs(st.z - 0.30740) / 0.30740, 0.02)
+
+    def single(self, component):
+        mix = chflow.Mixture()
+        mix.add(component, 1.0)
+        return mix
+
+    def test_pure_fluid_bubble_point_is_its_vapor_pressure(self):
+        ethane = chflow.component("ethane")
+        psat = chflow.pure_vapor_pressure(ethane, 250.0)
+        self.assertGreater(psat, 1.0e5)
+        self.assertLess(psat, ethane.pc)
+        self.assertAlmostEqual(chflow.bubble_pressure(self.single(ethane), 250.0),
+                               psat, delta=1e-5 * psat)
+        self.assertEqual(chflow.pure_vapor_pressure(ethane, ethane.tc + 10.0), 0.0)
+
+    def test_flash_satisfies_fugacity_equality(self):
+        feed = self.feed()
+        r = chflow.tp_flash(feed, 320.0, 4.0e6)
+        self.assertTrue(r.converged)
+        self.assertFalse(r.single_phase)
+        self.assertLess(0.0, r.vapor_fraction)
+        self.assertGreater(1.0, r.vapor_fraction)
+        self.assertGreater(r.liquid_mass_density, r.vapour_mass_density)
+        z = feed.fractions()
+        for i, (x, y) in enumerate(zip(r.liquid_composition, r.vapour_composition)):
+            self.assertAlmostEqual(r.vapor_fraction * y + (1.0 - r.vapor_fraction) * x,
+                                   z[i], delta=1e-9)
+            # f_i^L = f_i^V at equilibrium
+            self.assertAlmostEqual(math.log(x) + r.liquid.ln_phi[i],
+                                   math.log(y) + r.vapour.ln_phi[i], delta=1e-8)
+        # beyond the bubble point the same feed collapses to one liquid phase
+        self.assertTrue(chflow.tp_flash(feed, 320.0, 1.2e7).single_phase)
+
+    def test_case_dict_and_bubble_point_bracket_the_envelope(self):
+        case = chflow.load_flash_case(self.CASE)
+        self.assertEqual(case.feed.size(), 4)
+        self.assertEqual(len(case.pressures), 3)
+        self.assertTrue(case.compute_bubble_point)
+        pb = chflow.bubble_pressure(case.feed, case.temperature)
+        self.assertLess(8.0e6, pb)
+        self.assertGreater(9.0e6, pb)
+        self.assertFalse(chflow.tp_flash(case.feed, case.temperature, 0.99 * pb).single_phase)
+        self.assertTrue(chflow.tp_flash(case.feed, case.temperature, 1.01 * pb).single_phase)
+
+    def test_table_matches_the_direct_evaluation(self):
+        feed = self.feed()
+        pGrid, tGrid = [2.0e6, 4.0e6, 6.0e6], [310.0, 320.0, 330.0]
+        table = chflow.liquid_density_table(feed, pGrid, tGrid)
+        direct = chflow.tp_flash(feed, 320.0, 4.0e6).liquid_mass_density
+        self.assertAlmostEqual(table.sample(4.0e6, 320.0), direct, delta=1e-9 * direct)
+        mid = chflow.tp_flash(feed, 320.0, 3.0e6).liquid_mass_density
+        self.assertLess(abs(table.sample(3.0e6, 320.0) - mid) / mid, 0.02)
+        self.assertEqual(table.size(), 9)
 
 
 if __name__ == "__main__":

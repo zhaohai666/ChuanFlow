@@ -20,6 +20,7 @@ add_compile_options(-Wall -Wextra -Wno-unused-parameter)
 enable_testing()
 
 add_subdirectory(src/common)
+add_subdirectory(src/pvt)
 add_subdirectory(src/1d)
 add_subdirectory(src/3d)
 

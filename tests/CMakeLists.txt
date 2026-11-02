@@ -17,6 +17,12 @@ target_compile_definitions(transient_tests PRIVATE
     CF_CASE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases")
 add_test(NAME transient.unit COMMAND transient_tests)
 
+add_executable(pvt_tests unit/pvtTests.cpp)
+target_link_libraries(pvt_tests PRIVATE cf_pvt)
+target_compile_definitions(pvt_tests PRIVATE
+    CF_CASE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases")
+add_test(NAME pvt.unit COMMAND pvt_tests)
+
 # ---- analytic verification cases ----
 add_test(
     NAME verify.advectionDiffusion
@@ -60,6 +66,16 @@ foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug")
             ${mode})
 endforeach()
 
+# The PVT case sweeps a pressure envelope through the flash; the checker
+# asserts thermodynamic identities (material balance, fugacity equality,
+# envelope collapse, table vs direct EOS) rather than stored numbers.
+add_test(
+    NAME verify.pvtFlash
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt.py
+        $<TARGET_FILE:chflow-pvt>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtFlash/case.dict)
+
 if(CHFLOW_PYTHON_BINDINGS)
     add_test(
         NAME python.bindings
@@ -90,4 +106,11 @@ if(CARGO_EXECUTABLE)
             -- run transient ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientBlowdown/case.dict)
     set_tests_properties(cli.runTransient PROPERTIES
         ENVIRONMENT "CHUANFLOW_BIN_DIR=$<TARGET_FILE_DIR:chflow-1d-transient>")
+    add_test(NAME cli.runPvt
+        COMMAND ${CARGO_EXECUTABLE} run --offline --quiet
+            --manifest-path ${PROJECT_SOURCE_DIR}/cli/Cargo.toml
+            --target-dir ${CMAKE_BINARY_DIR}/cli
+            -- run pvt ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtFlash/case.dict)
+    set_tests_properties(cli.runPvt PROPERTIES
+        ENVIRONMENT "CHUANFLOW_BIN_DIR=$<TARGET_FILE_DIR:chflow-pvt>")
 endif()

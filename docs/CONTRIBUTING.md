@@ -3,14 +3,18 @@
 ## 1. 开发环境与构建
 
 - C++20（Apple clang 14+ / GCC 12+ / Clang 14+ 实测通过），CMake ≥ 3.24；
-- 内核层（`src/common`、`src/3d`）**零第三方依赖**：只允许 C++ 标准库。
+- 内核层（`src/common`、`src/1d`、`src/3d`）**零第三方依赖**：只允许 C++ 标准库。
   Eigen/PETSc/spdlog 等只能出现在未来的可选后端模块，不进入内核；
-- 测试需要 Python 3.10+（只用标准库）。
+- 测试需要 Python 3.10+（只用标准库）；
+- 可选层：Python 绑定 `src/bindings` 经 FetchContent 拉取 pybind11
+  （首次 configure 需要网络；离线或缺 Python 开发头文件时用
+  `-DCHFLOW_WITH_PYTHON=OFF` 跳过，C++ 构建不受影响）；CLI `cli/` 为
+  零依赖 Rust，未安装 cargo 时对应 CTest 用例自动不注册。
 
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure   # 全量回归，约 40 s
+ctest --test-dir build --output-on-failure   # 全量回归（poiseuille 算例约 6 分钟）
 ```
 
 单个验证算例可以直接手动跑，便于调试：

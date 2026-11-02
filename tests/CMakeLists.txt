@@ -41,3 +41,28 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_network.py
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetwork/case.dict)
+
+if(CHFLOW_PYTHON_BINDINGS)
+    add_test(
+        NAME python.bindings
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings.py)
+    # ':' not ';': CMake would split an ENVIRONMENT value containing ';'
+    set_tests_properties(python.bindings PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python:$<TARGET_FILE_DIR:chflow_core>")
+endif()
+
+# ---- CLI (Rust) ----
+find_program(CARGO_EXECUTABLE cargo)
+if(CARGO_EXECUTABLE)
+    add_test(NAME cli.unit
+        COMMAND ${CARGO_EXECUTABLE} test --offline --quiet
+            --manifest-path ${PROJECT_SOURCE_DIR}/cli/Cargo.toml
+            --target-dir ${CMAKE_BINARY_DIR}/cli)
+    add_test(NAME cli.runSteady
+        COMMAND ${CARGO_EXECUTABLE} run --offline --quiet
+            --manifest-path ${PROJECT_SOURCE_DIR}/cli/Cargo.toml
+            --target-dir ${CMAKE_BINARY_DIR}/cli
+            -- run steady ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetwork/case.dict)
+    set_tests_properties(cli.runSteady PROPERTIES
+        ENVIRONMENT "CHUANFLOW_BIN_DIR=$<TARGET_FILE_DIR:chflow-1d-steady>")
+endif()

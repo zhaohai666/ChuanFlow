@@ -13,9 +13,11 @@
 ```
 apps (chflow-1d-steady / chflow-scalar-transport / chflow-simple-foam)
   ├── src/1d          一维稳态管网内核（节点法水力计算，对标 Pipesim 的基础能力）
+  │      ├── src/bindings  pybind11 模块 chflow_core（Python 包 python/chflow）
   │      └── src/common  基础层（字典解析、日志/异常）
   └── src/3d          三维 FVM 内核（mesh / fields / discrete / solvers / io）
         └── src/common  基础层（向量、Field 容器、稀疏矩阵+Krylov求解、字典解析、日志/异常）
+cli/  Rust 自动化入口 chuanflow（run steady <case.dict>，定位并转发引擎二进制）
 ```
 
 内核零第三方依赖：纯 C++20 + 标准库，CMake ≥ 3.24 构建，测试用 CTest +
@@ -62,8 +64,22 @@ Python 标准库脚本校验（无外部测试框架）。
   `node <name> p <value>` / `pipe <name> Q … v … Re … f … dp …`（12 位有效
   数字，供 `tests/check_steady_network.py` 解析），未收敛返回非零码。
 
-M1 剩余的 Python 绑定与 CLI 封装、以及井筒/热力耦合与环路迭代（对标完整
-Pipesim）尚未实现。
+M1 剩余的井筒/热力耦合与环路迭代（对标完整 Pipesim）尚未实现。
+
+### 3.1 Python 绑定 `src/bindings` + `python/chflow`
+pybind11（FetchContent v2.13.6，`-DCHFLOW_WITH_PYTHON=ON`，缺少 Python
+开发头文件时自动跳过）。模块 `chflow_core` 导出
+`OneDNetwork / NetworkPipe / FluidProperties / SteadyControls /
+SteadyNetworkResult / PipeFlowResult` 与 `solve_steady_network /
+load_network / load_steady_controls / churchill_friction`；C++ 侧的
+`cf::Error` 自动转成 Python `RuntimeError`。Python 包 `chflow` 只是
+再导出层。求解调用释放 GIL。
+
+### 3.2 CLI `cli/`（Rust）
+零依赖 std-only 二进制 `chuanflow`：
+`chuanflow run steady <case.dict>` 通过 `$CHUANFLOW_BIN_DIR`（或 PATH）
+定位 `chflow-1d-steady` 并转发 stdout/退出码；`chuanflow version`。
+定位为自动化入口（HPC/CI），不做计算。
 
 ## 4. src/3d 三维内核
 
@@ -159,4 +175,8 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
   - `pureDiffusion`（Laplace/Poisson，线性场精确再现）
   - `poiseuilleChannel`（平面渠道 Poiseuille：抛物线剖面、通量守恒、
     `v≈0`、中心线与解析压降对比；SIMPLE 收敛约 1500 外迭代 / 37 s）
+- `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
+  构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；
+- `cli`（CTest `cli.unit` + `cli.runSteady`）：cargo 参数解析单测 +
+  通过 CLI 端到端跑稳态管网冒烟测试（存在 cargo 时才注册）；
 - 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`

@@ -1,0 +1,7 @@
+[package]
+name = "chuanflow"
+version = "0.1.0"
+edition = "2021"
+description = "ChuanFlow automation CLI: entry point for cases, solvers and post-processing"
+
+[dependencies]

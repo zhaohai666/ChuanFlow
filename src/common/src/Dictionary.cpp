@@ -104,6 +104,7 @@ public:
         {
             Token key = lex_.next();
             if (key.type == TokType::eof) return dict;
+            if (key.type == TokType::semi) continue;  // stray ';' after a block
             if (key.type != TokType::word)
             {
                 cfFatal("dictionary: expected key, got '" + key.text + "'");
@@ -181,6 +182,7 @@ private:
         {
             Token key = lex_.next();
             if (key.type == TokType::eof) cfFatal("dictionary: unterminated block");
+            if (key.type == TokType::semi) continue;  // stray ';' after a block
             if (key.type == TokType::rbrace) return block;
             if (key.type != TokType::word)
             {

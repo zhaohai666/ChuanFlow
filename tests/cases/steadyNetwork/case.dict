@@ -1,0 +1,39 @@
+// Steady single-phase gathering network: two wells into a manifold, one
+// line to a fixed-pressure terminal. All pipes are sized so the flow is
+// laminar, letting tests/check_steady_network.py compare against the exact
+// Hagen-Poiseuille series/parallel solution (including gravity heads).
+fluid
+{
+    rho 850;
+    mu  0.1;
+}
+
+nodes
+{
+    W1 {};
+    W2 {};
+    M {};
+    Outlet { pressure 1.0e6; }
+}
+
+pipes
+{
+    //  W1 --(climbs 5 m)--> M
+    P1 { from W1; to M;    length 1000; diameter 0.05; roughness 0; elevation 5; }
+    //  W2 --(climbs 10 m)--> M
+    P2 { from W2; to M;    length 1500; diameter 0.05; roughness 0; elevation 10; }
+    //  M  ------------------> terminal
+    P3 { from M;  to Outlet; length 800; diameter 0.05; roughness 0; elevation 0; }
+}
+
+sources
+{
+    well1 { node W1; rate 0.002; }
+    well2 { node W2; rate 0.001; }
+}
+
+solve
+{
+    maxIter 100;
+    tol     1e-12;
+}

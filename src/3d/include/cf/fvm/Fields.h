@@ -78,6 +78,8 @@ public:
 
     void setPatchValue(label patchId, const std::string& bcType, const Vector& value);
     std::string patchBcType(label patchId) const;
+    /// prescribed value of the patch condition (zero for gradient types)
+    Vector patchValue(label patchId) const;
 
     Vector faceValue(label face) const;
     /// component-wise linearisation against owner cell value of that component

@@ -25,6 +25,13 @@ python3 tests/check_poiseuille.py \
     "$PWD/build/src/3d/apps/chflow-simple-foam" \
     "$PWD/tests/cases/poiseuilleChannel/case.dict"
 
+# 三维瞬态 PISO：app 逐步打印 t/uMax/cont/correctors 与终态剖面，
+# check_piso.py 对比启动渠道解析级数（含离散壁面偏移的显式核对）
+./build/src/3d/apps/chflow-piso-foam tests/cases/startedChannel/case.dict
+python3 tests/check_piso.py \
+    "$PWD/build/src/3d/apps/chflow-piso-foam" \
+    "$PWD/tests/cases/startedChannel/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict

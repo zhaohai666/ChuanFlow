@@ -1,0 +1,56 @@
+// Sudden start-up of a planar channel driven by a constant body force.
+// u = (u(y,t), 0, 0): the x-normal faces are translational invariants, so the
+// pressure stays uniform and the analytic series solution
+//   u(y,t) = a H^2/(2 nu) [ xi(1-xi) - sum_n 4(1-(-1)^n)/(n pi)^3
+//                                     sin(n pi xi) exp(-n^2 pi^2 nu t / H^2) ]
+// applies. tests/check_piso.py compares the reported history and the final
+// profile against it.
+block
+{
+    min   (0 0 0);
+    max   (1 0.2 0.1);
+    cells (10 20 1);
+
+    xmin  { name left;   type symmetry; }
+    xmax  { name right;  type symmetry; }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+nu 0.01;
+
+patches
+{
+    // uniform gradient: the field is x-invariant, so zeroGradient is exact
+    left  { UType zeroGradient; p 0; pType fixedValue; } // one reference = anchor
+    right { UType zeroGradient; pType zeroGradient;     }
+    bottom{ U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top   { U (0 0 0); UType fixedValue; pType zeroGradient; }
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+piso
+{
+    // nu*dt/dy^2 = 0.01*0.002/1e-4 = 0.2: within the diffusion-number limit
+    // documented in PisoSolver.h (see also tests/check_piso.py).
+    dt          0.002;
+    endTime     12;      // 3 diffusion times H^2/nu: steady to 1e-13
+    correctors  2;
+    continuityTol 1e-8;
+    reportEvery 100;
+    force       (0.1 0 0);
+}
+
+output
+{
+    vtk out_started_channel.vtu;
+}

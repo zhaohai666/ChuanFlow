@@ -254,8 +254,9 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
 3. 压力修正：`laplacian(rAUf, p') = div(phi)`，`p'` 继承 `p` 的 BC
    （fixedValue→0 Dirichlet，否则 zeroGradient）；
 4. 校正：`U −= rAU grad(p')`，`p += α_P p'`，然后显式面通量校正
-   `phi_f −= rAUf_f·SnGrad(p')·|Sf| + 非正交补偿`（OpenFOAM 的
-   `phi -= pEqn.flux()`），校正后的 `phi` 在散度意义下按构造为零；
+   `phi_f −= rAUf_f·SnGrad(p')·|Sf| + 非正交补偿`（公共件 `correctFluxes`，
+   即 OpenFOAM 的 `phi -= pEqn.flux()`，见 5.6），校正后的 `phi` 在散度
+   意义下按构造为零；
 5. 收敛判据：预测通量散度 `contErr`；当动量欠松弛使 `contErr` 出现
    滞后地板时，用 `|p'|` 衰减作为真实的外迭代收敛信号（`pcorrTol`）。
 
@@ -269,10 +270,54 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
   Jacobi 缩放隐式地对压力做了欠松弛，是经典 SIMPLE 的稳定选择。
   代价是预测散度存在与滞后成正比的地板值，因此测试用 `pcorrTol` 判收敛。
 
-### 5.6 应用与 IO
+### 5.6 压力修正公共件 `pressureCorrection.cpp`
+SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个离散连续方程**：
+
+- `updatePhiInternal`：内部面 `phi = interp(U) & Sf`（不动边界面）；
+- `interpolateToFaces`：单元系数（`rAU`）按面求值，供 `fvm::laplacianFace`；
+- `correctFluxes`：`phi_f −= rAUf_f·SnGrad(p)·|Sf| + 非正交补偿`，边界面用
+  压力场的 `linearise`（fixedValue 给 Dirichlet，zeroGradient 不贡献）——
+  即 OpenFOAM 的 `phi -= pEqn.flux()`；
+- `continuityError`：`max|div(phi)|` 除以最大面面积，作为无量纲残差。
+
+### 5.7 瞬态 PISO 求解器 `pisoSolver.cpp`
+单相不可压瞬态回路（pisoFoam 结构，全部自研）：
+
+1. 每步一次动量：`ddt(U)/dt + div(phi,U) − laplacian(nu,U) = V(f − grad pⁿ)`；
+2. `HbyA = rAU·(H(U) + V grad pⁿ)/V`，即不含压力梯度的动量响应
+   （OpenFOAM 的 `UEqn.H()*rAU()`），边界按 `constrainHbyA` 处理：速度
+   给定的 patch 保留其面值，其余 zeroGradient；
+3. 每个 corrector：`phi = interp(HbyA) & Sf` → 隐式求解**全压力**
+   `laplacian(rAUf, p) = div(phi)`（以 pⁿ 为初值）→ `U = HbyA − rAU grad(p)`
+   → `phi −= rAUf SnGrad(p)|Sf|`；
+4. `rAU = V/aDiag`（物理动量响应）。因 `fvm::ddt` 把 `V/dt` 放在对角上，
+   `rAU ≤ dt` 天然约束了每次校正，所以 PISO 不需要 SIMPLE 那套欠松弛
+   （对比 5.5 的 Jacobi 缩放结论）；
+5. 收敛判据：校正后的 `max|div(phi)|`，实测降到 1e-18 量级（机器精度），
+   corrector 一次即退出。
+
+两个刻在实现里的经验结论（回归历史，勿回退）：
+
+- **必须解全压力 p，不能累加修正量 p'**：同位网格上 `interp(U)` 对
+  压力模式是"盲"的（交错场的半格平均相消），累加 `p = Σp'` 会把一个
+  钟形压力模态放大（实测每步 1.6~1.7 倍），最终污染动量对角导致发散。
+  这里压力只通过面的紧凑 `SnGrad` 进入通量——正是压力方程反演的算子，
+  该模态无法被泵起；
+- **稳定性上限**：压力 Poisson 在拉长网格上各向异性，其最弱模态（流向
+  压力斜坡 + 横向涡卷）只靠黏性衰减。启动渠道算例实测：扩散数
+  `nu·dt/dy² ≤ 0.5` 时严格稳定且精确；接近 1 时该模态从舍入误差起振并
+  每步放大，直至线性求解器报 NaN（app 会显式告警，不会静默继续）。
+  瞬态算例请把 `nu·dt/min(cell edge)²` 控制在 0.5 以内。
+
+### 5.8 应用与 IO
 - `chflow-scalar-transport <case.dict>`：速度驱动的对流扩散标量求解
   （`fvm::ddt + fvm::div + fvm::laplacian` 一次求解）；
 - `chflow-simple-foam <case.dict>`：不可压 SIMPLE；
+- `chflow-piso-foam <case.dict>`：不可压瞬态 PISO，`piso{dt endTime
+  correctors continuityTol linearTol linearMaxIter nonOrthCorrectors
+  reportEvery force}`，步进循环 `dt = min(dt, endTime − t)`，逐步打印
+  `t / uMax / cont / correctors` 与结束时第一条 x 截面的 `profile y u`
+  供解析核对，`piso done: steps ... worstContinuity ...` 收尾；
 - `VtkWriter`：ASCII `.vtu`（单元中心场），ParaView 直接可读。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
@@ -286,9 +331,11 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
 | `fvVectorMatrix` / `solve(UEqn == −grad(p))` | `fvMatrix`（多分量）+ apps 手写回路 |
 | `lduMatrix` + PBiCGStab | `SparseMatrix` + 右预处理 BiCGStab |
 | `simpleFoam` | `solveIncompressibleSimple` + `chflow-simple-foam` |
+| `pisoFoam` | `solveTransientIncompressiblePiso` + `chflow-piso-foam` |
 | `system/fvSchemes` 字典 | case.dict 的 `schemes{}`（`loadSchemes`） |
 | `correctedSnGrad` 非正交修正 | `fvMatrix::registerCorrector` |
-| `pEqn.flux()` | simpleSolver 显式面通量校正块 |
+| `pEqn.flux()` | `correctFluxes`（`pressureCorrection.cpp`，SIMPLE/PISO 共用） |
+| `constrainHbyA` / `UEqn.H()*rAU()` | pisoSolver 的 `HbyA` 组装与 patch 约束 |
 | `basicThermo` / `pengRobinson`（reacting 系列的热力学底座） | `cf::pvt::Mixture` + `pengRobinsonState`（`src/pvt`，等温闪蒸由自研 `tpFlash` 提供） |
 | `thermophysicalDict` / `species` | case.dict 的 `composition { name fraction; }`（`loadComposition`） |
 
@@ -309,7 +356,12 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
   液/真空塌成单相气、混合物泡点被压力扫描包络并随 T 上升、双线性表节点
   与直接求值一致（1e-14）、气相密度随压升、两相区液相密度沿包络下降、
   单相区密度对 p 单调增对 T 单调减、case.dict 往返与未知组分名报错；
-- `tests/cases/*`：八个物理回归算例 + `tests/check_*.py` 断言：
+- `tests/unit/pisoTests.cpp`（CTest `piso.unit`）：非正时间步直接报错、
+  无黏第一步每个单元 `u = f·dt`（1e-9）且压力停在选择基准、1500 步瞬态
+  推进后剖面逐点等于**离散**稳态抛物线（含半格壁面偏移，1e-5 相对峰速）、
+  三阶差分逐点满足 `nu∇²u = −a`（1e-9）、横向速度保持 0、1500 步内校正后
+  `max|div(phi)| < 1e-12`；
+- `tests/cases/*`：九个物理回归算例 + `tests/check_*.py` 断言：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug`（见 4.2）
@@ -319,6 +371,11 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
   - `pureDiffusion`（Laplace/Poisson，线性场精确再现）
   - `poiseuilleChannel`（平面渠道 Poiseuille：抛物线剖面、通量守恒、
     `v≈0`、中心线与解析压降对比；SIMPLE 收敛约 1500 外迭代 / 37 s）
+  - `startedChannel`（渠道瞬时启动：10×20×1 网格、体积力驱动、
+    `nu dt/dy² = 0.2`、6000 步 / 12 s 物理时间；速度历史对比解析级数
+    （早期相对误差 8.7e-3，为 Euler 一阶时间离散；后半程 2.8e-7）、
+    终态剖面逐点等于离散抛物线（1.4e-8）、壁面偏移实测等于
+    `(a/2nu)(dy/2)²`、校正后散度 1.4e-18）
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

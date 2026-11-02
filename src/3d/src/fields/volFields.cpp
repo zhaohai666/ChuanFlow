@@ -186,6 +186,11 @@ std::string volVectorField::patchBcType(label patchId) const
     return bc_[static_cast<std::size_t>(patchId)].type;
 }
 
+Vector volVectorField::patchValue(label patchId) const
+{
+    return bc_[static_cast<std::size_t>(patchId)].value;
+}
+
 Vector volVectorField::faceValue(label face) const
 {
     const label o = mesh_.owner()[static_cast<std::size_t>(face)];

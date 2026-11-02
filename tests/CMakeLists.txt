@@ -23,6 +23,10 @@ target_compile_definitions(pvt_tests PRIVATE
     CF_CASE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases")
 add_test(NAME pvt.unit COMMAND pvt_tests)
 
+add_executable(piso_tests unit/pisoTests.cpp)
+target_link_libraries(piso_tests PRIVATE cf3d)
+add_test(NAME piso.unit COMMAND piso_tests)
+
 # ---- analytic verification cases ----
 add_test(
     NAME verify.advectionDiffusion
@@ -46,6 +50,13 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/check_poiseuille.py
         $<TARGET_FILE:chflow-simple-foam>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/poiseuilleChannel/case.dict)
+
+add_test(
+    NAME verify.startedChannel
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_piso.py
+        $<TARGET_FILE:chflow-piso-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/startedChannel/case.dict)
 
 add_test(
     NAME verify.steadyNetwork

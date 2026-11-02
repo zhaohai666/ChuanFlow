@@ -4,31 +4,10 @@
 #include <cmath>
 
 #include "cf/common/Log.h"
+#include "cf/fvm/PressureCorrection.h"
 
 namespace cf
 {
-namespace
-{
-
-/// phi at internal faces = interp(U) & Sf.
-void updatePhiInternal(const polyMesh& mesh, const volVectorField& U,
-                       surfaceScalarField& phi)
-{
-    Field<scalar> ow = makeInternalOwnerWeights(mesh);
-    const auto& sf = mesh.faceSf();
-    const auto& up = U.internalField();
-    auto& vals = phi.values();
-    for (label f = 0; f < mesh.nInternalFaces(); ++f)
-    {
-        const std::size_t u = static_cast<std::size_t>(f);
-        const Vector& cO = up[static_cast<std::size_t>(mesh.owner()[u])];
-        const Vector& cN = up[static_cast<std::size_t>(mesh.neighbour()[u])];
-        const Vector uf = ow[u] * cO + (1.0 - ow[u]) * cN;
-        vals[u] = dot(uf, sf[u]);
-    }
-}
-
-} // namespace
 
 SimpleResult solveIncompressibleSimple(polyMesh& mesh,
                                        volVectorField& U,
@@ -49,13 +28,6 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         const std::string t = p.patchBcType(patch);
         pEqnField.setPatchValue(patch, t == "fixedValue" ? "fixedValue" : "zeroGradient", 0.0);
     }
-
-    scalar scale = 0;
-    for (label f = 0; f < mesh.nFaces(); ++f)
-    {
-        scale = std::max(scale, mesh.faceAreas()[static_cast<std::size_t>(f)]);
-    }
-    scale = std::max(scale, 1e-300);
 
     for (int iter = 1; iter <= ctl.maxIterations; ++iter)
     {
@@ -115,20 +87,11 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         updatePhiInternal(mesh, U, phi);
         phi.correctBoundaryFlux(U);
 
+        const scalar contErr = continuityError(mesh, phi);
         const Field<scalar> divPhi = fvc::divPhi(mesh, phi.values());
-        scalar contErr = 0;
-        for (label c = 0; c < nC; ++c)
-        {
-            contErr = std::max(contErr, std::abs(divPhi[static_cast<std::size_t>(c)]));
-        }
-        contErr /= scale;
 
         // ---------------- pressure correction ----------------
-        Field<scalar> rAUf;
-        fvc::interpolate(mesh, rAU,
-                         [&mesh, &rAU](label f)
-                         { return rAU[static_cast<std::size_t>(mesh.owner()[static_cast<std::size_t>(f)])]; },
-                         rAUf);
+        const Field<scalar> rAUf = interpolateToFaces(mesh, rAU);
 
         fvMatrix pEqn(mesh, viewOf(pEqnField), "pEqn");
         pEqn.schemes() = schemes;
@@ -160,59 +123,9 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         // operator (phi_f -= rAUf_f * SnGrad(p'), OpenFOAM's pEqn.flux()),
         // then interpolate the cell-wise non-orthogonal correction so the
         // corrected phi is divergence-free up to the linear-solver tolerance.
-        {
-            const auto& pc = pEqnField.internalField();
-            const auto& sf = mesh.faceSf();
-            const auto& dcv = mesh.deltaCoeffVec();
-            auto& vals = phi.values();
-            Field<scalar> owPhi = makeInternalOwnerWeights(mesh);
-            for (label f = 0; f < mesh.nFaces(); ++f)
-            {
-                const std::size_t u = static_cast<std::size_t>(f);
-                const scalar d2 = dot(dcv[u], dcv[u]);
-                if (d2 <= 0) continue;
-                const scalar coef = rAUf[u] * dot(sf[u], dcv[u]) / d2;
-                scalar corr = 0;
-                if (schemes.laplacian == "corrected")
-                {
-                    const Vector dh = dcv[u] / std::sqrt(d2);
-                    const Vector cfVec = sf[u] - dh * dot(sf[u], dh);
-                    Vector gradFace;
-                    if (f < mesh.nInternalFaces())
-                    {
-                        gradFace = owPhi[u] * gradPc[static_cast<std::size_t>(mesh.owner()[u])]
-                                 + (1.0 - owPhi[u]) * gradPc[static_cast<std::size_t>(mesh.neighbour()[u])];
-                    }
-                    else
-                    {
-                        gradFace = gradPc[static_cast<std::size_t>(mesh.owner()[u])];
-                    }
-                    corr = rAUf[u] * dot(cfVec, gradFace);
-                }
-                if (f < mesh.nInternalFaces())
-                {
-                    const scalar dp = pc[static_cast<std::size_t>(mesh.neighbour()[u])]
-                                    - pc[static_cast<std::size_t>(mesh.owner()[u])];
-                    vals[u] -= coef * dp + corr;
-                }
-                else
-                {
-                    // boundary: Tf' - Tp' = (c-1)Tp' + k from the p' BC
-                    scalar c = 0, k = 0;
-                    pEqnField.linearise(f, c, k);
-                    const scalar tp = pc[static_cast<std::size_t>(mesh.owner()[u])];
-                    vals[u] -= coef * ((c - 1.0) * tp + k) + corr;
-                }
-            }
-        }
+        correctFluxes(mesh, pEqnField, gradPc, rAUf, schemes, phi);
 
-        const Field<scalar> divAfter = fvc::divPhi(mesh, phi.values());
-        scalar errAfter = 0;
-        for (label c = 0; c < nC; ++c)
-        {
-            errAfter = std::max(errAfter, std::abs(divAfter[static_cast<std::size_t>(c)]));
-        }
-        errAfter /= scale;
+        const scalar errAfter = continuityError(mesh, phi);
 
         log::info("SIMPLE iter ", iter, ": continuity ", contErr,
                   " (corrected ", errAfter, ", p' ", pPrimeMax, ")");

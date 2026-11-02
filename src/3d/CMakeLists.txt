@@ -8,7 +8,9 @@ add_library(cf3d STATIC
     src/discrete/laplacianScheme.cpp
     src/discrete/gradScheme.cpp
     src/io/vtkWrite.cpp
+    src/solvers/pressureCorrection.cpp
     src/solvers/simpleSolver.cpp
+    src/solvers/pisoSolver.cpp
 )
 
 target_include_directories(cf3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

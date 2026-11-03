@@ -82,9 +82,11 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 - 线性求解后端：小规模 Eigen，大规模 PETSc。
 
 > 首版已落地：多面体网格（blockMesh + Gmsh msh）、场与 BC、fvc/fvm 离散、
-> 定常 SIMPLE、瞬态 PISO、ASCII `.vtu` 输出，以及 k-ε / k-ω SST 两方程 RANS
-> 与 Spalding 壁面函数（含平衡壁面单元）；VOF/Euler-Euler 多相、张量场、
-> MPI 域分解与 Eigen/PETSc 后端仍待实现。
+> 定常 SIMPLE（连续性 + 动量残差双判据）、瞬态 PISO、ASCII `.vtu` 输出，
+> k-ε / k-ω SST 两方程 RANS 与 Spalding 壁面函数（含平衡壁面单元），以及
+> VOF 首增量（相分数守恒输运 + 界面法向/曲率，速度给定的 `chflow-vof`）；
+> VOF 的几何界面重构与 CSF/动量耦合、Euler-Euler 双流体、张量场、
+> MPI 域分解、Eigen/PETSc 后端与 SIMPLE 的一致动量插值仍待实现。
 
 #### 5. 绑定层 `src/bindings`
 基于 pybind11：
@@ -145,8 +147,9 @@ print(result.pressure_profile)
 - M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 🚧
   （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE + 瞬态 PISO +
   blockMesh/Gmsh msh 读入 + vtu IO + k-ε / k-ω SST 湍流模型层与 Spalding 壁面
-  函数（湍流渠道摩阻对 Pope 律回归，SIMPLE 与 PISO 两种耦合共用同一套断言）
-  已落地，MPI 并行、Eigen/PETSc 后端与
+  函数（湍流渠道摩阻对 Pope 律回归，SIMPLE 与 PISO 两种耦合共用同一套断言）+
+  VOF 首增量（相分数守恒输运的 M-矩阵性质、界面法向与曲率，平移与刚体旋转
+  两个解析回归）已落地，MPI 并行、Eigen/PETSc 后端与
   SIMPLE 的一致动量插值待做）
 - 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
@@ -154,6 +157,7 @@ print(result.pressure_profile)
   水合物相平衡/生成条件、黏度与界面张力、非等温闪蒸、以及把密度实时供给
   1D/3D 求解器待做）
 - M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口
+  （VOF 的几何界面重构、CSF 与动量耦合、Euler-Euler 双流体在此）
 - M5：Tauri GUI 管网编辑器、实时曲线面板
 - M6：Kokkos GPU 加速、更多工业模型扩充
 

@@ -45,6 +45,15 @@ python3 tests/check_turbulent_channel.py \
     "$PWD/build/src/3d/apps/chflow-simple-foam" \
     "$PWD/tests/cases/turbulentChannel/case.dict"
 
+# VOF 多相首增量：速度场是**给定**的（uniform 平移 / rotation 刚体旋转），
+# app 逐步打印相体积、α 上下界、质心、界面 0.5 穿越位置与界面带的均值 κ；
+# check_vof.py 把 case 复制到临时目录运行、从 vtu 独立复算同一组量，
+# 并按各自的闭式性质断言（守恒界、平移速度、曲率 −1/R）
+./build/src/3d/apps/chflow-vof tests/cases/vofRotation/case.dict
+python3 tests/check_vof.py \
+    "$PWD/build/src/3d/apps/chflow-vof" \
+    "$PWD/tests/cases/vofRotation/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict
@@ -124,6 +133,31 @@ output { vtk out_poiseuille.vtu; }
 `simple{momentumTol}` 是动量固定点变化 `max|U − Uold|/max|U|` 的门槛，两个
 收敛分支都要过它：单列渠道这类流向均匀的算例所有 `phi` 恒为 0，只靠连续性
 会在第 1 次外迭代就宣布收敛。`simple{force}` 与 `piso{force}` 同义。
+
+VOF 算例（`chflow-vof`）复用同一套 `block{}`/`mesh{}`、`schemes{}`、`output{}`，
+再加三个自己的块——速度是**给定的解析场**而不是求解出来的，验收的是输运与界面几何：
+
+```
+velocity { type uniform;  U (1 0 0); }   // 或 type rotation; omega 1.0; center (0 0 0);
+                                         // 后者是 U = omega zhat x (x - center)
+alpha { plane { point (0.2 0.05 0.05); normal (1 0 0); } }   // 单元填充的阶跃
+//     或 alpha { circle { center (0.2 0 0); radius 0.16; smooth 4.0; } }
+//        smooth > 0 把圆界面改成 tanh 抹平，厚度以 dx 计（曲率测量需要，见下）
+patches { inlet  { alphaType fixedValue; alpha 1; }   // 入口必须喂相分数
+          outlet { alphaType zeroGradient; } }
+time    { dt 0.0125; endTime 0.2; reportEvery 4; interfaceThreshold 0.1; }
+schemes { ddt Euler; div upwind; grad corrected; }    // ddt 只接受 Euler
+solverTol 1e-13;                                     // solverMaxIter 缺省 2000
+output  { vtk out.vtu; vtkInitial initial.vtu; }      // 后者写**初始**界面的 n̂/κ
+```
+
+`velocity{}` 的两种都是坐标的线性函数，所以逐单元 `sum_f U(x_f)·Sf = ∫div U dV`
+精确为零——守恒与 α ∈ [0,1] 是隐式 Euler + 迎风作用在离散无散 phi 上的 M-矩阵
+性质，不需要限制器，也不必把结果裁剪回去。`interfaceThreshold` 是界面带判据相对
+`|∇alpha|` 全场最大值的比例（法向只在带内单元非零，曲率模板因此只读带内面）。
+`vtkInitial` 存在的原因：对流会沿流向各向异性地抹开界面，**逐单元**法向随之倾斜，
+所以逐单元几何断言只作用在解析的初始场上（带均值 κ 仍然守恒，见
+`docs/architecture.md` §5.10）。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

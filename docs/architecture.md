@@ -15,14 +15,14 @@
 ## 1. 总体分层
 
 ```
-apps (chflow-1d-steady / chflow-1d-transient / chflow-pvt / chflow-scalar-transport / chflow-simple-foam)
+apps (chflow-1d-steady / chflow-1d-transient / chflow-pvt / chflow-scalar-transport / chflow-simple-foam / chflow-piso-foam / chflow-vof)
   ├── src/1d          一维管网内核（M1 稳态节点法 + M2 首增量：瞬态/持液率/水合物）
   │      └── src/common  基础层（字典解析、日志/异常）
   ├── src/pvt         统一物性层（PR 状态方程 / 多组分 TP 闪蒸 / PVT 表插值）
   │      └── src/common  基础层（字典解析、日志/异常）
   ├── src/bindings    pybind11 模块 chflow_core（Python 包 python/chflow）
   │      └── src/1d + src/pvt
-  └── src/3d          三维 FVM 内核（mesh / fields / discrete / solvers / io）
+  └── src/3d          三维 FVM 内核（mesh / fields / discrete / solvers / turbulence / multiphase / io）
         └── src/common  基础层（向量、Field 容器、稀疏矩阵+Krylov求解、字典解析、日志/异常）
 cli/  Rust 自动化入口 chuanflow（run steady|transient|pvt <case.dict>，定位并转发引擎二进制）
 ```
@@ -357,6 +357,9 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
   reportEvery force}`，步进循环 `dt = min(dt, endTime − t)`，逐步打印
   `t / uMax / cont / correctors` 与结束时第一条 x 截面的 `profile y u`
   供解析核对，`piso done: steps ... worstContinuity ...` 收尾；
+- `chflow-vof <case.dict>`：相分数输运与界面几何，速度场由 case 给定而不是求解
+  （见 5.10），vtu 写 `alpha`/`nHat`/`kappa`，可选 `vtkInitial` 写同一组量的
+  初始场；
 - `VtkWriter`：ASCII `.vtu`（单元中心场），ParaView 直接可读。
 
 ### 5.9 湍流模型层 `turbulence/`
@@ -419,6 +422,70 @@ laminar；`lengthScale ≤ 0` 回落为包围盒对角线的 7%（水力直径�
 给一个起步速度场（`caseInit.h`），壁面函数需要一个已有速度的边界层可谈。
 vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`。
 
+### 5.10 多相流层 `multiphase/`（M3 首增量：VOF 相分数输运 + 界面几何）
+`include/cf/multiphase/VoF.h` + `src/multiphase/vof.cpp`，命名空间 `cf::vof`。
+只依赖 fvc/fvm/fvMatrix，不引入新求解器：`chflow-vof` 用**给定**速度场输运 α，
+把输运与几何算子单独验收。
+
+**输运是 M-矩阵**：`ddt(α) + div(phi, α) = 0` 用隐式 Euler + 迎风，作用在**离散
+无散**的 phi 上时，每行对角占优且行和 = V/dt、非对角全 ≤ 0，于是守恒与 α ∈ [0,1]
+是构造性质——不裁剪、不做 redistribution、不加限制器。实测旋转 case 32 步后
+`min α = 1.58e-39`、`max α = 0.999901`、相体积漂移 −5.1e-14 相对。
+单元测试拿**一步的离散闭式解**对表：阶跃场在 θ = U·dt/dx 下，锋后不变、锋前第 k
+格是 `(θ/(1+θ))^k`，这条尾部正是迎风写在下游干区的东西。
+
+**线性速度 ⇒ 逐单元精确无散**：面心取值的 Σ_f U(x_f)·S_f 是 ∫div U dV 的精确值
+（面是平面、U 线性），所以守恒不是运气。均匀平移实测 max|div(phi)| = 0（真的是
+0），刚体旋转 U = ω ẑ×(x−c) 实测 1.08e-19。旋转有穿壁速度，因此闭合盒只能在
+"相永远到不了壁"的前提下成立：入口给 0、出口带走 ~0。
+
+**界面法向** `interfaceNormal()`：n̂ = ∇α/|∇α|，指向 α 增大方向（对 phase-1 液滴
+朝内）；只有 |∇α| 达到全场最大值 `interfaceThreshold`（case 里 0.1）比例的单元
+带界面，其余给**精确 0**——这个 0 就是告诉曲率算子"别读我"。阈值取相对值是因为
+|∇α| 的量级由初始化方式决定（同一个界面的单元填充阶跃与 tanh 能差一个量级），
+而界面**位置**不由它决定。
+
+**曲率** `interfaceCurvature()`：κ_o = (1/V_o)·Σ_f (n̄_f − n̂_o)·S_f，且**只累加两侧
+单元都带界面的面**。减去自身法向在连续介质里恒等（闭合单元 Σ_f S_f = 0），它带来
+两件事：一致法向读 0，以及带外邻面直接退出模板。不做这个减法时，把带外法向置 0
+会让边界面的插值法向减半，两侧各注入 ±|S_f|/(2V) = ±1/(2dx) 的假象——dx = 0.0125
+上实测 ±40，足以淹没真值 −1/R = −6.25。修好后平面界面在**任意**网格上读
+κ = 0（单元测试：带内带外 max|κ| 都恰好是 0.0），手工构造的径向单位法向满足
+`|κ·r − 1| / (dx/r)² < 1.85` 的二阶律（模板是单元中心法向插值到面，误差是 r̂ 的
+二阶导 1/r² 对比散度本身 1/r）。
+两条推论：κ 只由**带内面**承载，所以界面沿自身方向要跨 ≥2 单元——单元填充的阶跃横跨
+只有 2 格且沿面方向无变化，读不出曲率（80×80 上 140 个带单元、法向偏径向 15.4° 均值
+/35.5° 最大、带均值 κ = −4.57 对 −1/R = −6.25、逐单元 |κ·r+1| = 2.9 均值）；tanh 平滑
+过的阶跃能读，而对流不在乎阶跃被怎么抹开。
+**误差由带的厚度（以单元计）决定，不由分辨率决定**：80×80 上 smooth = 0/1/2/3/4/6 dx
+给出法向偏离 15.4/9.5/4.0/2.4/1.4/0.7°（均值）与 35.5/22.9/12.2/6.9/4.5/2.4°（最大），
+带均值 κ −4.57/−5.04/−5.21/−5.82/−6.00/−6.22 对 −1/R = −6.25；而固定 smooth = 4 dx 在
+40、80、160 格上给出 1.39/1.40/1.40° 与 κ 均值 −6.14/−6.00/−5.97。抹开几个单元就是这一
+层目前的几何精度设定，要 sharper 的 α 需要几何界面重构（下一步）。
+
+**对流后的各向异性扩散**：`|U| = omega r` 沿流向把界面带拉宽（412 → 699 单元），逐单元
+法向相对**相质心**从初始的 1.40° 均值/4.49° 最大涨到 3.98°/19.6°，逐单元 |κ·r+1| 从
+0.137 涨到 0.178 均值（最大 1.93），而带的**均值** κ 仍是 −6.40 对 −1/R = −6.25。checker
+因此分两处断言：解析初始场用 tight 带宽（方向 2.5°/6°、逐单元曲率 0.2/1.0），对流后只断言
+"仍然是圆的"（8° 均值/30° 最大）。参照系必须跟着液滴走——用**初始**圆心量对流后的法向，
+会把整个 0.4 rad 的转动算到界面头上（读出 19.7° 均值/76° 最大，那是轨道角速度不是格式
+耗散）。逐单元几何之所以放在初始场上严格断言，是因为那是唯一有解析真值的场。
+
+**守恒的符号边界**：平移 case 的质量平衡是有界非零——入口喂 U·A·t = 0.002，场
+只涨 0.00199999973，缺的 2.72e-10 是出口带着 α = 1.19e-6 的干尾流出去的，
+上界 U·A·t·α_outlet = 2.38e-9。它不随 solverTol 变化（1e-13 也一样），是物理泄漏
+而不是求解误差，checker 因此断言**带符号的界**而不是 0。
+另一个"不是最后一位"的实测：α 的 y 不变性最大跨行差 1.00004e-16 = α=1 的 1 ulp，
+因为迭代求解的扫描顺序让各行独立收敛。
+
+**case 侧**：`velocity{ type uniform|rotation; U | omega center }`、
+`alpha{ plane{ point normal } | circle{ center radius smooth } }`、
+`patches{ name{ alphaType alpha } }`、`time{ dt endTime reportEvery interfaceThreshold }`、
+`schemes{ ddt Euler; div; grad }`（ddt 只接受 Euler）、`solverTol`/`solverMaxIter`、
+`output{ vtk vtkInitial }`；逐步报告行
+`vof t .. mass .. massErr .. min .. max .. cx .. cy .. x50 .. kappa .. iface N .. solver I .. residual R`，
+其中 `x50` 是相质心所在行上 α 的 0.5 穿越位置（checker 与 vtu 独立复算互校）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |
@@ -444,6 +511,10 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
 | `kqRWallFunction`（壁面单元代数化） | `wallEquilibrium()` + `imposeWallEquilibrium()`（平衡壁面单元） |
 | `wallDist` / `nearWallDist` | `RansModel::cellWallDistance()`（单元图 Dijkstra） |
 | `fvOptions` / `turbulenceProperties` | case.dict 的 `turbulence{}`（`TurbulenceConfig::fromCase`） |
+| `interFoam` 的 `alphaEqn.H` | `vof::advectAlpha` + `chflow-vof`（速度给定，CSF 与动量耦合待接） |
+| `MULES::limit` / `limiter` / `localErosion` | 不需要：迎风 + 离散无散 phi 即 M-矩阵，α ∈ [0,1] 是构造性质 |
+| `interfaceProperties::correctM()`（`fvc::grad(alpha)`） | `vof::interfaceNormal()`（相对阈值只让界面带持有法向，带外精确 0） |
+| `interfaceProperties::k()`（`fvc::div(M)`） | `vof::interfaceCurvature()`（只累加两侧都带界面的面，减去自身法向） |
 
 ## 7. 测试体系
 - `tests/unit/kernelTests.cpp`（CTest `kernel.unit`）：字典解析、网格几何
@@ -482,7 +553,15 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
   均匀衰减对闭式解（k-ε `k = k0[1+(C2−1)(ε0/k0)t]^{1/(1−C2)}` 与
   `ε = ε0(k/k0)^{C2}`、SST 在近壁分支 `ω = ω0/(1+β1ω0t)`、
   `k = k0(1+β1ω0t)^{−β*/β1}`）、壁面距离、laminar 路径、配置校验；
-- `tests/cases/*`：十一个物理回归算例 + `tests/check_*.py` 断言：
+- `tests/unit/vofTests.cpp`（CTest `vof.unit`）：全部是构造性恒等式而非存储值——
+  **一步输运的离散闭式解**（θ = U·dt/dx 的阶跃：锋后不变、锋前第 k 格
+  `(θ/(1+θ))^k`，1e-12；α ∈ [0,1] 无裁剪；相体积变化恰等于边界交换
+  `U·A·dt·(1−α_outlet)`）、零通量对场与体积都不动（1e-14）、
+  **手工径向单位法向**的 `|κ·r − 1| / (dx/r)² < 3`（二阶律，剔除近轴距与触边界
+  的模板截断单元）、**平面带回归**（带内带外 max|κ| 恰好为 0.0：曾有的
+  ±1/(2dx) 减半假象不得复发）、tanh 平面的法向（32/64 单元成带、
+  |n_y|+|n_z| 与 |n_x+1| < 1e-12、`phaseVolume` 与质心位置）；
+- `tests/cases/*`：十三个物理回归算例 + `tests/check_*.py` 断言：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug`（见 4.2）
@@ -514,6 +593,18 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
     跨过 `y+ = 52` 到中心线的网格只能把这个数核对到网格自己的精度，因此带宽取
     20%，而近壁闭合严格复查。checker 把 case 复制到临时目录再改 `model`，剖面
     一律从 vtu 质心取（两种耦合因此比的是同一组数），产物不落进仓库。
+  - `vofTranslation`（平面界面被匀速平移携带过域：160 单元、入口 α=1；
+    `max|div(phi)|` 恰为 0、α ∈ [0,1]（最小 1.2e-6 就是迎风干尾）、0.5 穿越位置
+    与速度对 `x0 + U t`（0.9986·U，落后 0.33 dx）、vtu 与日志两条独立路径互校
+    同一穿越、逐行 y 不变（1 ulp）、单调下降、平面曲率 max|κ| = 9.6e-12、
+    法向偏 x 轴 6.5e-13；质量平衡断言**带符号的界**，见 5.10）
+  - `vofRotation`（液滴绕刚体旋转 0.4 rad：80×80 闭合盒、平滑 4 dx 的圆界面；
+    `max|div(phi)|` = 1.1e-19、相体积 −5.1e-14 相对、质心角对 ωt 差 −0.005%、
+    半径 0.1995 对 0.2（−0.25%）、带均值 κ 由 −6.00（t=0）到 −6.40（t=0.4）
+    对 −1/R = −6.25；初始场的逐单元几何——法向偏径向 1.40° 均值/4.49° 最大、
+    |κ·r+1| = 0.137 均值/0.613 最大——从 `vtkInitial` 以 tight 带宽复核，对流后的
+    逐单元法向相对**相质心**只断言"仍然圆"（3.98° 均值/19.6° 最大，带由 412 拉宽到
+    699 单元），因为迎风会沿流向各向异性地抹开界面）；
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

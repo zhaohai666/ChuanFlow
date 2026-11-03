@@ -37,6 +37,10 @@ add_executable(turbulence_tests unit/turbulenceTests.cpp)
 target_link_libraries(turbulence_tests PRIVATE cf3d)
 add_test(NAME turbulence.unit COMMAND turbulence_tests)
 
+add_executable(vof_tests unit/vofTests.cpp)
+target_link_libraries(vof_tests PRIVATE cf3d)
+add_test(NAME vof.unit COMMAND vof_tests)
+
 # ---- analytic verification cases ----
 add_test(
     NAME verify.advectionDiffusion
@@ -91,6 +95,23 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/check_turbulent_channel.py
         $<TARGET_FILE:chflow-simple-foam>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/turbulentChannel/case.dict)
+
+add_test(
+    NAME verify.vofTranslation
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_vof.py
+        $<TARGET_FILE:chflow-vof>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofTranslation/case.dict)
+
+# the interface geometry the transport has to preserve: solid rotation is rigid,
+# so the droplet keeps its radius, its centre turns at omega, and its interface
+# keeps reading -1/R
+add_test(
+    NAME verify.vofRotation
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_vof.py
+        $<TARGET_FILE:chflow-vof>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofRotation/case.dict)
 
 add_test(
     NAME verify.steadyNetwork

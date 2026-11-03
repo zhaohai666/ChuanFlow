@@ -1,0 +1,98 @@
+// A droplet carried around a solid-body rotation, with its interface geometry
+// measured as it goes.
+//
+// U = omega x (x - center) is linear too, so sum_f U(x_f).Sf is again exactly
+// zero per cell: the box is closed and the field stays divergence-free at the
+// walls, where the rotating field has through-flow. That is admissible because
+// phase 1 never reaches them - the droplet stays on its circle - so the inflow
+// patches feed alpha = 0 and the outflow carries alpha = 0 away, and the phase
+// volume is conserved. Solid rotation is rigid, so the exact solution is the
+// initial field turned through omega * t: the droplet's centroid has to sit at
+// angle omega * t on its starting radius, and the interface has to still read
+// kappa = -1/R.
+//
+// The interface is smoothed over 4 cell widths because that is what the
+// geometry measurement needs, not what the transport does: div(nhat) is taken
+// across a band of cells, and a cell-filled step is a two-cell band whose
+// normals are grid-aliased (15.4 deg mean / 35.5 deg max off the radial
+// direction, band mean kappa -4.57 for -1/R = -6.25, and a cell by cell
+// |kappa*r + 1| of 2.9). A tanh profile 4 dx thick gives 1.40 deg mean / 4.49 deg
+// maximum direction error and |kappa*r + 1| = 0.137 at the interface cells; 6 dx
+// gives 0.68 deg / 0.085. At fixed thickness in cells the error does not fall
+// with resolution: 40, 80 and 160 cells across the box read 1.39, 1.40 and
+// 1.40 deg. A sharp alpha needs geometric interface reconstruction, which is the
+// next step for this layer.
+//
+// Verified by tests/check_vof.py (ctest verify.vofRotation):
+//   max |div(phi)|                 1.1e-19 (round-off of the Gauss identity)
+//   phase volume                   -5.1e-14 relative over 32 steps
+//   alpha                          within [0,1] (min 1.6e-39, max 0.99990)
+//   centroid angle                 0.400000 for omega*t = 0.400000 (-0.005%)
+//   centroid radius                0.199501 for the starting 0.2 (-0.25%)
+//   kappa over the band            -6.00 at t=0, -6.40 at t=0.4 s for -1/R=-6.25
+//   nhat vs the radial direction, at t=0 where the field is analytic:
+//                                  1.40 deg mean, 4.49 deg maximum, and
+//                                  |kappa*r + 1| = 0.137 mean / 0.613 maximum
+//   after advection the band is wider (412 -> 699 cells) and its cell by cell
+//   normals, measured against the phase's own centroid, read 3.98 deg mean /
+//   19.6 deg maximum and |kappa*r + 1| = 0.178: first-order upwind diffuses the
+//   interface anisotropically along the flow, which is a property of the
+//   transport scheme. Measuring them against the centre the case STARTED from
+//   would charge the 0.4 rad of orbit to the interface instead (19.7 deg mean /
+//   76 deg max), so the reference is the advected centroid.
+block
+{
+    min   (-0.5 -0.5 0);
+    max   ( 0.5  0.5 0.1);
+    cells (80 80 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+velocity
+{
+    type   rotation;
+    omega  1.0;
+    center (0 0 0);
+}
+
+alpha
+{
+    circle { center (0.2 0 0); radius 0.16; smooth 4.0; }
+}
+
+patches
+{
+    left   { alphaType fixedValue; alpha 0; }
+    right  { alphaType fixedValue; alpha 0; }
+    bottom { alphaType fixedValue; alpha 0; }
+    top    { alphaType fixedValue; alpha 0; }
+}
+
+time
+{
+    dt                0.0125;   // |U| dt / dx = 0.36 at the far edge of the band
+    endTime           0.4;      // the droplet turns 0.4 rad = 23 degrees
+    reportEvery       4;
+    interfaceThreshold 0.1;     // cells with |grad alpha| over 10% of its maximum
+}
+
+schemes
+{
+    ddt  Euler;
+    div  upwind;
+    grad corrected;
+}
+
+solverTol 1e-13;
+
+output
+{
+    vtk         out_vof_rotation.vtu;
+    vtkInitial  initial_vof_rotation.vtu;
+}

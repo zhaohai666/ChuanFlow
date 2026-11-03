@@ -17,6 +17,7 @@ add_library(cf3d STATIC
     src/solvers/pressureCorrection.cpp
     src/solvers/simpleSolver.cpp
     src/solvers/pisoSolver.cpp
+    src/multiphase/vof.cpp
 )
 
 target_include_directories(cf3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

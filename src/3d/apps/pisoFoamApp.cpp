@@ -13,6 +13,9 @@
 #include "cf/fvm/PisoSolver.h"
 #include "cf/fvm/VtkWriter.h"
 
+#include "caseInit.h"
+#include "caseTurbulence.h"
+
 using namespace cf;
 
 namespace
@@ -105,6 +108,12 @@ int main(int argc, char** argv)
         }
 
         phi.correctBoundaryFlux(U);
+        app::seedInitialVelocity(caseDict, mesh, U, phi);
+
+        // The model transports k and the dissipation variable with phi and the
+        // current U, so it is created once the initial flux exists.
+        const std::unique_ptr<RansModel> turb =
+            app::makeTurbulence(caseDict, mesh, U, phi, nu, schemes);
 
         scalar t = 0;
         int step = 0, maxCorrectors = 0;
@@ -116,7 +125,8 @@ int main(int argc, char** argv)
             const scalar dt = std::min(ctl.dt, endTime - t);
             PisoControls stepCtl = ctl;
             stepCtl.dt = dt;
-            res = solveTransientIncompressiblePiso(mesh, U, p, phi, nu, schemes, stepCtl);
+            res = solveTransientIncompressiblePiso(mesh, U, p, phi, nu, schemes, stepCtl,
+                                                   turb.get());
             t += dt;
             ++step;
             maxCorrectors = std::max(maxCorrectors, res.correctorsUsed);
@@ -149,6 +159,12 @@ int main(int argc, char** argv)
             }
         }
 
+        // The last step corrected the turbulence at the start of the step, so
+        // evaluate it once more against the final velocity: the wall report and
+        // the vtu then describe the field the run ended with.
+        if (turb) turb->correctTurbulence(ctl.dt);
+        if (turb) app::logWallReport(*turb);
+
         log::info("piso done: steps ", step, " endTime ", num(t),
                   " maxCorrectors ", maxCorrectors,
                   " worstContinuity ", num(worstContinuity));
@@ -162,6 +178,7 @@ int main(int argc, char** argv)
                 VtkWriter w(mesh);
                 w.addCellVector("U", U.internalField());
                 w.addCellScalar("p", p.internalField());
+                if (turb) app::writeTurbulence(w, *turb);
                 w.write(vtk);
             }
         }

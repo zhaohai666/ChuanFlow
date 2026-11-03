@@ -81,6 +81,11 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 - 湍流模型：k-ε、k-ω SST；
 - 线性求解后端：小规模 Eigen，大规模 PETSc。
 
+> 首版已落地：多面体网格（blockMesh + Gmsh msh）、场与 BC、fvc/fvm 离散、
+> 定常 SIMPLE、瞬态 PISO、ASCII `.vtu` 输出，以及 k-ε / k-ω SST 两方程 RANS
+> 与 Spalding 壁面函数（含平衡壁面单元）；VOF/Euler-Euler 多相、张量场、
+> MPI 域分解与 Eigen/PETSc 后端仍待实现。
+
 #### 5. 绑定层 `src/bindings`
 基于 pybind11：
 - 将 1d / 3d / pvt 内核对象导出为 Python Class；
@@ -139,7 +144,9 @@ print(result.pressure_profile)
   真两相动量交换与热力耦合待做）
 - M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 🚧
   （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE + 瞬态 PISO +
-  blockMesh/Gmsh msh 读入 + vtu IO 已落地，k-ε、MPI 待做）
+  blockMesh/Gmsh msh 读入 + vtu IO + k-ε / k-ω SST 湍流模型层与 Spalding 壁面
+  函数（湍流渠道摩阻对 Pope 律回归）已落地，MPI 并行、Eigen/PETSc 后端与
+  SIMPLE 的一致动量插值待做）
 - 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
   `chflow-pvt` 应用 + Python 绑定 + CLI 已落地，EOS 内部不变量与解析回归全绿；

@@ -33,6 +33,10 @@ target_compile_definitions(gmsh_mesh_tests PRIVATE
     CF_MESH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/meshes")
 add_test(NAME gmshMesh.unit COMMAND gmsh_mesh_tests)
 
+add_executable(turbulence_tests unit/turbulenceTests.cpp)
+target_link_libraries(turbulence_tests PRIVATE cf3d)
+add_test(NAME turbulence.unit COMMAND turbulence_tests)
+
 # ---- analytic verification cases ----
 add_test(
     NAME verify.advectionDiffusion
@@ -71,6 +75,13 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/check_piso.py
         $<TARGET_FILE:chflow-piso-foam>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/startedChannel/case.dict)
+
+add_test(
+    NAME verify.turbulentChannel
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_turbulent_channel.py
+        $<TARGET_FILE:chflow-piso-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/turbulentChannel/case.dict)
 
 add_test(
     NAME verify.steadyNetwork

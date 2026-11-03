@@ -132,6 +132,13 @@ Field<scalar> divPhi(const polyMesh& mesh, const Field<scalar>& phi);
 /// Per-face bounded linear weight of the owner cell (internal faces only).
 Field<scalar> makeInternalOwnerWeights(const polyMesh& mesh);
 
+/// Face-transmissibility coefficient of a cell-centred diffusion coefficient:
+/// harmonic mean across internal faces (the rule fvm::laplacian uses), owner
+/// cell value at boundary faces. `gammaCell` may be a single entry, meaning
+/// uniform. Models that prescribe their own wall-face value (turbulence wall
+/// functions) interpolate here and overwrite the boundary faces afterwards.
+Field<scalar> harmonicFaceGamma(const polyMesh& mesh, const Field<scalar>& gammaCell);
+
 /// Face-value evaluator for an equation unknown: internal faces interpolate
 /// the passed cell data, boundary faces apply the BC linearisation.
 std::function<scalar(label face, const Field<scalar>&)> makeFaceValueFn(

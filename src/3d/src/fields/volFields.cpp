@@ -2,7 +2,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <map>
 
 #include "cf/common/Error.h"
 
@@ -10,21 +9,6 @@ namespace cf
 {
 namespace
 {
-
-Field<label> buildFacePatchMap(const polyMesh& mesh)
-{
-    Field<label> map(static_cast<std::size_t>(mesh.nFaces()), -1);
-    const auto& patches = mesh.patches();
-    for (label p = 0; p < static_cast<label>(patches.size()); ++p)
-    {
-        const auto& pa = patches[static_cast<std::size_t>(p)];
-        for (label f = pa.start; f < pa.start + pa.size; ++f)
-        {
-            map[static_cast<std::size_t>(f)] = p;
-        }
-    }
-    return map;
-}
 
 /// unit face normal (outward of owner) and normal distance owner-centre->face
 scalar normalDistance(const polyMesh& mesh, label face)
@@ -65,25 +49,9 @@ volScalarField::volScalarField(const polyMesh& mesh, const std::string& name, sc
 {
 }
 
-namespace
-{
-// shared helper: boundary faces -> patch id via a cached map
-std::map<const polyMesh*, Field<label>> g_facePatchCache;
-
-const Field<label>& facePatchMap(const polyMesh& mesh)
-{
-    auto it = g_facePatchCache.find(&mesh);
-    if (it == g_facePatchCache.end())
-    {
-        it = g_facePatchCache.emplace(&mesh, buildFacePatchMap(mesh)).first;
-    }
-    return it->second;
-}
-} // namespace
-
 label volScalarField::patchIdOfFace(label face) const
 {
-    return facePatchMap(mesh_)[static_cast<std::size_t>(face)];
+    return mesh_.facePatchMap()[static_cast<std::size_t>(face)];
 }
 
 void volScalarField::setPatchValue(label patchId, const std::string& bcType, scalar value)
@@ -91,6 +59,28 @@ void volScalarField::setPatchValue(label patchId, const std::string& bcType, sca
     auto& bc = bc_[static_cast<std::size_t>(patchId)];
     bc.type = bcType;
     bc.value = value;
+}
+
+void volScalarField::setFaceValue(label face, scalar value)
+{
+    const std::size_t u = static_cast<std::size_t>(face);
+    if (static_cast<label>(u) < mesh_.nInternalFaces())
+    {
+        cfFatal("volScalarField::setFaceValue: internal face " + std::to_string(face));
+    }
+    if (u >= faceValueSet_.size())
+    {
+        faceValueOverride_.resize(static_cast<std::size_t>(mesh_.nFaces()), 0.0);
+        faceValueSet_.resize(static_cast<std::size_t>(mesh_.nFaces()), 0);
+    }
+    faceValueOverride_[u] = value;
+    faceValueSet_[u] = 1;
+}
+
+void volScalarField::clearFaceValues()
+{
+    faceValueOverride_.clear();
+    faceValueSet_.clear();
 }
 
 std::string volScalarField::patchBcType(label patchId) const
@@ -127,15 +117,18 @@ void volScalarField::linearise(label face, scalar& coeff, scalar& konst) const
     }
     const label p = patchIdOfFace(face);
     const auto& bc = bc_[static_cast<std::size_t>(p)];
+    const std::size_t u = static_cast<std::size_t>(face);
+    const scalar value = (u < faceValueSet_.size() && faceValueSet_[u]) ? faceValueOverride_[u]
+                                                                       : bc.value;
     if (bc.type == "fixedValue")
     {
         coeff = 0;
-        konst = bc.value;
+        konst = value;
     }
     else if (bc.type == "fixedGradient")
     {
         coeff = 1;
-        konst = bc.value * normalDistance(mesh_, face);
+        konst = value * normalDistance(mesh_, face);
     }
     else if (bc.type == "zeroGradient" || bc.type == "symmetry" || bc.type == "outlet")
     {
@@ -171,7 +164,7 @@ volVectorField::volVectorField(const polyMesh& mesh, const std::string& name, co
 
 label volVectorField::patchIdOfFace(label face) const
 {
-    return facePatchMap(mesh_)[static_cast<std::size_t>(face)];
+    return mesh_.facePatchMap()[static_cast<std::size_t>(face)];
 }
 
 void volVectorField::setPatchValue(label patchId, const std::string& bcType, const Vector& value)

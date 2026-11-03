@@ -32,22 +32,29 @@ polyMesh::polyMesh(Field<Vector> points,
         }
     }
 
-    // sanity: patches must cover all boundary faces exactly once
-    std::vector<char> seen(static_cast<std::size_t>(nFaces()), 0);
-    for (const Patch& p : patches_)
+    // face -> patch addressing, and the sanity check that patches cover all
+    // boundary faces exactly once
+    facePatchMap_.assign(static_cast<std::size_t>(nFaces()), -1);
+    for (label i = 0; i < nPatches(); ++i)
     {
+        const Patch& p = patches_[static_cast<std::size_t>(i)];
         for (label f = p.start; f < p.start + p.size; ++f)
         {
             if (f < nInternalFaces())
             {
                 cfFatal("polyMesh: patch '" + p.name + "' covers internal face " + std::to_string(f));
             }
-            seen[static_cast<std::size_t>(f)] = 1;
+            const std::size_t u = static_cast<std::size_t>(f);
+            if (facePatchMap_[u] >= 0)
+            {
+                cfFatal("polyMesh: boundary face " + std::to_string(f) + " in two patches");
+            }
+            facePatchMap_[u] = i;
         }
     }
     for (label f = nInternalFaces(); f < nFaces(); ++f)
     {
-        if (!seen[static_cast<std::size_t>(f)])
+        if (facePatchMap_[static_cast<std::size_t>(f)] < 0)
         {
             cfFatal("polyMesh: boundary face " + std::to_string(f) + " is not in any patch");
         }

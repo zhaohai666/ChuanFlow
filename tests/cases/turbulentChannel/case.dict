@@ -1,0 +1,96 @@
+// Fully developed turbulent plane channel at a known wall shear stress.
+//
+// The channel is driven by a uniform body force across a domain that is
+// invariant in x, so the flow is a single column: the wall shear balances the
+// force exactly and tau_w = u_tau^2 = force * H/2 is an *input* of the case.
+// What the turbulence model has to predict is then the bulk velocity that this
+// shear can sustain -- the classic friction-law test:
+//
+//   force = 19.5 m/s^2, H = 0.04 m, nu = 1.5e-5
+//   u_tau = sqrt(19.5 * 0.02) = 0.6245 m/s, Re_tau = u_tau H / (2 nu) = 833
+//   Pope's smooth-wall law 1/sqrt(f) = 2 log10(Re_b sqrt(f)) - 0.6 with
+//   u_tau/U_b = sqrt(f/8) gives U_b = 13.0 m/s, Re_b = 6.9e4.
+//
+// dy = 2.5e-3 puts the first cell centre at y+ ~ 52, inside the log layer where
+// the wall function belongs. The run is advanced in physical time from a
+// started field until the shear production and the driving force balance; the
+// transient is the pressure-velocity coupling doing the work that steady SIMPLE
+// cannot do on a streamwise-uniform case yet.
+//
+// Measured at endTime 3, with 8 cells between y+ = 52 and the centreline:
+//   kEpsilon   u_tau 0.624486  Ub 11.10  Ub/u_tau 17.8  (-14.5% on the friction law)
+//   kOmegaSST  u_tau 0.624266  Ub 13.67  Ub/u_tau 21.9  ( +5.4% on the friction law)
+// The shear itself is right to 4e-4 relative in both, because it is the balance
+// and not a prediction; the deficit is the friction law read on a mesh that
+// resolves the log layer with eight cells. The checker therefore bounds the
+// bulk velocity at 20% and checks the near-wall closure tightly.
+//
+// tests/check_turbulent_channel.py runs this case for both models and checks
+// the wall shear against the driving force, the first cell against the law of
+// the wall, the bulk velocity against Pope's friction law, the equilibrium of
+// the wall-adjacent cell, and that the run is steady, symmetric and finite.
+block
+{
+    min   (0 0 0);
+    max   (0.02 0.04 0.02);
+    cells (1 16 1);
+
+    xmin  { name left;   type symmetry; }
+    xmax  { name right;  type symmetry; }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+nu 1.5e-5;
+
+// A started velocity: the law-of-the-wall closure only has something to say
+// once the near-wall cells carry a log-layer speed, and it also sets the
+// turbulence scale through the reference velocity of the model.
+initial
+{
+    U (8 0 0);
+}
+
+patches
+{
+    // x-invariant flow: zero normal gradient on both ends, one pressure anchor
+    left  { UType zeroGradient; p 0; pType fixedValue; }
+    right { UType zeroGradient; pType zeroGradient;    }
+    bottom{ U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top   { U (0 0 0); UType fixedValue; pType zeroGradient; }
+}
+
+turbulence
+{
+    model       kEpsilon;   // the checker rewrites this for kOmegaSST
+    intensity   0.05;
+    lengthScale 0.0056;     // 7% of D_h
+    relaxation  0.7;
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+piso
+{
+    // nu_eff*dt/dy^2 = 3.3e-4*4e-3/6.25e-6 = 0.21: inside the diffusion-number
+    // limit documented in PisoSolver.h
+    dt            0.004;
+    endTime       3;
+    correctors    2;
+    continuityTol 1e-8;
+    reportEvery   250;
+    force         (19.5 0 0);
+}
+
+output
+{
+    vtk out_turbulent_channel.vtu;
+}

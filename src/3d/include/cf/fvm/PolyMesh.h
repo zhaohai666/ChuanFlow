@@ -64,6 +64,9 @@ public:
     /// Per-cell number of faces / cell-face addressing.
     const std::vector<std::vector<label>>& cells() const { return cells_; }
 
+    /// Face -> patch id for boundary faces, -1 for internal faces.
+    const Field<label>& facePatchMap() const { return facePatchMap_; }
+
     /// Bounding box corner (for reporting).
     Vector minX() const;
     Vector maxX() const;
@@ -78,6 +81,7 @@ private:
     std::vector<Patch> patches_;
     label nCells_ = 0;
     std::vector<std::vector<label>> cells_;
+    Field<label> facePatchMap_;
 
     mutable bool geomCalculated_ = false;
     mutable Field<scalar> cellVolumes_;

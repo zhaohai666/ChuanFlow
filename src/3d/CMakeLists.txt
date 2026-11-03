@@ -10,6 +10,10 @@ add_library(cf3d STATIC
     src/discrete/laplacianScheme.cpp
     src/discrete/gradScheme.cpp
     src/io/vtkWrite.cpp
+    src/turbulence/wallFunction.cpp
+    src/turbulence/turbulenceModel.cpp
+    src/turbulence/kEpsilon.cpp
+    src/turbulence/kOmegaSST.cpp
     src/solvers/pressureCorrection.cpp
     src/solvers/simpleSolver.cpp
     src/solvers/pisoSolver.cpp

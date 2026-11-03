@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include "cf/common/Log.h"
 #include "cf/fvm/PressureCorrection.h"
@@ -9,13 +10,34 @@
 namespace cf
 {
 
+namespace
+{
+
+/// A coupling can also fail by turning every field into NaN, which then makes
+/// the residuals read as zero; only finite fields mean anything.
+bool fieldsFinite(const volVectorField& U, const volScalarField& p)
+{
+    for (const Vector& u : U.internalField())
+    {
+        if (!std::isfinite(u.x) || !std::isfinite(u.y) || !std::isfinite(u.z)) return false;
+    }
+    for (const scalar v : p.internalField())
+    {
+        if (!std::isfinite(v)) return false;
+    }
+    return true;
+}
+
+} // namespace
+
 SimpleResult solveIncompressibleSimple(polyMesh& mesh,
                                        volVectorField& U,
                                        volScalarField& p,
                                        surfaceScalarField& phi,
                                        scalar nu,
                                        const Schemes& schemes,
-                                       const SimpleControls& ctl)
+                                       const SimpleControls& ctl,
+                                       IEddyViscosity* turb)
 {
     const label nC = mesh.nCells();
     const auto& vol = mesh.cellVolumes();
@@ -29,8 +51,12 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         pEqnField.setPatchValue(patch, t == "fixedValue" ? "fixedValue" : "zeroGradient", 0.0);
     }
 
+    scalar bestContErr = std::numeric_limits<scalar>::infinity();
+
     for (int iter = 1; iter <= ctl.maxIterations; ++iter)
     {
+        if (turb) turb->correctTurbulence(0);
+
         // ---------------- momentum ----------------
         const Field<Vector> gradP = fvc::grad(p, schemes.grad);
 
@@ -40,7 +66,8 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         // matrix' zero initial guess
         UEqn.schemes().relaxation = 1.0;
         fvm::div(UEqn, phi.values(), schemes.div);
-        fvm::laplacian(UEqn, nu, schemes.laplacian, -1);
+        if (turb) fvm::laplacianFace(UEqn, turb->nuEffFace(), schemes.laplacian, -1);
+        else fvm::laplacian(UEqn, nu, schemes.laplacian, -1);
         for (label c = 0; c < nC; ++c)
         {
             const std::size_t u = static_cast<std::size_t>(c);
@@ -65,7 +92,8 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         }
 
         // single momentum matrix per component with identical coefficients
-        // (constant nu). The pressure-correction scale rAU is taken from the
+        // (constant nu, or an isotropic nu + nut from the turbulence model).
+        // The pressure-correction scale rAU is taken from the
         // momentum diagonal WITHOUT the volume factor: the p' Poisson solve
         // and the explicit flux correction below use the same operator, so
         // any scale produces a divergence-free corrected flux; the scale only
@@ -73,6 +101,19 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         // injects the full flux-closing pressure ramp directly into the p
         // update and SIMPLE oscillates; this Jacobi-style scale under-relaxes
         // the pressure implicitly and is the stable classic-SIMPLE choice.
+        //
+        // Known limits (M3), both measured rather than assumed:
+        //  - because p accumulates on this damped scale, a case whose physics is
+        //    set by the streamwise pressure gradient converges its velocity
+        //    field long before its pressure field;
+        //  - the continuity criterion says nothing about the momentum balance,
+        //    so a streamwise-uniform case (a single-column channel, where every
+        //    phi is zero) reads continuity 0 on the first iteration and stops
+        //    before the wall shear has been felt.
+        // The first needs a consistent momentum interpolation (Rhie-Chow); the
+        // second a residual on U itself. Until then the turbulent channel
+        // regression runs the same physics as a transient in pisoFoam, where the
+        // time scale keeps the coupling honest.
         Field<scalar> rAU(static_cast<std::size_t>(nC));
         {
             const auto& d = UEqn.aDiag(0);
@@ -131,7 +172,7 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
                   " (corrected ", errAfter, ", p' ", pPrimeMax, ")");
         result.iterations = iter;
         result.finalContinuityError = contErr;
-        if (!std::isfinite(contErr) || !std::isfinite(pPrimeMax))
+        if (!std::isfinite(contErr) || !std::isfinite(pPrimeMax) || !fieldsFinite(U, p))
         {
             log::error("SIMPLE: diverged at iteration ", iter);
             break;
@@ -141,8 +182,13 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         // floor proportional to the remaining field change, so the decay of
         // |p'| is the honest pressure-convergence signal; pcorrTol lets a
         // case stop on it when continuityTol is tighter than the lag floor.
+        // A diverging coupling can also pass through a small-p' iteration, so
+        // the |p'| stop needs continuity to have stopped growing, and it is
+        // only consulted once the initial transient has been resolved.
+        const bool settled = contErr <= bestContErr;
+        bestContErr = std::min(bestContErr, contErr);
         if (contErr < ctl.continuityTol ||
-            (ctl.pcorrTol > 0 && pPrimeMax < ctl.pcorrTol))
+            (iter >= 5 && ctl.pcorrTol > 0 && pPrimeMax < ctl.pcorrTol && settled))
         {
             result.converged = true;
             break;

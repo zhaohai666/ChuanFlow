@@ -34,6 +34,33 @@ scalar cellGammaAt(const Field<scalar>& gammaCell, label cell)
 
 } // namespace
 
+Field<scalar> harmonicFaceGamma(const polyMesh& mesh, const Field<scalar>& gammaCell)
+{
+    Field<scalar> gammaFace(static_cast<std::size_t>(mesh.nFaces()));
+    for (label f = 0; f < mesh.nFaces(); ++f)
+    {
+        const std::size_t u = static_cast<std::size_t>(f);
+        if (f < mesh.nInternalFaces())
+        {
+            const scalar gp = cellGammaAt(gammaCell, mesh.owner()[u]);
+            const scalar gn = cellGammaAt(gammaCell, mesh.neighbour()[u]);
+            const Vector& cP = mesh.cellCentres()[static_cast<std::size_t>(mesh.owner()[u])];
+            const Vector& cN = mesh.cellCentres()[static_cast<std::size_t>(mesh.neighbour()[u])];
+            const Vector& cf = mesh.faceCentres()[u];
+            const scalar dP = mag(cf - cP), dN = mag(cN - cf);
+            const scalar tot = dP + dN;
+            gammaFace[u] = (tot > 0 && gp > 0 && gn > 0)
+                ? tot * gp * gn / (dN * gp + dP * gn)
+                : 0.5 * (gp + gn);
+        }
+        else
+        {
+            gammaFace[u] = cellGammaAt(gammaCell, mesh.owner()[u]);
+        }
+    }
+    return gammaFace;
+}
+
 namespace
 {
 
@@ -137,30 +164,7 @@ void laplacian(fvMatrix& eqn, scalar gammaUniform, const std::string& scheme, in
 
 void laplacian(fvMatrix& eqn, const Field<scalar>& gammaCell, const std::string& scheme, int sign)
 {
-    const polyMesh& mesh = eqn.mesh();
-    std::vector<scalar> gammaFace(static_cast<std::size_t>(mesh.nFaces()));
-    for (label f = 0; f < mesh.nFaces(); ++f)
-    {
-        const std::size_t u = static_cast<std::size_t>(f);
-        if (f < mesh.nInternalFaces())
-        {
-            const scalar gp = cellGammaAt(gammaCell, mesh.owner()[u]);
-            const scalar gn = cellGammaAt(gammaCell, mesh.neighbour()[u]);
-            const Vector& cP = mesh.cellCentres()[static_cast<std::size_t>(mesh.owner()[u])];
-            const Vector& cN = mesh.cellCentres()[static_cast<std::size_t>(mesh.neighbour()[u])];
-            const Vector& cf = mesh.faceCentres()[u];
-            const scalar dP = mag(cf - cP), dN = mag(cN - cf);
-            const scalar tot = dP + dN;
-            gammaFace[u] = (tot > 0 && gp > 0 && gn > 0)
-                ? tot * gp * gn / (dN * gp + dP * gn)
-                : 0.5 * (gp + gn);
-        }
-        else
-        {
-            gammaFace[u] = cellGammaAt(gammaCell, mesh.owner()[u]);
-        }
-    }
-    assembleLaplacian(eqn, std::move(gammaFace), scheme, sign);
+    assembleLaplacian(eqn, harmonicFaceGamma(eqn.mesh(), gammaCell), scheme, sign);
 }
 
 void laplacianFace(fvMatrix& eqn, const Field<scalar>& gammaFace, const std::string& scheme, int sign)

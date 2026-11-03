@@ -10,6 +10,9 @@
 #include "cf/fvm/SimpleSolver.h"
 #include "cf/fvm/VtkWriter.h"
 
+#include "caseInit.h"
+#include "caseTurbulence.h"
+
 using namespace cf;
 
 int main(int argc, char** argv)
@@ -65,8 +68,14 @@ int main(int argc, char** argv)
 
         // initial flux: boundary from inlet velocity BCs, interior zero
         phi.correctBoundaryFlux(U);
+        app::seedInitialVelocity(caseDict, mesh, U, phi);
 
         Schemes schemes = loadSchemes(caseDict);
+
+        // The model reads U and phi on every correctTurbulence(), so it is
+        // created after the boundary conditions and the initial flux exist.
+        const std::unique_ptr<RansModel> turb =
+            app::makeTurbulence(caseDict, mesh, U, phi, nu, schemes);
 
         SimpleControls ctl;
         if (caseDict.has("simple"))
@@ -81,11 +90,13 @@ int main(int argc, char** argv)
         }
 
         const SimpleResult res =
-            solveIncompressibleSimple(mesh, U, p, phi, nu, schemes, ctl);
+            solveIncompressibleSimple(mesh, U, p, phi, nu, schemes, ctl, turb.get());
 
         log::info("SIMPLE done: iterations=", res.iterations,
                   " continuity=", res.finalContinuityError,
                   res.converged ? " (converged)" : " (NOT converged)");
+
+        if (turb) app::logWallReport(*turb);
 
         scalar uMax = 0;
         for (const Vector& u : U.internalField()) uMax = std::max(uMax, mag(u));
@@ -101,6 +112,7 @@ int main(int argc, char** argv)
                 VtkWriter w(mesh);
                 w.addCellVector("U", U.internalField());
                 w.addCellScalar("p", p.internalField());
+                if (turb) app::writeTurbulence(w, *turb);
                 w.write(vtk);
             }
         }

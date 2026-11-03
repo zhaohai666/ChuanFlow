@@ -289,6 +289,16 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
   Jacobi 缩放隐式地对压力做了欠松弛，是经典 SIMPLE 的稳定选择。
   代价是预测散度存在与滞后成正比的地板值，因此测试用 `pcorrTol` 判收敛。
 
+两条 M3 期间实测出来的**已知限制**（不是 bug，后续要处理）：
+
+- 压力场在 Jacobi 尺度上累加，因此物理量由**流向压力梯度**决定的算例，
+  速度场先收敛、`p` 远慢于它；需要一致动量插值（Rhie-Chow）才能让压力与
+  通量同速收敛；
+- 收敛判据只看连续性，而动量平衡不在其中：流向均匀的算例（单列渠道，
+  所有 `phi` 恒为 0）在第 1 次外迭代就读到 `continuity 0` 并退出，壁面剪
+  切还没进入平衡。湍流渠道回归因此用 PISO 跑同一套物理——时间尺度会保
+  住耦合；给 SIMPLE 加动量残差判据是后续的独立改动。
+
 ### 5.6 压力修正公共件 `pressureCorrection.cpp`
 SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个离散连续方程**：
 
@@ -339,6 +349,66 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
   供解析核对，`piso done: steps ... worstContinuity ...` 收尾；
 - `VtkWriter`：ASCII `.vtu`（单元中心场），ParaView 直接可读。
 
+### 5.9 湍流模型层 `turbulence/`
+RANS 两方程模型 + 壁面函数，全部运动黏度形式（密度 1），与不可压求解器一致。
+
+**接口方向**：`IEddyViscosity`（`include/cf/fvm/EddyViscosity.h`）声明在 FVM
+层，只有一个方法 `nuEffFace()`；SIMPLE/PISO 因此以
+`IEddyViscosity* turb = nullptr` 结尾，不引入 `turbulence → fvm` 的反向依赖。
+`RansModel : IEddyViscosity` 持有 `U`/`phi` 的引用，每次 `correctTurbulence(dt)`
+读当前场，app 只需把模型指针交给求解器。
+
+**基类承担**（`turbulenceModel.cpp`）：k 的对流扩散衰减输运、壁面层次、
+`nut`、以及面级 `nu + nut`（动量方程与两个湍流输运共用同一份）；子类只给
+耗散变量方程、`nut` 公式、扩散系数与平衡对。`LaminarModel` 是"无模型"路径：
+`nut` 恒为 0、`hasDissipation()` 为 false，但仍然报告网格的 `y+`。
+
+**壁面链**（`WallFunction.h/.cpp`）：
+1. 壁面积由 `polyMesh` 的 patch type == `"wall"` 给出，`wallDist` 取
+   `deltaCoeffVec · n̂`（owner 中心到面的法向距离）；
+2. Spalding 全范围对数率写成 `y+` 关于 `u+` 的显式式
+   `y+ = u+ + e^{−κC}[e^{κu+} − 1 − κu+ − (κu+)²/2 − (κu+)³/6]`，
+   κ=0.41、C=ln(E)/κ=5.5676。反演不做两次反函数，而是合并成**一个**关于
+   `u+` 的单调方程 `u+·y+(u+) = u_par·y/ν` 二分求根；
+3. `nut_wall = u_τ²y/u_par − ν`，于是壁面动量扩散系数
+   `(ν+nut_wall)|Sf|/y = u_τ²|Sf|/u_par`——动量方程在壁上拿到的正是剪应力；
+4. `k` 在壁上取 zeroGradient（它的值由剪切决定），耗散变量取面对值：
+   ε = `u_τ³/(κy)`，ω = `√(ω_vis² + ω_log²)`，
+   `ω_vis = 6ν/(β1y²)`、`ω_log = u_τ/(√β*κy)`——二次合成在次层与对数层
+   各自给出正确极限，因此分辨次层与不分辨次层的网格都能用。
+   面对值通过 `volScalarField::setFaceValue` 写入、由 `faceValue()/linearise()`
+   读回。
+
+**平衡壁面单元**（`wallEquilibrium()` + `imposeWallEquilibrium()`，M3 实测需求）：
+壁面函数网格上，紧贴壁面的单元**不能**靠输运到达对数层平衡态——面的 Dirichlet
+由剪切给定，而单元值只通过分子黏度向它扩散；更要害的是该单元的应变率是相对
+无滑移面值算的 `U_P/(dy/2)`（`y+≈52` 时比对数层的 `u_τ/(κy)` 大数倍），于是
+`P = nut|S|²` 经 `nut = C_μk²/ε` 反馈成 `k²` 增长。实测：三步之内
+`k = 1.87e8 m²/s²`、`nut = 9.6e11`，随后每个线性求解器报 NaN。
+标准做法是让该单元变成代数单元：输运照旧组装（它负责把剪切带向外层），但
+求解后**替换**壁面单元的 `k`/耗散变量为对数层平衡对
+`k = u_τ²/√C_μ`（SST 用 `√β*`）、`ε = u_τ³/(κy)`、`ω = u_τ/(√β*κy)`，
+再重建 `nut`。这对平衡值自带 `nut = κu_τy`（对数层涡黏度），外层看到的就是
+正确的混合。一个单元同时触到两面时由较强剪切的那面给定**成对**的值。
+
+**壁面距离**：`cellWallDistance()` 以壁面相邻单元为源、在单元图上跑 Dijkstra，
+代价为跨面的中心距；面存储为 owner<neighbour，所以两侧都要能到达（此前只走
+owner→neighbour，导致上层行永远收不到距离）。这是正交网格上的精确值、非正交
+网格的上界，对只需要"量级为一个单元尺寸"的 F1/F2 足够。
+
+**常数**：k-ε `C_μ=0.09, C1=1.44, C2=1.92, σk=1, σε=1.3`；
+SST `a1=0.31, β*=0.09, β1=0.075, β2=0.0828, σk1=0.85, σk2=1, σω1=0.5,
+σω2=0.856, ζ*=0.3`，`γ = β/β* − ζ*/σ_ω` 保持自由流 `C_μ=0.09`，
+F1/F2 为 `tanh(arg^4)` / `tanh(arg²)` 的标准混合，生产项用 Menter 限幅器
+`Pk ≤ 10β*kω`；`kFloor = dissFloor = 1e-12`，湍流方程自带的线性求解设置
+`1e-8 / 2000` 次。
+
+**case 侧**：`turbulence{ model intensity lengthScale relaxation }`，缺块即
+laminar；`lengthScale ≤ 0` 回落为包围盒对角线的 7%（水力直径经验值）；
+`intensity < 0` 与 `relaxation ∉ (0,1]` 直接报错。`initial{ U (Ux Uy Uz) }`
+给一个起步速度场（`caseInit.h`），壁面函数需要一个已有速度的边界层可谈。
+vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |
@@ -358,6 +428,12 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
 | `constrainHbyA` / `UEqn.H()*rAU()` | pisoSolver 的 `HbyA` 组装与 patch 约束 |
 | `basicThermo` / `pengRobinson`（reacting 系列的热力学底座） | `cf::pvt::Mixture` + `pengRobinsonState`（`src/pvt`，等温闪蒸由自研 `tpFlash` 提供） |
 | `thermophysicalDict` / `species` | case.dict 的 `composition { name fraction; }`（`loadComposition`） |
+| `incompressible::turbulenceModel` / `eddyViscosity` | `IEddyViscosity`（FVM 层）+ `RansModel`（`src/3d/src/turbulence`） |
+| `kEpsilon` / `kOmegaSST` | `KEpsilon` / `KOmegaSST`（运动黏度形式，自研离散与线性化） |
+| `nutWallFunction` / `epsilonWallFunction` / `omegaWallFunction` | `wallState()` + `wallDissipation()` + `diffusionFace()` 的壁面分支 |
+| `kqRWallFunction`（壁面单元代数化） | `wallEquilibrium()` + `imposeWallEquilibrium()`（平衡壁面单元） |
+| `wallDist` / `nearWallDist` | `RansModel::cellWallDistance()`（单元图 Dijkstra） |
+| `fvOptions` / `turbulenceProperties` | case.dict 的 `turbulence{}`（`TurbulenceConfig::fromCase`） |
 
 ## 7. 测试体系
 - `tests/unit/kernelTests.cpp`（CTest `kernel.unit`）：字典解析、网格几何
@@ -387,7 +463,16 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
   同一网格、三棱柱渠道 20 单元/28 内部面/6 patch 与真实重心
   `(2/3, 1/30, 0.05)`、逐单元 `Σ Sf = 0`（闭合）、`fvc::grad(z)` 精度、
   `MeshLoader` 的 `block{}`/`mesh{}` 选型与两个错误分支；
-- `tests/cases/*`：十个物理回归算例 + `tests/check_*.py` 断言：
+- `tests/unit/turbulenceTests.cpp`（CTest `turbulence.unit`）：Spalding 对数
+  率的两端极限（次层 `u+=y+`、对数层趋近 `ln(Ey+)/κ`）、反演单调、F1/F2 混合
+  梯级（含"外层 F1 随 y 递减"与"在 0.15 处正在切换"）、`nut` 定义式、
+  壁面链恒等式 `u_par(ν+nut_wall)/y = u_τ²` 与壁面耗散 Dirichlet、
+  **平衡壁面单元**（`k = u_τ²/√C_μ` 与配对的 ε/ω 逐面成立、`nut = κu_τy`
+  对 k-ε 精确而对 SST 只允许被剪切分支压低、闭合只作用于触壁单元）、
+  均匀衰减对闭式解（k-ε `k = k0[1+(C2−1)(ε0/k0)t]^{1/(1−C2)}` 与
+  `ε = ε0(k/k0)^{C2}`、SST 在近壁分支 `ω = ω0/(1+β1ω0t)`、
+  `k = k0(1+β1ω0t)^{−β*/β1}`）、壁面距离、laminar 路径、配置校验；
+- `tests/cases/*`：十一个物理回归算例 + `tests/check_*.py` 断言：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug`（见 4.2）
@@ -406,6 +491,16 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
     （早期相对误差 8.7e-3，为 Euler 一阶时间离散；后半程 2.8e-7）、
     终态剖面逐点等于离散抛物线（1.4e-8）、壁面偏移实测等于
     `(a/2nu)(dy/2)²`、校正后散度 1.4e-18）
+  - `turbulentChannel`（充分发展湍流平面渠道，1×16×1 单列、体积力驱动、
+    `y+ ≈ 52`、750 步 / 0.5 s，两个模型各跑一遍）：壁面剪应力对积分平衡
+    `u_τ² = f·δ`（k-ε 2.2e-5、SST 3.7e-4 相对误差）、首格 `u+` 对 Spalding
+    对数率（2.7e-7 与 6.2e-7，说明壁面链在整条求解链上是自洽的）、剖面对称
+    单调、`u_tau/y+` 落在壁面函数区间、终态漂移 <1%、壁面单元的平衡对与
+    `nut = κu_τy` 从 vtu 复核；摩阻对 Pope 光滑平板律
+    `1/√f = 2log10(Re_b√f) − 0.6` 的偏差为 k-ε −14.5%、SST +5.4%
+    （`Ub/u_τ` 17.8 与 21.9，期望 20.8）——8 个单元跨过 `y+ = 52` 到中心线的
+    网格只能把这个数核对到网格自己的精度，因此带宽取 20%，而近壁闭合严格核
+    查。checker 把 case 复制到临时目录再改 `model`，产物不落进仓库。
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

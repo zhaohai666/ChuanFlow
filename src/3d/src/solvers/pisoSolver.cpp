@@ -16,13 +16,17 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
                                                 surfaceScalarField& phi,
                                                 scalar nu,
                                                 const Schemes& schemes,
-                                                const PisoControls& ctl)
+                                                const PisoControls& ctl,
+                                                IEddyViscosity* turb)
 {
     const label nC = mesh.nCells();
     const auto& vol = mesh.cellVolumes();
     PisoStepResult res;
 
     if (ctl.dt <= 0) cfFatal("PISO: non-positive time step");
+
+    if (turb) turb->correctTurbulence(ctl.dt);
+    const Field<scalar>* nuEffFace = turb ? &turb->nuEffFace() : nullptr;
 
     // The pressure keeps its own BCs; the correction equation is not needed
     // here because p is solved implicitly inside the step (see below).
@@ -35,7 +39,8 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
     UEqn.schemes().relaxation = 1.0;
     fvm::ddt(UEqn, UOld, ctl.dt);
     fvm::div(UEqn, phi.values(), schemes.div);
-    fvm::laplacian(UEqn, nu, schemes.laplacian, -1);
+    if (nuEffFace) fvm::laplacianFace(UEqn, *nuEffFace, schemes.laplacian, -1);
+    else fvm::laplacian(UEqn, nu, schemes.laplacian, -1);
     for (label c = 0; c < nC; ++c)
     {
         const std::size_t u = static_cast<std::size_t>(c);

@@ -42,6 +42,14 @@ public:
     void setPatchValue(label patchId, const std::string& bcType, scalar value);
     std::string patchBcType(label patchId) const;
 
+    /// Per-face value for a boundary face, overriding the patch-wide value of
+    /// setPatchValue for that face (the type still comes from the patch). Used
+    /// where the boundary value varies along a patch, e.g. the turbulence
+    /// dissipation implied by the law of the wall. Ignored for faces that are
+    /// internal or whose patch type does not carry a value.
+    void setFaceValue(label face, scalar value);
+    void clearFaceValues();
+
     /// face value from the current field (explicit use)
     scalar faceValue(label face) const;
     /// implicit linearisation: value = coeff * T[owner] + konst
@@ -61,6 +69,8 @@ private:
     std::string name_;
     Field<scalar> internal_;
     std::vector<BC> bc_;
+    Field<scalar> faceValueOverride_;
+    Field<char> faceValueSet_;
 };
 
 class volVectorField

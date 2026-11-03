@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cf/fvm/EddyViscosity.h"
 #include "cf/fvm/FvMatrix.h"
 
 namespace cf
@@ -52,12 +53,18 @@ struct PisoStepResult
 /// a stretched mesh, damped only by viscosity - grows per step out of roundoff
 /// until the linear solves break down near nu*dt/dy^2 = 1. Keep the diffusion
 /// number at or below 0.5; the app reports the breakdown instead of hiding it.
+/// Solves one time step. `turb` (null for laminar) is advanced with the
+/// previous step's velocity and flux before the momentum equation, and the
+/// momentum diffusion then uses its face-wise nu + nut, so the wall shear of a
+/// wall-function mesh comes from the law of the wall rather than from the
+/// viscosity of the first cell.
 PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
                                                 volVectorField& U,
                                                 volScalarField& p,
                                                 surfaceScalarField& phi,
                                                 scalar nu,
                                                 const Schemes& schemes,
-                                                const PisoControls& ctl);
+                                                const PisoControls& ctl,
+                                                IEddyViscosity* turb = nullptr);
 
 } // namespace cf

@@ -14,7 +14,7 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure   # 全量回归（poiseuille 算例约 6 分钟）
+ctest --test-dir build --output-on-failure   # 全量回归约 1 分钟（poiseuille 占 37 s）
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -31,6 +31,13 @@ python3 tests/check_poiseuille.py \
 python3 tests/check_piso.py \
     "$PWD/build/src/3d/apps/chflow-piso-foam" \
     "$PWD/tests/cases/startedChannel/case.dict"
+
+# 湍流渠道摩阻回归：同一个 case.dict 在临时目录里被复制改写成两个模型分别跑，
+# 断言壁面剪应力对体积力的积分平衡、首格 u+ 对 Spalding 对数率、剖面对称单调、
+# 平衡壁面单元与 Ub/u_τ 对 Pope 光滑平板律
+python3 tests/check_turbulent_channel.py \
+    "$PWD/build/src/3d/apps/chflow-piso-foam" \
+    "$PWD/tests/cases/turbulentChannel/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
@@ -70,6 +77,17 @@ python3 tests/check_pvt.py \
 - 新增算例的目录约定：`tests/cases/<name>/case.dict` +
   `tests/check_<name>.py`（断言阈值、打印实测误差），并在
   `tests/CMakeLists.txt` 里 `add_test` 注册；
+- **阈值分两类，不许混淆**：恒等式类（守恒量、壁面链闭合、离散精确解）用
+  机器精度级的严格阈值；预测类（摩阻律、湍流模型给出的 `U_b`）按网格自身能
+  支撑的精度放宽，并把**实测数字写进 case.dict 头注释**——`turbulentChannel`
+  的 8 个对数层单元给出 −14.5%/+5.4% 的 `U_b` 偏差，这是网格的精度，不是
+  模型的；把这种带宽写成 1% 只会让回归在下一次改网格时假失败；
+- checker 需要**多份配置同一算例**时（例如两个湍流模型），把 case 目录复制
+  到临时目录再改写，而不是往仓库里加第二份 case 或在仓库目录里留产物
+  （求解器把 `.vtu` 写在 cwd）；
+- 模型层要有 C++ 单元测试：断言闭合的**代数不变量**（如平衡壁面单元
+  `k = u_τ²/√C_μ` 配上 `ε = u_τ³/(κy)` 必然给出 `nut = κu_τy`），而不只是
+  "跑完没报错"；
 - 求解器改动后必须全量 `ctest` 绿；**提交/推送的默认前提就是全量绿**，
   失败状态不入库；
 - 临时调试脚手架（环境变量开关、`fprintf` 等）在合并前删除。
@@ -80,12 +98,22 @@ python3 tests/check_pvt.py \
 block { min (0 0 0); max (4 0.2 0.1); cells (100 20 1);
         xmin { name inlet; type inlet; } ... }
 nu 0.01;
+initial { U (8 0 0); }                     // 可选：起步速度场
 patches { inlet { U (0.1 0 0); UType fixedValue; pType zeroGradient; } ... }
 schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+turbulence { model kOmegaSST;              // laminar | kEpsilon | kOmegaSST
+             intensity 0.05; lengthScale 0.0056; relaxation 0.7; }
 simple { maxIterations 1600; continuityTol 1e-6; pcorrTol 1.4e-4;
          relaxU 0.9; relaxP 0.8; }
+piso { dt 0.004; endTime 3; correctors 2; continuityTol 1e-8;
+       reportEvery 250; force (19.5 0 0); }
 output { vtk out_poiseuille.vtu; }
 ```
+
+`block{}` 的 patch `type` 参与物理：`wall` 让湍流模型建立壁面层次与 `y+` 报告，
+`inlet` 才是 `turbulence{}` 里 intensity/lengthScale 的注入面；缺 `turbulence{}`
+即 laminar。体积力驱动（`piso{force}`）用 `symmetry` 封住流向两端做单列渠道，
+`p` 只需一个 `fixedValue` 锚点。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

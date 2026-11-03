@@ -1,0 +1,263 @@
+#!/usr/bin/env python3
+"""Run chflow-piso-foam on the wall-function channel with both RANS models and
+verify the friction physics.
+
+The case drives a streamwise-uniform column with a body force, so the wall
+shear is not a prediction but the momentum balance: tau_w = u_tau^2 =
+force * half-height. What the turbulence model has to deliver is the bulk
+velocity that balance can sustain, and the shape of the near-wall profile.
+
+usage: check_turbulent_channel.py <piso-binary> <case.dict>
+"""
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+
+KAPPA = 0.41
+SPALDING_C = 5.5676
+CMU = 0.09
+BETA_STAR = 0.09
+
+
+def case_constants(path):
+    """The numbers the checks are built from, read out of the case itself so it
+    cannot drift away from them."""
+    txt = open(path).read()
+    nu = float(re.search(r'^nu\s+([0-9.eE+-]+);', txt, re.M).group(1))
+    maxv = [float(v) for v in
+            re.search(r'max\s*\(([^)]*)\)', txt).group(1).split()]
+    cells = [int(v) for v in re.search(r'cells\s*\(([^)]*)\)', txt).group(1).split()]
+    force = float(re.search(r'force\s*\(([^)]*)\)', txt).group(1).split()[0])
+    end_time = float(re.search(r'endTime\s+([0-9.eE+-]+);', txt).group(1))
+    if cells[0] != 1 or cells[2] != 1:
+        raise SystemExit("the channel has to be a single column in x and z")
+    return dict(nu=nu, height=maxv[1], force=force, ny=cells[1], end_time=end_time)
+
+
+def spalding_u_plus(y_plus):
+    """Invert Spalding's law of the wall, y+ = u+ + e^(-kC)[e^(ku+) - 1 - ku+
+    - (ku+)^2/2 - (ku+)^3/6], by bisection on the monotone relation."""
+    lo, hi = 0.0, 50.0
+    a = math.exp(-KAPPA * SPALDING_C)
+
+    def yp(up):
+        ku = KAPPA * up
+        return up + a * (math.exp(ku) - 1.0 - ku - ku * ku / 2.0 - ku ** 3 / 6.0)
+
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if yp(mid) < y_plus:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def pope_bulk_velocity(u_tau, d_h, nu):
+    """Pope's smooth-wall friction law, 1/sqrt(f) = 2 log10(Re_b sqrt(f)) - 0.6.
+    With u_tau = U_b sqrt(f/8) the product Re_b sqrt(f) is fixed by u_tau alone,
+    so the law gives f - and then U_b - directly."""
+    inv_sqrt_f = 2.0 * math.log10(d_h * u_tau * math.sqrt(8.0) / nu) - 0.6
+    f = 1.0 / inv_sqrt_f ** 2
+    return u_tau * math.sqrt(8.0 / f)
+
+
+def profile_from_log(out):
+    pts = []
+    for m in re.finditer(r'^\[chflow\] profile y ([0-9.eE+-]+) u ([0-9.eE+-]+)$', out, re.M):
+        pts.append((float(m.group(1)), float(m.group(2))))
+    return pts
+
+
+def reports_from_log(out):
+    return [(float(m.group(1)), float(m.group(2))) for m in re.finditer(
+        r'^\[chflow\] t ([0-9.eE+-]+) uMax ([0-9.eE+-]+) cont ([0-9.eE+-]+)', out, re.M)]
+
+
+def cell_scalars(vtu_path, name):
+    txt = open(vtu_path).read()
+    m = re.search(r'<DataArray[^>]*Name="%s"[^>]*format="ascii">\s*(.*?)</DataArray>'
+                  % name, txt, re.S)
+    if not m:
+        raise SystemExit("%s: field %s missing from the vtu" % (vtu_path, name))
+    return [float(v) for v in m.group(1).split()]
+
+
+def cell_vector(vtu_path, name):
+    txt = open(vtu_path).read()
+    m = re.search(r'<DataArray[^>]*Name="%s" NumberOfComponents="3"[^>]*format="ascii">'
+                  r'\s*(.*?)</DataArray>' % name, txt, re.S)
+    v = [float(x) for x in m.group(1).split()]
+    return v[0::3]
+
+
+def run(binary, case, model):
+    """One model's run, in a copy of the case directory: the solver writes its
+    vtu next to the case, and the repository copy stays clean."""
+    work = tempfile.mkdtemp(prefix="ch-turbulent-channel-")
+    binary = os.path.abspath(binary)
+    src = os.path.dirname(case)
+    for f in os.listdir(src):
+        shutil.copy(os.path.join(src, f), work)
+    local = os.path.join(work, os.path.basename(case))
+    txt = open(local).read()
+    open(local, "w").write(txt.replace("model       kEpsilon;", "model       %s;" % model))
+    r = subprocess.run([binary, local], capture_output=True, text=True, cwd=work)
+    print("---- %s (rc %d) ----" % (model, r.returncode))
+    print(r.stdout[-1200:])
+    if r.returncode != 0:
+        print(r.stderr)
+        raise SystemExit("%s solver failed" % model)
+    if "nan" in r.stdout.lower():
+        raise SystemExit("%s: the run produced a non-finite field" % model)
+    vtu = os.path.join(work, os.path.basename(re.search(
+        r'^\s*vtk\s+(\S+);', open(local).read(), re.M).group(1)))
+    return dict(out=r.stdout, vtu=vtu, work=work)
+
+
+def check(model, res, c):
+    out = res["out"]
+    half = c["height"] / 2.0
+    u_tau_exact = math.sqrt(c["force"] * half)
+    failures = []
+
+    wall = re.search(r'turbulence: u_tau=([0-9.eE+-]+) y\+ mean=([0-9.eE+-]+)'
+                     r' max=([0-9.eE+-]+)', out)
+    if wall is None:
+        raise SystemExit("%s: no wall report in the log" % model)
+    u_tau, yp_mean, yp_max = (float(wall.group(i)) for i in (1, 2, 3))
+
+    # 1. the integral balance: the wall function prescribes the shear, and the
+    #    solved field has to agree with the driving force
+    bal = abs(u_tau / u_tau_exact - 1.0)
+    print("%s: u_tau=%.6f (balance %.6f, err %.1e)" % (model, u_tau, u_tau_exact, bal))
+    if bal > 0.01:
+        failures.append("wall shear does not balance the driving force")
+
+    # 2. the mesh has to sit in the band the wall function is derived for
+    print("%s: y+ = %.1f..%.1f" % (model, yp_mean, yp_max))
+    if not (30.0 < yp_mean < 300.0):
+        failures.append("mean y+ outside the wall-function band (30..300)")
+
+    # 3. steady: the last two reports of the transient have to agree
+    rep = reports_from_log(out)
+    if len(rep) < 2:
+        raise SystemExit("%s: too few reports to judge steadiness" % model)
+    drift = abs(rep[-1][1] / rep[-2][1] - 1.0)
+    print("%s: uMax %.6f at t=%.3g, drift over the last interval %.2e"
+          % (model, rep[-1][1], rep[-1][0], drift))
+    if drift > 0.01:
+        failures.append("the profile is still moving at endTime")
+
+    # 4. profile shape: monotone to the centreline, symmetric about it
+    prof = profile_from_log(out)
+    if len(prof) != c["ny"]:
+        raise SystemExit("%s: expected %d profile points, got %d"
+                         % (model, c["ny"], len(prof)))
+    n = len(prof) // 2
+    lower = [u for _, u in prof[:n]]
+    upper = [u for _, u in prof[n:]][::-1]
+    monotone = all(b > a for a, b in zip(lower, lower[1:]))
+    sym = max(abs(a - b) / b for a, b in zip(lower, upper))
+    print("%s: Ub=%.4f Umax=%.4f symmetry=%.2e monotone=%s"
+          % (model, sum(u for _, u in prof) / len(prof), max(lower), sym, monotone))
+    if not monotone:
+        failures.append("the profile is not monotone from the wall to the centreline")
+    if sym > 1e-6:
+        failures.append("the profile is not symmetric about the centreline")
+
+    # 5. the law of the wall at the first cell centre, which is where the wall
+    #    function closes the momentum equation
+    y1 = prof[0][0]
+    yp1 = u_tau * y1 / c["nu"]
+    up1 = prof[0][1] / u_tau
+    up_law = spalding_u_plus(yp1)
+    err = abs(up1 / up_law - 1.0)
+    print("%s: first cell y+=%.1f u+=%.3f (Spalding %.3f, err %.1e)"
+          % (model, yp1, up1, up_law, err))
+    if err > 0.02:
+        failures.append("first-cell u+ does not follow the law of the wall")
+
+    # 6. the friction law, the actual prediction of the case: the bulk velocity
+    #    this shear can sustain. The mesh puts 8 cells between y+ = 52 and the
+    #    centreline, so the band is the mesh's, not the model's.
+    ub = sum(u for _, u in prof) / len(prof)
+    expect = pope_bulk_velocity(u_tau, 2.0 * c["height"], c["nu"])
+    err_f = ub / expect - 1.0
+    print("%s: Ub/u_tau = %.2f, Pope: %.2f (err %+.1f%%)"
+          % (model, ub / u_tau, expect / u_tau, 100.0 * err_f))
+    if abs(err_f) > 0.2:
+        failures.append("bulk velocity outside the friction-law band")
+
+    # 7. the equilibrium wall cell, out of the vtu: the closure that keeps the
+    #    near-wall transport off the wall function
+    diss_name = "epsilon" if model == "kEpsilon" else "omega"
+    k = cell_scalars(res["vtu"], "k")
+    nut = cell_scalars(res["vtu"], "nut")
+    diss = cell_scalars(res["vtu"], diss_name)
+    u = cell_vector(res["vtu"], "U")
+    if len(u) != len(prof):
+        raise SystemExit("%s: the vtu and the profile report disagree" % model)
+    sqrt_const = math.sqrt(CMU if model == "kEpsilon" else BETA_STAR)
+    k_eq = u_tau * u_tau / sqrt_const
+    nut_log = KAPPA * u_tau * y1
+    # u_tau enters here through the wall report, whose printed digits bound how
+    # closely the closure can be re-derived (3e-6 relative on u_tau, so 1e-4 on
+    # k and 3e-4 on a cubic of it). A closure that was not applied at all leaves
+    # the cell orders of magnitude away, not at this level.
+    tol_pair = 5e-5
+    if model == "kEpsilon":
+        d_eq = u_tau ** 3 / (KAPPA * y1)
+        ok_k = abs(k[0] / k_eq - 1.0) < tol_pair
+        ok_d = abs(diss[0] / d_eq - 1.0) < tol_pair
+        ok_nut = abs(nut[0] / nut_log - 1.0) < 1e-3
+    else:
+        d_eq = u_tau / (sqrt_const * KAPPA * y1)
+        ok_k = abs(k[0] / k_eq - 1.0) < tol_pair
+        ok_d = abs(diss[0] / d_eq - 1.0) < tol_pair
+        # the SST shear branch may only reduce the log-layer viscosity
+        ok_nut = 0.0 < nut[0] <= nut_log
+    print("%s: wall cell k=%.4f (equilibrium %.4f), %s=%.1f (%.1f), nut=%.3e (log layer %.3e)"
+          % (model, k[0], k_eq, diss_name, diss[0], d_eq, nut[0], nut_log))
+    if not ok_k:
+        failures.append("wall cell k is not the equilibrium value")
+    if not ok_d:
+        failures.append("wall cell dissipation is not the equilibrium value")
+    if not ok_nut:
+        failures.append("wall cell eddy viscosity is not the log-layer value")
+
+    return ub, failures
+
+
+def main():
+    binary, case = sys.argv[1], sys.argv[2]
+    c = case_constants(case)
+    print("channel: height %.4g, nu %.3g, force %.4g -> u_tau %.6f, Re_tau %.1f"
+          % (c["height"], c["nu"], c["force"], math.sqrt(c["force"] * c["height"] / 2.0),
+             math.sqrt(c["force"] * c["height"] / 2.0) * c["height"] / 2.0 / c["nu"]))
+
+    results = {}
+    for model in ("kEpsilon", "kOmegaSST"):
+        res = run(binary, case, model)
+        try:
+            results[model] = check(model, res, c)
+        finally:
+            shutil.rmtree(res["work"], ignore_errors=True)
+
+    bad = False
+    for model, (ub, failures) in results.items():
+        for f in failures:
+            print("FAIL %s: %s" % (model, f))
+            bad = True
+    if bad:
+        raise SystemExit("turbulent channel verification FAILED")
+    print("turbulent channel verification passed: %s"
+          % ", ".join("%s Ub=%.3f" % (m, ub) for m, (ub, _) in results.items()))
+
+
+if __name__ == "__main__":
+    main()

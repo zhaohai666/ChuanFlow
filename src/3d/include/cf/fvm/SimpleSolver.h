@@ -1,5 +1,6 @@
 #pragma once
 
+#include "cf/fvm/EddyViscosity.h"
 #include "cf/fvm/FvMatrix.h"
 
 namespace cf
@@ -36,12 +37,16 @@ struct SimpleResult
 ///   4. correct:   U -= rAU grad(p'),  p += relaxP p'
 /// Walls/symmetry keep phi = 0 through the vector BCs; p' inherits the
 /// pressure BC structure (fixedValue -> 0 Dirichlet, else zeroGradient).
+/// `turb` (null for laminar) is advanced once per outer iteration and supplies
+/// the face-wise nu + nut for the momentum diffusion, so on a wall-function
+/// mesh the wall shear is the law-of-the-wall value.
 SimpleResult solveIncompressibleSimple(polyMesh& mesh,
                                        volVectorField& U,
                                        volScalarField& p,
                                        surfaceScalarField& phi,
                                        scalar nu,
                                        const Schemes& schemes,
-                                       const SimpleControls& ctl);
+                                       const SimpleControls& ctl,
+                                       IEddyViscosity* turb = nullptr);
 
 } // namespace cf

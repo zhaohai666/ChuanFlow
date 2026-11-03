@@ -120,6 +120,16 @@ add_test(
         $<TARGET_FILE:chflow-vof>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofDroplet/case.dict)
 
+# the two-way loop: the solved flux carries alpha and the force is rebuilt from
+# the shape it leaves, so an ellipse oscillates about the circle; the crossing
+# clock decides the density-matched Lamb period against the free-drop one
+add_test(
+    NAME verify.vofOscillating
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_vof.py
+        $<TARGET_FILE:chflow-vof>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofOscillating/case.dict)
+
 add_test(
     NAME verify.steadyNetwork
     COMMAND ${Python3_EXECUTABLE}

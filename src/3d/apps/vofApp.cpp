@@ -83,10 +83,13 @@ bool loadVelocity(const Dictionary& caseDict, VelocityField& v)
 /// The surface force the interface implies. The incompressible momentum
 /// equation this app drives is in acceleration form, so the case gives the
 /// surface tension (N/m) and the density it is scaled by, and `nu` is the
-/// kinematic viscosity that damps whatever the force starts.
+/// kinematic viscosity that damps whatever the force starts. `advect` couples
+/// the transport to the flux the coupling solves: the interface then moves, and
+/// the case becomes a droplet pushed around by its own surface force.
 struct SurfaceTension
 {
     bool enabled = false;
+    bool advect = false;   // two-way: alpha is carried by the solved flux
     scalar sigma = 0;      // N/m
     scalar rho = 1;        // kg/m3
     scalar nu = 0;         // m2/s
@@ -100,6 +103,7 @@ SurfaceTension loadSurfaceTension(const Dictionary& caseDict)
     if (!caseDict.has("surfaceTension")) return st;
     const Dictionary& sd = caseDict.getDict("surfaceTension");
     st.enabled = true;
+    st.advect = sd.getWordOr("advect", "false") == "true";
     st.sigma = sd.getScalar("sigma");
     st.rho = sd.getScalarOr("rho", 1.0);
     st.nu = sd.getScalar("nu");
@@ -174,12 +178,14 @@ void loadAlpha(const Dictionary& caseDict, volScalarField& alpha)
         return;
     }
 
-    if (ad.has("circle"))
+    if (ad.has("circle") || ad.has("ellipse"))
     {
-        const Dictionary& cd = ad.getDict("circle");
+        const bool round = ad.has("circle");
+        const Dictionary& cd = ad.getDict(round ? "circle" : "ellipse");
         const auto p = cd.getScalarList("center");
         const Vector center{p[0], p[1], p[2]};
-        const scalar radius = cd.getScalar("radius");
+        const scalar radiusA = cd.getScalar(round ? "radius" : "radiusA");
+        const scalar radiusB = round ? radiusA : cd.getScalar("radiusB");
         const scalar smooth = cd.getScalarOr("smooth", 0.0);
         // one representative cell edge, used only for the thickness of the
         // profile: the case is 2D by construction, so the diagonal of a cell
@@ -194,12 +200,20 @@ void loadAlpha(const Dictionary& caseDict, volScalarField& alpha)
         for (label i = 0; i < mesh.nCells(); ++i)
         {
             const std::size_t u = static_cast<std::size_t>(i);
-            const scalar r = mag(c[u] - center);
-            a[u] = eps > 0 ? 0.5 * (1.0 - std::tanh((r - radius) / eps))
-                           : (r < radius ? 1.0 : 0.0);
+            // the ellipse is a circle in the scaled coordinates, so its own
+            // level set is r = 1 there; a circle keeps the plain distance so
+            // its smoothing stays measured in cell widths
+            const scalar r = round ? mag(c[u] - center)
+                                   : std::sqrt(std::pow((c[u].x - center.x) / radiusA, 2) +
+                                               std::pow((c[u].y - center.y) / radiusB, 2) +
+                                               std::pow((c[u].z - center.z) / radiusA, 2));
+            const scalar level = round ? radiusA : 1.0;
+            a[u] = eps > 0 ? 0.5 * (1.0 - std::tanh((r - level) / eps))
+                           : (r < level ? 1.0 : 0.0);
         }
-        log::info("alpha: circle centre (", center.x, ", ", center.y, ", ", center.z,
-                  ") radius ", num(radius), smooth > 0 ? " smoothed" : " cell filled");
+        log::info("alpha: ", round ? "circle" : "ellipse", " centre (", center.x,
+                  ", ", center.y, ", ", center.z, ") semi-axes ", num(radiusA),
+                  " / ", num(radiusB), smooth > 0 ? " smoothed" : " cell filled");
         return;
     }
 
@@ -302,6 +316,26 @@ void phasePressures(const volScalarField& p, const Field<scalar>& alpha,
     }
     pIn = ni > 0 ? si / ni : std::numeric_limits<scalar>::quiet_NaN();
     pOut = no > 0 ? so / no : std::numeric_limits<scalar>::quiet_NaN();
+}
+
+/// The axes ratio of the alpha-weighted second-moment ellipse. For a uniformly
+/// filled ellipse of semi-axes (a, b) it is exactly a/b, and it is what an
+/// oscillating droplet's shape signal reads its period from: surface tension
+/// drives it back towards 1, inertia overshoots, viscosity damps it.
+scalar phaseAspect(const polyMesh& mesh, const Field<scalar>& alpha)
+{
+    const Field<Vector>& c = mesh.cellCentres();
+    const Vector cen = vof::phaseCentroid(mesh, alpha);
+    double ixx = 0, iyy = 0, mass = 0;
+    for (label i = 0; i < mesh.nCells(); ++i)
+    {
+        const std::size_t u = static_cast<std::size_t>(i);
+        const double dx = c[u].x - cen.x, dy = c[u].y - cen.y;
+        ixx += alpha[u] * dx * dx;
+        iyy += alpha[u] * dy * dy;
+        mass += alpha[u];
+    }
+    return ixx > 0 && iyy > 0 ? std::sqrt(ixx / iyy) : 1.0;
 }
 
 } // namespace
@@ -436,20 +470,22 @@ int main(int argc, char** argv)
             surfaceScalarField phi(mesh, "phi", 0.0);
             loadMomentumPatches(caseDict, mesh, U, p);
 
-            // One-way coupling: the interface is frozen and only reads out the
-            // pressure-velocity response to the force it implies. The flux this
-            // step produces is divergence-free to the linear-solver tolerance
-            // rather than to round-off, and advecting alpha with it is the
-            // increment after this one -- until then the transport keeps its
-            // exactly-divergence-free analytic velocity and the mass statement
-            // stays a closed-form one.
-            const Field<Vector> normal = vof::interfaceNormal(alpha, schemes.grad, threshold);
-            const Field<scalar> kappa = vof::interfaceCurvature(mesh, normal);
-            const Field<Vector> force =
+            // The interface drives the momentum. One-way (`advect false`) it is
+            // frozen and only reads out the pressure-velocity response to the
+            // force it implies; two-way the flux the coupling solves carries
+            // alpha, whose new shape then drives the next step -- the loop
+            // interFoam runs. The PISO flux is divergence-free to the
+            // linear-solver tolerance rather than to round-off, so the two-way
+            // mass statement is the boundary exchange (zero on a closed box
+            // whose walls carry alpha = 0), not a closed form.
+            Field<Vector> normal = vof::interfaceNormal(alpha, schemes.grad, threshold);
+            Field<scalar> kappa = vof::interfaceCurvature(mesh, normal);
+            Field<Vector> force =
                 vof::surfaceTensionForce(st.sigma / st.rho, alpha, kappa, schemes.grad);
             scalar fMax = 0;
             for (const Vector& f : force) fMax = std::max(fMax, mag(f));
             log::info("vof csf: sigma/rho ", num(st.sigma / st.rho), " nu ", num(st.nu),
+                      " advect ", st.advect ? "true" : "false",
                       " kappa ", num(kappa0), " max |f| ", num(fMax));
 
             PisoControls ctl;
@@ -461,9 +497,19 @@ int main(int argc, char** argv)
             ctl.cellForce = &force;
 
             PisoStepResult last;
+            SolverReport transport;
             for (int step = 1; step <= nSteps; ++step)
             {
                 last = solveTransientIncompressiblePiso(mesh, U, p, phi, st.nu, schemes, ctl);
+                if (st.advect)
+                {
+                    transport = vof::advectAlpha(alpha, phi.values(), dt, schemes, vc);
+                    // the next step is driven by the interface as it now is
+                    normal = vof::interfaceNormal(alpha, schemes.grad, threshold);
+                    kappa = vof::interfaceCurvature(mesh, normal);
+                    force = vof::surfaceTensionForce(st.sigma / st.rho, alpha,
+                                                     kappa, schemes.grad);
+                }
                 if (step % reportEvery != 0 && step != nSteps) continue;
                 const scalar mass = vof::phaseVolume(mesh, alpha.internalField());
                 const Vector c = vof::phaseCentroid(mesh, alpha.internalField());
@@ -473,17 +519,26 @@ int main(int argc, char** argv)
                 for (const Vector& u : U.internalField()) uMax = std::max(uMax, mag(u));
                 log::info("vof t ", num(static_cast<scalar>(step) * dt),
                           " mass ", num(mass), " massErr ", num(mass / mass0 - 1.0),
+                          " min ", num(alpha.min()), " max ", num(alpha.max()),
                           " cx ", num(c.x), " cy ", num(c.y),
                           " dp ", num(pIn - pOut), " pIn ", num(pIn), " pOut ", num(pOut),
-                          " umax ", num(uMax), " corr ", last.correctorsUsed,
+                          " umax ", num(uMax), " aspect ", num(phaseAspect(mesh, alpha.internalField())),
+                          " corr ", last.correctorsUsed,
                           " cont ", num(last.continuityError),
-                          " dpMax ", num(last.pressureCorrectionMax));
-                if (!std::isfinite(pIn - pOut) || !std::isfinite(uMax))
+                          " dpMax ", num(last.pressureCorrectionMax),
+                          " solver ", transport.iterations, " residual ", num(transport.finalResidual));
+                if (!std::isfinite(pIn - pOut) || !std::isfinite(uMax) ||
+                    !std::isfinite(alpha.min()) || !std::isfinite(alpha.max()))
                 {
-                    log::error("vof: non-finite pressure or velocity at step ", step);
+                    log::error("vof: non-finite field at step ", step);
                     ok = false;
                     break;
                 }
+            }
+            if (ok && nSteps > 0 && st.advect && !transport.converged)
+            {
+                log::error("vof: the transport did not converge");
+                ok = false;
             }
             if (ok && !vtk.empty())
             {

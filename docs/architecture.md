@@ -423,7 +423,7 @@ laminar；`lengthScale ≤ 0` 回落为包围盒对角线的 7%（水力直径�
 给一个起步速度场（`caseInit.h`），壁面函数需要一个已有速度的边界层可谈。
 vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`。
 
-### 5.10 多相流层 `multiphase/`（M3 首增量：VOF 相分数输运 + 界面几何；M4 首增量：CSF 与动量耦合）
+### 5.10 多相流层 `multiphase/`（M3 首增量：VOF 相分数输运 + 界面几何；M4：CSF 与动量耦合、解出通量输运 α）
 `include/cf/multiphase/VoF.h` + `src/multiphase/vof.cpp`，命名空间 `cf::vof`。
 只依赖 fvc/fvm/fvMatrix：`chflow-vof` 是两模式 app——case 带 `velocity{}` 用**给定**
 无散速度输运 α（M3），带 `surfaceTension{}` 冻结界面、驱动 PISO 读出它隐含的
@@ -501,25 +501,46 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
 单元测试给恒等式：**均匀 κ 上离散力成对抵消**——Σ V·f = −(σ/ρ)κ·Σ V·∇α，而离散
 梯度是 Gauss 和，闭合域上 α=0 边界使 Σ V∇α 精确为 0，实测 3.5e-17 相对；同时断言
 力恰好在带上的单元非零（带外恰好 0）、液滴受压向内（outward 精确为 0）、κ=0 ⇒ f=0。
-**范围**：这一增量是**单向**的（α 冻结，只读出压力-速度响应），因为 PISO 的通量
-只在线性求解器容差内无散，而当前输运算子的守恒声明建立在解析无散通量上；用解出的
-通量输运 α（液滴振荡）是下一增量。
+**范围与两相耦合**：vofDroplet 是**单向**的（α 冻结，只读出压力-速度响应）。第二增量
+把回路闭合：`surfaceTension{ advect true; }` 时每步先按 αⁿ 的力跑 PISO，再用**解出的**
+φ 输运 α（`advectAlpha`），再从 αⁿ⁺¹ 重算 n̂/κ/力。PISO 通量只在线性求解器容差内无散，
+所以两相耦合下的质量守恒不再是闭式——它变成**边界交换**：闭盒壁面 α=0 时交换为零，
+`Σ(αⁿ⁺¹−αⁿ)V` 精确到舍入（实测 1.0e-13 相对）；有界性仍是 M-矩阵性质（CFL 内）。
+**椭圆液滴振荡**（`vofOscillating`）把周期当作内核没被给的数来测，并且**裁决是哪条
+定律**：n̂ 朝内约定下释放 a≠b 的椭圆，n=2 模振荡。2D 自由液滴公式 ω² = n(n²−1)σ/(ρR³)
+（势流 + 运动学 + Bernoulli 对 Laplace 跃变，κ′ = (n²−1)ζ/R²）在这里**差 35%**——它假设
+环境不携带惯性；本内核动量是单流体式（ν、σ/ρ 为常数），环境就是同一种流体。给外域
+补上 φ_out = B r⁻ⁿ、两侧同配运动学条件后得 **ω² = n(n²−1)σ/((ρ_in+ρ_out)R³)**：环境把
+自己的惯性加进分母（同一陈述的能量形式：内外两域动能 ρπ ω²ζ²R²/n 对表面能
+σπ(n²−1)ζ²/2R）。匹配密度下 n=2 读 **ω² = 3σ/(ρR³)**；3D 自由球是 l(l−1)(l+2)=8、
+3D 匹配球是 4（单位 σ/(ρR³)）——算例同时裁决几何与惯性。R = √(ab) = 0.15819
+（解出的 Laplace 跃变落在它上面：dp 均值 0.502 对 σ/(ρR) = 0.5057），线性周期
+T = 2π√(ρR³/(3σ)) = 0.8071 s，实测（aspect 二阶矩穿越钟）**0.8602 s，+6.6%**：振幅
+(a−b)/(a+b)=0.15 的有限振幅软化（首四分之一周期 0.243 对 T/4=0.202）、迎风让界面
+厚度在程内翻倍、阈值带低估端部曲率（t=0 带均值 κ −4.7 对弧长均值 −6.2），三者同向。
+变形每周期衰减 ~×0.5——黏性自己只给 ×0.8（2D n=2 模 γ = 6ν/R² = 0.24/s），主导阻尼
+是迎风加厚的带。首步 |U| 冲到 0.62（≈0.87×毛细速度 √(σ/(ρR)) = 0.711）：物理释放 +
+`interfaceNormal` 阈值截断的带缘力尖峰（截断处离散 κ 跨 ~2/dx，少数带缘单元 |f| ~141），
+t~0.2 内 ring down、不触及形状（aspect 从首个报告起就光滑）——与 vofDroplet 量到的
+伪电流同源，此处叠在物理释放速度上。
 
 **case 侧**：`velocity{ type uniform|rotation; U | omega center }`、
-`alpha{ plane{ point normal } | circle{ center radius smooth } }`、
+`alpha{ plane{ point normal } | circle{ center radius smooth } | ellipse{ center radiusA radiusB smooth } }`、
 `patches{ name{ alphaType alpha } }`、`time{ dt endTime reportEvery interfaceThreshold }`、
 `schemes{ ddt Euler; div; grad }`（ddt 只接受 Euler）、`solverTol`/`solverMaxIter`、
 `output{ vtk vtkInitial }`；逐步报告行
 `vof t .. mass .. massErr .. min .. max .. cx .. cy .. x50 .. kappa .. iface N .. solver I .. residual R`，
 其中 `x50` 是相质心所在行上 α 的 0.5 穿越位置（checker 与 vtu 独立复算互校）。
 
-**动量模式（M4）**：`surfaceTension{ sigma rho nu correctors continuityTol }` 给出时
-驱动 PISO 而不是输运——case 必须恰好含两者之一；`patches{}` 在同一块里加读
+**动量模式（M4）**：`surfaceTension{ sigma rho nu [advect] correctors continuityTol }` 给出时
+驱动 PISO 而不是输运——case 必须恰好含两者之一；`advect true` 接通两相耦合（解出的
+φ 输运 α、每步重建力），缺省 false 冻结界面；`patches{}` 在同一块里加读
 `U (0 0 0)`（无滑移）与 `p`（一块 patch 的 Dirichlet 锚定闭合盒的常数），pType
 可写 `zeroGradient`；报告行换成
-`vof t .. mass .. massErr .. cx .. cy .. dp .. pIn .. pOut .. umax .. corr .. cont .. dpMax`，
-其中 dp/pIn/pOut 分别是跃变与按 α>0.99/α<0.01 分离的两侧体相均值（checker 从 vtu
-独立复算互校）；vtu 额外写 `U`、`p`、`csf`。
+`vof t .. mass .. massErr .. min .. max .. cx .. cy .. dp .. pIn .. pOut .. umax .. [aspect] .. corr .. cont .. dpMax`，
+其中 dp/pIn/pOut 分别是跃变与按 α>0.99/α<0.01 分离的两侧体相均值，advect 时多报
+`aspect`（α 二阶矩轴比 √(Ixx/Iyy)，振荡的形状信号；checker 从 vtu 独立复算互校）；
+vtu 额外写 `U`、`p`、`csf`。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
@@ -546,7 +567,7 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
 | `kqRWallFunction`（壁面单元代数化） | `wallEquilibrium()` + `imposeWallEquilibrium()`（平衡壁面单元） |
 | `wallDist` / `nearWallDist` | `RansModel::cellWallDistance()`（单元图 Dijkstra） |
 | `fvOptions` / `turbulenceProperties` | case.dict 的 `turbulence{}`（`TurbulenceConfig::fromCase`） |
-| `interFoam` 的 `alphaEqn.H` | `vof::advectAlpha` + `chflow-vof`（速度给定；用解出的通量输运 α 待接） |
+| `interFoam` 的 `alphaEqn.H` | `vof::advectAlpha` + `chflow-vof`（速度给定；`surfaceTension{ advect true; }` 时用解出的通量输运 α 并每步重建力） |
 | `MULES::limit` / `limiter` / `localErosion` | 不需要：迎风 + 离散无散 phi 即 M-矩阵，α ∈ [0,1] 是构造性质 |
 | `interfaceProperties::correctM()`（`fvc::grad(alpha)`） | `vof::interfaceNormal()`（相对阈值只让界面带持有法向，带外精确 0） |
 | `interfaceProperties::k()`（`fvc::div(M)`） | `vof::interfaceCurvature()`（只累加两侧都带界面的面，减去自身法向） |
@@ -601,7 +622,7 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
   **均匀 κ 上表面力成对抵消**（ΣV·f = 3.5e-17 相对——Gauss 梯度在闭合域上的
   恒等式；力恰好非零于带、带外恰好 0；正曲率液滴受力向内，outward 精确为 0；
   κ=0 ⇒ f 逐位为 0）；
-- `tests/cases/*`：十四个物理回归算例 + `tests/check_*.py` 断言：
+- `tests/cases/*`：十五个物理回归算例 + `tests/check_*.py` 断言：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug`（见 4.2）
@@ -652,6 +673,13 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
     （|Δp| 0.006%、|Ux+Ux'| 0.17% of max|U|）、离散力净和 ∫|f| 的 2.9e-13、
     闭盒净动量 ∫|U| 的 3.4e-7、解出通量 max|div(phi)| 1.1e-14、α 逐位不变、
     伪速度 max|U| 0.0123 = √(σ/(ρR)) 的 1.7% 且增量递减——见 5.10）；
+  - `vofOscillating`（M4：两相耦合——`advect true`，解出的 φ 输运 α、每步重建力；
+    80×80 闭合盒、平滑 4 dx 的椭圆 a=0.184 b=0.136、σ=0.08 ρ=1 ν=0.001）：质量守恒到
+    1.0e-13 相对（闭盒壁面 α=0）、α∈[0,1] 无截断、质心漂移 ≤1.1e-4、aspect 穿越
+    周期 **0.8602 s 对密度匹配 Lamb 值 2π√(ρR³/(3σ)) = 0.8069 s（+6.6%）**（自由液滴
+    公式会给 0.571 s——差 35%，穿越钟裁决）、振幅逐周期衰减（0.359→0.180→0.165→0.126，
+    双轴都衰减）、dp 呼吸 0.432..0.525 均值 0.502 对 σ/(ρR)=0.5057、释放在
+    0.87×毛细速度内、t>0.25 后 ≤0.202、vtu 独立复算体积/aspect/法向/κ——见 5.10）；
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

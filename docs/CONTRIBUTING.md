@@ -60,6 +60,14 @@ python3 tests/check_vof.py \
     "$PWD/build/src/3d/apps/chflow-vof" \
     "$PWD/tests/cases/vofDroplet/case.dict"
 
+# 椭圆液滴振荡（两相耦合）：`surfaceTension{ advect true; }` 让解出的 φ 输运 α、
+# 每步从新形状重建力；checker 测 aspect 穿越周期对密度匹配的 2D Lamb 值
+# 2π√(ρR³/(3σ))（R = √(ab)），并断言质量守恒、振幅双轴衰减（约 80 s）
+./build/src/3d/apps/chflow-vof tests/cases/vofOscillating/case.dict
+python3 tests/check_vof.py \
+    "$PWD/build/src/3d/apps/chflow-vof" \
+    "$PWD/tests/cases/vofOscillating/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict

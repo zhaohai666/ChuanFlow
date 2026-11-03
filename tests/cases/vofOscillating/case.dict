@@ -1,0 +1,142 @@
+// An elliptical droplet oscillating under its own surface force: the two-way
+// increment. The coupling now runs the loop interFoam runs -- the PISO flux
+// carries alpha, whose new shape rebuilds the surface force for the next step.
+//
+// Released from an ellipse a != b, the only equilibrium is the circle, and
+// surface tension drives the shape back towards it; inertia overshoots and the
+// droplet oscillates in its n = 2 mode while viscosity and the numerical
+// interface thickness damp it.
+//
+// The period has an analytic answer, and WHICH one is the point of the case.
+// The naive 2D free-drop law, w^2 = n(n^2-1) sigma/(rho R^3) -- potential flow
+// inside r = R + zeta cos(n theta) e^{iwt}, the kinematic condition and
+// Bernoulli against the Laplace jump with kappa' = (n^2-1) zeta/R^2 -- is
+// wrong here by 35%: it assumes the ambient carries no inertia. This kernel's
+// momentum is one-fluid, nu and sigma/rho constants: there is no density
+// contrast and the ambient is the same fluid as the drop. Repeating the
+// derivation with an exterior potential phi_out = B r^-n matching the
+// kinematic condition on both sides gives
+//
+//     w_n^2 = n (n^2 - 1) sigma / ((rho_in + rho_out) R^3)
+//
+// -- the ambient adds its inertia to the denominator. (The same statement in
+// energy: the kinetic energy of BOTH domains, rho pi w^2 zeta^2 R^2 / n for
+// the matched pair, against the surface energy sigma pi (n^2-1) zeta^2/(2R).)
+// Here rho_in = rho_out = rho, so n = 2 reads w^2 = 3 sigma/(rho R^3). The 3D
+// free sphere would read l(l-1)(l+2) = 8 and the 3D matched sphere 4, in units
+// of sigma/(rho R^3) -- the case discriminates both the geometry and the
+// inertia it really solved.
+//
+// With R = sqrt(a b) = 0.15819 -- the dynamically relevant radius, see the
+// solved Laplace jump below -- the linear period is
+//
+//     T_lin = 2 pi sqrt(rho R^3 / (3 sigma)) = 0.8071 s
+//
+// Measured on this run (aspect = sqrt of the ratio of the alpha second moments
+// about the phase centroid; zero crossings of aspect - 1 at t = 0.243, 0.675,
+// 1.103):
+//   period                 0.860 s (+6.6% over T_lin)
+//   aspect                 1.359 at the first report (a/b = 1.353 for the sharp
+//                          ellipse) -> 0.820 at t=0.448 -> 1.165 at t=0.88 ->
+//                          0.874 near t=1.31: the axes swap and decay
+//   amplitude              the deformation decays ~x0.5 per period; viscous
+//                          alone (gamma = 6 nu/R^2 = 0.24/s for the 2D n=2
+//                          mode) would give x0.8 -- the upwind-thickened band
+//                          is the dominant damper, not the viscosity
+//   phase volume           0.0072525534, drift <= 1.1e-13 relative over the
+//                          run (closed box, alpha = 0 on every wall)
+//   alpha                  [0, 1] with no clipping; the exact 0/1 of the tanh
+//                          cores erode to 0.9999999x as the band thickens
+//   centroid               drifts <= 1.1e-4 in x (BiCGStab sweep asymmetry),
+//                          pinned to 1e-12 in y
+//   dp = pIn - pOut        0.432..0.525, mean 0.502, around sigma/(rho R) =
+//                          0.5057: the jump breathes with the shape and the
+//                          flow, and lands on sqrt(a b), not on the alpha-
+//                          volume radius (0.152) or (a+b)/2 (0.16)
+//   max |U|                0.62 in the first 0.02 s -- the physical release
+//                          (the capillary-inertial speed is 0.711) plus the
+//                          band-edge force spike below -- down to 0.13 by
+//                          t=0.6 and decaying with the shape
+//   max |div(phi)|         3e-13 after 2 correctors
+// The +6.6% over T_lin is honest error, not tuning: the amplitude
+// (a-b)/(a+b) = 0.15 softens the first quarter period visibly (0.243 s against
+// T_lin/4 = 0.202 s), the upwind flux roughly doubles the interface thickness
+// over the run, and the threshold band under-resolves the tips' curvature
+// (band-mean kappa -4.7 at t=0 against the true arc-length mean -6.2). All
+// three push the period the same way.
+//
+// The band-edge force spike: interfaceNormal truncates nhat where |grad(alpha)|
+// falls below 0.1 of its peak, and the discrete curvature of that truncation
+// steps ~2/dx, so a few band-edge cells carry |f| up to 141 for the first
+// steps. It rings down by t ~ 0.2 and never reaches the shape (the aspect
+// history is smooth from the first report); it is the same artifact the frozen
+// droplet case measures as its spurious current, here on top of the physical
+// release speed.
+//
+// Verified by tests/check_vof.py (ctest verify.vofOscillating): mass conserved
+// to 1e-11 relative, alpha in [0, 1], the centroid pinned, the crossing period
+// within 12% of T_lin, the swing real and decaying on both axes, dp breathing
+// around sigma/(rho R), late-time |U| below half the capillary speed, and the
+// final vtu's own moments reproducing the reported volume and aspect.
+block
+{
+    min   (0 0 0);
+    max   (1 1 0.1);
+    cells (80 80 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+alpha
+{
+    ellipse { center (0.5 0.5 0); radiusA 0.184; radiusB 0.136; smooth 4.0; }
+}
+
+surfaceTension
+{
+    sigma 0.08;
+    rho   1;
+    nu    0.001;
+    advect true;
+    correctors    2;
+    continuityTol 1e-12;
+}
+
+patches
+{
+    // no-slip all round, one pressure anchor; the droplet never reaches a wall
+    // and its boundary alpha is 0, so the closed box exchanges no phase
+    left   { U (0 0 0); p 0;                 alphaType fixedValue; alpha 0; }
+    right  { U (0 0 0); pType zeroGradient;  alphaType fixedValue; alpha 0; }
+    bottom { U (0 0 0); pType zeroGradient;  alphaType fixedValue; alpha 0; }
+    top    { U (0 0 0); pType zeroGradient;  alphaType fixedValue; alpha 0; }
+}
+
+time
+{
+    dt                 0.002;   // surface CFL ~0.1, nu dt/dx^2 = 0.0128
+    endTime            1.32;    // just past the second minimum (t ~ 1.31)
+    reportEvery        4;
+    interfaceThreshold 0.1;
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+solverTol 1e-12;
+
+output
+{
+    vtk         out_vof_oscillating.vtu;
+    vtkInitial  initial_vof_oscillating.vtu;
+}

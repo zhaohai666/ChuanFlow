@@ -32,6 +32,14 @@ The momentum case (chflow-vof with a surfaceTension{} block, no velocity):
       the case reports its amplitude against the capillary-inertial and free-
       acceleration scales.
 
+  vofOscillating - the two-way loop: the solved flux carries alpha and the
+      surface force is rebuilt from the shape it leaves, so an ellipse released
+      off the circle oscillates in its n = 2 mode and decays. The period is the
+      number the kernel is not given, and the case exists to decide WHICH law:
+      one-fluid momentum means the ambient carries half the inertia,
+      w^2 = 3 sigma/(rho R^3) on R = sqrt(a b) -- not the free-drop
+      6 sigma/(rho R^3), which would be 35% off.
+
 usage: check_vof.py <chflow-vof> <case.dict>
 """
 import math
@@ -73,7 +81,9 @@ def case_constants(path):
         # The checker needs the patch that carries U, so the velocity block's
         # own U() is not what is read here.
         st = re.search(r'surfaceTension\s*\{([^}]*)\}', txt, re.S).group(1)
-        c['kind'] = 'droplet'
+        adv = re.search(r'advect\s+(\w+)\s*;', st)
+        c['advect'] = bool(adv and adv.group(1) == 'true')
+        c['kind'] = 'oscillating' if c['advect'] else 'droplet'
         c['sigma'] = float(re.search(r'sigma\s+([0-9.eE+-]+);', st).group(1))
         c['rho'] = float(re.search(r'rho\s+([0-9.eE+-]+);', st).group(1))
         c['nu'] = float(re.search(r'nu\s+([0-9.eE+-]+);', st).group(1))
@@ -109,8 +119,15 @@ def case_constants(path):
         if c['kind'] == 'rotation':
             c['r0'] = math.hypot(c['center'][0] - c['axis'][0],
                                  c['center'][1] - c['axis'][1])
+    elif 'ellipse' in al:
+        c['shape'] = 'ellipse'
+        c['center'] = [float(v) for v in
+                       re.search(r'center\s*\(([^)]*)\)', al).group(1).split()]
+        c['a'] = float(re.search(r'radiusA\s+([0-9.eE+-]+);', al).group(1))
+        c['b'] = float(re.search(r'radiusB\s+([0-9.eE+-]+);', al).group(1))
+        c['smooth'] = float(re.search(r'smooth\s+([0-9.eE+-]+);', al).group(1))
     else:
-        raise SystemExit("the alpha block must be a plane or a circle")
+        raise SystemExit("the alpha block must be a plane, a circle or an ellipse")
     return c
 
 
@@ -169,7 +186,7 @@ def log_numbers(out):
                       r'endTime ([0-9.eE+-]+) kappa ([0-9.eE+-]+) iface (\d+)', out)
     div = re.search(r'\[chflow\] vof velocity: (\w+) max \|div\(phi\)\| ([0-9.eE+-]+)', out)
     csf = re.search(r'\[chflow\] vof csf: sigma/rho ([0-9.eE+-]+) nu ([0-9.eE+-]+) '
-                    r'kappa ([0-9.eE+-]+) max \|f\| ([0-9.eE+-]+)', out)
+                    r'advect (true|false) kappa ([0-9.eE+-]+) max \|f\| ([0-9.eE+-]+)', out)
     if not rows or start is None:
         raise SystemExit("the log does not hold a start line and the report lines "
                          "the checker needs")
@@ -181,7 +198,8 @@ def log_numbers(out):
                 max_div=float(div.group(2)) if div else None,
                 sigma_over_rho=float(csf.group(1)) if csf else None,
                 nu=float(csf.group(2)) if csf else None,
-                f_max=float(csf.group(4)) if csf else None)
+                advect=(csf.group(3) == 'true') if csf else None,
+                f_max=float(csf.group(5)) if csf else None)
 
 
 def failures_exit(case, failures, notes):
@@ -217,14 +235,20 @@ def main():
         failures, notes = [], []
         init_alpha = init[1]['alpha'] if init else None
         check_common(c, log, cent, alpha, nh, kap, band, failures, notes)
-        if c['kind'] == 'droplet':
+        if c['kind'] == 'oscillating':
+            check_oscillating(c, log, cent, f, alpha, nh, kap, band, init,
+                              failures, notes)
+        elif c['kind'] == 'droplet':
             check_droplet(c, log, cent, f, alpha, nh, kap, band, init_alpha,
                           failures, notes)
         elif c['kind'] == 'translation':
             check_translation(c, log, cent, alpha, nh, kap, band, failures, notes)
         else:
             check_rotation(c, log, cent, alpha, nh, kap, band, failures, notes)
-        if init:
+        if init and c['shape'] in ('plane', 'circle'):
+            # the ellipse has no cell-by-cell closed form (its curvature varies
+            # around the interface); its initial field is checked by
+            # check_oscillating instead
             check_initial_geometry(c, init, failures, notes)
         failures_exit(c, failures, notes)
     finally:
@@ -592,6 +616,218 @@ def check_droplet(c, log, cent, f, alpha, nh, kap, band, init_alpha, failures, n
                  % (len(band), kmean, -1.0 / r))
     if abs(kmean / (-1.0 / r) - 1.0) > 0.08:
         failures.append("the band reads kappa %.4f, not -1/R = %.4f" % (kmean, -1.0 / r))
+
+
+def check_oscillating(c, log, cent, f, alpha, nh, kap, band, init, failures, notes):
+    """The two-way momentum mode: the solved flux carries alpha and the surface
+    force is rebuilt from the shape it leaves, so an ellipse released off the
+    circle oscillates in its n = 2 mode and decays. The period is the number
+    the kernel is not given, and the case exists to decide WHICH law: one-fluid
+    momentum means the ambient carries half the inertia, w^2 = 3 sigma/(rho
+    R^3) on R = sqrt(a b), not the free-drop 6 sigma/(rho R^3) -- 35% apart."""
+    if not log['advect']:
+        failures.append("the oscillating case ran with advect false: the "
+                        "interface would be frozen and nothing below means anything")
+        return
+
+    dv = c['dx'][0] * c['dx'][1] * c['dx'][2]
+    r_eq = math.sqrt(c['a'] * c['b'])
+    t_lin = 2.0 * math.pi * math.sqrt(c['rho'] * r_eq ** 3 / (3.0 * c['sigma']))
+    target = c['sigma'] / (c['rho'] * r_eq)
+    u_ci = math.sqrt(target)
+    rows = log['rows']
+
+    if abs(rows[-1]['t'] - c['end_time']) > c['dt']:
+        failures.append("the run stopped at t=%g, not the endTime %g the case "
+                        "asked for" % (rows[-1]['t'], c['end_time']))
+
+    # mass: the box is closed and every wall carries alpha = 0, so the boundary
+    # exchange is zero and the two-way loop conserves the phase volume to
+    # round-off -- the flux telescopes over the interior faces, whatever it is.
+    merr = max(abs(r['massErr']) for r in rows)
+    notes.append("phase volume drift over the run: %.3e relative (closed box)"
+                 % merr)
+    if merr > 1e-11:
+        failures.append("the two-way loop lost %.3e of the phase volume: the "
+                        "advected transport is not conservative on the solved "
+                        "flux" % merr)
+
+    # nothing in an internal surface force can translate the drop, so the
+    # centroid stays pinned; what moves it is the linear solver's sweep
+    # asymmetry, which accumulates in x
+    drift = max(max(abs(r['cx'] - c['center'][0]), abs(r['cy'] - c['center'][1]))
+                for r in rows)
+    notes.append("centroid drift over the run: %.3e (BiCGStab sweep asymmetry)"
+                 % drift)
+    if drift > 5e-4:
+        failures.append("the droplet's centroid moved %.3e: the surface force is "
+                        "internal and cannot translate it" % drift)
+
+    # the crossing clock: the reported aspect - 1 linearly interpolated to zero.
+    # cross[0] is the first compression, cross[1] the return, cross[2] the
+    # second; consecutive same-direction crossings are one period apart.
+    s = [(r['t'], r['aspect'] - 1.0) for r in rows]
+    cross = [t0 + (t1 - t0) * s0 / (s0 - s1)
+             for (t0, s0), (t1, s1) in zip(s, s[1:]) if (s0 > 0) != (s1 > 0)]
+    if len(cross) < 3:
+        failures.append("only %d crossings of aspect = 1: the shape is not "
+                        "oscillating about the circle (a wrong-sign surface "
+                        "force grows away from it instead)" % len(cross))
+        return
+    periods = [y - x for x, y in zip(cross, cross[2:])]
+    t_meas = sum(periods) / len(periods)
+    t_free = 2.0 * math.pi * math.sqrt(c['rho'] * r_eq ** 3 / (6.0 * c['sigma']))
+    notes.append("aspect = 1 at t = %s; period %.4f s against the density-matched "
+                 "2D Lamb period 2 pi sqrt(rho R^3/(3 sigma)) = %.4f s on "
+                 "R = sqrt(a b) = %.5f (%.1f%%; the free-drop law would say "
+                 "%.4f s)"
+                 % (['%.3f' % t for t in cross], t_meas, t_lin, r_eq,
+                    100.0 * (t_meas / t_lin - 1.0), t_free))
+    if abs(t_meas / t_lin - 1.0) > 0.12:
+        failures.append("the measured period %.4f s is %.1f%% off the "
+                        "density-matched analytic %.4f s" % (t_meas,
+                        100.0 * (t_meas / t_lin - 1.0), t_lin))
+    # the first quarter period carries the full release amplitude, where the
+    # finite-amplitude softening bites; it runs long but not arbitrarily so
+    if not 0.22 < cross[0] / t_lin < 0.38:
+        failures.append("the first crossing at t=%.3f is %.0f%% of T_lin/4: the "
+                        "release phase does not read as the n = 2 mode"
+                        % (cross[0], 400.0 * cross[0] / t_lin))
+
+    # the swing is real and decaying on both axes
+    amin = min(r['aspect'] for r in rows)
+    amp0 = max(r['aspect'] for r in rows if r['t'] < cross[0]) - 1.0
+    amp_in1 = 1.0 - min(r['aspect'] for r in rows if cross[0] < r['t'] < cross[1])
+    amp_out2 = max(r['aspect'] for r in rows if cross[1] < r['t'] < cross[2]) - 1.0
+    amp_in2 = 1.0 - min(r['aspect'] for r in rows if r['t'] > cross[2])
+    notes.append("aspect range [%.4f, %.4f]; amplitudes: release %.3f, first "
+                 "compression %.3f, second extension %.3f, second compression "
+                 "%.3f" % (amin, max(r['aspect'] for r in rows), amp0, amp_in1,
+                           amp_out2, amp_in2))
+    if amin > 0.90:
+        failures.append("the shape never swings past aspect %.3f: that is not an "
+                        "n = 2 oscillation" % amin)
+    if amp0 < 0.2:
+        failures.append("the case is released from a/b = %.3f but the largest "
+                        "reported amplitude is %.3f" % (c['a'] / c['b'], amp0))
+    if amp_out2 > 0.75 * amp0 or amp_out2 < 0.02:
+        failures.append("the second extension's amplitude %.3f against the "
+                        "release's %.3f: the oscillation is either not decaying "
+                        "or already dead" % (amp_out2, amp0))
+    if amp_in2 >= amp_in1 or amp_in2 < 0.02:
+        failures.append("the second compression %.3f against the first's %.3f: "
+                        "the decay is not monotone across a period (or it is "
+                        "dead)" % (amp_in2, amp_in1))
+
+    # the jump breathes with the shape and the flow; its run-long mean sits on
+    # the Laplace value of the volume-equivalent radius
+    dps = [r['dp'] for r in rows]
+    dmean = sum(dps) / len(dps)
+    notes.append("dp = pIn - pOut over the run: [%.4f, %.4f], mean %.4f, against "
+                 "sigma/(rho R) = %.4f"
+                 % (min(dps), max(dps), dmean, target))
+    if not 0.92 < dmean / target < 1.02:
+        failures.append("the mean pressure jump %.4f is %.1f%% off the Laplace "
+                        "value %.4f on R = sqrt(a b)"
+                        % (dmean, 100.0 * (dmean / target - 1.0), target))
+
+    # the release reaches the capillary speed (plus the band-edge force spike
+    # the case header documents); past the ring-down the flow decays with the
+    # shape amplitude
+    umax_all = max(r['umax'] for r in rows)
+    late = max(r['umax'] for r in rows if r['t'] > 0.25)
+    notes.append("max |U|: %.3f in the release against the capillary-inertial "
+                 "speed %.3f, %.3f past t = 0.25" % (umax_all, u_ci, late))
+    if not all(math.isfinite(r['umax']) for r in rows):
+        failures.append("the velocity diverged")
+    if late > 0.5 * u_ci:
+        failures.append("past the startup the flow still reaches %.3f = %.0f%% "
+                        "of the capillary speed: it is not decaying with the "
+                        "shape" % (late, 100.0 * late / u_ci))
+
+    # the continuity of the solved flux, which carries alpha
+    cont = max(r['cont'] for r in rows)
+    notes.append("max |div(phi)| of the solved flux over the run: %.3e with up "
+                 "to %d correctors (%d configured)"
+                 % (cont, max(r['corr'] for r in rows), c['correctors']))
+    if cont > 1e-8:
+        failures.append("the coupling leaves div(phi) at %.3e" % cont)
+
+    # the result on disk has to carry the same statement, read independently of
+    # the report line
+    mass = sum(alpha) * dv
+    if abs(mass / log['mass0'] - 1.0) > 1e-10:
+        failures.append("the written phase volume is %.3e off the run's own"
+                        % (mass / log['mass0'] - 1.0))
+    m = sum(alpha)
+    cx = sum(v * p[0] for v, p in zip(alpha, cent)) / m
+    cy = sum(v * p[1] for v, p in zip(alpha, cent)) / m
+    ixx = sum(v * (p[0] - cx) ** 2 for v, p in zip(alpha, cent)) / m
+    iyy = sum(v * (p[1] - cy) ** 2 for v, p in zip(alpha, cent)) / m
+    aspect = math.sqrt(ixx / iyy)
+    notes.append("from the written field: volume %.9g, aspect %.6f against the "
+                 "reported %.6f" % (mass, aspect, rows[-1]['aspect']))
+    if abs(aspect - rows[-1]['aspect']) > 1e-9:
+        failures.append("the written field's aspect %.9f is not the reported "
+                        "%.9f" % (aspect, rows[-1]['aspect']))
+
+    # the normals are unit and point into the phase, on the deformed shape as
+    # on the round one; the band's mean curvature is the ellipse-scale one
+    bad = [i for i in band if abs(math.hypot(nh[i][0], nh[i][1], nh[i][2]) - 1.0)
+           > 1e-6]
+    outward = max(nh[i][0] * (cent[i][0] - cx) + nh[i][1] * (cent[i][1] - cy)
+                  for i in band)
+    kmean = sum(kap[i] for i in band) / len(band)
+    notes.append("%d band cells at the end: %d non-unit normals, max outward "
+                 "component %.3f, band mean kappa %.3f"
+                 % (len(band), len(bad), outward, kmean))
+    if bad:
+        failures.append("%d band cells carry a non-unit normal" % len(bad))
+    if outward > 0.05:
+        failures.append("a band cell's normal points out of the phase (%.3f): "
+                        "nhat has to read towards increasing alpha" % outward)
+    if not -9.0 < kmean < -2.5:
+        failures.append("the band mean kappa %.3f is not a closed deformed "
+                        "interface's curvature in this geometry" % kmean)
+
+    # the initial field the run started from: the released ellipse, its volume
+    # the one the mass statement above is anchored to
+    if init:
+        icent, ifl = init
+        ia, inh, ikap = ifl['alpha'], ifl['nHat'], ifl['kappa']
+        iband = [i for i, v in enumerate(inh)
+                 if math.hypot(v[0], v[1], v[2]) > 0.5]
+        m0 = sum(ia)
+        icx = sum(v * p[0] for v, p in zip(ia, icent)) / m0
+        icy = sum(v * p[1] for v, p in zip(ia, icent)) / m0
+        ixx = sum(v * (p[0] - icx) ** 2 for v, p in zip(ia, icent)) / m0
+        iyy = sum(v * (p[1] - icy) ** 2 for v, p in zip(ia, icent)) / m0
+        a0 = math.sqrt(ixx / iyy)
+        outward0 = max(inh[i][0] * (icent[i][0] - icx)
+                       + inh[i][1] * (icent[i][1] - icy) for i in iband)
+        ikmean = sum(ikap[i] for i in iband) / len(iband)
+        h = ((c['a'] - c['b']) / (c['a'] + c['b'])) ** 2
+        k_true = -2.0 * math.pi / (math.pi * (c['a'] + c['b'])
+                                   * (1.0 + 3.0 * h / (10.0 + math.sqrt(4.0 - 3.0 * h))))
+        notes.append("at t=0: volume %.9g for %.9g reported, aspect %.4f for the "
+                     "sharp a/b = %.4f, %d band cells, max outward normal "
+                     "component %.3f, band mean kappa %.3f for the arc-length "
+                     "mean %.3f (the threshold band under-resolves the tips)"
+                     % (m0 * dv, log['mass0'], a0, c['a'] / c['b'], len(iband),
+                        outward0, ikmean, k_true))
+        if abs(m0 * dv / log['mass0'] - 1.0) > 1e-10:
+            failures.append("the written initial volume is %.3e off the run's "
+                            "own" % (m0 * dv / log['mass0'] - 1.0))
+        if not 1.2 < a0 < 1.5:
+            failures.append("the initial aspect %.3f is not the released "
+                            "ellipse's" % a0)
+        if outward0 > 0.05:
+            failures.append("an initial band normal points out of the phase "
+                            "(%.3f)" % outward0)
+        if not 0.6 < ikmean / k_true < 1.05:
+            failures.append("the initial band mean kappa %.3f is %.0f%% of the "
+                            "ellipse's arc-length mean %.3f"
+                            % (ikmean, 100.0 * ikmean / k_true, k_true))
 
 
 def check_initial_geometry(c, init, failures, notes):

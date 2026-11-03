@@ -44,7 +44,9 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
     for (label c = 0; c < nC; ++c)
     {
         const std::size_t u = static_cast<std::size_t>(c);
-        const Vector rhs = vol[u] * (ctl.bodyForce - gradP[u]);
+        const Vector force =
+            ctl.bodyForce + (ctl.cellForce ? (*ctl.cellForce)[u] : Vector::zero());
+        const Vector rhs = vol[u] * (force - gradP[u]);
         for (int comp = 0; comp < 3; ++comp)
         {
             UEqn.addRhs(c, comp, rhs[comp]);

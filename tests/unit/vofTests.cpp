@@ -254,6 +254,93 @@ int main()
               "the phase centroid sits in the half the phase fills");
     }
 
+    // ---- 6. the surface force on a uniformly curved interface cancels ----
+    {
+        // A surface tension force is internal: it can only bend the interface,
+        // never translate the body. Continuum, the net force over a closed
+        // volume is
+        //     integral f dV = -(sigma/rho) kappa integral grad(alpha) dV
+        //                 = -(sigma/rho) kappa closedintegral alpha n dA = 0
+        // for a UNIFORM kappa and an alpha constant on the outer boundary. The
+        // discrete gradient is a Gauss sum, so the identity has to hold cell by
+        // cell rather than asymptotically -- which is what makes it a test of
+        // the sign convention and of the band-localisation rather than of the
+        // force's magnitude.
+        const label n = 40;
+        Box box(false, n, n, 1);
+        volScalarField alpha(box.mesh, "alpha", 0.0);
+        const Field<Vector>& c = box.mesh.cellCentres();
+        const Vector centre{0.5, 0.5, 0.0};
+        const scalar radius = 0.16;
+        const scalar eps = 4.0 / static_cast<scalar>(n);
+        for (label i = 0; i < box.mesh.nCells(); ++i)
+        {
+            const std::size_t u = static_cast<std::size_t>(i);
+            alpha.internalField()[u] =
+                0.5 * (1.0 - std::tanh((mag(c[u] - centre) - radius) / eps));
+        }
+
+        Schemes sch;
+        sch.grad = "corrected";
+        const scalar sigmaOverRho = 0.08;
+        const scalar k = -1.0 / radius;
+
+        // uniform curvature over the whole field: the droplet is a pressure
+        // source only, and the total force has to vanish
+        const Field<scalar> kUniform(static_cast<std::size_t>(box.mesh.nCells()), k);
+        const Field<Vector> f = vof::surfaceTensionForce(sigmaOverRho, alpha, kUniform, sch.grad);
+
+        Vector net = Vector::zero();
+        scalar forceOnBand = 0, forceOffBand = 0;
+        const Field<Vector> g = fvc::grad(alpha, sch.grad);
+        const Field<scalar>& vol = box.mesh.cellVolumes();
+        for (std::size_t u = 0; u < f.size(); ++u)
+        {
+            net += vol[u] * f[u];
+            // f is grad(alpha) scaled by a field, so it can only be nonzero
+            // where the gradient is
+            if (mag(g[u]) > 0) forceOnBand += mag(f[u]);
+            else forceOffBand += mag(f[u]);
+        }
+        scalar gMax = 0;
+        for (const Vector& v : g) gMax = std::max(gMax, mag(v));
+        const scalar scale = sigmaOverRho * std::abs(k) * gMax *
+                             static_cast<scalar>(box.mesh.nCells()) * vol[0];
+
+        std::cout << "     uniform kappa: |sum V f| / scale " << mag(net) / scale
+                  << ", |f| off the band " << forceOffBand << "\n";
+        CHECK(mag(net) < 1e-12 * scale,
+              "a uniformly curved interface exerts no net surface force");
+        CHECK(forceOffBand == 0.0 && forceOnBand > 0,
+              "the force lives exactly on the cells that carry an interface");
+
+        // and the sign: n points to increasing alpha, i.e. inwards for a droplet,
+        // so kappa < 0 and f = -(sigma/rho) kappa grad(alpha) has to point at the
+        // centre. A sign slip here is a droplet that blows itself up.
+        scalar inward = 0, outward = 0;
+        for (std::size_t u = 0; u < f.size(); ++u)
+        {
+            const Vector r = c[u] - centre;
+            const scalar m = mag(r);
+            if (m < 1e-12 || mag(g[u]) == 0) continue;
+            const scalar radial = dot(f[u], r) / m;   // negative = towards centre
+            if (radial < 0) inward += -radial * vol[u];
+            else outward += radial * vol[u];
+        }
+        std::cout << "     radial: inward " << inward << " outward " << outward << "\n";
+        CHECK(outward < 1e-12 * inward,
+              "a positively curved droplet is squeezed inwards, not blown apart");
+
+        // zero curvature is zero force whatever the interface looks like
+        const Field<scalar> kZero(static_cast<std::size_t>(box.mesh.nCells()), 0.0);
+        bool allZero = true;
+        for (const Vector& v : vof::surfaceTensionForce(sigmaOverRho, alpha, kZero, sch.grad))
+        {
+            if (mag(v) != 0) allZero = false;
+        }
+        CHECK(allZero, "a flat interface carries no surface force");
+    }
+
     if (failures)
     {
         std::cout << failures << " VOF unit test(s) FAILED\n";

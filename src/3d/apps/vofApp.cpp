@@ -1,5 +1,7 @@
-// chflow-vof: transport a phase fraction in a prescribed divergence-free
-// velocity and report the interface geometry it implies.
+// chflow-vof: two things done to one interface. Either transport a phase
+// fraction in a prescribed divergence-free velocity and report the geometry it
+// implies, or keep the interface still and report the pressure-velocity
+// response to the surface force it implies.
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -15,6 +17,7 @@
 #include "cf/fvm/Fields.h"
 #include "cf/fvm/FvMatrix.h"
 #include "cf/fvm/MeshLoader.h"
+#include "cf/fvm/PisoSolver.h"
 #include "cf/fvm/VtkWriter.h"
 #include "cf/multiphase/VoF.h"
 
@@ -30,11 +33,11 @@ std::string num(double v)
     return os.str();
 }
 
-/// The two analytic fields the increment is verified with. Both are linear in
-/// the coordinates, which makes the discrete flux divergence of every cell
-/// exactly zero -- summing U(x_f) & Sf over a closed polyhedron is the integral
-/// of div(U) whenever U is linear -- so the transport is conservative and
-/// bounded by construction rather than by luck.
+/// The two analytic fields the transport increment is verified with. Both are
+/// linear in the coordinates, which makes the discrete flux divergence of every
+/// cell exactly zero -- summing U(x_f) & Sf over a closed polyhedron is the
+/// integral of div(U) whenever U is linear -- so the transport is conservative
+/// and bounded by construction rather than by luck.
 struct VelocityField
 {
     enum Kind { Uniform, Rotation } kind = Uniform;
@@ -50,12 +53,13 @@ struct VelocityField
     }
 };
 
-VelocityField loadVelocity(const Dictionary& caseDict)
+/// Absent means the case drives the momentum instead of the transport, which is
+/// what `surfaceTension{}` is for; the caller rejects a case with neither.
+bool loadVelocity(const Dictionary& caseDict, VelocityField& v)
 {
-    if (!caseDict.has("velocity")) cfFatal("vof: case has no velocity{} block");
+    if (!caseDict.has("velocity")) return false;
     const Dictionary& vd = caseDict.getDict("velocity");
     const std::string type = vd.getWord("type");
-    VelocityField v;
     if (type == "uniform")
     {
         const auto l = vd.getScalarList("U");
@@ -73,7 +77,67 @@ VelocityField loadVelocity(const Dictionary& caseDict)
     {
         cfFatal("vof: velocity type must be uniform or rotation");
     }
-    return v;
+    return true;
+}
+
+/// The surface force the interface implies. The incompressible momentum
+/// equation this app drives is in acceleration form, so the case gives the
+/// surface tension (N/m) and the density it is scaled by, and `nu` is the
+/// kinematic viscosity that damps whatever the force starts.
+struct SurfaceTension
+{
+    bool enabled = false;
+    scalar sigma = 0;      // N/m
+    scalar rho = 1;        // kg/m3
+    scalar nu = 0;         // m2/s
+    int correctors = 2;
+    scalar continuityTol = 1e-10;
+};
+
+SurfaceTension loadSurfaceTension(const Dictionary& caseDict)
+{
+    SurfaceTension st;
+    if (!caseDict.has("surfaceTension")) return st;
+    const Dictionary& sd = caseDict.getDict("surfaceTension");
+    st.enabled = true;
+    st.sigma = sd.getScalar("sigma");
+    st.rho = sd.getScalarOr("rho", 1.0);
+    st.nu = sd.getScalar("nu");
+    st.correctors = std::max(1, static_cast<int>(sd.getScalarOr("correctors", 2.0)));
+    st.continuityTol = sd.getScalarOr("continuityTol", 1e-10);
+    if (!(st.sigma > 0) || !(st.rho > 0) || !(st.nu > 0))
+        cfFatal("vof: surfaceTension needs positive sigma, rho and nu");
+    return st;
+}
+
+/// Velocity and pressure conditions for the momentum mode, read from the same
+/// `patches{}` block the phase fraction uses. A closed box has to anchor the
+/// pressure somewhere: the patch that carries `p` gets a Dirichlet, and because
+/// it is also a no-slip wall the flux through it stays whatever the velocity
+/// condition says, so the anchor costs nothing physically.
+void loadMomentumPatches(const Dictionary& caseDict, const polyMesh& mesh,
+                         volVectorField& U, volScalarField& p)
+{
+    if (!caseDict.has("patches")) cfFatal("vof: the momentum mode needs patches{}");
+    const Dictionary& ps = caseDict.getDict("patches");
+    bool anchored = false;
+    for (const std::string& name : ps.keys())
+    {
+        const Dictionary& pd = ps.getDict(name);
+        const label patch = mesh.patchIdByName(name);
+        if (patch < 0) cfFatal("vof: patch '" + name + "' is not in the mesh");
+        if (pd.has("U"))
+        {
+            const auto l = pd.getScalarList("U");
+            U.setPatchValue(patch, pd.getWordOr("UType", "fixedValue"), Vector{l[0], l[1], l[2]});
+        }
+        if (pd.has("p"))
+        {
+            p.setPatchValue(patch, pd.getWordOr("pType", "fixedValue"), pd.getScalar("p"));
+            anchored = true;
+        }
+    }
+    if (!anchored) cfFatal("vof: the momentum mode needs one patch with p to anchor the pressure");
 }
 
 /// The initial interface. `plane` and `circle` without `smooth` fill whole
@@ -222,6 +286,24 @@ void interfaceStatistics(const volScalarField& alpha, const Schemes& schemes,
     kappaMean /= static_cast<scalar>(nInterface);
 }
 
+/// Mean pressure on each side of the interface, away from the band. The jump
+/// the surface force has to balance is between the two bulk phases: the cells
+/// the force actually acts on carry the smearing of the profile, so reading p
+/// there would report the interface structure rather than the Laplace jump.
+void phasePressures(const volScalarField& p, const Field<scalar>& alpha,
+                    scalar& pIn, scalar& pOut)
+{
+    double si = 0, so = 0;
+    int ni = 0, no = 0;
+    for (std::size_t u = 0; u < static_cast<std::size_t>(p.internalField().size()); ++u)
+    {
+        if (alpha[u] > 0.99) { si += p.internalField()[u]; ++ni; }
+        else if (alpha[u] < 0.01) { so += p.internalField()[u]; ++no; }
+    }
+    pIn = ni > 0 ? si / ni : std::numeric_limits<scalar>::quiet_NaN();
+    pOut = no > 0 ? so / no : std::numeric_limits<scalar>::quiet_NaN();
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -238,23 +320,13 @@ int main(int argc, char** argv)
         polyMesh mesh = MeshLoader::fromCase(caseDict, argv[1]);
         log::info("mesh: ", mesh.nCells(), " cells, ", mesh.nFaces(), " faces");
 
-        const VelocityField vel = loadVelocity(caseDict);
-        Field<scalar> phi(static_cast<std::size_t>(mesh.nFaces()), 0.0);
-        scalar maxDiv = 0;
-        for (label f = 0; f < mesh.nFaces(); ++f)
-        {
-            const std::size_t u = static_cast<std::size_t>(f);
-            phi[u] = dot(vel.at(mesh.faceCentres()[u]), mesh.faceSf()[u]);
-        }
-        // the discrete continuity of the prescribed field, reported because
-        // everything the transport conserves rests on it being zero
-        {
-            const Field<scalar> divPhi = fvc::divPhi(mesh, phi);
-            for (const scalar d : divPhi) maxDiv = std::max(maxDiv, std::abs(d));
-        }
-        log::info("vof velocity: ",
-                  vel.kind == VelocityField::Uniform ? "uniform" : "rotation",
-                  " max |div(phi)| ", num(maxDiv));
+        VelocityField vel;
+        const bool transport = loadVelocity(caseDict, vel);
+        const SurfaceTension st = loadSurfaceTension(caseDict);
+        if (!transport && !st.enabled)
+            cfFatal("vof: case needs velocity{} to drive the transport or surfaceTension{} to drive the momentum");
+        if (transport && st.enabled)
+            cfFatal("vof: a case drives either the transport or the momentum, not both");
 
         Schemes schemes = loadSchemes(caseDict);
         if (schemes.ddt != "Euler") cfFatal("vof: schemes ddt must be Euler");
@@ -287,10 +359,7 @@ int main(int argc, char** argv)
         // advection numerically diffuses the interface and tilts its normals
         // along the flow, which is a property of the transport, not of the
         // operators.
-        std::string vtkInitial;
-        if (caseDict.has("output"))
-            vtkInitial = caseDict.getDict("output").getWordOr("vtkInitial", "");
-        if (!vtkInitial.empty())
+        const auto writeGeometry = [&](const std::string& path)
         {
             const Field<Vector> n = vof::interfaceNormal(alpha, schemes.grad, threshold);
             const Field<scalar> k = vof::interfaceCurvature(mesh, n);
@@ -298,60 +367,138 @@ int main(int argc, char** argv)
             w.addCellScalar("alpha", alpha.internalField());
             w.addCellVector("nHat", n);
             w.addCellScalar("kappa", k);
-            w.write(vtkInitial);
-        }
+            w.write(path);
+        };
+        std::string vtkInitial;
+        if (caseDict.has("output"))
+            vtkInitial = caseDict.getDict("output").getWordOr("vtkInitial", "");
+        if (!vtkInitial.empty()) writeGeometry(vtkInitial);
+
+        std::string vtk;
+        if (caseDict.has("output")) vtk = caseDict.getDict("output").getWordOr("vtk", "");
 
         const int nSteps = static_cast<int>(std::llround(endTime / dt));
-        SolverReport last;
-        bool finite = true;
-        for (int step = 1; step <= nSteps; ++step)
-        {
-            last = vof::advectAlpha(alpha, phi, dt, schemes, vc);
-            if (step % reportEvery != 0 && step != nSteps) continue;
-            const scalar mass = vof::phaseVolume(mesh, alpha.internalField());
-            const Vector c = vof::phaseCentroid(mesh, alpha.internalField());
-            scalar kappa = 0;
-            int nIface = 0;
-            interfaceStatistics(alpha, schemes, threshold, kappa, nIface);
-            log::info("vof t ", num(static_cast<scalar>(step) * dt),
-                      " mass ", num(mass), " massErr ", num(mass / mass0 - 1.0),
-                      " min ", num(alpha.min()), " max ", num(alpha.max()),
-                      " cx ", num(c.x), " cy ", num(c.y),
-                      " x50 ", num(crossingX50(mesh, alpha.internalField(), c)),
-                      " kappa ", num(kappa), " iface ", nIface,
-                      " solver ", last.iterations, " residual ", num(last.finalResidual));
-            if (!std::isfinite(mass) || !std::isfinite(alpha.min()) || !std::isfinite(alpha.max()))
-            {
-                log::error("vof: non-finite phase fraction at step ", step);
-                finite = false;
-                break;
-            }
-        }
+        bool ok = true;
 
-        if (finite && caseDict.has("output"))
+        if (transport)
         {
-            const Dictionary& od = caseDict.getDict("output");
-            const std::string vtk = od.getWordOr("vtk", "");
-            if (!vtk.empty())
+            Field<scalar> phi(static_cast<std::size_t>(mesh.nFaces()), 0.0);
+            for (label f = 0; f < mesh.nFaces(); ++f)
             {
-                const Field<Vector> n = vof::interfaceNormal(alpha, schemes.grad, threshold);
-                const Field<scalar> k = vof::interfaceCurvature(mesh, n);
+                const std::size_t u = static_cast<std::size_t>(f);
+                phi[u] = dot(vel.at(mesh.faceCentres()[u]), mesh.faceSf()[u]);
+            }
+            // the discrete continuity of the prescribed field, reported because
+            // everything the transport conserves rests on it being zero
+            scalar maxDiv = 0;
+            const Field<scalar> divPhi = fvc::divPhi(mesh, phi);
+            for (const scalar d : divPhi) maxDiv = std::max(maxDiv, std::abs(d));
+            log::info("vof velocity: ",
+                      vel.kind == VelocityField::Uniform ? "uniform" : "rotation",
+                      " max |div(phi)| ", num(maxDiv));
+
+            SolverReport last;
+            for (int step = 1; step <= nSteps; ++step)
+            {
+                last = vof::advectAlpha(alpha, phi, dt, schemes, vc);
+                if (step % reportEvery != 0 && step != nSteps) continue;
+                const scalar mass = vof::phaseVolume(mesh, alpha.internalField());
+                const Vector c = vof::phaseCentroid(mesh, alpha.internalField());
+                scalar kappa = 0;
+                int nIface = 0;
+                interfaceStatistics(alpha, schemes, threshold, kappa, nIface);
+                log::info("vof t ", num(static_cast<scalar>(step) * dt),
+                          " mass ", num(mass), " massErr ", num(mass / mass0 - 1.0),
+                          " min ", num(alpha.min()), " max ", num(alpha.max()),
+                          " cx ", num(c.x), " cy ", num(c.y),
+                          " x50 ", num(crossingX50(mesh, alpha.internalField(), c)),
+                          " kappa ", num(kappa), " iface ", nIface,
+                          " solver ", last.iterations, " residual ", num(last.finalResidual));
+                if (!std::isfinite(mass) || !std::isfinite(alpha.min()) || !std::isfinite(alpha.max()))
+                {
+                    log::error("vof: non-finite phase fraction at step ", step);
+                    ok = false;
+                    break;
+                }
+            }
+            // endTime 0 is a legal case: it writes the initial field and geometry
+            if (ok && nSteps > 0 && !last.converged)
+            {
+                log::error("vof: the transport did not converge");
+                ok = false;
+            }
+            if (ok && !vtk.empty()) writeGeometry(vtk);
+        }
+        else
+        {
+            volVectorField U(mesh, "U");
+            volScalarField p(mesh, "p");
+            surfaceScalarField phi(mesh, "phi", 0.0);
+            loadMomentumPatches(caseDict, mesh, U, p);
+
+            // One-way coupling: the interface is frozen and only reads out the
+            // pressure-velocity response to the force it implies. The flux this
+            // step produces is divergence-free to the linear-solver tolerance
+            // rather than to round-off, and advecting alpha with it is the
+            // increment after this one -- until then the transport keeps its
+            // exactly-divergence-free analytic velocity and the mass statement
+            // stays a closed-form one.
+            const Field<Vector> normal = vof::interfaceNormal(alpha, schemes.grad, threshold);
+            const Field<scalar> kappa = vof::interfaceCurvature(mesh, normal);
+            const Field<Vector> force =
+                vof::surfaceTensionForce(st.sigma / st.rho, alpha, kappa, schemes.grad);
+            scalar fMax = 0;
+            for (const Vector& f : force) fMax = std::max(fMax, mag(f));
+            log::info("vof csf: sigma/rho ", num(st.sigma / st.rho), " nu ", num(st.nu),
+                      " kappa ", num(kappa0), " max |f| ", num(fMax));
+
+            PisoControls ctl;
+            ctl.dt = dt;
+            ctl.correctors = st.correctors;
+            ctl.continuityTol = st.continuityTol;
+            ctl.linearTol = vc.tol;
+            ctl.linearMaxIter = vc.maxIter;
+            ctl.cellForce = &force;
+
+            PisoStepResult last;
+            for (int step = 1; step <= nSteps; ++step)
+            {
+                last = solveTransientIncompressiblePiso(mesh, U, p, phi, st.nu, schemes, ctl);
+                if (step % reportEvery != 0 && step != nSteps) continue;
+                const scalar mass = vof::phaseVolume(mesh, alpha.internalField());
+                const Vector c = vof::phaseCentroid(mesh, alpha.internalField());
+                scalar pIn = 0, pOut = 0;
+                phasePressures(p, alpha.internalField(), pIn, pOut);
+                scalar uMax = 0;
+                for (const Vector& u : U.internalField()) uMax = std::max(uMax, mag(u));
+                log::info("vof t ", num(static_cast<scalar>(step) * dt),
+                          " mass ", num(mass), " massErr ", num(mass / mass0 - 1.0),
+                          " cx ", num(c.x), " cy ", num(c.y),
+                          " dp ", num(pIn - pOut), " pIn ", num(pIn), " pOut ", num(pOut),
+                          " umax ", num(uMax), " corr ", last.correctorsUsed,
+                          " cont ", num(last.continuityError),
+                          " dpMax ", num(last.pressureCorrectionMax));
+                if (!std::isfinite(pIn - pOut) || !std::isfinite(uMax))
+                {
+                    log::error("vof: non-finite pressure or velocity at step ", step);
+                    ok = false;
+                    break;
+                }
+            }
+            if (ok && !vtk.empty())
+            {
                 VtkWriter w(mesh);
                 w.addCellScalar("alpha", alpha.internalField());
-                w.addCellVector("nHat", n);
-                w.addCellScalar("kappa", k);
+                w.addCellVector("nHat", normal);
+                w.addCellScalar("kappa", kappa);
+                w.addCellVector("U", U.internalField());
+                w.addCellScalar("p", p.internalField());
+                w.addCellVector("csf", force);
                 w.write(vtk);
             }
         }
 
-        if (!finite) return 1;
-        // endTime 0 is a legal case: it writes the initial field and geometry
-        if (nSteps > 0 && !last.converged)
-        {
-            log::error("vof: the transport did not converge");
-            return 1;
-        }
-        return 0;
+        return ok ? 0 : 1;
     }
     catch (const std::exception& e)
     {

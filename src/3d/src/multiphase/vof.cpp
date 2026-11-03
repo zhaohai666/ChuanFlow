@@ -102,4 +102,24 @@ Field<scalar> interfaceCurvature(const polyMesh& mesh, const Field<Vector>& norm
     return k;
 }
 
+Field<Vector> surfaceTensionForce(scalar sigmaOverRho,
+                                  const volScalarField& alpha,
+                                  const Field<scalar>& kappa,
+                                  const std::string& gradScheme)
+{
+    const polyMesh& mesh = alpha.mesh();
+    if (static_cast<label>(kappa.size()) != mesh.nCells())
+        cfFatal("vof: the curvature field must hold one value per cell");
+
+    const Field<Vector> g = fvc::grad(alpha, gradScheme);
+    const label nC = mesh.nCells();
+    Field<Vector> f(static_cast<std::size_t>(nC), Vector::zero());
+    for (label c = 0; c < nC; ++c)
+    {
+        const std::size_t u = static_cast<std::size_t>(c);
+        f[u] = g[u] * (-sigmaOverRho * kappa[u]);
+    }
+    return f;
+}
+
 } // namespace cf::vof

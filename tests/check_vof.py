@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Run a prescribed-divergence-free-velocity VOF case and verify what the phase
-fraction and the interface geometry have to deliver.
+"""Run a VOF case and verify what the phase fraction, the interface geometry and
+-- in the momentum mode -- the pressure-velocity response have to deliver.
 
-The two cases are the two things the increment claims:
+The transport cases (chflow-vof with a velocity{} block):
 
   vofTranslation - a plane interface carried by a uniform velocity. The
       transport's contract is conservation and boundedness, and here both have a
@@ -20,6 +20,17 @@ The two cases are the two things the increment claims:
 
 Both velocities are linear in the coordinates, which is why sum_f U(x_f).Sf is
 exactly zero per cell and the checks below are absolute rather than grid-rate.
+
+The momentum case (chflow-vof with a surfaceTension{} block, no velocity):
+
+  vofDroplet - a droplet held still while the coupling answers the surface force
+      its interface implies. The number the discrete force is NOT given is the
+      Laplace jump p_inside - p_outside = sigma/(rho R) for a 2D droplet; the
+      solver has to find it by balancing -grad(p) against -(sigma/rho) kappa
+      grad(alpha), which is what a collocated pressure-velocity coupling is
+      tested by. The current that survives that balance is the spurious one, so
+      the case reports its amplitude against the capillary-inertial and free-
+      acceleration scales.
 
 usage: check_vof.py <chflow-vof> <case.dict>
 """
@@ -43,7 +54,6 @@ def case_constants(path):
     lo, hi = triple('min'), triple('max')
     cells = [int(v) for v in re.search(r'cells\s*\(([^)]*)\)', txt).group(1).split()]
     td = re.search(r'time\s*\{([^}]*)\}', txt, re.S).group(1)
-    vel = re.search(r'velocity\s*\{([^}]*)\}', txt, re.S).group(1)
     al = re.search(r'alpha\s*\{(.*?)\n\}', txt, re.S).group(1)
 
     c = dict(
@@ -53,23 +63,36 @@ def case_constants(path):
         dt=float(re.search(r'dt\s+([0-9.eE+-]+);', td).group(1)),
         end_time=float(re.search(r'endTime\s+([0-9.eE+-]+);', td).group(1)),
         vtu=re.search(r'vtk\s+([A-Za-z0-9_.-]+);', txt).group(1),
+        momentum='surfaceTension' in txt,
     )
     init = re.search(r'vtkInitial\s+([A-Za-z0-9_.-]+);', txt)
     c['vtu_initial'] = init.group(1) if init else None
     c['steps'] = int(round(c['end_time'] / c['dt']))
 
-    if 'uniform' in vel:
-        c['kind'] = 'translation'
-        c['U'] = [float(v) for v in
-                  re.search(r'U\s*\(([^)]*)\)', vel).group(1).split()]
-        c['area'] = c['vol'][1] * c['vol'][2]      # the inlet is the xmin face
-    elif 'rotation' in vel:
-        c['kind'] = 'rotation'
-        c['omega'] = float(re.search(r'omega\s+([0-9.eE+-]+);', vel).group(1))
-        c['axis'] = [float(v) for v in
-                     re.search(r'center\s*\(([^)]*)\)', vel).group(1).split()]
+    if c['momentum']:
+        # The checker needs the patch that carries U, so the velocity block's
+        # own U() is not what is read here.
+        st = re.search(r'surfaceTension\s*\{([^}]*)\}', txt, re.S).group(1)
+        c['kind'] = 'droplet'
+        c['sigma'] = float(re.search(r'sigma\s+([0-9.eE+-]+);', st).group(1))
+        c['rho'] = float(re.search(r'rho\s+([0-9.eE+-]+);', st).group(1))
+        c['nu'] = float(re.search(r'nu\s+([0-9.eE+-]+);', st).group(1))
+        corr = re.search(r'correctors\s+([0-9.eE+-]+);', st)
+        c['correctors'] = int(corr.group(1)) if corr else 2
     else:
-        raise SystemExit("the velocity block must be uniform or rotation")
+        vel = re.search(r'velocity\s*\{([^}]*)\}', txt, re.S).group(1)
+        if 'uniform' in vel:
+            c['kind'] = 'translation'
+            c['U'] = [float(v) for v in
+                      re.search(r'U\s*\(([^)]*)\)', vel).group(1).split()]
+            c['area'] = c['vol'][1] * c['vol'][2]      # the inlet is the xmin face
+        elif 'rotation' in vel:
+            c['kind'] = 'rotation'
+            c['omega'] = float(re.search(r'omega\s+([0-9.eE+-]+);', vel).group(1))
+            c['axis'] = [float(v) for v in
+                         re.search(r'center\s*\(([^)]*)\)', vel).group(1).split()]
+        else:
+            raise SystemExit("the velocity block must be uniform or rotation")
 
     if 'plane' in al:
         c['shape'] = 'plane'
@@ -134,7 +157,7 @@ def read_vtu(path):
 # ---------------------------------------------------------------- log reading
 
 def log_numbers(out):
-    """Every report line as a dict, plus the two lines that are not per-step."""
+    """Every report line as a dict, plus the lines that are not per-step."""
     keys, rows = None, []
     for m in re.finditer(r'^\[chflow\] vof t (.*?)(?: solver \d+ residual [0-9.eE+-]+)?$',
                          out, re.M):
@@ -145,12 +168,20 @@ def log_numbers(out):
     start = re.search(r'\[chflow\] vof start: mass ([0-9.eE+-]+) dt ([0-9.eE+-]+) '
                       r'endTime ([0-9.eE+-]+) kappa ([0-9.eE+-]+) iface (\d+)', out)
     div = re.search(r'\[chflow\] vof velocity: (\w+) max \|div\(phi\)\| ([0-9.eE+-]+)', out)
-    if not rows or start is None or div is None:
+    csf = re.search(r'\[chflow\] vof csf: sigma/rho ([0-9.eE+-]+) nu ([0-9.eE+-]+) '
+                    r'kappa ([0-9.eE+-]+) max \|f\| ([0-9.eE+-]+)', out)
+    if not rows or start is None:
         raise SystemExit("the log does not hold a start line and the report lines "
                          "the checker needs")
+    if (div is None) == (csf is None):
+        raise SystemExit("the log has neither exactly one of the velocity line "
+                         "(transport) and the csf line (momentum)")
     return dict(rows=rows, mass0=float(start.group(1)), kappa0=float(start.group(4)),
-                iface0=int(start.group(5)), kind=div.group(1),
-                max_div=float(div.group(2)))
+                iface0=int(start.group(5)), kind=div.group(1) if div else 'momentum',
+                max_div=float(div.group(2)) if div else None,
+                sigma_over_rho=float(csf.group(1)) if csf else None,
+                nu=float(csf.group(2)) if csf else None,
+                f_max=float(csf.group(4)) if csf else None)
 
 
 def failures_exit(case, failures, notes):
@@ -184,8 +215,12 @@ def main():
         if not band:
             raise SystemExit("no cell carries an interface in the result")
         failures, notes = [], []
+        init_alpha = init[1]['alpha'] if init else None
         check_common(c, log, cent, alpha, nh, kap, band, failures, notes)
-        if c['kind'] == 'translation':
+        if c['kind'] == 'droplet':
+            check_droplet(c, log, cent, f, alpha, nh, kap, band, init_alpha,
+                          failures, notes)
+        elif c['kind'] == 'translation':
             check_translation(c, log, cent, alpha, nh, kap, band, failures, notes)
         else:
             check_rotation(c, log, cent, alpha, nh, kap, band, failures, notes)
@@ -199,16 +234,19 @@ def main():
 def check_common(c, log, cent, alpha, nh, kap, band, failures, notes):
     # the prescribed field has to be discretely divergence-free, or nothing
     # below means anything: conservation is a property of the transport on such
-    # a flux, not of the transport alone
-    exact = c['kind'] == 'translation'
-    limit = 1e-18
-    notes.append("max |div(phi)| = %g for the %s velocity (%s)"
-                 % (log['max_div'], log['kind'],
-                    "the Gauss identity, so exactly zero is the expectation"
-                    if exact else "the same identity, at round-off"))
-    if log['max_div'] > limit:
-        failures.append("the prescribed velocity is not discretely divergence-free "
-                        "(max |div(phi)| = %g)" % log['max_div'])
+    # a flux, not of the transport alone. The momentum mode has no prescribed
+    # field -- its phi is the one the coupling solves -- and the continuity of
+    # that is asserted where the coupling is checked.
+    if log['max_div'] is not None:
+        exact = c['kind'] == 'translation'
+        limit = 1e-18
+        notes.append("max |div(phi)| = %g for the %s velocity (%s)"
+                     % (log['max_div'], log['kind'],
+                        "the Gauss identity, so exactly zero is the expectation"
+                        if exact else "the same identity, at round-off"))
+        if log['max_div'] > limit:
+            failures.append("the prescribed velocity is not discretely divergence-free "
+                            "(max |div(phi)| = %g)" % log['max_div'])
 
     # boundedness: the M-matrix claim, with no clipping anywhere in the kernel
     lo, hi = min(alpha), max(alpha)
@@ -405,6 +443,155 @@ def check_rotation(c, log, cent, alpha, nh, kap, band, failures, notes):
         failures.append("the advected interface is no longer round: its normals are "
                         "%.2f deg mean / %.2f deg max off the radius"
                         % (sum(dev) / len(dev), max(dev)))
+
+
+def check_droplet(c, log, cent, f, alpha, nh, kap, band, init_alpha, failures, notes):
+    """The momentum mode: a frozen interface and the pressure-velocity response
+    to the surface force it implies."""
+    U, p, csf = f['U'], f['p'], f['csf']
+    dv = c['dx'][0] * c['dx'][1] * c['dx'][2]        # a block mesh, so uniform
+    last = log['rows'][-1]
+    r = c['radius']
+    # the kernel's momentum is in acceleration form, so its p is p/rho and the
+    # jump a 2D droplet of radius R has to carry is sigma/(rho R)
+    target = c['sigma'] / (c['rho'] * r)
+
+    # the jump, recomputed from the field rather than taken from the report
+    ins = [p[i] for i in range(len(p)) if alpha[i] > 0.99]
+    outs = [p[i] for i in range(len(p)) if alpha[i] < 0.01]
+    dp = sum(ins) / len(ins) - sum(outs) / len(outs)
+    notes.append("Laplace jump %.9g from the field (%.9g reported) for sigma/(rho R) "
+                 "= %.9g: %.3f%% ; the far field sits at %.3g, its anchor"
+                 % (dp, last['dp'], target, 100.0 * (dp / target - 1.0),
+                    sum(outs) / len(outs)))
+    if abs(dp / target - 1.0) > 0.03:
+        failures.append("the pressure jump is %.6f, not sigma/(rho R) = %.6f"
+                        % (dp, target))
+    if dp <= 0:
+        failures.append("the pressure jump has the wrong sign: the surface force "
+                        "expands the droplet instead of squeezing it")
+    if abs(sum(outs) / len(outs)) > 1e-3 * target:
+        failures.append("the phase outside the band is %.3g off its own anchor, so "
+                        "the reported jump is measuring the wrong thing"
+                        % (sum(outs) / len(outs)))
+
+    # one-way coupling: nothing moves the interface, so the phase volume and
+    # alpha itself are exactly what the case started with
+    if init_alpha is not None:
+        frozen = max(abs(a - b) for a, b in zip(alpha, init_alpha))
+        notes.append("alpha unchanged by the momentum mode: %.3e over %d cells"
+                     % (frozen, len(alpha)))
+        if frozen > 1e-11:
+            failures.append("the momentum mode moved the phase fraction by %.3e: it "
+                            "is meant to be frozen" % frozen)
+    mass = sum(alpha) * dv
+    notes.append("phase volume %.9g from the result for %.9g reported: alpha is "
+                 "frozen, so the two have to agree to the writer's precision "
+                 "(%.3e relative)" % (mass, log['mass0'], abs(mass / log['mass0'] - 1.0)))
+    if abs(mass / log['mass0'] - 1.0) > 1e-10:
+        failures.append("the frozen interface changed its volume by %.3e"
+                        % (mass / log['mass0'] - 1.0))
+
+    # the force is band-localised and internal: it can only bend the interface,
+    # never translate the droplet, so its volume sum has to vanish
+    net = [sum(dv * csf[i][k] for i in range(len(csf))) for k in range(3)]
+    fsum = sum(dv * math.hypot(*csf[i]) for i in range(len(csf)))
+    notes.append("surface force: |f| over the mesh %.6g, net %s = %.3e of it"
+                 % (fsum, ['%.3e' % v for v in net],
+                    math.hypot(*net) / fsum if fsum else float('nan')))
+    if fsum == 0 or math.hypot(*net) / fsum > 1e-10:
+        failures.append("the discrete surface force does not cancel as a pair: it "
+                        "would accelerate the droplet as a whole")
+
+    # the same statement one step later: the box is closed, so the momentum the
+    # force puts in has nowhere to go but a circulation. The net of rho*U over
+    # the mesh is the integral the surface force's own net would drive.
+    mom = [sum(dv * U[i][k] for i in range(len(U))) for k in range(3)]
+    ms = sum(dv * math.hypot(*U[i]) for i in range(len(U)))
+    notes.append("momentum in the box: |integral U dV| %s = %.3e of integral |U| dV "
+                 "%.6g" % (['%.3e' % v for v in mom],
+                           math.hypot(*mom) / ms if ms else float('nan'), ms))
+    if ms == 0 or math.hypot(*mom) / ms > 1e-3:
+        failures.append("the closed box acquired a net translation (%.3e of its own "
+                        "|U|): the surface force is not internal"
+                        % (math.hypot(*mom) / ms if ms else float('nan')))
+
+    # away from the band there is no force, so the momentum balance there is
+    # grad(p) = 0 and each phase's own bulk is at one pressure: the ramp belongs
+    # to the band and nowhere else. Measured well inside each bulk, away from the
+    # profile's own tails.
+    worst = 0.0
+    for sel in ([v for v, a in zip(p, alpha) if a > 0.999],
+                [v for v, a in zip(p, alpha) if a < 0.001]):
+        worst = max(worst, (max(sel) - min(sel)) / abs(target))
+    notes.append("pressure in the two bulks: flat to %.3f%% of the jump (no force "
+                 "there, so grad(p) = 0)" % (100.0 * worst))
+    if worst > 0.02:
+        failures.append("the pressure ramps by %.3f%% of the jump inside a bulk "
+                        "phase, where the force is zero" % (100.0 * worst))
+
+    # and the response is mirror-symmetric about the droplet's own axes: the
+    # force cancels in pairs, so what the coupling solves has nothing to lean on.
+    # This is the identity of the unit test read out of the SOLVED fields.
+    idx = {(round(q[0], 9), round(q[1], 9)): i for i, q in enumerate(cent)}
+    umax_f = max(math.hypot(*v) for v in U)
+    dp_asym = max(abs(p[i] - p[idx[(round(1.0 - q[0], 9), round(q[1], 9))]])
+                  for i, q in enumerate(cent)
+                  if (round(1.0 - q[0], 9), round(q[1], 9)) in idx)
+    ux_asym = max(abs(U[i][0] + U[idx[(round(1.0 - q[0], 9), round(q[1], 9))]][0])
+                  for i, q in enumerate(cent)
+                  if (round(1.0 - q[0], 9), round(q[1], 9)) in idx)
+    notes.append("mirror about x = 0.5: |dp| up to %.3e (%.4f%% of the jump), "
+                 "|Ux + Ux'| up to %.3e (%.3f%% of max |U|)"
+                 % (dp_asym, 100.0 * dp_asym / target, ux_asym,
+                    100.0 * ux_asym / umax_f))
+    if dp_asym > 1e-2 * target or ux_asym > 1e-2 * umax_f:
+        failures.append("the response is not mirror-symmetric (dp %.3e, Ux %.3e): "
+                        "the surface force left a net push" % (dp_asym, ux_asym))
+
+    # the continuity of the SOLVED flux, which is what closes the balance
+    cont = max(row['cont'] for row in log['rows'])
+    notes.append("max |div(phi)| of the solved flux over the run: %.3e with up to "
+                 "%d correctors (%d configured)"
+                 % (cont, max(row['corr'] for row in log['rows']), c['correctors']))
+    if cont > 1e-8:
+        failures.append("the coupling leaves div(phi) at %.3e, so the pressure does "
+                        "not close the force" % cont)
+
+    # the spurious current: what the mismatched cancellation of f and grad(p)
+    # leaves behind. Measured against the capillary-inertial velocity
+    # sqrt(sigma/(rho R)), the speed the same surface tension would reach in an
+    # inviscid drop of this size.
+    u_ci = math.sqrt(target)
+    umax = max(row['umax'] for row in log['rows'])
+    notes.append("spurious current: max |U| %.6g = %.2f%% of sqrt(sigma/(rho R)) = "
+                 "%.4f over %d steps (nu dt/dx^2 = %.3f)"
+                 % (umax, 100.0 * umax / u_ci, u_ci, c['steps'],
+                    c['nu'] * c['dt'] / c['dx'][0] ** 2))
+    if not all(math.isfinite(row['umax']) for row in log['rows']):
+        failures.append("the velocity diverged")
+    if umax > 0.1 * u_ci:
+        failures.append("the surface force drives |U| to %.2f%% of the capillary "
+                        "velocity: the pressure is not balancing it"
+                        % (100.0 * umax / u_ci))
+    # and it has to still be building, not running away: the increments shrink
+    g = [log['rows'][i]['umax'] - log['rows'][i - 1]['umax']
+         for i in range(1, len(log['rows']))]
+    if len(g) > 2 and max(g[1:]) > g[0]:
+        failures.append("the spurious current grows faster as it goes (%s): that is "
+                        "an instability, not a gyre building" % ['%.3g' % v for v in g])
+    notes.append("|U| history %s (increments %s)"
+                 % (['%.4g' % row['umax'] for row in log['rows']],
+                    ['%.3g' % v for v in g]))
+
+    # the interface geometry the force was built from, on the result the case
+    # wrote rather than on the report line
+    kmean = sum(kap[i] for i in band) / len(band)
+    notes.append("%d interface cells carry the force: band mean kappa %.4f for "
+                 "-1/R = %.4f (the same field the run started with)"
+                 % (len(band), kmean, -1.0 / r))
+    if abs(kmean / (-1.0 / r) - 1.0) > 0.08:
+        failures.append("the band reads kappa %.4f, not -1/R = %.4f" % (kmean, -1.0 / r))
 
 
 def check_initial_geometry(c, init, failures, notes):

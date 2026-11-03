@@ -69,4 +69,31 @@ Field<Vector> interfaceNormal(const volScalarField& alpha, const std::string& sc
 /// consistent.
 Field<scalar> interfaceCurvature(const polyMesh& mesh, const Field<Vector>& normal);
 
+/// The continuum surface force as a per-cell acceleration:
+///
+///     f = -(sigma / rho) * kappa * grad(alpha)
+///
+/// `sigmaOverRho` is the kinematic surface tension (m/s): this kernel's
+/// incompressible momentum equation is in acceleration form, so the caller
+/// divides the surface tension (N/m) by the density it scales the equation with.
+///
+/// The minus sign is the whole point and it comes from the normal convention
+/// above: n points towards increasing alpha, so for a droplet of phase 1 it
+/// points INwards and `kappa = div(n) = -1/R` is negative, while the surface
+/// force has to pull the fluid towards the centre of curvature, which is also
+/// inwards. With these two conventions `f = -sigmaOverRho*kappa*grad(alpha)`
+/// is therefore inwards for a droplet and, integrated across the interface,
+/// gives the Laplace jump `p_inside - p_outside = sigma/R` with the inside at
+/// the HIGHER pressure, which is what the static-droplet case measures.
+///
+/// The force is band-localised by construction: `kappa` is zero wherever the
+/// normal is, so no delta function of its own is needed, and `grad(alpha)`
+/// carries the thickness of the interface -- an interface smoothed over n cell
+/// widths spreads the same integral over n cells and lowers the peak by the
+/// same factor.
+Field<Vector> surfaceTensionForce(scalar sigmaOverRho,
+                                  const volScalarField& alpha,
+                                  const Field<scalar>& kappa,
+                                  const std::string& gradScheme);
+
 } // namespace cf::vof

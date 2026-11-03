@@ -17,6 +17,16 @@ struct PisoControls
     int linearMaxIter = 2000;
     int nonOrthCorrectors = 2;
     Vector bodyForce = Vector::zero(); // acceleration (m/s2), i.e. -grad(p)/rho
+
+    /// Optional per-cell acceleration (m/s2) added to `bodyForce`, null for
+    /// none. It enters the momentum equation as a source, so it is carried by
+    /// `HbyA` and therefore reaches the flux through the interpolated response
+    /// - the same pairing the pressure uses between its cell gradient and its
+    /// face normal gradient. A surface force needs that pairing: the pressure
+    /// balances it where the momentum equation is written (cells) and where
+    /// continuity is closed (faces), and a force that reaches only one of the
+    /// two leaves the other to accelerate the fluid.
+    const Field<Vector>* cellForce = nullptr;
 };
 
 struct PisoStepResult

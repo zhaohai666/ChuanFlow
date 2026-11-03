@@ -1,0 +1,106 @@
+// A droplet held still while the pressure-velocity coupling answers the surface
+// force its interface implies.
+//
+// The whole case is one number the discrete force is not given: the Laplace
+// jump. f = -(sigma/rho) kappa grad(alpha) is nonzero only in the band that
+// carries the interface, and the momentum balance 0 = -grad(p) + f then makes
+// p_inside - p_outside = sigma/(rho R) -- the pressure has to be solved to find
+// it, which is exactly what a collocated CSF is a test of.
+//
+// For a 2D droplet of radius R the jump is sigma/(rho R) (one curvature, not
+// two), so with sigma = 0.08, rho = 1 and R = 0.16 the answer is 0.5 in the
+// kernel's kinematic (per-unit-density) pressure units.
+//
+// The second thing it measures is the part that is not physics. The surface
+// force and the pressure ramp that balances it do not cancel cell by cell --
+// they cancel after the pressure solve -- so the momentum equation is driven
+// from an interface-scale force on the first steps and the fluid rolls into a
+// gyre around the band: the spurious current. Here the coupling is one-way
+// (alpha is frozen, not advected), so the current cannot feed back into the
+// interface, and its amplitude and settling are a clean read of the pressure-
+// velocity mismatch alone. Advection of the interface by the solved flux is the
+// increment after this one.
+//
+// Verified by tests/check_vof.py (ctest verify.vofDroplet):
+//   Laplace jump dp from the solved field  0.495106989 vs sigma/(rho R) = 0.5
+//                                          (-0.98%, the same order as the band's
+//                                          own curvature error)
+//   far field                              -3.1e-6 for the anchor p = 0
+//   bulk pressure flatness                 0.63% (alpha > 0.999), 0.38%
+//                                          (alpha < 0.001) of the jump: the ramp
+//                                          is confined to the band
+//   mirror symmetry of the response        |dp| 2.8e-5 = 0.006% of the jump,
+//                                          |Ux + Ux'| 2.1e-5 = 0.17% of max |U|
+//   net surface force                      2.9e-13 of integral |f| dV (internal)
+//   net momentum in the closed box         3.4e-7 of integral |U| dV (no push)
+//   solved flux max |div(phi)|             1.1e-14, 1 corrector (2 configured)
+//   alpha                                  unchanged by the run, exactly
+//   phase volume                           2.0e-13 relative (the writer's own
+//                                          12-digit rounding)
+//   spurious current                       max |U| 0.0123 = 1.7% of
+//                                          sqrt(sigma/(rho R)) = 0.707, with
+//                                          shrinking increments
+//                                          0.0020 -> 0.0014 over the run
+block
+{
+    min   (0 0 0);
+    max   (1 1 0.1);
+    cells (80 80 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+alpha
+{
+    circle { center (0.5 0.5 0); radius 0.16; smooth 4.0; }
+}
+
+surfaceTension
+{
+    sigma 0.08;
+    rho   1;
+    nu    0.01;
+    correctors    2;
+    continuityTol 1e-12;
+}
+
+patches
+{
+    // no-slip all round, and one patch that anchors the pressure: a closed box
+    // has no other way to fix the constant. The interface never reaches the
+    // walls, so alpha outside the band is 0 and its boundary condition is
+    // irrelevant here, but it has to be named for the transport mode's grammar.
+    left   { U (0 0 0); p 0;                 alphaType fixedValue; alpha 0; }
+    right  { U (0 0 0); pType zeroGradient;  alphaType fixedValue; alpha 0; }
+    bottom { U (0 0 0); pType zeroGradient;  alphaType fixedValue; alpha 0; }
+    top    { U (0 0 0); pType zeroGradient;  alphaType fixedValue; alpha 0; }
+}
+
+time
+{
+    dt                 0.002;   // nu dt / dx^2 = 0.128: within the PISO limit
+    endTime            0.04;
+    reportEvery        4;
+    interfaceThreshold 0.1;
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;   // the PISO momentum uses it (the transport does not)
+    grad      corrected;
+}
+
+solverTol 1e-12;
+
+output
+{
+    vtk         out_vof_droplet.vtu;
+    vtkInitial  initial_vof_droplet.vtu;
+}

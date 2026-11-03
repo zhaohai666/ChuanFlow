@@ -357,7 +357,8 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
   reportEvery force}`，步进循环 `dt = min(dt, endTime − t)`，逐步打印
   `t / uMax / cont / correctors` 与结束时第一条 x 截面的 `profile y u`
   供解析核对，`piso done: steps ... worstContinuity ...` 收尾；
-- `chflow-vof <case.dict>`：相分数输运与界面几何，速度场由 case 给定而不是求解
+- `chflow-vof <case.dict>`：两模式——相分数输运与界面几何（速度由 case 给定
+  而不是求解），或 CSF 动量模式（`surfaceTension{}` 冻结界面、驱动 PISO）
   （见 5.10），vtu 写 `alpha`/`nHat`/`kappa`，可选 `vtkInitial` 写同一组量的
   初始场；
 - `VtkWriter`：ASCII `.vtu`（单元中心场），ParaView 直接可读。
@@ -422,10 +423,11 @@ laminar；`lengthScale ≤ 0` 回落为包围盒对角线的 7%（水力直径�
 给一个起步速度场（`caseInit.h`），壁面函数需要一个已有速度的边界层可谈。
 vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`。
 
-### 5.10 多相流层 `multiphase/`（M3 首增量：VOF 相分数输运 + 界面几何）
+### 5.10 多相流层 `multiphase/`（M3 首增量：VOF 相分数输运 + 界面几何；M4 首增量：CSF 与动量耦合）
 `include/cf/multiphase/VoF.h` + `src/multiphase/vof.cpp`，命名空间 `cf::vof`。
-只依赖 fvc/fvm/fvMatrix，不引入新求解器：`chflow-vof` 用**给定**速度场输运 α，
-把输运与几何算子单独验收。
+只依赖 fvc/fvm/fvMatrix：`chflow-vof` 是两模式 app——case 带 `velocity{}` 用**给定**
+无散速度输运 α（M3），带 `surfaceTension{}` 冻结界面、驱动 PISO 读出它隐含的
+压力-速度响应（M4）——两条路径各自单独验收。
 
 **输运是 M-矩阵**：`ddt(α) + div(phi, α) = 0` 用隐式 Euler + 迎风，作用在**离散
 无散**的 phi 上时，每行对角占优且行和 = V/dt、非对角全 ≤ 0，于是守恒与 α ∈ [0,1]
@@ -478,6 +480,31 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
 另一个"不是最后一位"的实测：α 的 y 不变性最大跨行差 1.00004e-16 = α=1 的 1 ulp，
 因为迭代求解的扫描顺序让各行独立收敛。
 
+**连续表面力（M4 首增量）** `surfaceTensionForce(sigmaOverRho, alpha, kappa, grad)`：
+`f = −(σ/ρ)·κ·∇α`，符号从法向约定整个推出来：n̂ 指向 α 增大方向（液滴**朝内**），
+κ = div n̂ = −1/R 为负；物理上表面张力把流体拉向曲率中心（也朝内），于是
+`0 = −∇p + f` ⇒ `p_in − p_out = σ/(ρR)`，**内侧更高**。直观的 σκ∇α 符号正好相反
+（会把液滴吹爆）。力天然局限在带上：κ 在法向为 0 处为 0，厚度由 ∇α 承载——同一
+界面用 n 单元厚的 tanh 把同一个积分摊到 n 个单元上、峰值低 n 倍。
+**进入 PISO 的通路**：`PisoControls::cellForce` 把每单元加速度加进动量右端。它由
+`explicitOperator`（即 H(U)）随 **HbyA** 一起携带，因此通量看到的是与压力同一套
+单元梯度/面法向梯度配对——表面力需要的正是这种配对：压力在动量写出的地方（单元）
+与连续性闭合的地方（面）同时平衡它，只到达其一时另一个就会加速流体。`correctFluxes`
+因此一行不改。
+**静态液滴实测**（`vofDroplet`，σ=0.08、ρ=1、R=0.16 ⇒ 真值 σ/(ρR) = 0.5，闭盒
+全无滑移 + 一块 p=0 锚定）：解出的 Laplace 压差 0.49511（−0.98%，与带自身曲率误差
+同阶）、远场 −3.1e-6、两侧体相压强平到跃变的 0.63%/0.38%（斜坡只属于带）、解场的
+镜像对称 |Δp| 0.006% 与 |Ux+Ux'| 0.17% of max|U|、离散表面力净和 = ∫|f| 的
+2.9e-13（内力）、闭盒净动量 = ∫|U| 的 3.4e-7、解出通量 max|div(phi)| = 1.1e-14
+（1 个 corrector 即收敛）、α 逐位不变、伪速度 max|U| = 0.0123 = √(σ/(ρR)) 的
+1.7% 且增量递减（0.0020→0.0014，是旋涡在建立而不是失稳）。
+单元测试给恒等式：**均匀 κ 上离散力成对抵消**——Σ V·f = −(σ/ρ)κ·Σ V·∇α，而离散
+梯度是 Gauss 和，闭合域上 α=0 边界使 Σ V∇α 精确为 0，实测 3.5e-17 相对；同时断言
+力恰好在带上的单元非零（带外恰好 0）、液滴受压向内（outward 精确为 0）、κ=0 ⇒ f=0。
+**范围**：这一增量是**单向**的（α 冻结，只读出压力-速度响应），因为 PISO 的通量
+只在线性求解器容差内无散，而当前输运算子的守恒声明建立在解析无散通量上；用解出的
+通量输运 α（液滴振荡）是下一增量。
+
 **case 侧**：`velocity{ type uniform|rotation; U | omega center }`、
 `alpha{ plane{ point normal } | circle{ center radius smooth } }`、
 `patches{ name{ alphaType alpha } }`、`time{ dt endTime reportEvery interfaceThreshold }`、
@@ -485,6 +512,14 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
 `output{ vtk vtkInitial }`；逐步报告行
 `vof t .. mass .. massErr .. min .. max .. cx .. cy .. x50 .. kappa .. iface N .. solver I .. residual R`，
 其中 `x50` 是相质心所在行上 α 的 0.5 穿越位置（checker 与 vtu 独立复算互校）。
+
+**动量模式（M4）**：`surfaceTension{ sigma rho nu correctors continuityTol }` 给出时
+驱动 PISO 而不是输运——case 必须恰好含两者之一；`patches{}` 在同一块里加读
+`U (0 0 0)`（无滑移）与 `p`（一块 patch 的 Dirichlet 锚定闭合盒的常数），pType
+可写 `zeroGradient`；报告行换成
+`vof t .. mass .. massErr .. cx .. cy .. dp .. pIn .. pOut .. umax .. corr .. cont .. dpMax`，
+其中 dp/pIn/pOut 分别是跃变与按 α>0.99/α<0.01 分离的两侧体相均值（checker 从 vtu
+独立复算互校）；vtu 额外写 `U`、`p`、`csf`。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
@@ -511,10 +546,12 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
 | `kqRWallFunction`（壁面单元代数化） | `wallEquilibrium()` + `imposeWallEquilibrium()`（平衡壁面单元） |
 | `wallDist` / `nearWallDist` | `RansModel::cellWallDistance()`（单元图 Dijkstra） |
 | `fvOptions` / `turbulenceProperties` | case.dict 的 `turbulence{}`（`TurbulenceConfig::fromCase`） |
-| `interFoam` 的 `alphaEqn.H` | `vof::advectAlpha` + `chflow-vof`（速度给定，CSF 与动量耦合待接） |
+| `interFoam` 的 `alphaEqn.H` | `vof::advectAlpha` + `chflow-vof`（速度给定；用解出的通量输运 α 待接） |
 | `MULES::limit` / `limiter` / `localErosion` | 不需要：迎风 + 离散无散 phi 即 M-矩阵，α ∈ [0,1] 是构造性质 |
 | `interfaceProperties::correctM()`（`fvc::grad(alpha)`） | `vof::interfaceNormal()`（相对阈值只让界面带持有法向，带外精确 0） |
 | `interfaceProperties::k()`（`fvc::div(M)`） | `vof::interfaceCurvature()`（只累加两侧都带界面的面，减去自身法向） |
+| `surfaceTensionForce`（CSF，`f = −σκ∇α` 的密度归一形式） | `vof::surfaceTensionForce`（`f = −(σ/ρ)κ∇α`，符号从 n̂ 朝内的约定推出；p_in − p_out = σ/(ρR) 内侧更高） |
+| `interFoam` 把 `f = F/rho` 挂到 `UEqn` 右端 | `PisoControls::cellForce`（每单元加速度进动量右端，由 HbyA/`explicitOperator` 携带，通量经与压力同一套配对看到它） |
 
 ## 7. 测试体系
 - `tests/unit/kernelTests.cpp`（CTest `kernel.unit`）：字典解析、网格几何
@@ -560,8 +597,11 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
   **手工径向单位法向**的 `|κ·r − 1| / (dx/r)² < 3`（二阶律，剔除近轴距与触边界
   的模板截断单元）、**平面带回归**（带内带外 max|κ| 恰好为 0.0：曾有的
   ±1/(2dx) 减半假象不得复发）、tanh 平面的法向（32/64 单元成带、
-  |n_y|+|n_z| 与 |n_x+1| < 1e-12、`phaseVolume` 与质心位置）；
-- `tests/cases/*`：十三个物理回归算例 + `tests/check_*.py` 断言：
+  |n_y|+|n_z| 与 |n_x+1| < 1e-12、`phaseVolume` 与质心位置）、
+  **均匀 κ 上表面力成对抵消**（ΣV·f = 3.5e-17 相对——Gauss 梯度在闭合域上的
+  恒等式；力恰好非零于带、带外恰好 0；正曲率液滴受力向内，outward 精确为 0；
+  κ=0 ⇒ f 逐位为 0）；
+- `tests/cases/*`：十四个物理回归算例 + `tests/check_*.py` 断言：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug`（见 4.2）
@@ -605,6 +645,13 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
     |κ·r+1| = 0.137 均值/0.613 最大——从 `vtkInitial` 以 tight 带宽复核，对流后的
     逐单元法向相对**相质心**只断言"仍然圆"（3.98° 均值/19.6° 最大，带由 412 拉宽到
     699 单元），因为迎风会沿流向各向异性地抹开界面）；
+  - `vofDroplet`（M4：静止液滴——α 冻结，PISO 读出 CSF 隐含的压力-速度响应；
+    80×80 闭合盒全无滑移 + 一块 p=0 锚定、平滑 4 dx 的圆界面、σ=0.08 ρ=1 R=0.16 ⇒
+    真值 σ/(ρR)=0.5）：解出的 Laplace 跃变 0.49511（−0.98%，vtu 与日志两条路径
+    互校）、远场 −3.1e-6、两侧体相压强平到跃变的 0.63%/0.38%、解场镜像对称
+    （|Δp| 0.006%、|Ux+Ux'| 0.17% of max|U|）、离散力净和 ∫|f| 的 2.9e-13、
+    闭盒净动量 ∫|U| 的 3.4e-7、解出通量 max|div(phi)| 1.1e-14、α 逐位不变、
+    伪速度 max|U| 0.0123 = √(σ/(ρR)) 的 1.7% 且增量递减——见 5.10）；
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

@@ -114,6 +114,13 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofRotation/case.dict)
 
 add_test(
+    NAME verify.vofDroplet
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_vof.py
+        $<TARGET_FILE:chflow-vof>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofDroplet/case.dict)
+
+add_test(
     NAME verify.steadyNetwork
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_network.py

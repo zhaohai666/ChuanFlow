@@ -48,11 +48,17 @@ python3 tests/check_turbulent_channel.py \
 # VOF 多相首增量：速度场是**给定**的（uniform 平移 / rotation 刚体旋转），
 # app 逐步打印相体积、α 上下界、质心、界面 0.5 穿越位置与界面带的均值 κ；
 # check_vof.py 把 case 复制到临时目录运行、从 vtu 独立复算同一组量，
-# 并按各自的闭式性质断言（守恒界、平移速度、曲率 −1/R）
+# 并按各自的闭式性质断言（守恒界、平移速度、曲率 −1/R、Laplace 跃变 σ/(ρR)）
 ./build/src/3d/apps/chflow-vof tests/cases/vofRotation/case.dict
 python3 tests/check_vof.py \
     "$PWD/build/src/3d/apps/chflow-vof" \
     "$PWD/tests/cases/vofRotation/case.dict"
+
+# 静止液滴（动量模式）：解出的拉普拉斯压差对 σ/(ρR)、伪速度幅值、镜像对称
+./build/src/3d/apps/chflow-vof tests/cases/vofDroplet/case.dict
+python3 tests/check_vof.py \
+    "$PWD/build/src/3d/apps/chflow-vof" \
+    "$PWD/tests/cases/vofDroplet/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
@@ -158,6 +164,18 @@ output  { vtk out.vtu; vtkInitial initial.vtu; }      // 后者写**初始**界�
 `vtkInitial` 存在的原因：对流会沿流向各向异性地抹开界面，**逐单元**法向随之倾斜，
 所以逐单元几何断言只作用在解析的初始场上（带均值 κ 仍然守恒，见
 `docs/architecture.md` §5.10）。
+
+**动量模式**：用 `surfaceTension{}` 替换 `velocity{}`（两者必须恰好给一个），α
+冻结、PISO 读出 CSF 隐含的压力-速度响应；`patches{}` 在同一块里加 `U (0 0 0)`
+（无滑移）与一块 `p 0` 的 patch（闭合盒的压强常数靠它锚定）：
+
+```
+surfaceTension { sigma 0.08; rho 1; nu 0.01; correctors 2; continuityTol 1e-12; }
+patches { left { U (0 0 0); p 0; } right { U (0 0 0); pType zeroGradient; } ... }
+```
+
+验收的是拉普拉斯跃变 `p_in − p_out = σ/(ρR)`（内核的 p 是运动学压强 p/ρ）、
+斜坡只属于带、解场的镜像对称、以及伪速度幅值对 √(σ/(ρR)) 的比值。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

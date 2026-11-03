@@ -132,8 +132,9 @@ patches { inlet { U (0.1 0 0); UType fixedValue; pType zeroGradient; } ... }
 schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
 turbulence { model kOmegaSST;              // laminar | kEpsilon | kOmegaSST
              intensity 0.05; lengthScale 0.0056; relaxation 0.7; }
-simple { maxIterations 1600; continuityTol 1e-6; pcorrTol 1.4e-4;
-         momentumTol 1e-4; relaxU 0.9; relaxP 0.8; force (19.5 0 0); }
+simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-4;
+         momentumTol 1e-4; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02;
+         force (19.5 0 0); }
 piso { dt 0.004; endTime 3; correctors 2; continuityTol 1e-8;
        reportEvery 250; force (19.5 0 0); }
 output { vtk out_poiseuille.vtu; }

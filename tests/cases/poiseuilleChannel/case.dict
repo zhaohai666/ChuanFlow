@@ -35,17 +35,23 @@ schemes
 
 simple
 {
-    maxIterations 1600;
+    maxIterations 300;
     continuityTol 1e-6;
-    // Classic SIMPLE with momentum under-relaxation leaves a lag floor in
-    // the predictor-continuity residual; |p'| decay is the true outer
-    // convergence signal, so the case stops on it.
-    pcorrTol      1.4e-4;
-    // the velocity has to have stopped changing too; measured 5.5e-5 at the
-    // iteration this case stops on, so it gates without delaying
+    // the predictor flux carries an HbyA/pressure-flux imbalance that the
+    // pressure solve closes every sweep, so its divergence floors (~5e-3
+    // here) and continuityTol is unreachable; |dp| between sweeps is the
+    // honest outer stop signal
+    pcorrTol      1e-4;
+    // the velocity has to have stopped changing too
     momentumTol   1e-4;
+    // small aP keeps the sweep-to-sweep loop in its linear regime (rate
+    // |1-2aP|); larger fixed aP limit-cycles through the inlet-corner mode
     relaxU        0.9;
-    relaxP        0.8;
+    relaxP        0.03;
+    // startup floor: the first Poisson overshoots to ~70x the physical
+    // pressure (local rAU vs global wall response), so the pressure step is
+    // damped there and opens toward relaxP as the step shrinks
+    pRelaxStart   0.02;
 }
 
 output

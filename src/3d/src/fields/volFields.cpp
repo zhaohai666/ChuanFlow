@@ -88,6 +88,11 @@ std::string volScalarField::patchBcType(label patchId) const
     return bc_[static_cast<std::size_t>(patchId)].type;
 }
 
+scalar volScalarField::patchValue(label patchId) const
+{
+    return bc_[static_cast<std::size_t>(patchId)].value;
+}
+
 scalar volScalarField::faceValue(label face) const
 {
     const std::size_t u = static_cast<std::size_t>(face);

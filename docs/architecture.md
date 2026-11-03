@@ -265,45 +265,58 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
 （对角 = 面系数之和，源项乘体积），这一约定见 5.5 的 rAU 讨论。
 
 ### 5.5 SIMPLE 求解器 `simpleSolver.cpp`
-单相不可压定常回路（simpleFoam 结构，全部自研）：
+单相不可压定常回路（simpleFoam 的**全压力形式**，全部自研）：
 
-1. 动量：`div(phi,U) − laplacian(nu,U) = V(bodyForce − grad(p))`，欠松弛通过
-   **对旧场混合**实现：`U = Uold + α_U(U* − Uold)`（不是对矩阵零初值混合）；
-2. 预测通量 `phi = interp(U) & Sf`；
-3. 压力修正：`laplacian(rAUf, p') = div(phi)`，`p'` 继承 `p` 的 BC
-   （fixedValue→0 Dirichlet，否则 zeroGradient）；
-4. 校正：`U −= rAU grad(p')`，`p += α_P p'`，然后显式面通量校正
-   `phi_f −= rAUf_f·SnGrad(p')·|Sf| + 非正交补偿`（公共件 `correctFluxes`，
-   即 OpenFOAM 的 `phi -= pEqn.flux()`，见 5.6），校正后的 `phi` 在散度
-   意义下按构造为零；
-5. 收敛判据：预测通量散度 `contErr`；当动量欠松弛使 `contErr` 出现
-   滞后地板时，用 `|p'|` 衰减作为真实的外迭代收敛信号（`pcorrTol`）；
-   两个分支都要过**动量残差**门 `momentumTol`——一次外迭代里
-   `max|U − Uold|/max|U|`（动量欠松弛 + 压力校正响应的总固定点变化）。
+1. 动量：矩阵**不含压力**，`div(phi,U) − laplacian(nuEff,U) = V(bodyForce −
+   grad(pⁿ))`——`−V·grad(pⁿ)` 走源项（OpenFOAM 的 `solve(UEqn == −fvc::grad(p))`），
+   解出的 `x` 是对当前压力迭代的物理响应。欠松弛通过对旧场混合实现：
+   `Hfree = (1−α_U)·Uold + α_U·x`（不是对矩阵零初值混合）；
+2. `HbyA = constrainHbyA(Hfree)`：速度给定的 patch 保留其法向通量，其余
+   zeroGradient；
+3. 预测通量 `phi = flux(HbyA)`（OpenFOAM 的 `phiHbyA`）——单元压力梯度
+   不进预测通量，面速度才与 `SnGrad` 闭合成 Rhie-Chow 一致（实测：预测
+   通量里带单元梯度时，渠道出口柱 Ux 塌陷 27%）。`adjustPhi` 仅在压力
+   无任何 fixedValue（`needReference`）时做全局平衡，否则边界物理吸收
+   失衡，强行缩放反而把自由边界通量反转；
+4. **全压力** Poisson：`laplacian(rAUf, pFull) = div(phi)`，`pFull` 用算例
+   自己的 p 边界条件——修正量钉在 0 的 `p'` 形式会把 `pⁿ` 的边界误差
+   冻结进定点；
+5. 校正：面通量按**未松弛**的解出压力闭合 `phi −= rAUf·SnGrad(pFull)|Sf|`
+   （OpenFOAM 的 `pEqn.flux()`，公共件 `correctFluxes`），然后
+   `p += aP·(pFullNew − p)`、`U = Hfree − aP·rAUr·(grad(pFullNew) −
+   grad(pⁿ))`——deferred 拆分的两半用同一个 `aP`，定点就是离散动量平衡
+   `aDiag·U − offdiag·U = V·bodyForce − V·grad(p)` 本身。
 
-两个刻在实现里的经验结论（回归历史，勿回退）：
+**压力欠松弛 `aP`（自适应步长限制器）**：`rAUr = V/aDiag` 是局部响应，
+而通量闭合所需的整段压力斜坡由全域壁面介导——细长算例第一个 Poisson
+把启动失衡解到 K 倍物理压力（100×20 渠道实测 K≈70，即拉长比），该步长
+经 `grad(p)` 反馈回动量会以 ~K 的增益振荡。限制器把每次压力步长压到场
+尺度的 15% 以内（线性区），随步长收缩向 `relaxP` 打开：
+`aP = min(relaxP, max(pRelaxStart, 0.15·pScale/pStep))`。线性区内
+sweep 间是速率 `|1−2aP|` 的定点二循环（`aP=0.02` 实测衰减 0.955 精确吻合）；
+`pRelaxStart=0` 退回常数 `relaxP`。固定大 `aP`（≥0.05）会经入口角点局部
+模态进入有界极限环，`relaxP` 取 0.02~0.03（`relaxU=0.9`）。
 
-- **rAU 必须与 p' 方程、通量校正、U 校正三处使用同一算子**，校正后的
-  `phi` 才能严格散度自由；校正和 p' 方程用同一系数即可自洽；
-- `rAU = α_U/aDiag`（不含体积）。由于 p' 方程与通量校正使用同一算子，
-  `rAU` 整体缩放不破坏散度自由性，只缩放 `p'` 的幅值：使用物理响应
-  `V/aDiag` 会把通量闭合所需的整段压力斜坡直接注入 `p`，SIMPLE 发散；
-  Jacobi 缩放隐式地对压力做了欠松弛，是经典 SIMPLE 的稳定选择。
-  代价是预测散度存在与滞后成正比的地板值，因此测试用 `pcorrTol` 判收敛。
-
-一条 M3 期间实测出来的**已知限制**（不是 bug，后续要处理）：
-
-- 压力场在 Jacobi 尺度上累加，因此物理量由**流向压力梯度**决定的算例，
-  速度场先收敛、`p` 远慢于它（实测 `poiseuilleChannel` 停在 `|p'|=1.4e-4`
-  时 `dU` 已到 `5.5e-5`）；需要一致动量插值（Rhie-Chow）才能让压力与通量
-  同速收敛。
-
-曾经的两条里的另一条已修：**只看连续性判不了动量平衡**——流向均匀的单列
-渠道所有 `phi` 恒为 0，第 1 次外迭代就读到 `continuity 0` 并退出，壁面剪
-切还没进入平衡（实测关掉 `momentumTol` 时 1 次迭代即"收敛"，`u_τ` 只有
-0.554，对积分平衡差 11%）。加入 `momentumTol` 门后同一个算例在
-chflow-simple-foam 下 ~30 次外迭代收敛（k-ε 27 次、SST 39 次），`u_τ` 与
+收敛判据：预测通量由 `HbyA` 单独构成、压力通量那一半由校正补上，因此
+预测散度收敛到 HbyA/压力通量的固有失衡量（验证渠道 ~5e-3），
+`continuityTol` 只在失衡较小的算例可达；**`|dp|` 分支（`pcorrTol`）才是
+该结构下的真实外收敛信号**。两分支都过动量残差门 `momentumTol`
+（`max|U−Uold|/max|U|`，含动量欠松弛与压力响应的总固定点变化）——
+只看连续性判不了动量平衡：流向均匀的单列渠道所有 `phi` 恒 0，
+第 1 次外迭代就读到 `continuity 0`，壁面剪切还没进入平衡（实测关掉
+`momentumTol` 时 1 次迭代即"收敛"，`u_τ` 只有 0.554，对积分平衡差 11%）。
+加门后体积力渠道 ~30 次外迭代收敛（k-ε 27 次、SST 39 次），`u_τ` 与
 拖力平衡符合到 3e-7，与 PISO 750 步的定常解一致（Ub 10.96 vs 11.10）。
+
+刻在实现里的经验结论（回归历史，勿回退）：
+
+- **rAU 必须与压力方程、通量校正、U 校正三处使用同一算子**，校正后的
+  `phi` 才能严格散度自由（公共件 `correctFluxes` 保证）；
+- 旧 `p'` 修正形式靠 Jacobi 缩放（`rAU = α_U/aDiag`）隐式欠松弛压力来
+  稳定，代价是 `p` 在 Jacobi 尺度上累加、物理压力远慢于速度收敛
+  （`poiseuilleChannel` 停在 `|p'|=1.4e-4` 时约 1500 外迭代）。全压力
+  形式直接用物理响应 `V/aDiag`，压力收敛到真实物理值（入口角点
+  实测 1.226 ≈ 解析 1.2 Pa），同一算例 47 次外迭代收敛。
 
 ### 5.6 压力修正公共件 `pressureCorrection.cpp`
 SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个离散连续方程**：
@@ -348,7 +361,8 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
 - `chflow-scalar-transport <case.dict>`：速度驱动的对流扩散标量求解
   （`fvm::ddt + fvm::div + fvm::laplacian` 一次求解）；
 - `chflow-simple-foam <case.dict>`：不可压定常 SIMPLE，`simple{maxIterations
-  continuityTol pcorrTol momentumTol nonOrthCorrectors relaxU relaxP force}`，
+  continuityTol pcorrTol momentumTol nonOrthCorrectors relaxU relaxP
+  pRelaxStart force}`，
   逐次外迭代打印 `continuity / corrected / |p'| / dU`，收尾 `SIMPLE done:
   iterations ... continuity ... momentum ... (converged|NOT converged)`；
   退出码即收敛标志；
@@ -635,7 +649,8 @@ vtu 额外写 `U`、`p`、`csf`。
     0/1；`T = z` 仍是离散解的精确解（斜面的补偿项恒为 0），断言误差
     1e-10——网格来自 Gmsh 文件而不是 `block{}`）
   - `poiseuilleChannel`（平面渠道 Poiseuille：抛物线剖面、通量守恒、
-    `v≈0`、中心线与解析压降对比；SIMPLE 收敛约 1500 外迭代 / 37 s）
+    `v≈0`、中心线与解析压降对比；全压力 SIMPLE + 自适应 `aP` 收敛 47 次
+    外迭代，入口压力对解析 1.2 Pa 符合到 2.2%）
   - `startedChannel`（渠道瞬时启动：10×20×1 网格、体积力驱动、
     `nu dt/dy² = 0.2`、6000 步 / 12 s 物理时间；速度历史对比解析级数
     （早期相对误差 8.7e-3，为 Euler 一阶时间离散；后半程 2.8e-7）、

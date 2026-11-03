@@ -41,6 +41,7 @@ public:
 
     void setPatchValue(label patchId, const std::string& bcType, scalar value);
     std::string patchBcType(label patchId) const;
+    scalar patchValue(label patchId) const;
 
     /// Per-face value for a boundary face, overriding the patch-wide value of
     /// setPatchValue for that face (the type still comes from the patch). Used

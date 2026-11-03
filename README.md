@@ -82,13 +82,14 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 - 线性求解后端：小规模 Eigen，大规模 PETSc。
 
 > 首版已落地：多面体网格（blockMesh + Gmsh msh）、场与 BC、fvc/fvm 离散、
-> 定常 SIMPLE（连续性 + 动量残差双判据）、瞬态 PISO、ASCII `.vtu` 输出，
+> 定常 SIMPLE（全压力回路 + Rhie-Chow 一致动量插值 + 自适应压力欠松弛，
+> 连续性 + 动量残差 + 压力步长三判据）、瞬态 PISO、ASCII `.vtu` 输出，
 > k-ε / k-ω SST 两方程 RANS 与 Spalding 壁面函数（含平衡壁面单元），以及
 > VOF 首增量（相分数守恒输运 + 界面法向/曲率，速度给定的 `chflow-vof`）、
 > VOF 的连续表面力（CSF 与 PISO 动量耦合，静止液滴算例验 Laplace 压差）与
 > 两相耦合（解出通量输运 α，椭圆液滴振荡验密度匹配的 2D Lamb 周期）；
 > VOF 的几何界面重构、Euler-Euler 双流体、张量场、
-> MPI 域分解、Eigen/PETSc 后端与 SIMPLE 的一致动量插值仍待实现。
+> MPI 域分解与 Eigen/PETSc 后端仍待实现。
 
 #### 5. 绑定层 `src/bindings`
 基于 pybind11：
@@ -147,12 +148,12 @@ print(result.pressure_profile)
   （瞬态水力 + 段塞持液率输运 + 水合物等温动力学 + 3 个解析回归已落地，
   真两相动量交换与热力耦合待做）
 - M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 🚧
-  （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE + 瞬态 PISO +
+  （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE（全压力回路 +
+  Rhie-Chow 一致动量插值，Poiseuille 算例 1411 → 47 外迭代）+ 瞬态 PISO +
   blockMesh/Gmsh msh 读入 + vtu IO + k-ε / k-ω SST 湍流模型层与 Spalding 壁面
   函数（湍流渠道摩阻对 Pope 律回归，SIMPLE 与 PISO 两种耦合共用同一套断言）+
   VOF 首增量（相分数守恒输运的 M-矩阵性质、界面法向与曲率，平移与刚体旋转
-  两个解析回归）已落地，MPI 并行、Eigen/PETSc 后端与
-  SIMPLE 的一致动量插值待做）
+  两个解析回归）已落地，MPI 并行与 Eigen/PETSc 后端待做）
 - 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
   `chflow-pvt` 应用 + Python 绑定 + CLI 已落地，EOS 内部不变量与解析回归全绿；

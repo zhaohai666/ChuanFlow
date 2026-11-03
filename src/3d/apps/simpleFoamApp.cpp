@@ -86,6 +86,7 @@ int main(int argc, char** argv)
             ctl.pcorrTol = sd.getScalarOr("pcorrTol", ctl.pcorrTol);
             ctl.relaxU = sd.getScalarOr("relaxU", ctl.relaxU);
             ctl.relaxP = sd.getScalarOr("relaxP", ctl.relaxP);
+            ctl.pRelaxStart = sd.getScalarOr("pRelaxStart", ctl.pRelaxStart);
             ctl.nonOrthCorrectors = static_cast<int>(sd.getScalarOr("nonOrthCorrectors", ctl.nonOrthCorrectors));
             ctl.momentumTol = sd.getScalarOr("momentumTol", ctl.momentumTol);
             if (sd.has("force"))

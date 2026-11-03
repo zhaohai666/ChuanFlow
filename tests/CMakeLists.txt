@@ -27,6 +27,12 @@ add_executable(piso_tests unit/pisoTests.cpp)
 target_link_libraries(piso_tests PRIVATE cf3d)
 add_test(NAME piso.unit COMMAND piso_tests)
 
+add_executable(gmsh_mesh_tests unit/gmshMeshTests.cpp)
+target_link_libraries(gmsh_mesh_tests PRIVATE cf3d)
+target_compile_definitions(gmsh_mesh_tests PRIVATE
+    CF_MESH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/meshes")
+add_test(NAME gmshMesh.unit COMMAND gmsh_mesh_tests)
+
 # ---- analytic verification cases ----
 add_test(
     NAME verify.advectionDiffusion
@@ -43,6 +49,14 @@ add_test(
         $<TARGET_FILE:chflow-scalar-transport>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/pureDiffusion/case.dict
         linearZ 1e-8)
+
+add_test(
+    NAME verify.gmshDiffusion
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_scalar_profile.py
+        $<TARGET_FILE:chflow-scalar-transport>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/gmshDiffusion/case.dict
+        linearZ 1e-10 out_gmsh_poisson.vtu)
 
 add_test(
     NAME verify.poiseuille

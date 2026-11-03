@@ -211,12 +211,28 @@ stdout/退出码；`chuanflow version`。
 
 ## 5. src/3d 三维内核
 
-### 5.1 网格 `PolyMesh.h` / `blockMesh.cpp`
+### 5.1 网格 `PolyMesh.h` / `blockMesh.cpp` / `gmshMesh.cpp` / `meshLoader.cpp`
 `polyMesh` 是唯一的网格容器：面心 `faceCentres`、面法积 `faceSf`、
 `owner/neighbour`（约定：`Sf` 由 owner 指向 neighbour，边界面上为外法向）、
 单元体积/重心、面面积、`deltaCoeffVec = (cN−cO)/|cN−cO|²`。
-`BlockMesh::fromDict` 生成六面体结构化网格（blockMesh 风格，
-`min/max/cells` + 6 个边界面 patch）。
+容器与文件格式无关：只要给出点、面顶点环、owner/neighbour 与 patch，
+几何量（含面的朝向）都由拓扑重算，因此非结构网格与结构化网格走同一条路径。
+单元体积和重心用面扇形三角化的散度定理精确计算（一阶矩/体积），
+对六面体、四面体、三棱柱都给出真实重心——早期按面面积加权的重心会让
+斜单元的 `cO→面心` 方向偏离面法向，非正交补偿随之失真。
+
+- `BlockMesh::fromDict`：六面体结构化网格（blockMesh 风格，
+  `min/max/cells` + 6 个边界面 patch）；
+- `GmshMesh::fromFile`：Gmsh **ASCII** `.msh`（2.2 与 4.1 两种写法），
+  一阶四面体(4)/六面体(5)/三棱柱(6)；面由体单元连接关系重建并按顶点集
+  去重（同一面被第三个单元引用 → 非流形报错），patch 名取表面 physical
+  group（四边形边界面也能匹配被三角化 Split 后的两个三角形），文件不带
+  表面分组时回退到包围框平面名 `xmin…zmax` 并告警，两者都不匹配则报错；
+  金字塔单元与任何二阶单元直接拒绝而不是悄悄退化成角点；
+- `MeshLoader::fromCase`：case.dict 选型——`block{}` 走结构化，
+  `mesh { format gmsh; file "..."; patches { inlet { type inlet; } } }`
+  走文件；相对路径先按 cwd、再按 case 文件所在目录解析，因此算例可以把
+  网格和 `.dict` 放在一起、从任意目录运行。
 
 ### 5.2 场系统 `Fields.h` / `volFields.cpp`
 - `volScalarField` / `volVectorField`：单元场 + 每 patch 一个边界条件
@@ -228,8 +244,11 @@ stdout/退出码；`chuanflow version`。
 ### 5.3 离散算子 `discrete/`
 仿 OpenFOAM 的 fvc/fvm 双命名空间：
 
-- `fvc::grad`：最小二乘梯度，`linear | corrected`（corrected = 精确对偶
-  + 非正交补偿）；
+- `fvc::grad`：高斯（散度定理）梯度，`linear | corrected`。`linear` 对
+  任何平面面多面体网格精确复现线性场（测试断言到 1e-14）；`corrected`
+  再加两轮非正交补偿，正交网格上等价于 `linear`，斜网格上是一个收敛的
+  近似——粗四面体网格（实测最坏非正交 54°、单元体积比 12:1）上补偿项会
+  放大，需要靠网格质量控制而不是格式；
 - `fvc::interpolate`：有界线性面插值（权重夹到 [0,1]）；
 - `fvc::divPhi`：单元面通量求和（保持广度量纲，不除体积）；
 - `fvm::div`：`upwind / linear / blend`，对 `phi` 组装隐式对流项；
@@ -326,6 +345,7 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
 |---|---|
 | `polyMesh` / `primitiveMesh` | `polyMesh`（`src/3d/include/cf/fvm/PolyMesh.h`） |
 | `blockMeshDict` | `BlockMesh::fromDict`（case.dict 的 `block{}`） |
+| Gmsh `.msh` 导入 | `GmshMesh::fromFile` + `MeshLoader`（case.dict 的 `mesh{}`，ASCII 2.2/4.1，一阶 tet/hex/prism） |
 | `volScalarField` / `surfaceScalarField` | 同名类（`Fields.h`） |
 | `fvc::` / `fvm::` | 同名命名空间（`FvMatrix.h`） |
 | `fvVectorMatrix` / `solve(UEqn == −grad(p))` | `fvMatrix`（多分量）+ apps 手写回路 |
@@ -361,7 +381,13 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
   推进后剖面逐点等于**离散**稳态抛物线（含半格壁面偏移，1e-5 相对峰速）、
   三阶差分逐点满足 `nu∇²u = −a`（1e-9）、横向速度保持 0、1500 步内校正后
   `max|div(phi)| < 1e-12`；
-- `tests/cases/*`：九个物理回归算例 + `tests/check_*.py` 断言：
+- `tests/unit/gmshMeshTests.cpp`（CTest `gmshMesh.unit`）：单六面体（无
+  physical group → 包围框平面命名 + 类型覆盖）、2×2×2 六面体与
+  `BlockMesh` 几何指纹逐元素相等、同一四面体网格的 2.2/4.1 两种写法读出
+  同一网格、三棱柱渠道 20 单元/28 内部面/6 patch 与真实重心
+  `(2/3, 1/30, 0.05)`、逐单元 `Σ Sf = 0`（闭合）、`fvc::grad(z)` 精度、
+  `MeshLoader` 的 `block{}`/`mesh{}` 选型与两个错误分支；
+- `tests/cases/*`：十个物理回归算例 + `tests/check_*.py` 断言：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug`（见 4.2）
@@ -369,6 +395,10 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
     `β·y + (1−β)·x = z`、ρ_L > ρ_V、泡点两侧相态塌陷、表节点 = 直接求值）
   - `advectionDiffusion`（Pe=10 一维对流扩散，解析解对比）
   - `pureDiffusion`（Laplace/Poisson，线性场精确再现）
+  - `gmshDiffusion`（非结构网格上的同一道题：三棱柱渠道 `tests/meshes/
+    prismChannel_22.msh`，20 单元、实测最坏非正交 78°，两端 Dirichlet
+    0/1；`T = z` 仍是离散解的精确解（斜面的补偿项恒为 0），断言误差
+    1e-10——网格来自 Gmsh 文件而不是 `block{}`）
   - `poiseuilleChannel`（平面渠道 Poiseuille：抛物线剖面、通量守恒、
     `v≈0`、中心线与解析压降对比；SIMPLE 收敛约 1500 外迭代 / 37 s）
   - `startedChannel`（渠道瞬时启动：10×20×1 网格、体积力驱动、

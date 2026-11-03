@@ -139,7 +139,7 @@ print(result.pressure_profile)
   真两相动量交换与热力耦合待做）
 - M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 🚧
   （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE + 瞬态 PISO +
-  blockMesh/vtu IO 已落地，k-ε、Gmsh 读入、MPI 待做）
+  blockMesh/Gmsh msh 读入 + vtu IO 已落地，k-ε、MPI 待做）
 - 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
   `chflow-pvt` 应用 + Python 绑定 + CLI 已落地，EOS 内部不变量与解析回归全绿；

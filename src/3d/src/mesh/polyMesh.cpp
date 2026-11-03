@@ -148,60 +148,56 @@ void polyMesh::calcGeometry() const
     magSf_.resize(static_cast<std::size_t>(nF));
     for (label f = 0; f < nF; ++f) magSf_[static_cast<std::size_t>(f)] = mag(sf_[static_cast<std::size_t>(f)]);
 
-    // exact cell volumes by divergence theorem over the oriented face fans
+    // Exact cell volumes and first moments: the divergence theorem over the
+    // fan triangles of every face tiles the cell with origin-based tetrahedra,
+    // whose signed volumes sum to the cell volume and whose volume-weighted
+    // centroids sum to its first moment.
     cellVolumes_.assign(static_cast<std::size_t>(nCells_), 0.0);
+    cellCentres_.assign(static_cast<std::size_t>(nCells_), Vector::zero());
+    Field<Vector> moment(static_cast<std::size_t>(nCells_), Vector::zero());
     for (label f = 0; f < nF; ++f)
     {
         const auto& verts = faces_[static_cast<std::size_t>(f)];
         const Vector& v0 = points_[static_cast<std::size_t>(verts[0])];
         scalar fv = 0;
+        Vector fm = Vector::zero();
         for (std::size_t i = 1; i + 1 < verts.size(); ++i)
         {
             const Vector a = points_[verts[i]] - v0;
             const Vector b = points_[verts[i + 1]] - v0;
-            fv += dot(v0, cross(a, b)) / 6.0;
+            const scalar tV = dot(v0, cross(a, b)) / 6.0;
+            fv += tV;
+            fm += tV * ((v0 + points_[verts[i]] + points_[verts[i + 1]]) / 4.0);
         }
-        // fan orientation may agree or disagree with the oriented normal;
-        // match sign against dot(rawNormal, Sf)
         Vector raw = Vector::zero();
         for (std::size_t i = 1; i + 1 < verts.size(); ++i)
         {
             raw += cross(points_[verts[i]] - v0, points_[verts[i + 1]] - v0);
         }
-        const bool agree = dot(raw, sf_[static_cast<std::size_t>(f)]) >= 0;
-        const scalar contrib = agree ? fv : -fv;
-        cellVolumes_[static_cast<std::size_t>(owner_[static_cast<std::size_t>(f)])] += contrib;
+        // fan orientation may agree or disagree with the oriented normal;
+        // match sign against dot(rawNormal, Sf)
+        const scalar s = dot(raw, sf_[static_cast<std::size_t>(f)]) >= 0 ? 1.0 : -1.0;
+        const label o = owner_[static_cast<std::size_t>(f)];
+        cellVolumes_[static_cast<std::size_t>(o)] += s * fv;
+        moment[static_cast<std::size_t>(o)] += fm * s;
         if (f < nInternalFaces())
         {
-            cellVolumes_[static_cast<std::size_t>(neighbour_[static_cast<std::size_t>(f)])] -= contrib;
+            const label nb = neighbour_[static_cast<std::size_t>(f)];
+            cellVolumes_[static_cast<std::size_t>(nb)] -= s * fv;
+            moment[static_cast<std::size_t>(nb)] -= fm * s;
         }
     }
     for (label c = 0; c < nCells_; ++c)
     {
+        // the signs of volume and moment cancel, so the quotient is the
+        // centroid even for a cell whose decomposition came out negative
+        cellCentres_[static_cast<std::size_t>(c)]
+            = moment[static_cast<std::size_t>(c)] / cellVolumes_[static_cast<std::size_t>(c)];
         cellVolumes_[static_cast<std::size_t>(c)] = std::abs(cellVolumes_[static_cast<std::size_t>(c)]);
         if (cellVolumes_[static_cast<std::size_t>(c)] <= 0)
         {
             cfFatal("polyMesh: degenerate cell volume for cell " + std::to_string(c));
         }
-    }
-
-    // area-weighted cell centres (exact for hexahedra)
-    cellCentres_.assign(static_cast<std::size_t>(nCells_), Vector::zero());
-    Field<scalar> areaSum(static_cast<std::size_t>(nCells_), 0.0);
-    for (label f = 0; f < nF; ++f)
-    {
-        const auto add = [&](label c)
-        {
-            cellCentres_[static_cast<std::size_t>(c)] += faceCentres_[static_cast<std::size_t>(f)] * magSf_[static_cast<std::size_t>(f)];
-            areaSum[static_cast<std::size_t>(c)] += magSf_[static_cast<std::size_t>(f)];
-        };
-        add(owner_[static_cast<std::size_t>(f)]);
-        if (f < nInternalFaces()) add(neighbour_[static_cast<std::size_t>(f)]);
-    }
-    for (label c = 0; c < nCells_; ++c)
-    {
-        cellCentres_[static_cast<std::size_t>(c)] = cellCentres_[static_cast<std::size_t>(c)]
-            / areaSum[static_cast<std::size_t>(c)];
     }
 
     distVec_.resize(static_cast<std::size_t>(nF));

@@ -1,6 +1,8 @@
 add_library(cf3d STATIC
     src/mesh/polyMesh.cpp
     src/mesh/blockMesh.cpp
+    src/mesh/gmshMesh.cpp
+    src/mesh/meshLoader.cpp
     src/fields/volFields.cpp
     src/discrete/fvMatrix.cpp
     src/discrete/interpolate.cpp

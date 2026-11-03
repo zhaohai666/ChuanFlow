@@ -1,0 +1,49 @@
+// Unstructured mesh regression: a prism channel (one diagonal per cross
+// section, swept in z) with Dirichlet T=0 at z=0 and T=1 at z=1.
+//
+// The z-interface faces are perpendicular to z, the side and diagonal faces
+// are vertical, and cell centres in a column share (x, y) - so T = z is an
+// exact solution of the assembled discrete Laplacian even though the mesh is
+// non-orthogonal: the corrected-scheme compensation cfVec.gradFace vanishes
+// identically. The checker therefore asserts ~1e-10, not a fitted tolerance.
+mesh
+{
+    format gmsh;
+    file "../../meshes/prismChannel_22.msh";
+
+    patches
+    {
+        inlet   { type inlet;  }
+        outlet  { type outlet; }
+        wall_y0 { type wall;   }
+        wall_x1 { type wall;   }
+        wall_y1 { type wall;   }
+        wall_x0 { type wall;   }
+    }
+}
+
+velocity    (0 0 0);
+diffusivity 1.0;
+initialValue 0;
+
+patches
+{
+    inlet  { type fixedValue; value 0; }
+    outlet { type fixedValue; value 1; }
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+solverTol    1e-12;
+solverMaxIter 5000;
+
+output
+{
+    vtk out_gmsh_poisson.vtu;
+}

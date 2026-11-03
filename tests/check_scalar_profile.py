@@ -2,9 +2,11 @@
 """Run chflow-scalar-transport on a case and check the solution against
 an analytic profile. Stdlib only; parses the ASCII .vtu cell data.
 
-usage: check_scalar_profile.py <solver-binary> <case.dict> <mode> <tol>
+usage: check_scalar_profile.py <solver-binary> <case.dict> <mode> <tol> [vtu]
   mode: advection  -> 1D steady convection-diffusion, both Dirichlet
-        linearZ    -> pure diffusion, T = z / zmax
+        linearZ    -> pure diffusion between two Dirichlet planes normal to z;
+                      T = (z - zmin) / (zmax - zmin) over the mesh extent, so
+                      it works on a block mesh and on an unstructured one
 """
 import math
 import re
@@ -42,7 +44,7 @@ def read_vtu(path):
         cy = sum(points[v][1] for v in vids) / n
         cz = sum(points[v][2] for v in vids) / n
         centers.append((cx, cy, cz))
-    return centers, values
+    return centers, values, points
 
 
 def analytic_advection(x, U, L, D):
@@ -56,6 +58,8 @@ def analytic_advection(x, U, L, D):
 
 def main():
     binary, case, mode, tol = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])
+    default_vtu = "out_advection.vtu" if mode == "advection" else "out_poisson.vtu"
+    vtu_name = sys.argv[5] if len(sys.argv) > 5 else default_vtu
     import os
     workdir = os.path.dirname(case)
     r = subprocess.run([binary, case], capture_output=True, text=True, cwd=workdir)
@@ -63,17 +67,16 @@ def main():
         print(r.stdout, r.stderr)
         raise SystemExit("solver failed")
 
-    vtu = os.path.join(workdir,
-                       "out_advection.vtu" if mode == "advection" else "out_poisson.vtu")
-    centers, T = read_vtu(vtu)
+    vtu = os.path.join(workdir, vtu_name)
+    centers, T, points = read_vtu(vtu)
 
     if mode == "advection":
         U, L, D = 0.1, 1.0, 0.01
         err = max(abs(t - analytic_advection(c[0], U, L, D)) for c, t in zip(centers, T))
     elif mode == "linearZ":
-        zmax = max(c[2] for c in centers) + 0.05  # cell centre vs domain: use analytic slope
-        # domain is 0..0.1 in z with T(0)=0, T(0.1)=1: exact linear field, cell-centre values
-        err = max(abs(t - c[2] / 0.1) for c, t in zip(centers, T))
+        zs = [p[2] for p in points]
+        zmin, zmax = min(zs), max(zs)
+        err = max(abs(t - (c[2] - zmin) / (zmax - zmin)) for c, t in zip(centers, T))
     else:
         raise SystemExit("unknown mode")
 

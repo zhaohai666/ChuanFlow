@@ -87,6 +87,22 @@ simple { maxIterations 1600; continuityTol 1e-6; pcorrTol 1.4e-4;
 output { vtk out_poiseuille.vtu; }
 ```
 
+三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
+`block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶
+tet/hex/prism，边界表面必须打好 physical group，否则只能按包围框平面命名）：
+
+```
+mesh {
+    format gmsh;
+    file "../../meshes/prismChannel_22.msh";   # 相对 cwd，找不到时按 .dict 所在目录解析
+    patches { inlet { type inlet; } outlet { type outlet; } }   # 缺省类型 wall
+}
+```
+
+`patches{}` 里的名字必须与 Gmsh physical group 同名；场边界条件仍写在外层
+`patches{}`（两者是不同字典）。网格夹具放在 `tests/meshes/`，
+`tests/unit/gmshMeshTests.cpp` 通过 `CF_MESH_DIR` 读取它们。
+
 格式刻意兼容 OpenFOAM 字典语法（`key value;`、嵌套 block、`(a b c)` 列表），
 解析器在 `src/common/src/Dictionary.cpp`。
 

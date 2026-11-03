@@ -7,9 +7,9 @@
 
 #include "cf/common/Dictionary.h"
 #include "cf/common/Log.h"
-#include "cf/fvm/BlockMesh.h"
 #include "cf/fvm/Fields.h"
 #include "cf/fvm/FvMatrix.h"
+#include "cf/fvm/MeshLoader.h"
 #include "cf/fvm/PisoSolver.h"
 #include "cf/fvm/VtkWriter.h"
 
@@ -37,7 +37,7 @@ int main(int argc, char** argv)
     {
         const Dictionary caseDict = Dictionary::parseFile(argv[1]);
 
-        polyMesh mesh = BlockMesh::fromDict(caseDict.getDict("block"));
+        polyMesh mesh = MeshLoader::fromCase(caseDict, argv[1]);
         log::info("mesh: ", mesh.nCells(), " cells, ", mesh.nPatches(), " patches");
 
         const scalar nu = caseDict.getScalar("nu");

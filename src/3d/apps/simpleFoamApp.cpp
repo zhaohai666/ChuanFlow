@@ -87,6 +87,12 @@ int main(int argc, char** argv)
             ctl.relaxU = sd.getScalarOr("relaxU", ctl.relaxU);
             ctl.relaxP = sd.getScalarOr("relaxP", ctl.relaxP);
             ctl.nonOrthCorrectors = static_cast<int>(sd.getScalarOr("nonOrthCorrectors", ctl.nonOrthCorrectors));
+            ctl.momentumTol = sd.getScalarOr("momentumTol", ctl.momentumTol);
+            if (sd.has("force"))
+            {
+                const auto f = sd.getScalarList("force");
+                ctl.bodyForce = Vector{f[0], f[1], f[2]};
+            }
         }
 
         const SimpleResult res =
@@ -94,6 +100,7 @@ int main(int argc, char** argv)
 
         log::info("SIMPLE done: iterations=", res.iterations,
                   " continuity=", res.finalContinuityError,
+                  " momentum=", res.finalMomentumResidual,
                   res.converged ? " (converged)" : " (NOT converged)");
 
         if (turb) app::logWallReport(*turb);

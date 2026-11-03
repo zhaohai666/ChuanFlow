@@ -39,6 +39,12 @@ python3 tests/check_turbulent_channel.py \
     "$PWD/build/src/3d/apps/chflow-piso-foam" \
     "$PWD/tests/cases/turbulentChannel/case.dict"
 
+# 同一套断言换一种压力-速度耦合再跑一遍：case.dict 同时带 piso{} 和 simple{}，
+# app 各读自己的块，剖面一律从 vtu 质心取，所以两个耦合比的是同一组数
+python3 tests/check_turbulent_channel.py \
+    "$PWD/build/src/3d/apps/chflow-simple-foam" \
+    "$PWD/tests/cases/turbulentChannel/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict
@@ -104,7 +110,7 @@ schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
 turbulence { model kOmegaSST;              // laminar | kEpsilon | kOmegaSST
              intensity 0.05; lengthScale 0.0056; relaxation 0.7; }
 simple { maxIterations 1600; continuityTol 1e-6; pcorrTol 1.4e-4;
-         relaxU 0.9; relaxP 0.8; }
+         momentumTol 1e-4; relaxU 0.9; relaxP 0.8; force (19.5 0 0); }
 piso { dt 0.004; endTime 3; correctors 2; continuityTol 1e-8;
        reportEvery 250; force (19.5 0 0); }
 output { vtk out_poiseuille.vtu; }
@@ -114,6 +120,10 @@ output { vtk out_poiseuille.vtu; }
 `inlet` 才是 `turbulence{}` 里 intensity/lengthScale 的注入面；缺 `turbulence{}`
 即 laminar。体积力驱动（`piso{force}`）用 `symmetry` 封住流向两端做单列渠道，
 `p` 只需一个 `fixedValue` 锚点。
+
+`simple{momentumTol}` 是动量固定点变化 `max|U − Uold|/max|U|` 的门槛，两个
+收敛分支都要过它：单列渠道这类流向均匀的算例所有 `phi` 恒为 0，只靠连续性
+会在第 1 次外迭代就宣布收敛。`simple{force}` 与 `piso{force}` 同义。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

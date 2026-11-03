@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
-"""Run chflow-piso-foam on the wall-function channel with both RANS models and
-verify the friction physics.
+"""Run the wall-function channel with both RANS models and verify the friction
+physics through either pressure-velocity coupling.
 
 The case drives a streamwise-uniform column with a body force, so the wall
 shear is not a prediction but the momentum balance: tau_w = u_tau^2 =
 force * half-height. What the turbulence model has to deliver is the bulk
 velocity that balance can sustain, and the shape of the near-wall profile.
 
-usage: check_turbulent_channel.py <piso-binary> <case.dict>
+The same assertions run on the transient (chflow-piso-foam, which reaches the
+balance over 750 steps) and on the steady loop (chflow-simple-foam, which
+reaches it in a few dozen iterations); which one is in play is read off the
+log. The profile always comes from the vtu cell centroids, so the two couplings
+are compared on the same numbers.
+
+usage: check_turbulent_channel.py <solver-binary> <case.dict>
 """
 import math
 import os
@@ -66,16 +72,32 @@ def pope_bulk_velocity(u_tau, d_h, nu):
     return u_tau * math.sqrt(8.0 / f)
 
 
-def profile_from_log(out):
-    pts = []
-    for m in re.finditer(r'^\[chflow\] profile y ([0-9.eE+-]+) u ([0-9.eE+-]+)$', out, re.M):
-        pts.append((float(m.group(1)), float(m.group(2))))
-    return pts
-
-
 def reports_from_log(out):
     return [(float(m.group(1)), float(m.group(2))) for m in re.finditer(
         r'^\[chflow\] t ([0-9.eE+-]+) uMax ([0-9.eE+-]+) cont ([0-9.eE+-]+)', out, re.M)]
+
+
+def profile_from_vtu(vtu_path):
+    """Cell-centre (y, u) sorted across the column. The centroids come from the
+    mesh vertices the vtu stores, so the profile is the same field whether the
+    run was a transient or a steady loop -- and no log parsing is involved."""
+    txt = open(vtu_path).read()
+    pts = re.search(r'<DataArray type="Float64" NumberOfComponents="3" format="ascii">'
+                    r'\s*(.*?)</DataArray>', txt, re.S).group(1)
+    c = [float(v) for v in pts.split()]
+    points = list(zip(c[0::3], c[1::3], c[2::3]))
+    conn = [int(v) for v in re.search(r'Name="connectivity" format="ascii">'
+                                      r'\s*(.*?)</DataArray>', txt, re.S).group(1).split()]
+    offs = [int(v) for v in re.search(r'Name="offsets" format="ascii">'
+                                      r'\s*(.*?)</DataArray>', txt, re.S).group(1).split()]
+    u = cell_vector(vtu_path, "U")
+    prof, prev = [], 0
+    for o in offs:
+        vids = conn[prev:o]
+        prev = o
+        prof.append((sum(points[v][1] for v in vids) / len(vids), u[len(prof)]))
+    prof.sort()
+    return prof
 
 
 def cell_scalars(vtu_path, name):
@@ -143,18 +165,40 @@ def check(model, res, c):
     if not (30.0 < yp_mean < 300.0):
         failures.append("mean y+ outside the wall-function band (30..300)")
 
-    # 3. steady: the last two reports of the transient have to agree
+    # 3. steady. Each coupling says it differently: the transient compares its
+    #    last two reports, SIMPLE reports the fixed-point change of the velocity
+    #    over the last outer iteration -- the only signal that means anything on
+    #    a streamwise-uniform column, where every phi and every p' is zero.
     rep = reports_from_log(out)
-    if len(rep) < 2:
-        raise SystemExit("%s: too few reports to judge steadiness" % model)
-    drift = abs(rep[-1][1] / rep[-2][1] - 1.0)
-    print("%s: uMax %.6f at t=%.3g, drift over the last interval %.2e"
-          % (model, rep[-1][1], rep[-1][0], drift))
-    if drift > 0.01:
-        failures.append("the profile is still moving at endTime")
+    if rep:
+        if len(rep) < 2:
+            raise SystemExit("%s: too few reports to judge steadiness" % model)
+        drift = abs(rep[-1][1] / rep[-2][1] - 1.0)
+        print("%s: uMax %.6f at t=%.3g, drift over the last interval %.2e"
+              % (model, rep[-1][1], rep[-1][0], drift))
+        if drift > 0.01:
+            failures.append("the profile is still moving at endTime")
+    else:
+        done = re.search(r"SIMPLE done: iterations=(\d+) continuity=([0-9.eE+-]+)"
+                         r" momentum=([0-9.eE+-]+) \((converged|NOT converged)\)", out)
+        if done is None:
+            raise SystemExit("%s: neither a transient report nor a SIMPLE "
+                             "convergence line in the log" % model)
+        iters, res_u, state = int(done.group(1)), float(done.group(3)), done.group(4)
+        print("%s: SIMPLE %s in %d iterations, velocity residual %.2e"
+              % (model, state, iters, res_u))
+        if state != "converged":
+            failures.append("SIMPLE did not reach its convergence criteria")
+        if res_u > 1e-4:
+            failures.append("the velocity field is still moving")
+        # one iteration means the stop fired on continuity alone, which is what
+        # this case is identically zero at; the wall shear cannot be in balance
+        # yet however small the number reads
+        if iters < 2:
+            failures.append("SIMPLE stopped without letting the momentum evolve")
 
     # 4. profile shape: monotone to the centreline, symmetric about it
-    prof = profile_from_log(out)
+    prof = profile_from_vtu(res["vtu"])
     if len(prof) != c["ny"]:
         raise SystemExit("%s: expected %d profile points, got %d"
                          % (model, c["ny"], len(prof)))
@@ -199,9 +243,6 @@ def check(model, res, c):
     k = cell_scalars(res["vtu"], "k")
     nut = cell_scalars(res["vtu"], "nut")
     diss = cell_scalars(res["vtu"], diss_name)
-    u = cell_vector(res["vtu"], "U")
-    if len(u) != len(prof):
-        raise SystemExit("%s: the vtu and the profile report disagree" % model)
     sqrt_const = math.sqrt(CMU if model == "kEpsilon" else BETA_STAR)
     k_eq = u_tau * u_tau / sqrt_const
     nut_log = KAPPA * u_tau * y1

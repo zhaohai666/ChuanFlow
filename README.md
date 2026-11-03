@@ -145,7 +145,8 @@ print(result.pressure_profile)
 - M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 🚧
   （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE + 瞬态 PISO +
   blockMesh/Gmsh msh 读入 + vtu IO + k-ε / k-ω SST 湍流模型层与 Spalding 壁面
-  函数（湍流渠道摩阻对 Pope 律回归）已落地，MPI 并行、Eigen/PETSc 后端与
+  函数（湍流渠道摩阻对 Pope 律回归，SIMPLE 与 PISO 两种耦合共用同一套断言）
+  已落地，MPI 并行、Eigen/PETSc 后端与
   SIMPLE 的一致动量插值待做）
 - 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +

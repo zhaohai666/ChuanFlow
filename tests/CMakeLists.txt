@@ -83,6 +83,15 @@ add_test(
         $<TARGET_FILE:chflow-piso-foam>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/turbulentChannel/case.dict)
 
+# the same friction physics through the steady coupling; the case carries both a
+# simple{} and a piso{} block and each app reads its own
+add_test(
+    NAME verify.turbulentChannelSimple
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_turbulent_channel.py
+        $<TARGET_FILE:chflow-simple-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/turbulentChannel/case.dict)
+
 add_test(
     NAME verify.steadyNetwork
     COMMAND ${Python3_EXECUTABLE}

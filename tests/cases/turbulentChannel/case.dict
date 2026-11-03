@@ -12,23 +12,29 @@
 //   u_tau/U_b = sqrt(f/8) gives U_b = 13.0 m/s, Re_b = 6.9e4.
 //
 // dy = 2.5e-3 puts the first cell centre at y+ ~ 52, inside the log layer where
-// the wall function belongs. The run is advanced in physical time from a
-// started field until the shear production and the driving force balance; the
-// transient is the pressure-velocity coupling doing the work that steady SIMPLE
-// cannot do on a streamwise-uniform case yet.
+// the wall function belongs. Both couplings are regression-tested on this case:
+// the transient is advanced in physical time until the shear production and the
+// driving force balance, steady SIMPLE reaches the same balance in a few dozen
+// outer iterations -- which it can only do because momentumTol gates the stop,
+// since on a streamwise-uniform column every phi is zero and continuity reads 0
+// on the first iteration.
 //
-// Measured at endTime 3, with 8 cells between y+ = 52 and the centreline:
-//   kEpsilon   u_tau 0.624486  Ub 11.10  Ub/u_tau 17.8  (-14.5% on the friction law)
-//   kOmegaSST  u_tau 0.624266  Ub 13.67  Ub/u_tau 21.9  ( +5.4% on the friction law)
-// The shear itself is right to 4e-4 relative in both, because it is the balance
-// and not a prediction; the deficit is the friction law read on a mesh that
-// resolves the log layer with eight cells. The checker therefore bounds the
+// Measured (Ub from the vtu centroids, Pope's law gives 12.98 m/s):
+//                 u_tau    Ub      Ub/u_tau    iterations
+//   piso  kEpsilon  0.624486 11.10   17.8       750 steps    (-14.5%)
+//   piso  kOmegaSST 0.624266 13.67   21.9       750 steps    ( +5.4%)
+//   simple kEpsilon 0.624500 10.96   17.6        27          (-15.5%)
+//   simple kOmegaSST0.624500 13.78   22.1        39          ( +6.2%)
+// The shear itself is right to 4e-4 relative in every run, because it is the
+// balance and not a prediction; the deficit is the friction law read on a mesh
+// that resolves the log layer with eight cells. The checker therefore bounds the
 // bulk velocity at 20% and checks the near-wall closure tightly.
 //
-// tests/check_turbulent_channel.py runs this case for both models and checks
-// the wall shear against the driving force, the first cell against the law of
-// the wall, the bulk velocity against Pope's friction law, the equilibrium of
-// the wall-adjacent cell, and that the run is steady, symmetric and finite.
+// tests/check_turbulent_channel.py runs this case for both models and both
+// couplings and checks the wall shear against the driving force, the first cell
+// against the law of the wall, the bulk velocity against Pope's friction law,
+// the equilibrium of the wall-adjacent cell, and that the run is steady,
+// symmetric and finite.
 block
 {
     min   (0 0 0);
@@ -76,6 +82,21 @@ schemes
     div       upwind;
     laplacian corrected;
     grad      corrected;
+}
+
+simple
+{
+    // The column is streamwise-uniform, so every phi is zero and continuity is
+    // satisfied at machine precision from the first iteration. momentumTol is
+    // the criterion that actually decides the run: it is the relative change of
+    // the velocity over one outer iteration, and it is what keeps SIMPLE from
+    // stopping before the wall shear has been felt.
+    maxIterations 200;
+    continuityTol 1e-8;
+    momentumTol   1e-5;
+    relaxU        0.9;
+    relaxP        0.8;
+    force         (19.5 0 0);
 }
 
 piso

@@ -267,7 +267,7 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
 ### 5.5 SIMPLE 求解器 `simpleSolver.cpp`
 单相不可压定常回路（simpleFoam 结构，全部自研）：
 
-1. 动量：`div(phi,U) − laplacian(nu,U) = −V grad(p)`，欠松弛通过
+1. 动量：`div(phi,U) − laplacian(nu,U) = V(bodyForce − grad(p))`，欠松弛通过
    **对旧场混合**实现：`U = Uold + α_U(U* − Uold)`（不是对矩阵零初值混合）；
 2. 预测通量 `phi = interp(U) & Sf`；
 3. 压力修正：`laplacian(rAUf, p') = div(phi)`，`p'` 继承 `p` 的 BC
@@ -277,7 +277,9 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
    即 OpenFOAM 的 `phi -= pEqn.flux()`，见 5.6），校正后的 `phi` 在散度
    意义下按构造为零；
 5. 收敛判据：预测通量散度 `contErr`；当动量欠松弛使 `contErr` 出现
-   滞后地板时，用 `|p'|` 衰减作为真实的外迭代收敛信号（`pcorrTol`）。
+   滞后地板时，用 `|p'|` 衰减作为真实的外迭代收敛信号（`pcorrTol`）；
+   两个分支都要过**动量残差**门 `momentumTol`——一次外迭代里
+   `max|U − Uold|/max|U|`（动量欠松弛 + 压力校正响应的总固定点变化）。
 
 两个刻在实现里的经验结论（回归历史，勿回退）：
 
@@ -289,15 +291,19 @@ BiCGStab，支持外迭代（非正交修正次数）与欠松弛。矩阵为广
   Jacobi 缩放隐式地对压力做了欠松弛，是经典 SIMPLE 的稳定选择。
   代价是预测散度存在与滞后成正比的地板值，因此测试用 `pcorrTol` 判收敛。
 
-两条 M3 期间实测出来的**已知限制**（不是 bug，后续要处理）：
+一条 M3 期间实测出来的**已知限制**（不是 bug，后续要处理）：
 
 - 压力场在 Jacobi 尺度上累加，因此物理量由**流向压力梯度**决定的算例，
-  速度场先收敛、`p` 远慢于它；需要一致动量插值（Rhie-Chow）才能让压力与
-  通量同速收敛；
-- 收敛判据只看连续性，而动量平衡不在其中：流向均匀的算例（单列渠道，
-  所有 `phi` 恒为 0）在第 1 次外迭代就读到 `continuity 0` 并退出，壁面剪
-  切还没进入平衡。湍流渠道回归因此用 PISO 跑同一套物理——时间尺度会保
-  住耦合；给 SIMPLE 加动量残差判据是后续的独立改动。
+  速度场先收敛、`p` 远慢于它（实测 `poiseuilleChannel` 停在 `|p'|=1.4e-4`
+  时 `dU` 已到 `5.5e-5`）；需要一致动量插值（Rhie-Chow）才能让压力与通量
+  同速收敛。
+
+曾经的两条里的另一条已修：**只看连续性判不了动量平衡**——流向均匀的单列
+渠道所有 `phi` 恒为 0，第 1 次外迭代就读到 `continuity 0` 并退出，壁面剪
+切还没进入平衡（实测关掉 `momentumTol` 时 1 次迭代即"收敛"，`u_τ` 只有
+0.554，对积分平衡差 11%）。加入 `momentumTol` 门后同一个算例在
+chflow-simple-foam 下 ~30 次外迭代收敛（k-ε 27 次、SST 39 次），`u_τ` 与
+拖力平衡符合到 3e-7，与 PISO 750 步的定常解一致（Ub 10.96 vs 11.10）。
 
 ### 5.6 压力修正公共件 `pressureCorrection.cpp`
 SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个离散连续方程**：
@@ -341,7 +347,11 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
 ### 5.8 应用与 IO
 - `chflow-scalar-transport <case.dict>`：速度驱动的对流扩散标量求解
   （`fvm::ddt + fvm::div + fvm::laplacian` 一次求解）；
-- `chflow-simple-foam <case.dict>`：不可压 SIMPLE；
+- `chflow-simple-foam <case.dict>`：不可压定常 SIMPLE，`simple{maxIterations
+  continuityTol pcorrTol momentumTol nonOrthCorrectors relaxU relaxP force}`，
+  逐次外迭代打印 `continuity / corrected / |p'| / dU`，收尾 `SIMPLE done:
+  iterations ... continuity ... momentum ... (converged|NOT converged)`；
+  退出码即收敛标志；
 - `chflow-piso-foam <case.dict>`：不可压瞬态 PISO，`piso{dt endTime
   correctors continuityTol linearTol linearMaxIter nonOrthCorrectors
   reportEvery force}`，步进循环 `dt = min(dt, endTime − t)`，逐步打印
@@ -491,16 +501,19 @@ vtu 额外写 `nut`/`k`/耗散变量，收尾打印 `u_tau / y+ mean / y+ max`�
     （早期相对误差 8.7e-3，为 Euler 一阶时间离散；后半程 2.8e-7）、
     终态剖面逐点等于离散抛物线（1.4e-8）、壁面偏移实测等于
     `(a/2nu)(dy/2)²`、校正后散度 1.4e-18）
-  - `turbulentChannel`（充分发展湍流平面渠道，1×16×1 单列、体积力驱动、
-    `y+ ≈ 52`、750 步 / 0.5 s，两个模型各跑一遍）：壁面剪应力对积分平衡
-    `u_τ² = f·δ`（k-ε 2.2e-5、SST 3.7e-4 相对误差）、首格 `u+` 对 Spalding
-    对数率（2.7e-7 与 6.2e-7，说明壁面链在整条求解链上是自洽的）、剖面对称
-    单调、`u_tau/y+` 落在壁面函数区间、终态漂移 <1%、壁面单元的平衡对与
-    `nut = κu_τy` 从 vtu 复核；摩阻对 Pope 光滑平板律
-    `1/√f = 2log10(Re_b√f) − 0.6` 的偏差为 k-ε −14.5%、SST +5.4%
-    （`Ub/u_τ` 17.8 与 21.9，期望 20.8）——8 个单元跨过 `y+ = 52` 到中心线的
-    网格只能把这个数核对到网格自己的精度，因此带宽取 20%，而近壁闭合严格核
-    查。checker 把 case 复制到临时目录再改 `model`，产物不落进仓库。
+  - `turbulentChannel` / `turbulentChannelSimple`（充分发展湍流平面渠道，
+    1×16×1 单列、体积力驱动、`y+ ≈ 52`；同一个 case 带 `piso{}` 与 `simple{}`
+    两个块，两个 app 各读自己的，两个模型各跑一遍）：壁面剪应力对积分平衡
+    `u_τ² = f·δ`（PISO k-ε 2.2e-5、SST 3.7e-4；SIMPLE 两者 3.2e-7）、首格 `u+`
+    对 Spalding 对数率（说明壁面链在整条求解链上是自洽的）、剖面对称单调、
+    `u_tau/y+` 落在壁面函数区间、壁面单元的平衡对与 `nut = κu_τy` 从 vtu 复核；
+    定常性判据按耦合分别读取——瞬态看末两次 `uMax` 漂移 <1%，SIMPLE 看
+    `momentum`（动量固定点变化）；摩阻对 Pope 光滑平板律
+    `1/√f = 2log10(Re_b√f) − 0.6` 的偏差为 PISO k-ε −14.5%、SST +5.4%，
+    SIMPLE k-ε −15.5%、SST +6.2%（`Ub/u_τ` 17.6~22.1，期望 20.8）——8 个单元
+    跨过 `y+ = 52` 到中心线的网格只能把这个数核对到网格自己的精度，因此带宽取
+    20%，而近壁闭合严格复查。checker 把 case 复制到临时目录再改 `model`，剖面
+    一律从 vtu 质心取（两种耦合因此比的是同一组数），产物不落进仓库。
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

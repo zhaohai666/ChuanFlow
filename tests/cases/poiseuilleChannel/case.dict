@@ -41,6 +41,9 @@ simple
     // the predictor-continuity residual; |p'| decay is the true outer
     // convergence signal, so the case stops on it.
     pcorrTol      1.4e-4;
+    // the velocity has to have stopped changing too; measured 5.5e-5 at the
+    // iteration this case stops on, so it gates without delaying
+    momentumTol   1e-4;
     relaxU        0.9;
     relaxP        0.8;
 }

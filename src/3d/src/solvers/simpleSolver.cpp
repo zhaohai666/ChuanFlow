@@ -71,9 +71,10 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         for (label c = 0; c < nC; ++c)
         {
             const std::size_t u = static_cast<std::size_t>(c);
+            const Vector rhs = vol[u] * (ctl.bodyForce - gradP[u]);
             for (int comp = 0; comp < 3; ++comp)
             {
-                UEqn.addRhs(c, comp, -vol[u] * gradP[u][comp]);
+                UEqn.addRhs(c, comp, rhs[comp]);
             }
         }
 
@@ -102,18 +103,11 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         // update and SIMPLE oscillates; this Jacobi-style scale under-relaxes
         // the pressure implicitly and is the stable classic-SIMPLE choice.
         //
-        // Known limits (M3), both measured rather than assumed:
-        //  - because p accumulates on this damped scale, a case whose physics is
-        //    set by the streamwise pressure gradient converges its velocity
-        //    field long before its pressure field;
-        //  - the continuity criterion says nothing about the momentum balance,
-        //    so a streamwise-uniform case (a single-column channel, where every
-        //    phi is zero) reads continuity 0 on the first iteration and stops
-        //    before the wall shear has been felt.
-        // The first needs a consistent momentum interpolation (Rhie-Chow); the
-        // second a residual on U itself. Until then the turbulent channel
-        // regression runs the same physics as a transient in pisoFoam, where the
-        // time scale keeps the coupling honest.
+        // Known limit (M3), measured rather than assumed: because p accumulates
+        // on this damped scale, a case whose physics is set by the streamwise
+        // pressure gradient converges its velocity field long before its
+        // pressure field. Closing that gap needs a consistent momentum
+        // interpolation (Rhie-Chow), not a tighter tolerance.
         Field<scalar> rAU(static_cast<std::size_t>(nC));
         {
             const auto& d = UEqn.aDiag(0);
@@ -168,10 +162,28 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
 
         const scalar errAfter = continuityError(mesh, phi);
 
+        // The fixed-point change of the whole velocity update -- momentum
+        // relaxation plus the pressure-correction response. It is the only
+        // signal here that speaks to the momentum balance: continuity can be
+        // satisfied by a velocity field that has nothing to do with the forces,
+        // which a streamwise-uniform case makes explicit -- every phi is zero,
+        // so continuity reads 0 on iteration 1 and the wall shear is never felt.
+        // Gating on it, a force-driven wall-function channel converges as a
+        // steady problem in about 30 iterations.
+        scalar uMax = 0, dUMax = 0;
+        for (label c = 0; c < nC; ++c)
+        {
+            const std::size_t u = static_cast<std::size_t>(c);
+            uMax = std::max(uMax, mag(U.internalField()[u]));
+            dUMax = std::max(dUMax, mag(U.internalField()[u] - UOld[u]));
+        }
+        const scalar uRes = dUMax / std::max(uMax, 1e-300);
+
         log::info("SIMPLE iter ", iter, ": continuity ", contErr,
-                  " (corrected ", errAfter, ", p' ", pPrimeMax, ")");
+                  " (corrected ", errAfter, ", p' ", pPrimeMax, ", dU ", uRes, ")");
         result.iterations = iter;
         result.finalContinuityError = contErr;
+        result.finalMomentumResidual = uRes;
         if (!std::isfinite(contErr) || !std::isfinite(pPrimeMax) || !fieldsFinite(U, p))
         {
             log::error("SIMPLE: diverged at iteration ", iter);
@@ -185,10 +197,13 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         // A diverging coupling can also pass through a small-p' iteration, so
         // the |p'| stop needs continuity to have stopped growing, and it is
         // only consulted once the initial transient has been resolved.
+        // momentumTol then gates both branches on the velocity having settled.
         const bool settled = contErr <= bestContErr;
         bestContErr = std::min(bestContErr, contErr);
-        if (contErr < ctl.continuityTol ||
-            (iter >= 5 && ctl.pcorrTol > 0 && pPrimeMax < ctl.pcorrTol && settled))
+        const bool momentumSettled = !(ctl.momentumTol > 0) || uRes <= ctl.momentumTol;
+        if (momentumSettled &&
+            (contErr < ctl.continuityTol ||
+             (iter >= 5 && ctl.pcorrTol > 0 && pPrimeMax < ctl.pcorrTol && settled)))
         {
             result.converged = true;
             break;

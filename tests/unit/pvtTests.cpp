@@ -6,6 +6,7 @@
 #include <iostream>
 #include <vector>
 
+#include "cf/pvt/BlackOil.h"
 #include "cf/pvt/Flash.h"
 #include "cf/pvt/PengRobinson.h"
 #include "cf/pvt/PvtCase.h"
@@ -230,6 +231,125 @@ int main()
         CHECK(rho.sample(1.2e7, 330.0) < rho.sample(1.2e7, 320.0)
               && rho.sample(1.2e7, 320.0) < rho.sample(1.2e7, 310.0),
               "single-phase density falls with temperature");
+    }
+
+    // ---- black-oil correlations: anchors transcribed independently from the
+    //      published formulas (whitson wiki bopvt, Ahmed ch. 2) ----
+    {
+        // Standing pb: Rs=350 scf/stb, gg=0.75, 30 API, 160 F
+        CHECK(relNear(standingBubblePointPsia(0.75, 30, 160, 350),
+                      1736.2810988821, 1e-9),
+              "Standing pb anchor");
+        CHECK(standingBubblePointPsia(0.75, 30, 160, 400)
+                  > standingBubblePointPsia(0.75, 30, 160, 350),
+              "Standing pb grows with Rs");
+        CHECK(standingBubblePointPsia(0.75, 30, 160, 0.0) == 0.0,
+              "Standing pb clamps at zero for dry oil");
+
+        // Vazquez-Beggs Rs and Bo
+        CHECK(relNear(vazquezBeggsRsScfStb(2000.0, 0.75, 30, 160),
+                      384.5605771515, 1e-9),
+              "VB Rs anchor");
+        CHECK(vazquezBeggsRsScfStb(3000.0, 0.75, 30, 160)
+                  > vazquezBeggsRsScfStb(1000.0, 0.75, 30, 160),
+              "VB Rs grows with pressure");
+        const double pbAnchor = standingBubblePointPsia(0.75, 30, 160, 350);
+        const double bob = vazquezBeggsBoRbStb(pbAnchor, 350, pbAnchor,
+                                               0.75, 30, 160);
+        CHECK(relNear(bob, 1.208381, 1e-9), "VB Bo at the bubble point");
+        CHECK(vazquezBeggsBoRbStb(0.5 * pbAnchor, 150, pbAnchor, 0.75, 30, 160)
+                  < bob,
+              "Bo below pb is smaller than Bob");
+        CHECK(relNear(vazquezBeggsBoRbStb(pbAnchor + 1000, 350, pbAnchor,
+                                          0.75, 30, 160),
+                      1.1906793708, 1e-8),
+              "undersaturated Bo shrinks above pb");
+
+        // Beggs-Robinson viscosity: gas thins the live oil
+        const double muDead = beggsRobinsonDeadOilCp(30, 160);
+        CHECK(relNear(muDead, 4.3451707363, 1e-9), "BR dead-oil anchor");
+        const double muLive = beggsRobinsonLiveOilCp(muDead, 350);
+        CHECK(relNear(muLive, 1.2256765162, 1e-9), "BR live-oil anchor");
+        CHECK(muLive < muDead, "dissolved gas thins the oil");
+        CHECK(beggsRobinsonDeadOilCp(30, 220) < muDead,
+              "dead oil thins with temperature");
+        CHECK(beggsRobinsonDeadOilCp(40, 160) < muDead,
+              "lighter oil is thinner");
+
+        // Lee-Gonzalez-Eakin gas viscosity: MW=20, 600 R, 0.05 g/cm3
+        CHECK(relNear(leeGasViscosityCp(20.0, 600.0, 0.05),
+                      0.0133743728, 1e-8),
+              "Lee gas-viscosity anchor");
+
+        // DAK Z on Standing pseudo-criticals: gg=0.65 -> Tpc 373.97 R,
+        // Ppc 670.91 psia; the chart U-shape (Z dips below 1, then rises)
+        double ppc = 0, tpc = 0;
+        standingPseudoCritical(0.65, ppc, tpc);
+        CHECK(relNear(tpc, 373.96875, 1e-12) && relNear(ppc, 670.90625, 1e-12),
+              "Standing pseudo-criticals");
+        CHECK(relNear(dranchukAbouKassemZ(2000.0, 660.0, ppc, tpc),
+                      0.885965, 1e-5),
+              "DAK Z anchor (chart mid-range)");
+        CHECK(std::abs(dranchukAbouKassemZ(14.7, 660.0, ppc, tpc) - 1.0) < 0.01,
+              "DAK Z -> ideal gas at atmospheric pressure");
+        const double zDeep = dranchukAbouKassemZ(2000.0, 520.0, ppc, tpc);
+        CHECK(zDeep < 0.85 && zDeep > 0.6, "DAK Z dips below one when cold");
+        CHECK(dranchukAbouKassemZ(8000.0, 520.0, ppc, tpc) > 1.1,
+              "DAK Z rises above one when squeezed");
+        // monotone through the U: the well isothermal stays single-valued
+        CHECK(dranchukAbouKassemZ(500.0, 660.0, ppc, tpc)
+                  > dranchukAbouKassemZ(1000.0, 660.0, ppc, tpc),
+              "Z falls with pressure below the dip");
+    }
+
+    // ---- black-oil SI adapter: material balance and phase split ----
+    {
+        BlackOilFluid f;
+        f.gasGravity = 0.75;
+        f.oilDensityStd = 850.0;
+        f.gorStd = 100.0; // sm3/sm3
+        f.temperature = 350.0;
+        f.surfaceTension = 0.025;
+
+        // one stock-tank sm3 of oil carries oil + dissolved/free gas mass;
+        // below pb that mass is constant along the isotherm
+        const double massPerSm3 = blackOilMassPerOilSm3(f);
+        CHECK(relNear(massPerSm3, 941.8743123428, 1e-9),
+              "mass per stock-tank sm3 (oil + dissolved gas at std)");
+        const BlackOilState lo = evaluateBlackOil(f, 3.0e6);
+        const BlackOilState hi = evaluateBlackOil(f, 2.0e7); // above pb
+        CHECK(lo.freeGas > 0.0 && hi.freeGas == 0.0,
+              "free gas appears below pb only");
+        CHECK(lo.rs < f.gorStd && hi.rs == f.gorStd,
+              "dissolved gas saturates at pb");
+        // saturated-oil identity (Ahmed eq. 2-63) at full GOR: above pb the
+        // oil phase carries all the gas, so rho*Bo is the SI mapping of
+        // (350 gamma_o + 0.0764 gamma_g GOR) / 5.615 lb/ft3
+        const double gammaO = 850.0 / 999.014;
+        const double massPerStbLb = 350.0 * gammaO
+                                  + 0.0764 * 0.75 * 100.0 * 5.614583;
+        CHECK(relNear(hi.rhoOil * hi.bo,
+                      massPerStbLb / 5.6145833 * 16.0184634, 1e-9),
+              "saturated-oil density identity at full GOR");
+        CHECK(lo.rhoOil * lo.bo < hi.rhoOil * hi.bo,
+              "oil phase gains dissolved-gas mass as pressure rises");
+        CHECK(lo.rhoOil > 550.0 && lo.rhoOil < 900.0,
+              "live-oil density plausible");
+        CHECK(lo.bo > 1.0, "oil swells with dissolved gas");
+        CHECK(lo.bg > 0.0 && lo.bg > hi.bg, "gas FVF shrinks with pressure");
+        CHECK(lo.rhoGas < 100.0 && lo.rhoGas > 1.0, "gas density plausible");
+        CHECK(lo.muOil > 1e-4 && lo.muOil < 0.05, "live-oil viscosity plausible");
+        CHECK(lo.muGas > 5e-6 && lo.muGas < 3e-5, "gas viscosity plausible");
+        CHECK(lo.z > 0.7 && lo.z < 1.0, "gas Z in the chart range");
+
+        // water blends by volume; the mixture viscosity is a log blend
+        f.waterCut = 0.5;
+        f.waterDensity = 1020.0;
+        f.waterViscosity = 5e-4;
+        double rhoL = 0, muL = 0;
+        blackOilLiquid(f, lo, rhoL, muL);
+        CHECK(rhoL > lo.rhoOil && rhoL < 1020.0, "liquid density between phases");
+        CHECK(muL < lo.muOil && muL > 5e-4, "liquid viscosity between phases");
     }
 
     // ---- case dictionary ----

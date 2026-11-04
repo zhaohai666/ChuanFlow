@@ -5,6 +5,9 @@
 #include <limits>
 
 #include "cf/common/Error.h"
+#include "cf/common/Log.h"
+
+#include "cf/1d/BeggsBrill.h"
 
 #include "DenseSolve.h"
 
@@ -208,8 +211,18 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
         {
             const NetworkPipe& pipe = net.pipes[k];
             PipeFlowResult fr;
-            solvePipeFlow(pipe, net.fluid, pAll[static_cast<std::size_t>(pipe.from)]
-                                        - pAll[static_cast<std::size_t>(pipe.to)], fr);
+            if (net.hasBlackOil)
+            {
+                solvePipeFlowTwoPhase(pipe, net.blackOil,
+                                      pAll[static_cast<std::size_t>(pipe.from)],
+                                      pAll[static_cast<std::size_t>(pipe.to)], fr);
+            }
+            else
+            {
+                solvePipeFlow(pipe, net.fluid,
+                              pAll[static_cast<std::size_t>(pipe.from)]
+                            - pAll[static_cast<std::size_t>(pipe.to)], fr);
+            }
             if (withJacobian) res.pipeFlows[k] = fr;
             const label a = unk[static_cast<std::size_t>(pipe.from)];
             const label b = unk[static_cast<std::size_t>(pipe.to)];
@@ -249,17 +262,41 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
             for (std::size_t i = 0; i < r.size(); ++i) negR[i] = -r[i];
             detail::solveDenseLinear(j, negR);
             const std::vector<double> pOld = p;
-            for (std::size_t i = 0; i < nFree; ++i) p[i] += ctl.relax * negR[i];
-            maxRes = evaluate(p, r, j, true);
-            // crude line search: the friction law is monotone, so a full
-            // Newton step normally wins; halve only on clear growth
-            int halvings = 0;
-            while (maxRes > 1.5 * res.residual && halvings < 6)
+            // Globalization along the Newton ray. The two-phase law has a
+            // static-head knee: below it the residual is a flat plateau
+            // (Q = 0), so no strict decrease exists until the knee is
+            // crossed. Accept equal-residual trials on the plateau - the
+            // direction there consistently pushes the source node up and
+            // the iterate climbs to the knee - but require strict decrease
+            // once live. Trials leaving the physical domain (non-finite or
+            // non-positive pressure) are skipped.
+            bool moved = false;
+            for (int step = 0; step < 16 && !moved; ++step)
             {
+                const double t = step < 12 ? std::pow(0.5, step)
+                                           : std::pow(2.0, step - 11);
+                std::vector<double> pTry = pOld;
+                bool feasible = true;
                 for (std::size_t i = 0; i < nFree; ++i)
-                    p[i] = pOld[i] + ctl.relax * negR[i] * std::pow(0.5, halvings + 1);
+                {
+                    pTry[i] += ctl.relax * negR[i] * t;
+                    if (!(pTry[i] > 0.0) || !std::isfinite(pTry[i]))
+                        feasible = false;
+                }
+                if (!feasible) continue;
+                maxRes = evaluate(pTry, r, j, true);
+                if (maxRes <= res.residual)
+                {
+                    p = pTry;
+                    moved = true;
+                }
+            }
+            if (!moved)
+            {
+                // trials overwrote r/j with the last rejected trial's
+                // state; restore them for the point we keep
+                p = pOld;
                 maxRes = evaluate(p, r, j, true);
-                ++halvings;
             }
             res.residual = maxRes;
             res.relativeResidual = maxRes / qScale;
@@ -278,12 +315,181 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
     for (std::size_t k = 0; k < net.pipes.size(); ++k)
     {
         const NetworkPipe& pipe = net.pipes[k];
-        solvePipeFlow(pipe, net.fluid,
-                      res.nodePressure[static_cast<std::size_t>(pipe.from)]
-                    - res.nodePressure[static_cast<std::size_t>(pipe.to)],
-                      res.pipeFlows[k]);
+        if (net.hasBlackOil)
+        {
+            solvePipeFlowTwoPhase(pipe, net.blackOil,
+                                  res.nodePressure[static_cast<std::size_t>(pipe.from)],
+                                  res.nodePressure[static_cast<std::size_t>(pipe.to)],
+                                  res.pipeFlows[k]);
+        }
+        else
+        {
+            solvePipeFlow(pipe, net.fluid,
+                          res.nodePressure[static_cast<std::size_t>(pipe.from)]
+                        - res.nodePressure[static_cast<std::size_t>(pipe.to)],
+                          res.pipeFlows[k]);
+        }
     }
     return res;
+}
+
+namespace
+{
+
+/// Largest root of g(q) = march(pUp, q).pOutlet - pLow via Illinois. The
+/// BB gradient is U-shaped in q - holdup relief lowers the required drop
+/// before friction raises it - so g can vanish several times and the
+/// stable operating point is the largest root. Bracketing from q=0
+/// instead latches onto the near-zero root whenever the static surplus is
+/// smaller than the low-rate friction hump, and the pipe law then jumps
+/// between branches as the pressures move. `choked` when the march hit
+/// the floor at the upper bracket.
+double twoPhaseRateForDrop(const NetworkPipe& pipe,
+                           const pvt::BlackOilFluid& fluid, double pUp,
+                           double pLow, double sinFlow, bool& choked)
+{
+    choked = false;
+    const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
+    const double pFloor = std::max(0.02 * pUp, 1000.0);
+    auto g = [&](double q)
+    {
+        const BeggsBrillMarchOut m = marchBeggsBrillPipe(
+            fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness,
+            sinFlow, 24);
+        // choked marches return the floor shortfall: continuous with the
+        // unchoked branch (there pOutlet -> pFloor) and correctly scaled
+        // for the secant, unlike a fixed sentinel
+        return m.ok ? m.pOutlet - pLow : pFloor - pLow;
+    };
+
+    // climb the rate axis until a negative sample sits above a positive
+    // one; that bracket ends at the largest root
+    const double qSeed = std::max(1e-3 * area, 1e-8);
+    const double g0 = g(0.0);
+    double qLo = 0.0, fLo = g0;
+    double qHi = qSeed, fHi = g(qHi);
+    int expansions = 0;
+    while (!(fHi <= 0.0 && qLo > 0.0))
+    {
+        if (fHi > 0.0)
+        {
+            qLo = qHi;
+            fLo = fHi;
+        }
+        else if (qLo <= 0.0 && expansions >= 20)
+            break; // no gas-lift dip within reach
+        qHi *= 4.0;
+        fHi = g(qHi);
+        if (++expansions > 60)
+        {
+            choked = true; // pathological: no rate within range
+            return qHi;
+        }
+    }
+    if (qLo <= 0.0)
+    {
+        // nothing positive above zero: either the static column alone
+        // reaches the low side (root near zero) or the pipe is dead
+        if (g0 <= 0.0) return 0.0;
+        fLo = g0;
+    }
+
+    // Illinois secant between qLo (g>0) and qHi (g<0)
+    double q = qLo + (qHi - qLo) * fLo / (fLo - fHi);
+    for (int it = 0; it < 100; ++it)
+    {
+        const double fq = g(q);
+        if (std::abs(fq) < 1e-7 * pUp) break;
+        if (fq > 0.0)
+        {
+            qLo = q;
+            fLo = fq;
+            // Illinois: bias the retained endpoint against re-selection
+            fLo *= 0.5;
+        }
+        else
+        {
+            qHi = q;
+            fHi = fq;
+            fHi *= 0.5;
+        }
+        const double qNew = qLo + (qHi - qLo) * fLo / (fLo - fHi);
+        if (!(qNew > qLo && qNew < qHi)) q = 0.5 * (qLo + qHi);
+        else q = qNew;
+        if (std::abs(qHi - qLo) < 1e-9 * std::max(qHi, 1e-30)) break;
+    }
+    return q;
+}
+
+} // namespace
+
+bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
+                           const pvt::BlackOilFluid& fluid, double pFrom,
+                           double pTo, PipeFlowResult& out)
+{
+    out = PipeFlowResult{};
+    out.name = pipe.name;
+    out.regime = -1;
+    const double dp = pFrom - pTo;
+    out.dpTotal = dp;
+    if (!(pipe.length > 0) || !(pipe.diameter > 0))
+        return true;
+
+    const bool forward = dp >= 0.0; // flow from -> to when pFrom is higher
+    const double pUp = std::max(pFrom, pTo);
+    const double pLow = std::min(pFrom, pTo);
+    const double sinFlow =
+        (forward ? 1.0 : -1.0) * pipe.elevation / pipe.length;
+
+    bool choked = false;
+    const double q = twoPhaseRateForDrop(pipe, fluid, pUp, pLow, sinFlow, choked);
+
+    const BeggsBrillMarchOut m = marchBeggsBrillPipe(
+        fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness, sinFlow, 24);
+    out.flowRate = forward ? q : -q;
+    out.velocity = m.vmOutlet * (forward ? 1.0 : -1.0);
+    out.holdup = m.holdupOutlet;
+    out.regime = m.regimeMax;
+    out.massRate = m.massRate;
+    out.frictionFactor = m.fTpOutlet;
+    out.choked = choked || !m.ok;
+    out.dpFriction = dp; // gravity is inside the BB gradient
+
+    // conductance dQ/d(dpTotal). One-sided difference probing DEEPER into
+    // the live branch: a central difference straddles the static-head knee
+    // whenever the low side sits within h of it, and the resulting chord
+    // points Newton back into the dead region. From the dead side (q == 0)
+    // probe just past the knee so the step can cross it.
+    const double h = std::max(1e-4 * std::abs(dp), 1.0);
+    double c = 0.0;
+    if (q > 0.0)
+    {
+        bool ch2 = false;
+        const double qDeep = twoPhaseRateForDrop(
+            pipe, fluid, pUp, std::max(pLow - h, 1.0), sinFlow, ch2);
+        c = (qDeep - q) / h;
+    }
+    if (!(c > 0.0))
+    {
+        // below the static head the law is flat at zero flow; probe just
+        // past the knee so Newton still gets a usable slope pointing the
+        // residual downhill
+        const BeggsBrillMarchOut dead =
+            marchBeggsBrillPipe(fluid, 0.0, pUp, pipe.length, pipe.diameter,
+                                pipe.roughness, sinFlow, 24);
+        const double deficit = pLow - dead.pOutlet; // missing pressure
+        if (deficit > 0.0)
+        {
+            bool ch2 = false;
+            const double probeLow = std::max(dead.pOutlet - 0.01 * pUp, 1.0);
+            const double qProbe = twoPhaseRateForDrop(
+                pipe, fluid, pUp, probeLow, sinFlow, ch2);
+            c = qProbe / std::max(pLow - probeLow, 1.0);
+        }
+        if (!(c > 0.0)) c = 1e-6; // keep the network Jacobian nonsingular
+    }
+    out.conductance = c;
+    return true;
 }
 
 OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
@@ -293,10 +499,28 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
     if (caseDict.has("fluid"))
     {
         const Dictionary& fd = caseDict.getDict("fluid");
-        net.fluid.rho = fd.getScalar("rho");
-        net.fluid.mu = fd.getScalar("mu");
+        if (fd.has("blackoil"))
+        {
+            // two-phase mode: sources are stock-tank oil rates, per-pipe
+            // hydraulics come from Beggs-Brill + black-oil PVT
+            const Dictionary& bd = fd.getDict("blackoil");
+            net.hasBlackOil = true;
+            net.blackOil.gasGravity = bd.getScalarOr("gasGravity", net.blackOil.gasGravity);
+            net.blackOil.oilDensityStd = bd.getScalarOr("oilDensity", net.blackOil.oilDensityStd);
+            net.blackOil.gorStd = bd.getScalarOr("gor", net.blackOil.gorStd);
+            net.blackOil.waterCut = bd.getScalarOr("waterCut", net.blackOil.waterCut);
+            net.blackOil.temperature = bd.getScalarOr("temperature", net.blackOil.temperature);
+            net.blackOil.surfaceTension = bd.getScalarOr("surfaceTension", net.blackOil.surfaceTension);
+            if (!(net.blackOil.oilDensityStd > 0))
+                cfFatal("steadyNetwork: blackoil needs positive oilDensity");
+        }
+        else
+        {
+            net.fluid.rho = fd.getScalar("rho");
+            net.fluid.mu = fd.getScalar("mu");
+        }
     }
-    if (!(net.fluid.rho > 0) || !(net.fluid.mu > 0))
+    if (!net.hasBlackOil && (!(net.fluid.rho > 0) || !(net.fluid.mu > 0)))
         cfFatal("steadyNetwork: fluid needs positive rho and mu");
 
     if (caseDict.has("nodes"))

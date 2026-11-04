@@ -114,9 +114,28 @@ converged … residual …`、`pvt liquid|vapour rho … M …`、逐组分
 `pvt x/y <name> <value>`、`pvt bubble T … p …` 与 `pvt table …`
 （12 位有效数字，供 `tests/check_pvt.py` 解析）。
 
-尚未实现（pvt 后续增量）：水合物相平衡/生成条件（HH-2、kJ-i 类）、黑油/
-挥发油分离器、黏度与界面张力模型、非等温（PH/PT 焓耦合）闪蒸，以及把
+尚未实现（pvt 后续增量）：水合物相平衡/生成条件（HH-2、kJ-i 类）、挥发油/
+黑油分离器闪蒸（相关式形式的黑油物性已落地，见 §3.6）、EOS 黏度与界面
+张力模型、非等温（PH/PT 焓耦合）闪蒸，以及把
 pvt 密度直供 1D/3D 求解器（当前一维的 ρ/μ 仍由 case.dict 给定常数）。
+
+### 3.6 黑油物性相关式 `BlackOil.h` / `blackOil.cpp`
+油藏/集输工程标准的黑油（black-oil）物性栈，全部 SI 接口、内部用现场单位
+计算并锚定文献值到 12 位：
+
+- **Standing 泡点压力**（whitson wiki bopvt / Ahmed eq. 2-76；T 用 °F 直进，
+  不做 460/459.67 的舍入差）；
+- **Vazquez-Beggs** `Rs`、`Bo` 与欠饱和压缩系数 `co`（`co` 分母对退化泡点
+  ——死油 Rs=0 给出 pb=0——下限约束到关联式拟合范围，防 bo 指数坍缩）；
+- **饱和油密度**由单 STB 质量守恒闭式（Ahmed eq. 2-63，350γo + 0.0764γgRs
+  除以 5.6146·Bo，ft³/bbl 换算）；
+- **Beggs-Robinson** 死油/活油黏度、**Lee-Gonzalez-Eakin** 气体黏度；
+- **Dranchuk-Abou-Kassem Z**（11 系数）：残差在 Z∈[0.05,3] 连续变号，用
+  区间二分求解（阻尼 Newton 在 ρr≈1 附近发散）；
+- `evaluateBlackOil(fluid, p)` 一次给出 rs/bo/freeGas/bg/z/ρg/μo/μg/μ 混合，
+  `blackOilMassPerOilSm3` 给出地面油单位的管线质量流量换算；
+  单元测试（`tests/unit/pvtTests.cpp`）对上述每条相关式锚定独立 Python
+  转写值，并用 Ahmed 恒等式做交叉验证。
 
 ## 4. src/1d 一维管网内核
 
@@ -141,9 +160,31 @@ pvt 密度直供 1D/3D 求解器（当前一维的 ρ/μ 仍由 case.dict 给定
   `node <name> p <value>` / `pipe <name> Q … v … Re … f … dp …`（12 位有效
   数字，供 `tests/check_steady_network.py` 解析），未收敛返回非零码。
 
-M1 剩余的井筒/热力耦合与环路迭代（对标完整 Pipesim）尚未实现；一维的
-`rho/mu` 目前仍由 case.dict 直接给定，改由 §3 的 pvt 层按 (p, T) 求取属于
-后续增量。
+**两相扩展：黑油 PVT + Beggs-Brill（对标 Pipesim 两相稳态）**。case.dict 的
+`fluid{}` 里写 `blackoil{gasGravity; oilDensity; gor; waterCut; temperature;
+surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³/s）：
+
+- **管道本构**：Beggs-Brill (1973) 流型判别（segregated/transition/
+  intermittent/distributed，过渡区按 A 权重混合）、倾斜修正 ψ 与两相摩阻
+  倍数 S；沿程 24 段 march 从上游压力积分 BB 梯度（每段用局部 p 的黑油
+  物性就地算 λ、HL、ρs），`marchBeggsBrillPipe`（`BeggsBrill.h`）对
+  fluids 库 doctest 黄金锚点（686.9724506803469 Pa/m）吻合到 1e-6；
+- **流量—压降反解**：BB 梯度对流量是 U 形的（持液率释压先降、摩阻后升），
+  `g(q)=p_out(q)−p_low` 有多个根；根查找从高流量端向下括住**最大根**（稳定
+  支），避免从 q=0 括到静液柱附近的近零根导致管 law 在分支间跳变——
+  这是两相管网 Newton 收敛的关键；
+- **管网方程组**：同一套节点法 Newton；雅可比电导取单向差分（探针伸向
+  活流分支深处，不跨越静液柱拐点），死支（q=0）用拐点弦电导并回退
+  1e-6 保非奇异；全局化线搜索接受死区平台上的等残差步（方向一致地推向
+  拐点），活流分支要求严格下降，出物理域（压力非正/非有限）的试步跳过；
+- **回归**：`tests/cases/steadyNetworkMultiphase/case.dict` 两井集输 + 
+  `tests/check_steady_network_multiphase.py`（流量/质量平衡到 1e-9、HL∈(0,1]、
+  流型合法、与 gor=0 干油对照：气体抬升水平管压降）；单元测试另含纯液/
+  纯气退化（精确 Darcy-Weisbach + 重位）、`solvePipeFlowTwoPhase` 闭合差
+  与两端管网一致（<5 Pa）。
+
+M1 剩余的井筒/热力耦合与环路迭代（对标完整 Pipesim）尚未实现；单相模式的
+`rho/mu` 仍由 case.dict 直接给定，黑油模式下物性由 §3.6 按 (p) 实时求取。
 
 ### 4.2 瞬态水力 + 持液率输运 + 水合物动力学（M2 首增量）
 

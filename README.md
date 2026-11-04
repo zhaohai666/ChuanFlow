@@ -144,6 +144,8 @@ print(result.pressure_profile)
 
 ## 🚀 开发路线（Milestone）
 - M1：一维稳态管网求解器 + Python绑定 + CLI，对标基础Pipesim算例，完成基准校验 ✅
+  （黑油 PVT 相关式 + Beggs-Brill 两相管流已接入稳态管网：井筒/集输两相压力分布、
+  流型与持液率，两相算例与干气对照回归全绿）
 - M2：一维瞬态多相求解，实现段塞基础模型、水合物计算，对标OLGA简单工况 🚧
   （瞬态水力 + 段塞持液率输运 + 水合物等温动力学 + 3 个解析回归已落地，
   真两相动量交换与热力耦合待做）
@@ -156,8 +158,10 @@ print(result.pressure_profile)
   两个解析回归）已落地，MPI 并行与 Eigen/PETSc 后端待做）
 - 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
-  `chflow-pvt` 应用 + Python 绑定 + CLI 已落地，EOS 内部不变量与解析回归全绿；
-  水合物相平衡/生成条件、黏度与界面张力、非等温闪蒸、以及把密度实时供给
+  黑油物性相关式（Standing 泡点、Vazquez-Beggs Rs/Bo/co、Beggs-Robinson 与
+  Lee 黏度、DAK Z）+ `chflow-pvt` 应用 + Python 绑定 + CLI 已落地，
+  EOS 内部不变量与解析回归全绿；
+  水合物相平衡/生成条件、EOS 黏度与界面张力、非等温闪蒸、以及把密度实时供给
   1D/3D 求解器待做）
 - M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口 🚧
   （VOF 连续表面力 CSF 与 PISO 动量耦合（静止液滴 Laplace 压差算例）与两相

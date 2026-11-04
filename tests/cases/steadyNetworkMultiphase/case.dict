@@ -1,0 +1,50 @@
+// Steady black-oil two-phase gathering network: two gas-lifted wells into a
+// manifold, one line to a fixed-pressure terminal. Sources are stock-tank oil
+// rates (sm3/s); every pipe is solved as an isothermal Beggs-Brill pipe fed
+// by the black-oil PVT layer. The fluid sits below its bubble point at
+// network pressures, so all three pipes carry free gas. Physics checks live
+// in tests/check_steady_network_multiphase.py; the correlation constants
+// themselves are anchored by tests/unit/networkTests.cpp against the fluids
+// library golden value.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.75;
+        oilDensity     850;
+        gor            80;    // sm3/sm3
+        waterCut       0;
+        temperature    340;   // K, isothermal
+        surfaceTension 0.025; // N/m
+    }
+}
+
+nodes
+{
+    W1 {};
+    W2 {};
+    M {};
+    Outlet { pressure 4.0e6; }
+}
+
+pipes
+{
+    //  W1 --(climbs 60 m)--> M
+    P1 { from W1; to M;    length 1200; diameter 0.08; roughness 4.6e-5; elevation 60; }
+    //  W2 --(climbs 90 m)--> M
+    P2 { from W2; to M;    length 1500; diameter 0.08; roughness 4.6e-5; elevation 90; }
+    //  M  ------------------> terminal
+    P3 { from M;  to Outlet; length 800; diameter 0.1; roughness 4.6e-5; elevation 0; }
+}
+
+sources
+{
+    well1 { node W1; rate 0.004; }
+    well2 { node W2; rate 0.002; }
+}
+
+solve
+{
+    maxIter 100;
+    tol     1e-10;
+}

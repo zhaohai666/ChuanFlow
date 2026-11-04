@@ -45,9 +45,24 @@ int main(int argc, char** argv)
         }
         for (const PipeFlowResult& f : res.pipeFlows)
         {
-            log::info("pipe ", f.name, " Q ", num(f.flowRate), " v ", num(f.velocity),
-                      " Re ", num(f.reynolds), " f ", num(f.frictionFactor),
-                      " dp ", num(f.dpTotal));
+            std::string line = "pipe " + f.name + " Q " + num(f.flowRate)
+                             + " v " + num(f.velocity);
+            if (f.regime >= 0)
+            {
+                static const char* regimeName[] = {"segregated", "transition",
+                                                   "intermittent", "distributed"};
+                line += " HL " + num(f.holdup) + " regime "
+                      + std::string(regimeName[f.regime])
+                      + " m " + num(f.massRate);
+                if (f.choked) line += " CHOKED";
+            }
+            else
+            {
+                line += " Re " + num(f.reynolds) + " f "
+                      + num(f.frictionFactor);
+            }
+            line += " dp " + num(f.dpTotal);
+            log::info(line);
         }
 
         log::info("steady solved: iterations=", res.iterations,

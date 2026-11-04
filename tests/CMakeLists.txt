@@ -137,6 +137,15 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetwork/case.dict)
 
+# black-oil Beggs-Brill gathering network: balance, holdup/regime sanity and
+# a dry-oil GOR sensitivity twin
+add_test(
+    NAME verify.steadyNetworkMultiphase
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_network_multiphase.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkMultiphase/case.dict)
+
 foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug")
     list(GET tmode 0 mode)
     list(GET tmode 1 Mode)

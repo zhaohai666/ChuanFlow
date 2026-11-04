@@ -5,6 +5,7 @@
 
 #include "cf/common/Dictionary.h"
 #include "cf/common/Labels.h"
+#include "cf/pvt/BlackOil.h"
 
 namespace cf
 {
@@ -42,6 +43,11 @@ public:
     std::vector<double> nodeExternalRate;  // m3/s injected at the node
     FluidProperties fluid;
     std::vector<NetworkPipe> pipes;
+    // when set, every pipe is solved as an isothermal black-oil two-phase
+    // Beggs-Brill pipe and `sources` rates are stock-tank oil rates
+    // (sm3/s); `fluid` is then unused
+    bool hasBlackOil = false;
+    pvt::BlackOilFluid blackOil;
 
     label addNode(const std::string& name);
     label nodeIndex(const std::string& name) const; // cfFatal if missing
@@ -71,11 +77,18 @@ struct PipeFlowResult
     std::string name;
     double dpTotal = 0;     // p(from) - p(to), Pa
     double dpFriction = 0;  // dpTotal - rho*g*dz
-    double velocity = 0;    // m/s, positive from -> to
+    double velocity = 0;    // m/s, signed from -> to
     double flowRate = 0;    // m3/s
     double reynolds = 0;
     double frictionFactor = 0;
     double conductance = 0; // dQ/d(dpTotal), s
+    double holdup = 0;      // two-phase: outlet liquid volume fraction
+    int regime = -1;        // two-phase: Beggs-Brill regime of the last
+                            // segment (0 segregated, 1 transition,
+                            // 2 intermittent, 3 distributed; -1 single-phase)
+    double massRate = 0;    // two-phase: kg/s, invariant along the pipe
+    bool choked = false;    // two-phase: the march hit the pressure floor at
+                            // the imposed end pressures
 };
 
 struct SteadyNetworkResult
@@ -99,6 +112,16 @@ void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
 
 SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
                                        const SteadyControls& ctl);
+
+/// Beggs-Brill pipe law Q(dpTotal) with absolute end pressures (the black-oil
+/// PVT needs the pressure level, not just the difference): flow runs from the
+/// high-pressure end to the low-pressure end, the rate is solved by a
+/// bracketed secant on the march, and the conductance dQ/d(dpTotal) comes
+/// from a central difference. Q is signed from -> to. Returns false when the
+/// pipe chokes (the march hits the pressure floor before reaching pLow).
+bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
+                           const pvt::BlackOilFluid& fluid, double pFrom,
+                           double pTo, PipeFlowResult& out);
 
 /// Case dictionary grammar (see tests/cases/steadyNetwork/case.dict):
 ///   fluid { rho 850; mu 0.1; }

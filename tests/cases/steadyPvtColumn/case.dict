@@ -1,0 +1,53 @@
+// Steady single-phase network with tabulated properties (fluid { pvt { ... } }):
+// a gas gathering line whose rho(p) collapses along the pipe. The source feeds
+// a free well node, the flowline climbs to a fixed terminal; every pipe is
+// solved by solvePipeFlowPvt (24-segment local energy balance, mass rate fixed
+// by the upstream density, piecewise-linear rho/mu at the local pressure).
+//
+// Measured anchors (chflow-1d-steady, 12-digit output):
+//   p_W = 2168647.51441, p_M = 2033450.42682 (Newton, 13 iters, tol 1e-11)
+//   Q = 0.008 through both pipes (source balance to 1e-12 rel)
+//   Riser  v 1.8756857857 (outlet velocity, above the inlet 1.762),
+//          f 0.0183158376798, dp 135197.087588
+//   checker re-marches each pipe from the reported upstream pressure at the
+//   reported rate and lands on the reported downstream pressure to 2.1e-12
+//   rel (same 24-segment Euler recursion); reported outlet velocity and
+//   Churchill f match to ~1e-12 rel; dp differs from the inlet-density
+//   constant-property law by 2.8% (Riser) / 0.6% (Flowline) — rho(p) active
+
+fluid
+{
+    pvt
+    {
+        pressure ( 1.0e5 5.0e5 1.0e6 2.0e6 4.0e6 );
+        rho      ( 5.0   12.0  25.0  50.0  100.0 );
+        mu       ( 1.0e-5 1.05e-5 1.15e-5 1.3e-5 1.5e-5 );
+    }
+}
+
+nodes
+{
+    W  {}                 // free well head, fed below
+    M  {}                 // free junction
+    T  { pressure 2.0e6; } // fixed terminal
+}
+
+pipes
+{
+    Riser
+    {
+        from W; to M;
+        length 300; diameter 0.076; roughness 4.6e-5;
+        elevation 250;      // uphill first leg
+    }
+    Flowline
+    {
+        from M; to T;
+        length 800; diameter 0.1; roughness 4.6e-5;
+        elevation 60;       // climbing export line
+    }
+}
+
+sources { feed { node W; rate 0.008; } }
+
+solve { maxIter 100; tol 1e-11; }

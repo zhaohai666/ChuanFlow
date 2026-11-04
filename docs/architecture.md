@@ -231,9 +231,28 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
   | `steadyEquipmentPump` | 闭环路（两端等压）：工作点 = 系统曲线∩扬程曲线二次根（q*=3.085629e-4、H=24.1315 m），dpPump = −ρg·H(q*) 与摩阻逐 Pa 相等（回路恒等式），净 dp = 0 |
   | `steadyEquipmentNetwork` | 源率驱动串联网（阀→自由节点→泵 + 10 m 高程→定压终端）：p_J1=72750 / p_W1=173511 对闭式链 1e-6；泵几乎顶平高程（p_J1 < 终端压力）——泵头符号错误的符号测试（差 ~4 bar）|
 
-M1 剩余的环路迭代（对标完整 Pipesim）尚未实现；单相模式的
-`rho/mu` 仍由 case.dict 直接给定，黑油模式下物性由 §3.6 按 (p) 实时求取。
-井筒热力耦合见 §4.3。
+- **表驱动单相物性（PVT 供给 ρ(p)/μ(p)）**：`PvtFluid`（严格递增压力
+  网格 + ρ/μ 表，节点间分段线性、表端钳位；NaN/p≤0 取首条，Newton 早期
+  迭代永不产生坏物性）+ `solvePipeFlowPvt`——与黑油 march 同构：24 段
+  局部机械能平衡 `dp/ds = −ρ(p)g·sinFlow − f(Re(p))·ρ(p)v|v|/(2D)
+  + ρ(p)g·H/L`，**质量流量守恒**（`w = ρ(pUp)·q`，局部 `v = w/(ρA)`，
+  气体沿程膨胀、出口速度 > 进口 q/A）、阀 K 均摊到段、Re/f 取出口值；
+  流量由**单调律的扩括 Illinois secant** 反解（loss 无界增长、静水头有界
+  → 恰一根，无需黑油的取最大根技巧；残差 1e-12·pUp）；电导沿用两相的
+  单侧深探（静水头膝下 Q=0 平台，中心差分会把 Newton 指回死区），死侧
+  探过膝。**平表严格退化为常物性管律**（每段复现同一隐式 law，单位测试
+  对 `solvePipeFlow` 1e-9）；等温气柱（ρ=p/c）静水闭式 `p(h)=p₀exp(−gH/c)`
+  在 Euler 截断 `x²/(2N)` 内成立。网络分派支路 `hasBlackOil > hasPvtFluid
+  > 常物性`；字典 `fluid { pvt { pressure(...); rho(...); mu(...); } }`
+  （等长 ≥2、正值、严格递增，blackoil/pvt 共存即 fatal）。回归
+  `tests/cases/steadyPvtColumn` + `tests/check_steady_pvt.py`：checker 从
+  case 自身的表出发复算 24 段推进，闭合报告的节点压力至 2.1e-12 rel、
+  出口速度/Churchill f 至 ~1e-12 rel，气柱膨胀（出口速度 > q/A）与
+  可压缩性可见性（dp 偏离进口密度常物性律 2.8%/0.6%）双断言。
+
+M1 剩余的环路迭代（对标完整 Pipesim）尚未实现；黑油模式下物性由 §3.6
+按 (p) 实时求取，单相模式物性由 case.dict 常量或上表 `fluid { pvt }`
+供给。井筒热力耦合见 §4.3。
 
 ### 4.2 瞬态水力 + 持液率输运 + 水合物动力学（M2 首增量）
 

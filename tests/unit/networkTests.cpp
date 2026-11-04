@@ -5,6 +5,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <tuple>
 
 #include "cf/1d/BeggsBrill.h"
 #include "cf/1d/Network.h"
@@ -356,6 +357,195 @@ int main()
                                 0.076, 4.6e-5, 30.0 / 800.0, 24);
         CHECK(std::abs(m.pOutlet - 4.0e6) < 5.0,
               "network pressure closes the Beggs-Brill march");
+    }
+
+    // ---- tabulated properties: flat table reproduces the constant law ----
+    {
+        PvtFluid tf;
+        tf.pressure = {1.0e5, 5.0e6};
+        tf.rho = {850.0, 850.0};
+        tf.mu = {0.1, 0.1};
+        CHECK(relNear(tf.density(2.0e6), 850.0, 1e-12)
+                  && relNear(tf.viscosity(2.0e6), 0.1, 1e-12),
+              "flat table interpolates to the constant");
+
+        PvtFluid lin;
+        lin.pressure = {1.0e6, 3.0e6};
+        lin.rho = {800.0, 900.0};
+        lin.mu = {1e-3, 2e-3};
+        CHECK(relNear(lin.density(2.0e6), 850.0, 1e-12), "midpoint rho linear");
+        CHECK(relNear(lin.viscosity(2.0e6), 1.5e-3, 1e-12), "midpoint mu linear");
+        CHECK(relNear(lin.density(1.0e6), 800.0, 1e-12)
+                  && relNear(lin.density(9.0e6), 900.0, 1e-12)
+                  && relNear(lin.density(1.0e5), 800.0, 1e-12),
+              "table clamps outside the grid");
+
+        // flat table: the 24-segment property march must reproduce the
+        // implicit constant-property pipe law (they are the same function
+        // of q, each solved by a secant)
+        NetworkPipe p;
+        p.name = "P"; p.fromName = "A"; p.toName = "B";
+        p.length = 1000; p.diameter = D; p.roughness = 0; p.elevation = 0;
+        for (const double dpTest : {2.0e5, 5.0e5, 1.0e6})
+        {
+            PipeFlowResult fc, fp;
+            solvePipeFlow(p, fluid, dpTest, fc);
+            solvePipeFlowPvt(p, tf, 1.0e6 + dpTest, 1.0e6, fp);
+            CHECK(relNear(fp.flowRate, fc.flowRate, 1e-9),
+                  "flat PVT rate matches the constant-property rate");
+            CHECK(relNear(fp.velocity, fc.velocity, 1e-9),
+                  "flat PVT velocity matches (outlet = inlet when rho const)");
+        }
+        // reverse direction
+        PipeFlowResult fr1, fr2;
+        solvePipeFlow(p, fluid, -5.0e5, fr1);
+        solvePipeFlowPvt(p, tf, 1.0e6, 1.5e6, fr2);
+        CHECK(relNear(fr2.flowRate, fr1.flowRate, 1e-9),
+              "flat PVT reverse flow matches");
+
+        // elevation + valve + pump on the flat table: equipment paths agree
+        NetworkPipe e = p;
+        e.name = "EQ"; e.elevation = 30; e.valveK = 2.0;
+        e.pumpHead = 40; e.pumpRate = 0.05; e.pumpShutoffHead = 45;
+        PipeFlowResult ec, ep;
+        solvePipeFlow(e, fluid, 6.0e5, ec);
+        solvePipeFlowPvt(e, tf, 1.6e6, 1.0e6, ep);
+        CHECK(relNear(ep.flowRate, ec.flowRate, 1e-9),
+              "flat PVT equipment pipe matches (valve + pump + lift)");
+        CHECK(relNear(ep.dpValve, ec.dpValve, 1e-9)
+                  && relNear(ep.dpPump, ec.dpPump, 1e-9),
+              "flat PVT equipment dp reports match");
+    }
+
+    // ---- isothermal gas column: property march vs in-test restatement ----
+    {
+        // rho = p/c (c = R T): the static column is p0 exp(-g H / c); the
+        // march discretises the same ODE, so the test restates the Euler
+        // recursion and the mass-consistent velocity law
+        const double c = 1.0e5;
+        const double H = 100.0, Dg = 0.05, muG = 1.2e-5;
+        const double x = 9.80665 * H / c;
+        PvtFluid gas;
+        gas.pressure = {1.0e5, 2.0e6};
+        gas.rho = {1.0e5 / c, 2.0e6 / c}; // linear between = rho = p/c
+        gas.mu = {muG, muG};
+        NetworkPipe p;
+        p.name = "RISER"; p.fromName = "B"; p.toName = "T";
+        p.length = H; p.diameter = Dg; p.roughness = 0; p.elevation = H;
+
+        auto march = [&](double q, double pUp)
+        {
+            const double area = 0.25 * kPi * Dg * Dg;
+            const double w = pUp / c * q;
+            const double ds = H / 24.0;
+            double pr = pUp;
+            double vOut = 0, reOut = 0, fOut = 0;
+            for (int i = 0; i < 24; ++i)
+            {
+                const double rho = pr / c;
+                vOut = w / (rho * area);
+                reOut = rho * vOut * Dg / muG;
+                fOut = churchillFriction(reOut, 0.0);
+                pr -= rho * 9.80665 * ds + fOut * rho * vOut * vOut
+                    / (2.0 * Dg) * ds;
+            }
+            return std::make_tuple(pr, vOut);
+        };
+
+        // static rest: the column alone overshoots the imposed outlet ->
+        // the law is flat and the rate is exactly zero
+        PipeFlowResult rest;
+        const double pUp = 2.0e6;
+        solvePipeFlowPvt(p, gas, pUp,
+                         pUp * std::exp(-x) * (1.0 + 1e-4), rest);
+        CHECK(rest.flowRate == 0.0, "gas column at static surplus -> no flow");
+        // the Euler static column tracks the exponential closed form
+        // within the first-order truncation x^2/(2*24)
+        CHECK(std::abs(std::get<0>(march(0.0, pUp)) - pUp * std::exp(-x))
+                  < pUp * 1.1 * x * x / 48.0,
+              "static gas column tracks exp(-gH/c) within Euler truncation");
+
+        // live branch: outlet 1e-4 below the static column -> friction
+        // supplies the deficit; invert the same recursion in-test
+        const double pLow = pUp * std::exp(-x) * (1.0 - 1e-4);
+        PipeFlowResult live;
+        solvePipeFlowPvt(p, gas, pUp, pLow, live);
+        CHECK(live.flowRate > 0.0,
+              "deficit below the static column gives flow");
+        double qLo = 0.0, fLo = std::get<0>(march(0.0, pUp)) - pLow;
+        double qHi = 1e-4, fHi = std::get<0>(march(qHi, pUp)) - pLow;
+        while (fHi > 0.0)
+        {
+            qLo = qHi; fLo = fHi;
+            qHi *= 4.0;
+            fHi = std::get<0>(march(qHi, pUp)) - pLow;
+        }
+        double qRef = qLo + (qHi - qLo) * fLo / (fLo - fHi);
+        for (int it = 0; it < 100; ++it)
+        {
+            const double fq = std::get<0>(march(qRef, pUp)) - pLow;
+            if (std::abs(fq) < 1e-12 * pUp) break;
+            if (fq > 0.0) { qLo = qRef; fLo = fq; fLo *= 0.5; }
+            else { qHi = qRef; fHi = fq; fHi *= 0.5; }
+            const double qn = qLo + (qHi - qLo) * fLo / (fLo - fHi);
+            qRef = (qn > qLo && qn < qHi) ? qn : 0.5 * (qLo + qHi);
+        }
+        CHECK(relNear(live.flowRate, qRef, 1e-9),
+              "inverted rate matches the in-test gas-column re-march");
+        // the reported velocity is the OUTLET velocity of the expanding
+        // fill: strictly above the inlet velocity q/A
+        CHECK(live.velocity > live.flowRate / (0.25 * kPi * Dg * Dg),
+              "outlet velocity exceeds the inlet (gas expands)");
+        CHECK(relNear(live.velocity, std::get<1>(march(qRef, pUp)), 1e-9),
+              "reported velocity is the march outlet velocity");
+        CHECK(!live.choked, "gas column does not choke");
+    }
+
+    // ---- PVT network end to end: free junction closed by the march ----
+    {
+        OneDNetwork net;
+        net.hasPvtFluid = true;
+        net.pvtFluid.pressure = {1.0e6, 2.0e6};
+        net.pvtFluid.rho = {10.0, 20.0}; // both nodes on rho = p/1e5, so the
+                                         // linear table IS rho = p/1e5
+        net.pvtFluid.mu = {1.2e-5, 1.2e-5};
+        net.addNode("W");
+        net.addNode("T");
+        net.setNodePressure("T", 1.5e6);
+        net.setNodeRate("W", 0.002);
+        NetworkPipe p;
+        p.name = "FLOWLINE"; p.fromName = "W"; p.toName = "T";
+        p.length = 2000; p.diameter = 0.1; p.roughness = 1e-5; p.elevation = 40;
+        net.addPipe(p);
+
+        SteadyControls ctl;
+        ctl.tol = 1e-11;
+        const SteadyNetworkResult res = solveSteadyNetwork(net, ctl);
+        CHECK(res.converged, "PVT network converged");
+        CHECK(relNear(res.pipeFlows[0].flowRate, 0.002, 1e-9),
+              "PVT mass balance through the line");
+        // the solved well pressure closes the mass-consistent march
+        auto march = [&](double pW)
+        {
+            const double area = 0.25 * kPi * 0.1 * 0.1;
+            const double w = pW / 1.0e5 * 0.002;
+            const double ds = 2000.0 / 24.0;
+            double pr = pW;
+            for (int i = 0; i < 24; ++i)
+            {
+                const double rho = pr / 1.0e5;
+                const double v = w / (rho * area);
+                const double re = rho * v * 0.1 / 1.2e-5;
+                const double f = churchillFriction(re, 1e-5 / 0.1);
+                pr -= rho * 9.80665 * 40.0 / 24.0
+                    + f * rho * v * v / (2.0 * 0.1) * ds;
+            }
+            return pr;
+        };
+        CHECK(std::abs(march(res.nodePressure[0]) - 1.5e6) < 1.0,
+              "network pressure closes the PVT march");
+        CHECK(res.pipeFlows[0].regime == -1,
+              "PVT pipe reports single-phase");
     }
 
     if (failures)

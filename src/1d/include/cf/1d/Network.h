@@ -11,11 +11,27 @@ namespace cf
 {
 
 /// Constant-property single-phase fluid for the 1D network kernel.
-/// Full PVT flash models will live in src/pvt and replace this later.
+/// Property-varying fills use PvtFluid below.
 struct FluidProperties
 {
     double rho = 850.0; // kg/m3
     double mu = 1e-3;   // Pa.s
+};
+
+/// Tabulated single-phase fluid: rho(p) and mu(p) on a strictly ascending
+/// pressure grid, piecewise-linear between nodes and clamped outside the
+/// table ends. The steady pipe law marches the local mechanical-energy
+/// balance with properties evaluated at the local pressure, so a
+/// compressible fill (e.g. an isothermal gas, rho = p/(R T)) contributes
+/// its shrinking density to the gravity head exactly where it acts.
+struct PvtFluid
+{
+    std::vector<double> pressure; // Pa, strictly ascending
+    std::vector<double> rho;      // kg/m3 at those pressures
+    std::vector<double> mu;       // Pa.s at those pressures
+
+    double density(double p) const;
+    double viscosity(double p) const;
 };
 
 struct NetworkPipe
@@ -56,6 +72,11 @@ public:
     // (sm3/s); `fluid` is then unused
     bool hasBlackOil = false;
     pvt::BlackOilFluid blackOil;
+    // tabulated-property single-phase mode (ignored when hasBlackOil is
+    // set): `sources` rates are volumetric m3/s at the upstream end of
+    // each pipe
+    bool hasPvtFluid = false;
+    PvtFluid pvtFluid;
 
     label addNode(const std::string& name);
     label nodeIndex(const std::string& name) const; // cfFatal if missing
@@ -123,6 +144,17 @@ double churchillFriction(double reynolds, double relativeRoughness);
 void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
                    double dpTotal, PipeFlowResult& out);
 
+/// Signed flow through one pipe for given absolute end pressures with
+/// tabulated rho(p)/mu(p): the rate is solved by a bracketed secant on a
+/// segment-wise march of the local energy balance (mass rate fixed by the
+/// upstream density, so the fill expands as the pressure falls), and the
+/// conductance comes from a one-sided probe into the live branch — the
+/// static-head knee leaves a Q = 0 plateau, as in the two-phase law.
+/// Flow always runs from the high-pressure end to the low-pressure end;
+/// Q is signed from -> to.
+bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
+                      double pFrom, double pTo, PipeFlowResult& out);
+
 SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
                                        const SteadyControls& ctl);
 
@@ -147,6 +179,9 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
 ///                pumpShutoffHead 30; } }    // defaults to pumpHead
 ///   sources { s1 { node W1; rate 0.002; } }
 ///   solve { maxIter 100; tol 1e-10; relax 1.0; }
+/// Tabulated-property variant: fluid { pvt { pressure ( 1e5 1e6 4e6 );
+///   rho ( 5 25 100 ); mu ( 1e-5 1.15e-5 1.5e-5 ); } } — piecewise-linear
+/// rho(p)/mu(p), clamped at the table ends.
 OneDNetwork loadNetworkFromDict(const Dictionary& caseDict);
 SteadyControls loadSteadyControls(const Dictionary& caseDict);
 

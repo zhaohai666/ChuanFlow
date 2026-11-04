@@ -31,6 +31,26 @@ double laminarConductance(const NetworkPipe& p, const FluidProperties& fluid)
     return M_PI * std::pow(p.diameter, 4) / (128.0 * fluid.mu * p.length);
 }
 
+/// Piecewise-linear table lookup clamped at both ends (NaN/p <= 0 takes the
+/// first entry, so early Newton iterates can never produce a bad property).
+double pvtLookup(const std::vector<double>& grid,
+                 const std::vector<double>& vals, double p)
+{
+    const std::size_t n = grid.size();
+    if (n == 0) return 0.0;
+    if (!(p > grid[0])) return vals[0];
+    if (p >= grid[n - 1]) return vals[n - 1];
+    std::size_t lo = 0, hi = n - 1;
+    while (hi - lo > 1)
+    {
+        const std::size_t mid = (lo + hi) / 2;
+        if (grid[mid] <= p) lo = mid;
+        else hi = mid;
+    }
+    const double t = (p - grid[lo]) / (grid[hi] - grid[lo]);
+    return vals[lo] + (vals[hi] - vals[lo]) * t;
+}
+
 struct RawFlow
 {
     double velocity = 0; // m/s, signed from -> to
@@ -291,6 +311,12 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
                                       pAll[static_cast<std::size_t>(pipe.from)],
                                       pAll[static_cast<std::size_t>(pipe.to)], fr);
             }
+            else if (net.hasPvtFluid)
+            {
+                solvePipeFlowPvt(pipe, net.pvtFluid,
+                                 pAll[static_cast<std::size_t>(pipe.from)],
+                                 pAll[static_cast<std::size_t>(pipe.to)], fr);
+            }
             else
             {
                 solvePipeFlow(pipe, net.fluid,
@@ -395,6 +421,13 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
                                   res.nodePressure[static_cast<std::size_t>(pipe.from)],
                                   res.nodePressure[static_cast<std::size_t>(pipe.to)],
                                   res.pipeFlows[k]);
+        }
+        else if (net.hasPvtFluid)
+        {
+            solvePipeFlowPvt(pipe, net.pvtFluid,
+                             res.nodePressure[static_cast<std::size_t>(pipe.from)],
+                             res.nodePressure[static_cast<std::size_t>(pipe.to)],
+                             res.pipeFlows[k]);
         }
         else
         {
@@ -566,6 +599,199 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     return true;
 }
 
+double PvtFluid::density(double p) const { return pvtLookup(pressure, rho, p); }
+
+double PvtFluid::viscosity(double p) const { return pvtLookup(pressure, mu, p); }
+
+namespace
+{
+
+/// Segment-wise march of the local mechanical-energy balance
+/// dp/ds = -rho(p) g sinFlow - f(rho v, mu(p)) rho v |v| / (2D)
+///         + rho(p) g H(q)/L
+/// from pUp toward the far end, with rho/mu evaluated at the segment-start
+/// pressure and the valve K spread uniformly over the segments. The mass
+/// rate is fixed by the UPSTREAM density (w = rho(pUp) q), so the local
+/// velocity grows as the fill expands along the pipe; with a constant
+/// table every segment reproduces the constant-property law exactly and
+/// the march coincides with solvePipeFlow's implicit pipe law.
+struct PvtMarchOut
+{
+    bool ok = false;
+    double pOutlet = 0;
+    double velocity = 0; // outlet velocity, flow direction
+    double reynolds = 0; // outlet conditions, as in the BB march
+    double friction = 0;
+};
+
+PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
+                         double qIn, double pUp, double sinFlow, int nSeg)
+{
+    const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
+    const double massRate = fluid.density(pUp) * qIn;
+    const double ds = pipe.length / nSeg;
+    const double dz = sinFlow * ds;
+    const double headPerM = pumpHeadOf(pipe, qIn) / pipe.length;
+    const double pFloor = std::max(0.02 * pUp, 1000.0);
+    PvtMarchOut m;
+    double p = pUp;
+    for (int i = 0; i < nSeg; ++i)
+    {
+        const double rho = fluid.density(p);
+        const double mu = fluid.viscosity(p);
+        const double v = massRate / (rho * area);
+        const double re = rho * v * pipe.diameter / mu;
+        const double f = churchillFriction(re, pipe.roughness / pipe.diameter);
+        m.velocity = v;
+        m.reynolds = re;
+        m.friction = f;
+        const double dp = rho * kGravity * dz
+            + (f * ds / pipe.diameter + pipe.valveK / nSeg) * rho * v * v / 2.0
+            - rho * kGravity * headPerM * ds;
+        p -= dp;
+        if (!(p > pFloor))
+        {
+            m.pOutlet = pFloor;
+            return m; // ok stays false: the fill cannot carry this rate
+        }
+    }
+    m.ok = true;
+    m.pOutlet = p;
+    return m;
+}
+
+/// Rate landing the march on pLow via Illinois. The loss grows without
+/// bound in |q| (friction + the pump curve falling) while the static head
+/// stays bounded, so the law is monotone with a single root: a plain
+/// expanding bracket finds it, unlike the U-shaped two-phase gradient.
+double pvtRateForDrop(const NetworkPipe& pipe, const PvtFluid& fluid,
+                      double pUp, double pLow, double sinFlow, bool& choked)
+{
+    choked = false;
+    const double pFloor = std::max(0.02 * pUp, 1000.0);
+    auto g = [&](double q)
+    {
+        const PvtMarchOut m = marchPvtPipe(pipe, fluid, q, pUp, sinFlow, 24);
+        // floor-crossing marches return the floor shortfall: continuous
+        // with the unchoked branch and correctly scaled for the secant
+        return m.ok ? m.pOutlet - pLow : pFloor - pLow;
+    };
+
+    const double qSeed = std::max(1e-3 * 0.25 * M_PI * pipe.diameter
+                                      * pipe.diameter, 1e-8);
+    const double g0 = g(0.0);
+    if (g0 <= 0.0) return 0.0; // the static column alone reaches the low side
+
+    double qLo = 0.0, fLo = g0;
+    double qHi = qSeed, fHi = g(qHi);
+    int expansions = 0;
+    while (fHi > 0.0)
+    {
+        qLo = qHi;
+        fLo = fHi;
+        qHi *= 4.0;
+        fHi = g(qHi);
+        if (++expansions > 60)
+        {
+            choked = true; // no rate within reach lands on the low side
+            return qHi;
+        }
+    }
+
+    double q = qLo + (qHi - qLo) * fLo / (fLo - fHi);
+    for (int it = 0; it < 100; ++it)
+    {
+        const double fq = g(q);
+        if (std::abs(fq) < 1e-12 * pUp) break;
+        if (fq > 0.0)
+        {
+            qLo = q;
+            fLo = fq;
+            // Illinois: bias the retained endpoint against re-selection
+            fLo *= 0.5;
+        }
+        else
+        {
+            qHi = q;
+            fHi = fq;
+            fHi *= 0.5;
+        }
+        const double qNew = qLo + (qHi - qLo) * fLo / (fLo - fHi);
+        if (!(qNew > qLo && qNew < qHi)) q = 0.5 * (qLo + qHi);
+        else q = qNew;
+        if (std::abs(qHi - qLo) < 1e-12 * std::max(qHi, 1e-30)) break;
+    }
+    return q;
+}
+
+} // namespace
+
+bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
+                      double pFrom, double pTo, PipeFlowResult& out)
+{
+    out = PipeFlowResult{};
+    out.name = pipe.name;
+    out.regime = -1;
+    const double dp = pFrom - pTo;
+    out.dpTotal = dp;
+    if (!(pipe.length > 0) || !(pipe.diameter > 0)
+        || fluid.pressure.size() < 2)
+        return true;
+
+    const bool forward = dp >= 0.0; // flow from -> to when pFrom is higher
+    const double pUp = std::max(pFrom, pTo);
+    const double pLow = std::min(pFrom, pTo);
+    const double sinFlow =
+        (forward ? 1.0 : -1.0) * pipe.elevation / pipe.length;
+    const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
+
+    bool choked = false;
+    const double q = pvtRateForDrop(pipe, fluid, pUp, pLow, sinFlow, choked);
+
+    const PvtMarchOut m = marchPvtPipe(pipe, fluid, q, pUp, sinFlow, 24);
+    out.flowRate = (forward ? 1.0 : -1.0) * q;
+    out.velocity = (forward ? 1.0 : -1.0) * m.velocity;
+    out.reynolds = m.reynolds;
+    out.frictionFactor = m.friction;
+    out.choked = choked || !m.ok;
+    out.dpFriction = dp; // gravity and the property variation are in the march
+    out.dpValve = pipe.valveK * fluid.density(pUp) * std::abs(out.velocity)
+                * out.velocity / 2.0;
+    out.dpPump = -fluid.density(pUp) * kGravity * pumpHeadOf(pipe, q);
+
+    // conductance dQ/d(dpTotal). One-sided difference probing DEEPER into
+    // the live branch: below the static head the law is flat at zero flow
+    // (same knee as the two-phase law), and a central difference straddling
+    // the knee points Newton back into the dead region. From the dead side
+    // (q == 0) probe just past the knee so the step can cross it.
+    const double h = std::max(1e-4 * std::abs(dp), 1.0);
+    double c = 0.0;
+    if (q > 0.0)
+    {
+        bool ch2 = false;
+        const double qDeep = pvtRateForDrop(
+            pipe, fluid, pUp, std::max(pLow - h, 1.0), sinFlow, ch2);
+        c = (qDeep - q) / h;
+    }
+    if (!(c > 0.0))
+    {
+        const PvtMarchOut dead =
+            marchPvtPipe(pipe, fluid, 0.0, pUp, sinFlow, 24);
+        const double deficit = pLow - dead.pOutlet; // missing pressure
+        if (deficit > 0.0)
+        {
+            bool ch2 = false;
+            const double probeLow = std::max(dead.pOutlet - 0.01 * pUp, 1.0);
+            const double qProbe = pvtRateForDrop(
+                pipe, fluid, pUp, probeLow, sinFlow, ch2);
+            c = qProbe / std::max(pLow - probeLow, 1.0);
+        }
+        if (!(c > 0.0)) c = 1e-6; // keep the network Jacobian nonsingular
+    }
+    out.conductance = c;
+    return true;
+}
+
 OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
 {
     OneDNetwork net;
@@ -573,6 +799,8 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
     if (caseDict.has("fluid"))
     {
         const Dictionary& fd = caseDict.getDict("fluid");
+        if (fd.has("blackoil") && fd.has("pvt"))
+            cfFatal("steadyNetwork: fluid cannot be both blackoil and pvt");
         if (fd.has("blackoil"))
         {
             // two-phase mode: sources are stock-tank oil rates, per-pipe
@@ -588,13 +816,41 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             if (!(net.blackOil.oilDensityStd > 0))
                 cfFatal("steadyNetwork: blackoil needs positive oilDensity");
         }
+        else if (fd.has("pvt"))
+        {
+            // tabulated-property single-phase mode: rho(p)/mu(p) come from
+            // the case table (piecewise-linear, clamped at the ends)
+            const Dictionary& pd = fd.getDict("pvt");
+            net.hasPvtFluid = true;
+            net.pvtFluid.pressure = pd.getScalarList("pressure");
+            net.pvtFluid.rho = pd.getScalarList("rho");
+            net.pvtFluid.mu = pd.getScalarList("mu");
+            const std::size_t n = net.pvtFluid.pressure.size();
+            if (n < 2 || net.pvtFluid.rho.size() != n
+                || net.pvtFluid.mu.size() != n)
+                cfFatal("steadyNetwork: fluid pvt needs pressure/rho/mu"
+                        " lists of equal length (at least 2)");
+            for (std::size_t i = 0; i < n; ++i)
+            {
+                if (!(net.pvtFluid.pressure[i] > 0)
+                    || !(net.pvtFluid.rho[i] > 0)
+                    || !(net.pvtFluid.mu[i] > 0))
+                    cfFatal("steadyNetwork: fluid pvt entries must be"
+                            " positive");
+                if (i > 0 && !(net.pvtFluid.pressure[i]
+                               > net.pvtFluid.pressure[i - 1]))
+                    cfFatal("steadyNetwork: fluid pvt pressures must"
+                            " strictly ascend");
+            }
+        }
         else
         {
             net.fluid.rho = fd.getScalar("rho");
             net.fluid.mu = fd.getScalar("mu");
         }
     }
-    if (!net.hasBlackOil && (!(net.fluid.rho > 0) || !(net.fluid.mu > 0)))
+    if (!net.hasBlackOil && !net.hasPvtFluid
+        && (!(net.fluid.rho > 0) || !(net.fluid.mu > 0)))
         cfFatal("steadyNetwork: fluid needs positive rho and mu");
 
     if (caseDict.has("nodes"))

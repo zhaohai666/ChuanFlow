@@ -300,6 +300,16 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkMultiphase/case.dict)
 
+# tabulated-property single-phase law (fluid { pvt ... }): the checker
+# re-parses the case table and re-marches both pipes from the reported
+# pressures — compressibility closure + expansion + dp visibility
+add_test(
+    NAME verify.steadyPvtColumn
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_pvt.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyPvtColumn/case.dict)
+
 foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug")
     list(GET tmode 0 mode)
     list(GET tmode 1 Mode)

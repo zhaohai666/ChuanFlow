@@ -302,9 +302,9 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 | `transientSlug` | 段塞推进：串联管层流流量（1e-3）+ CSTR 级联递推（1e-9）|
 | `transientValve` | 关阀/开阀时间表：代入节点柔度后每步只剩单个单调标量方程，二分到机器精度精确复现 (Q, p, α)（1e-9，时间表按 `t += dt` 与内核锁步累计——打印时刻仅 12 位有效数字，斜坡上会引入 dK~1e2 的舍入误差）+ 关阀泄漏 6.2e-8 m³/s、罐压冻结（漂移 ~1.0 Pa）、重开恢复排液 q(20)=3.385e-3、全程层流 Re=1229 |
 
-尚未实现（M2 后续增量）：液膜夹带与段塞合并破碎
-（非等温与成核/生长动力学已由 §4.2 热力耦合与 §4.3
-水合物动力学落地）。
+尚未实现（M2 后续增量）：段塞合并破碎（液膜夹带已由 §4.3 的
+entrainment 增量落地；非等温与成核/生长动力学已由 §4.2 热力耦合与
+§4.3 水合物动力学落地）。
 
 ### 4.3 分布式两流体瞬态内核（M2 第二增量，OLGA 主干）
 
@@ -420,14 +420,31 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
   串接语义不受影响：逐位复用同一 momentumResidual/momentumScale
   （serial Newton 与管网 Newton 共享算术），serial 7 个边界组合校验仅对
   单管生效；
+- **液膜夹带（entrainment{} 块）**：液相按元分为壁膜与液滴两部分——
+  液滴分数 `d`（输运层语义，闭合/动量/物性不动）：液滴含量
+  `qd = α·d` **骑气相**，面通量 `qd·v_G` 按气相体积通量方向迎风
+  （gvol = 0 的面零通量），壁膜通量 `F − qd·v_G` 补全液相总通量 F——
+  α 的输运完全不变（膜+滴+气仍整体携带 v_m），分裂是线性一致的。每步
+  输运后按元弛豫 `dd/dt = (E_eq − d)/relaxTime`（隐式 Euler，
+  `E_eq = clamp((v_G − vCrit)/vRef, 0, 1)`，v_G 取本步输运后状态的
+  gasVelocity），α ≤ 1e-9 的元跳过；CFL 另加 max|v_G| 覆盖。边界语义：
+  `phaseRates` 端注入 `entrainedFraction ×` 施加液相率（与率一致的组成
+  下恰等于含量×气速），`fixedPressure` ghost 端按 gvol 符号注入
+  `α_ghost·E·v_G_ghost`（入流）或带出元内容（出流）。管网节点混合的
+  液滴分数按液相体积流量加权并改写被供支的 entrainedFraction。E_eq 弛豫
+  与入口注入共同作用下稳态**不是均匀 `d*`** 而是沿程发展剖面——面衡算
+  与隐式交换合成的线性递推
+  `d_i = (v_G* d_{i−1} + (Δx/τ)E_eq*)/(v_G* + Δx/τ)`、
+  `d_0 = (E_in·vsl + α*(Δx/τ)E_eq*)/(α*(v_G* + Δx/τ))`；
 - **应用** `chflow-1d-twofluid <case.dict>`：输出 `t … vm … dp …` /
   `node <j> p …` / `cell <i> alpha … water … vsl … vsg …`（thermal 时
   追加 `T …`，动态闭合时追加 `s …`，EOS 开启时追加 `p …`，水合物开启时
-  追加 `h …`）+ `thermal: qWall … qInlet …`；`network{}` 算例改发
+  追加 `h …`，夹带开启时追加 `entr …`）+ `thermal: qWall … qInlet …`；
+  `network{}` 算例改发
   `t … net` / `junction <名> p … net …` / `pipe <名> vm … dp …` /
-  `pnode <名> <j> p …` / `pcell <名> <i> alpha … water … vsl … vsg … [T/p/h]`。
+  `pnode <名> <j> p …` / `pcell <名> <i> alpha … water … vsl … vsg … [T/p/h/entr]`。
 
-十三个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
+十四个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
 
 | 算例 | 校验内容 |
 |---|---|
@@ -444,6 +461,7 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 | `twoFluidHydrateFlow` | 流动水合物（rate 驱动 + EOS + thermal + 动力学全开）：整步全耦合逐元复现（1e-9）——Godunov 输运 α（wallis F 凸迎风取左）、水/水合物骑同一液相通量同 clamp 语义、气量按 wallis G 迎风 + 化学计量气汇、相通量导热的隐式温度解；恒等式：逐元组成 `w + h = 0.25`（1e-12）、相分配 `vsl + vsg = v_m`（1e-12）、发射 EOS 气量对复现 m_G（1e-9）、稳态气衡算 `ρ_G 注入·vsg − ρ_G,out·vsg,out = gasContent·vsl_out·h_out`（实测 8.4795689623 对 8.4795689622 kg/m²/s）、Churchill 压降逐项重算（4774.6772 Pa）、壁面换热求和、稳态能量衡算 `入口焓 + 壁面 + 潜热 = 出口焓`（1.7736709e5 W，潜热 = gasContent 消耗率×面积×latent）；水沿程单调耗尽/水合物单调累积；末两帧全等 |
 | `twoFluidJunction` | 对称 Y 节点合流（branchA/branchB 定压 200/300 Pa → 节点 J → outlet 0 Pa，均匀持液 0.5 + wallis 滑移 0 ⇒ 混合物性处处常数）：校验器独立积分消元后的 2×2 层流隐式 Euler 系统（每步，rtol 1e-4 覆盖 Churchill 与层流 ~1e-6 偏差），并逐元复现节点混合 + Godunov 水相输运（1e-9）+ 隐式迎风温度解（1e-7——轨迹速度携带层流偏差）。逐帧：节点体积衡算 net ≈ 0（Newton 衡算行，1e-12）、p_J/三管 vm 对齐轨迹、发射 dp = Churchill 摩阻和逐项重算（1e-9）、α 恒 0.5（1e-9）、`vsl + vsg = v_m`（1e-9）。稳态闭式锚：`p_J* = Σ(A_i/K_i)p_i / Σ(A_i/K_i) = 60.0375234522 Pa`（K_i = 32μ̄L_i/D_i²）、`u_A* = 0.0349556635`、`u_B* = 0.0599306884`、`u_C* = 0.0421717120` m/s（Re 71–129 层流）、三管损失行进节点压力收于 p_J*；来流混合闭式：`φ_J* = 0.2473580247`（液相体积流加权，branchB 注入 0.1 前沿冲刷）、`T_J* = 312.6320988 K`（热容流加权，branchB 注入 320 K），前沿 ~713 s 清空几何，末端帧对齐 1e-10 |
 | `twoFluidNetworkSpan` | 双节点跨管 + 管网级全局 Newton：srcA/srcB 定压 200/300 Pa → 节点 J1 → 跨管 mid → 节点 J2 → sink1/sink2 定压 0 Pa（5 管 7×7 系统：3 动量行 + 2 衡算行，mid 两端均接节点、动量行被两端 p_J 夹持）。校验器独立积分 7×7 层流隐式 Euler 系统（每步，rtol 1e-4 覆盖 Churchill 与层流偏差），并逐元复现两级节点混合 + Godunov 水相输运（1e-9）+ 隐式迎风温度解（1e-7）。稳态闭式锚（节点导纳 `c_i = A_i/K_i`，K_i = 32μ̄L_i/D_i²）：`p1* = 141.9280795715 Pa`、`p2* = β·p1* = 12.2417750574 Pa`（β = c_m/(c_m + c_1 + c_2)，p1* = 500·c_s/(2c_s + c_m(1−β))）、五管 `u* = 0.0145035/0.0394785/0.0539820/0.0171978/0.0152869` m/s（Re 30–110 层流）、pnode 恒等式（srcA/srcB 出口 = mid 入口 = p1*，mid 出口 = p2*，sink 入口 = p2*）；来流混合闭式：`φ1* = 0.2074690`（液相体积流加权，branchB 注入 0.1 前沿冲刷）、`T1* = 314.62655 K`（热容流加权），J2 由跨管单独供给（混合态 = mid 末端元态）；前沿 ~700 s 清空几何、级联瞬态尾（srcB → J1 混合 → mid → J2 → sink 逐级上风翻转 + 隐式热尾，e 折叠 ≈ Δx/u 秒/级）到 endTime 2500 s 才衰减到位；发射 dp 从内核 vm 做纯损失行进重算（内核 Churchill vs 校验器层流 ~1e-9 相对偏差经 dp ∝ u²f 放大，sink2 dp = 全额 p2* 最敏感，vm 物理由 1e-4 轨迹行独立覆盖）|
+| `twoFluidEntrained` | 液膜夹带首增量（rate 驱动水平管 + wallis 滑移 0.3 + entrainment vCrit 0.2/vRef 0.6/τ 8 s/初值 0.9，入口注入 10% 夹带）：整步逐元复现（1e-9）——α 的 Godunov 输运不变、液滴含量 `qd = αd` 骑气相按 gvol 符号迎风（gvol = 0 面零通量）、rate 入口注入 `E_in·vsl`、隐式 E_eq 弛豫（初值 0.9 → 下游沉到 E_eq，双向交换都被触发）；恒等式 `vsl + vsg = v_m`（1e-9）；稳态闭式锚：`α* = F⁻¹(vsl) = 0.5598164906`（1e-9）、发展剖面递推 `d_0 = 0.1492899147 → d_19 = 0.6026486661`（`E_eq* = 0.6132415786` at `vG* = 0.5679449472`，1e-9——入口注入 0.015 与内部输运 `α*d*v_G*` 不平衡，均匀 `d*` 不是不动点）、水相冲刷到注入 0.25、Churchill 压降逐项重算（实测 3585.64 Pa）；末两帧全等 |
 
 三个温度回归（`tests/check_two_fluid_thermal.py`，断言离散闭式而非
 连续指数）：
@@ -1253,8 +1271,8 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
   进口交出的体积精确、clamp 恰为 0——这是 α 方程的一阶迎风做不到的；40×40 圆盘自转
   40 步逐步相体积漂移 ≤ 6.9e-16 相对、clamp ≤ 4.42e-17、α ∈ [0,1]、带 60→70 格、
   限流最多 336 面且最小因子 0.5（同格两个出流棱柱在角上重合处）；
-- `tests/cases/*`：三十七个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
-  `twoFluid*` 十三个见 §4.3 的表）：
+- `tests/cases/*`：三十八个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
+  `twoFluid*` 十四个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug` / `transientValve`（见 4.2）

@@ -135,6 +135,27 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             line's inflow state. The steady state anchors on the closed
             form p_J* = sum (A_i/K_i) p_i / sum (A_i/K_i) with the
             front-flushed phi_J* and T_J*.
+
+  mode = entrained      : film-droplet split (entrainment first increment)
+            - rate-driven horizontal pipe, wallis slip 0.3, so the gas
+            velocity rides the holdup. The per-cell droplet fraction d of
+            the liquid transports its content qd = alpha d at the gas
+            velocity (face flux qd vG upwinded on the gas direction; the
+            film flux F - qd vG completes the liquid flux F) and relaxes
+            towards E_eq = clamp((vG - vCrit)/vRef, 0, 1) with implicit
+            Euler at relaxTime. The injected liquid arrives 10% entrained
+            against an initial d0 = 0.9, so the run exercises the droplet
+            front, exchange in both directions and the steady profile. The
+            imposed rate keeps vm = vsl + vsg exact, so the checker
+            replicates every step cell by cell (1e-9) and anchors the last
+            frame on the closed forms alpha* (root of F(alpha*) = vsl),
+            the developing steady droplet profile — no uniform d* is a
+            fixed point, the exact discrete one combines the face balance
+            with the implicit Euler exchange into the linear recursion
+            d_i = (vG* d_{i-1} + (dx/tau) E_eq*) / (vG* + dx/tau) fed by
+            d_0 = (E_in vsl + alpha* (dx/tau) E_eq*) /
+            (alpha* (vG* + dx/tau)) — the flushed water cut and the
+            per-cell Churchill pressure drop.
 """
 import math
 import subprocess
@@ -1807,6 +1828,171 @@ elif mode == "networkspan":
             for key in ("alpha", "water", "vsl", "vsg", "T"):
                 if abs(c1f[key] - c0f[key]) > 1e-9:
                     drift.append(f"{pn}.{key}")
+    if drift:
+        fails.append(f"state still drifting between the last two frames: "
+                     f"{drift[:4]}")
+    else:
+        print("ok:   steady state held over the final 10 s")
+
+elif mode == "entrained":
+    # film-droplet split first increment: rate-driven wallis pipe, the
+    # droplet fraction d of the liquid rides the gas velocity and relaxes
+    # towards E_eq = clamp((vG - vCrit)/vRef, 0, 1) at the exchange time
+    N, L, DI, DT = 20, 20.0, 0.02, 0.1
+    DX = L / N
+    VSL, VSG = 0.15, 0.25
+    VM = VSL + VSG
+    US = 0.3
+    PHI_IN, PHI0 = 0.25, 0.8
+    E_IN, E0 = 0.1, 0.9
+    VCRIT, VREF, TAU = 0.2, 0.6, 8.0
+    ROUGH = 0.0
+    REPORT = 100
+    qa, qb, qc = US, VM - US, 0.0           # F(a) = us a^2 + (vm-us) a
+    ga, gb, gc = -US, US - VM, VM           # G(a) = -us a^2 + (us-vm) a + vm
+    a_star = (-(VM - US) + math.sqrt((VM - US) ** 2 + 4 * US * VSL)) / (2 * US)
+    vg_star = VM + US * a_star
+    d_star = min(max((vg_star - VCRIT) / VREF, 0.0), 1.0)
+
+    def vg_of(a):
+        return VM + US * a
+
+    alpha = [0.5] * N
+    water = [PHI0] * N
+    entr = [E0] * N
+    step_in_sample = 0
+    for k, fr in enumerate(frames):
+        want_steps = 0 if k == 0 else k * REPORT
+        while step_in_sample < want_steps:
+            flux = ([VSL]
+                    + [godunov(qa, qb, qc, alpha[j - 1], alpha[j])
+                       for j in range(1, N)]
+                    + [qc + alpha[-1] * (qb + qa * alpha[-1])])
+            gvol = ([VSG]
+                    + [godunov(ga, gb, gc, alpha[j - 1], alpha[j])
+                       for j in range(1, N)]
+                    + [gc + alpha[-1] * (gb + ga * alpha[-1])])
+            wflux = [PHI_IN * flux[0]]
+            for j in range(1, N):
+                wflux.append((water[j - 1] if flux[j] >= 0 else water[j])
+                             * flux[j])
+            wflux.append(water[-1] * flux[N])
+            # droplet content flux: rate face imposes the inflow share of
+            # the liquid rate, gas-flux faces upwind on the gas direction
+            dflux = [E_IN * flux[0]]
+            for j in range(1, N):
+                if gvol[j] > 0:
+                    dflux.append(alpha[j - 1] * entr[j - 1]
+                                 * vg_of(alpha[j - 1]))
+                elif gvol[j] < 0:
+                    dflux.append(alpha[j] * entr[j] * vg_of(alpha[j]))
+                else:
+                    dflux.append(0.0)
+            dflux.append(alpha[-1] * entr[-1] * vg_of(alpha[-1])
+                         if gvol[N] > 0 else 0.0)
+            new = []
+            for i in range(N):
+                na = alpha[i] + DT / DX * (flux[i] - flux[i + 1])
+                naf = (alpha[i] * water[i]
+                       + DT / DX * (wflux[i] - wflux[i + 1]))
+                nqe = (alpha[i] * entr[i]
+                       + DT / DX * (dflux[i] - dflux[i + 1]))
+                cap = max(na, 0.0)
+                na = min(max(na, 0.0), 1.0)
+                naf = min(max(naf, 0.0), cap)
+                nqe = min(max(nqe, 0.0), cap)
+                new.append((na, naf / cap if cap > 1e-9 else 0.0,
+                            nqe / cap if cap > 1e-9 else 0.0))
+            alpha = [v[0] for v in new]
+            water = [v[1] for v in new]
+            entr = [v[2] for v in new]
+            for i in range(N):
+                if alpha[i] > 1e-9:
+                    e_eq = min(max((vg_of(alpha[i]) - VCRIT) / VREF,
+                                   0.0), 1.0)
+                    entr[i] += (e_eq - entr[i]) * DT / (TAU + DT)
+            step_in_sample += 1
+        t = fr["t"]
+        check(f"vm(t={t})", fr["vm"], VM, 1e-12)
+        for i in range(N):
+            c = fr["cells"][i]
+            if abs(c["alpha"] - alpha[i]) > 1e-9 + 1e-9 * abs(alpha[i]):
+                fails.append(f"alpha[{i}](t={t}): got={c['alpha']} "
+                             f"want={alpha[i]}")
+                break
+            if abs(c["water"] - water[i]) > 1e-9 + 1e-9 * abs(water[i]):
+                fails.append(f"water[{i}](t={t}): got={c['water']} "
+                             f"want={water[i]}")
+                break
+            if abs(c["entr"] - entr[i]) > 1e-9 + 1e-9 * abs(entr[i]):
+                fails.append(f"entr[{i}](t={t}): got={c['entr']} "
+                             f"want={entr[i]}")
+                break
+            # the superficial phase fluxes are F(alpha), G(alpha): they sum
+            # to the mixture velocity exactly and pin the split per cell
+            if abs(c["vsl"] - (qc + alpha[i] * (qb + qa * alpha[i]))) > 1e-9:
+                fails.append(f"vsl[{i}](t={t}): got={c['vsl']}")
+                break
+            if abs(c["vsg"] - (gc + alpha[i] * (gb + ga * alpha[i]))) > 1e-9:
+                fails.append(f"vsg[{i}](t={t}): got={c['vsg']}")
+                break
+            if abs(c["vsl"] + c["vsg"] - VM) > 1e-9:
+                fails.append(f"vsl+vsg != vm at cell {i} (t={t})")
+                break
+        else:
+            print(f"ok:   alpha/water/entr fields replicated (t={t}) "
+                  f"(1e-9)")
+        # pressure drop: per-cell Churchill friction on the replicated
+        # holdup (rate-driven anchors the gauge at the outlet)
+        dp = 0.0
+        for i in range(N):
+            rho = alpha[i] * RHO_L + (1.0 - alpha[i]) * RHO_G
+            mu = alpha[i] * MU_L + (1.0 - alpha[i]) * MU_G
+            re = rho * VM * DI / mu
+            dp += churchill(re, ROUGH / DI) * (DX / DI) * 0.5 * rho * VM ** 2
+        check(f"dp = Churchill friction sum (t={t})", fr["dp"], dp, 1e-9)
+
+    # steady anchors on the closed forms (last frame)
+    fr = frames[-1]
+    hold_bad = [i for i in range(N)
+                if abs(fr["cells"][i]["alpha"] - a_star)
+                > 1e-9 + 1e-9 * a_star]
+    if hold_bad:
+        fails.append(f"steady holdup cells {hold_bad[:4]} != alpha*")
+    else:
+        print(f"ok:   uniform steady holdup alpha*={a_star:.10f} (1e-9)")
+    # no uniform droplet fraction is a fixed point: the inlet injects
+    # E_IN vsl of droplet content while the interior carries alpha d vG,
+    # so the steady state is the developing profile — the exact discrete
+    # fixed point of transport+relaxation (clamps inactive there)
+    dx_tau = DX / TAU
+    e_eq_star = d_star
+    d_prof = [(E_IN * VSL + a_star * dx_tau * e_eq_star)
+              / (a_star * (vg_star + dx_tau))]
+    for _ in range(1, N):
+        d_prof.append((vg_star * d_prof[-1] + dx_tau * e_eq_star)
+                      / (vg_star + dx_tau))
+    ent_bad = [i for i in range(N)
+               if abs(fr["cells"][i]["entr"] - d_prof[i])
+               > 1e-9 + 1e-9 * d_prof[i]]
+    if ent_bad:
+        fails.append(f"steady entrained cells {ent_bad[:4]} != profile")
+    else:
+        print(f"ok:   steady droplet profile d_0={d_prof[0]:.10f} -> "
+              f"d_{N - 1}={d_prof[-1]:.10f} "
+              f"(E_eq*={e_eq_star:.10f} at vG*={vg_star:.10f}, 1e-9)")
+    wat_bad = [i for i in range(N)
+               if abs(fr["cells"][i]["water"] - PHI_IN) > 1e-9]
+    if wat_bad:
+        fails.append(f"steady water cells {wat_bad[:4]} != injected cut")
+    else:
+        print(f"ok:   water cut flushed to the injected {PHI_IN} (1e-9)")
+    drift = []
+    for key in ("alpha", "water", "entr"):
+        for i in range(N):
+            if abs(frames[-1]["cells"][i][key]
+                   - frames[-2]["cells"][i][key]) > 1e-9:
+                drift.append(f"{key}[{i}]")
     if drift:
         fails.append(f"state still drifting between the last two frames: "
                      f"{drift[:4]}")

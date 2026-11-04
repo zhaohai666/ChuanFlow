@@ -94,6 +94,19 @@ namespace cf
 /// absorbs it) as a source in the temperature equation. Requires the gas
 /// EOS (fluid gasR > 0) and a thermal{} block: both p_i and T_i drive the
 /// kinetics.
+/// With an entrainment{} block the sections also carry a droplet fraction d
+/// of the liquid (the film-droplet split of annular flow; transport level
+/// only in this increment - the closure, momentum and properties stay
+/// mixture-based). The droplet content qd = alpha d rides the gas at its
+/// velocity: the face flux qd vG upwinds on the gas direction, the film
+/// flux F - qd vG completes the liquid flux F, so the volume balance
+/// survives the split. d relaxes towards the equilibrium entrained
+/// fraction E_eq = clamp((vG - vCrit)/vRef, 0, 1) with implicit Euler at
+/// the exchange time relaxTime (vG from the closure's gas velocity). Inflow
+/// boundaries carry entrainedFraction of the inflow liquid (rate faces
+/// impose that share of the liquid rate; pressure ghosts inject
+/// qd_ghost vG_ghost); junction mixing weights the droplet fraction with
+/// the liquid volume flow like the water cut.
 
 struct TwoFluidFluid
 {
@@ -142,6 +155,11 @@ struct TwoFluidBoundary
                              // inflow ghost cell
     double waterFraction = 0;// water cut of the inflow liquid
     double hydrateFraction = 0; // hydrate fraction of the inflow liquid
+    double entrainedFraction = 0; // droplet fraction of the inflow liquid
+                                  // (entrainment on): rate faces impose it
+                                  // as that share of the liquid rate,
+                                  // pressure ghosts inject it at the ghost
+                                  // gas velocity
     double temperature = 0;  // K, temperature of the inflow ghost cell
                              // (required on both ends when thermal is on,
                              // the unused one for potential backflow)
@@ -192,6 +210,21 @@ struct TwoFluidHydrate
     double initial = 0;              // initial hydrate fraction of the slurry
 };
 
+/// Film-droplet split of the liquid (annular flow, transport level only:
+/// the closure, momentum and mixture properties stay untouched - the
+/// droplet fraction rides the gas but does not feed back yet). E_eq is the
+/// equilibrium entrained fraction the per-cell droplet fraction relaxes
+/// towards: a linear ramp of the closure gas velocity between vCrit (no
+/// entrainment below) and vCrit + vRef (full entrainment above), relaxed at
+/// the exchange time constant relaxTime.
+struct TwoFluidEntrainment
+{
+    double vCrit = 0;      // m/s, gas velocity where entrainment starts
+    double vRef = 1;       // m/s, ramp width to full entrainment
+    double relaxTime = 0;  // s, film <-> droplet exchange time constant
+    double initial = 0;    // initial droplet fraction of the liquid
+};
+
 struct TwoFluidCase
 {
     TwoFluidFluid fluid;
@@ -207,6 +240,9 @@ struct TwoFluidCase
     TwoFluidThermal thermal;
     bool hydrateOn = false;      // hydrate kinetics solved (hydrate{} present)
     TwoFluidHydrate hydrate;
+    bool entrainmentOn = false;  // film-droplet split solved (entrainment{}
+                                 // present)
+    TwoFluidEntrainment entrainment;
     bool networkMode = false;    // branch-network member: the junction end
                                  // boundary is owned by the TwoFluidNetwork
                                  // (mutated every step), so the constructor
@@ -274,6 +310,9 @@ public:
     /// Hydrate volume fraction of the liquid+hydrate slurry per section;
     /// zeros unless the hydrate{} block is present.
     std::vector<double> cellHydrate() const { return hydrate_; }
+    /// Droplet fraction of the liquid per section (entrainment on);
+    /// zeros unless the entrainment{} block is present.
+    std::vector<double> cellEntrained() const { return entrained_; }
     /// Wall heat the sections absorb this step, W (positive = into the fluid);
     /// zero unless thermal is on.
     double wallHeatRate() const { return wallHeatRate_; }
@@ -324,6 +363,12 @@ public:
         return cfg_.hydrateOn ? (atInlet ? hydrate_[0] : hydrate_[n_ - 1])
                               : 0.0;
     }
+    double endEntrained(bool atInlet) const
+    {
+        return cfg_.entrainmentOn
+                   ? (atInlet ? entrained_[0] : entrained_[n_ - 1])
+                   : 0.0;
+    }
     double endTemperature(bool atInlet) const
     {
         return cfg_.thermalOn ? (atInlet ? T_[0] : T_[n_ - 1])
@@ -355,6 +400,7 @@ private:
     void momentumSolve(double dt);
     void slipStep(double dt);
     void transportStep(double dt);
+    void entrainmentStep(double dt);
     void hydrateStep(double dt);
     void thermalStep(double dt);
     double wallTemperature(int i) const;
@@ -410,6 +456,8 @@ private:
     std::vector<double> hydrateDelta_; // this step's hydrate volume change
                                        // per bulk m3 (the latent-heat source
                                        // the thermal step consumes)
+    std::vector<double> entrained_; // droplet fraction of the liquid
+                                    // (entrainment on)
     double wallHeatRate_ = 0;
     double inletHeatRate_ = 0;
     double vM_ = 0;   // current mixture velocity
@@ -460,6 +508,14 @@ private:
 ///       latentHeat 4.2e8;        // J released per m3 hydrate formed
 ///       initial 0;               // initial hydrate fraction of the slurry
 ///   }
+///   entrainment  // optional: presence switches the film-droplet split on
+///   {
+///       vCrit 0.2;               // m/s, gas velocity where entrainment
+///                                // starts
+///       vRef 0.6;                // m/s, ramp width to full entrainment
+///       relaxTime 8;             // s, film<->droplet exchange time
+///       initial 0;               // initial droplet fraction of the liquid
+///   }
 ///   time { dt 0.25; endTime 30; reportEvery 4; }
 TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict);
 
@@ -474,7 +530,7 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict);
 /// junction. Rate-driven far ends fix their branch velocity, sealed far
 /// ends are dead legs; each junction needs at least one fixed-pressure far
 /// end as its pressure reference. After the solve every junction mixes its
-/// inflows (holdup/water/hydrate volume-flow-weighted, temperature
+/// inflows (holdup/water/hydrate/droplet volume-flow-weighted, temperature
 /// heat-capacity-flow-weighted, gas density mass-flux-weighted) and every
 /// junction face is set: feeding branches get a fixed-pressure ghost at
 /// the mixed state, supplied branches get the junction split imposed as
@@ -523,7 +579,8 @@ private:
         double net = 0;          // last balance residual (diagnostic)
         std::vector<double> rates; // signed per-pipe rates into the node
         // last mixed junction-face state (kept when nothing flows in)
-        double alphaJ = 0, waterJ = 0, hydrateJ = 0, tJ = 0, rhoJ = 0;
+        double alphaJ = 0, waterJ = 0, hydrateJ = 0, entrJ = 0, tJ = 0,
+               rhoJ = 0;
     };
     void solveNetwork(double dt);
 

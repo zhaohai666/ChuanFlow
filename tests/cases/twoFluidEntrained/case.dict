@@ -1,0 +1,85 @@
+// Film-droplet split (entrainment) first increment of the distributed
+// two-fluid kernel: rate-driven horizontal pipe with wallis slip so the
+// gas velocity varies with the holdup, and an entrainment{} block carrying
+// the per-cell droplet fraction d of the liquid. The droplet content
+// qd = alpha d rides the gas at its velocity (face flux qd vG upwinded on
+// the gas direction; the film flux F - qd vG completes the liquid flux F),
+// and d relaxes towards the equilibrium entrained fraction
+//   E_eq = clamp((vG - vCrit) / vRef, 0, 1)
+// with implicit Euler at the exchange time relaxTime = 8 s. The injected
+// liquid arrives 10% entrained (entrainedFraction 0.1) against an initial
+// uniform d0 = 0.9, so the run exercises the droplet transport front, the
+// film <-> droplet exchange in both directions and the steady profile.
+// The mixture velocity is the imposed rate vsl + vsg = 0.4 m/s exactly
+// (incompressible phases, rate-driven), so the whole trajectory is closed
+// form: Godunov transport of alpha on F(a) = us a^2 + (vm - us) a and of
+// the gas flux on G(a) = -us a^2 + (us - vm) a + vm, the water cut and the
+// droplet content with their own upwind rules, then the relaxation.
+// Steady state: alpha* solves F(alpha*) = vsl = 0.15 (0.5598164906), the
+// gas velocity vG* = vm + us alpha* = 0.5679449472 sits inside the ramp
+// (E_eq* = (vG* - vCrit)/vRef = 0.6132415787), the water cut is flushed to
+// the injected 0.25, and the pressure drop is the per-cell Churchill sum
+// on the replicated holdup profile. The droplet fraction does NOT settle
+// uniformly: the inlet injects 10% entrained liquid while the exchange
+// relaxes d towards E_eq, so the steady state is the developing profile
+// tests/check_two_fluid.py mode entrained replicates every step cell by
+// cell (1e-9) and anchors the last frame on the closed forms: the uniform
+// steady holdup alpha* (root of F(alpha*) = vsl), the flushed water cut,
+// the per-cell Churchill pressure drop, and the steady droplet-fraction
+// PROFILE - the injected liquid arrives 10% entrained while the exchange
+// relaxes d towards E_eq, so the fixed point is the linear recursion
+//   d_i = (vG* d_{i-1} + (dx/tau) E_eq*) / (vG* + dx/tau)
+// fed by d_0 = (E_in vsl + alpha* (dx/tau) E_eq*) / (alpha* (vG* + dx/tau)):
+// entrainment develops along the pipe from ~0.149 at the inlet towards
+// E_eq* = 0.6132 downstream (an OLGA-style developing entrainment profile).
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.3;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.8;
+}
+
+entrainment
+{
+    vCrit 0.2;
+    vRef 0.6;
+    relaxTime 8;
+    initial 0.9;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 20;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.15; vsg 0.25; waterFraction 0.25;
+             entrainedFraction 0.1; }
+    outlet { type fixedPressure; p 0; alpha 0.5; waterFraction 0.5;
+             entrainedFraction 0.5; }
+}
+
+time
+{
+    dt 0.1;
+    endTime 400;
+    reportEvery 100;
+}

@@ -75,13 +75,18 @@ int main(int argc, char** argv)
                     const std::vector<double> hy
                         = nc.perPipe.hydrateOn ? s.cellHydrate()
                                                : std::vector<double>();
+                    const std::vector<double> ent
+                        = nc.perPipe.entrainmentOn ? s.cellEntrained()
+                                                   : std::vector<double>();
                     for (int i = 0; i < s.sections(); ++i)
                         log::info("pcell ", pn, " ", i, " alpha ",
                                   num(a[i]), " water ", num(w[i]), " vsl ",
                                   num(vsl[i]), " vsg ", num(vsg[i]),
                                   T.empty() ? "" : (" T " + num(T[i])),
                                   ep.empty() ? "" : (" p " + num(ep[i])),
-                                  hy.empty() ? "" : (" h " + num(hy[i])));
+                                  hy.empty() ? "" : (" h " + num(hy[i])),
+                                  ent.empty() ? ""
+                                              : (" entr " + num(ent[i])));
                 }
             };
 
@@ -123,6 +128,9 @@ int main(int argc, char** argv)
                 = c.fluid.gasR > 0 ? s.cellPressure() : std::vector<double>();
             const std::vector<double> hy
                 = c.hydrateOn ? s.cellHydrate() : std::vector<double>();
+            const std::vector<double> ent
+                = c.entrainmentOn ? s.cellEntrained()
+                                  : std::vector<double>();
             for (int i = 0; i < s.sections(); ++i)
             {
                 log::info("cell ", i, " alpha ", num(a[i]), " water ",
@@ -131,7 +139,8 @@ int main(int argc, char** argv)
                           T.empty() ? "" : (" T " + num(T[i])),
                           sl.empty() ? "" : (" s " + num(sl[i])),
                           ep.empty() ? "" : (" p " + num(ep[i])),
-                          hy.empty() ? "" : (" h " + num(hy[i])));
+                          hy.empty() ? "" : (" h " + num(hy[i])),
+                          ent.empty() ? "" : (" entr " + num(ent[i])));
             }
             if (!T.empty())
                 log::info("thermal: qWall ", num(s.wallHeatRate()),

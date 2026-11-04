@@ -211,6 +211,18 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         hydrate_.assign(n_, hy.initial);
         hydrateDelta_.assign(n_, 0.0);
     }
+
+    if (cfg_.entrainmentOn)
+    {
+        if (!(cfg_.entrainment.vRef > 0))
+            cfFatal("twoFluid: entrainment needs a positive vRef ramp"
+                    " width");
+        if (!(cfg_.entrainment.relaxTime >= 0))
+            cfFatal("twoFluid: negative entrainment relaxTime");
+        if (cfg_.entrainment.initial < 0 || cfg_.entrainment.initial > 1)
+            cfFatal("twoFluid: initial entrained fraction outside [0,1]");
+        entrained_.assign(n_, cfg_.entrainment.initial);
+    }
 }
 
 void TwoFluidPipe::fluxCoeffs(double& qa, double& qb, double& qc) const
@@ -499,6 +511,16 @@ void TwoFluidPipe::transportStep(double dt)
     {
         cmax = std::max(std::abs(qb), std::abs(2.0 * qa + qb));
     }
+    // entrained droplets ride the gas itself (not alpha_g vG), a speed the
+    // F' bounds already cover for the algebraic closures - keep the guard
+    // explicit so a closure change cannot silently outrun the CFL
+    if (cfg_.entrainmentOn)
+        for (int i = 0; i < n_; ++i)
+            cmax = std::max(cmax,
+                            std::abs(gasVelocity(alpha_[i],
+                                                 cfg_.closure.model == 2
+                                                     ? slip_[i]
+                                                     : 0.0)));
     const double dxMin = *std::min_element(dxs_.begin(), dxs_.end());
     if (dt * cmax / dxMin > 1.0 + 1e-12)
         cfFatal("twoFluid: CFL violated (dt * |dF/dalpha| / dx = "
@@ -510,6 +532,7 @@ void TwoFluidPipe::transportStep(double dt)
     std::vector<double> flux(n_ + 1), wflux(n_ + 1);
     std::vector<double> hflux(n_ + 1, 0.0);
     std::vector<double> gvol(n_ + 1, 0.0), gmflux(n_ + 1, 0.0);
+    std::vector<double> dflux(n_ + 1, 0.0); // entrained droplet content flux
 
     for (int j = 0; j <= n_; ++j)
     {
@@ -673,6 +696,56 @@ void TwoFluidPipe::transportStep(double dt)
             gmflux[j] = rhoUp * gvol[j];
         }
     }
+
+    // entrained droplets ride the gas at its velocity: the droplet content
+    // flux qd vG (qd = alpha d) upwinds on the GAS direction (droplets go
+    // where the gas goes), the film flux F - qd vG completes the liquid
+    // flux F so film + droplet + gas still carry the mixture velocity; rate
+    // faces impose the inflow composition's share of the liquid rate
+    // instead (the injected liquid arrives entrainedFraction entrained)
+    if (cfg_.entrainmentOn)
+    {
+        for (int j = 0; j <= n_; ++j)
+        {
+            if (j == 0)
+            {
+                if (in.type == TwoFluidBoundary::Type::phaseRates)
+                    dflux[0] = in.entrainedFraction * flux[0];
+                else if (in.type != TwoFluidBoundary::Type::sealed)
+                    dflux[0] = gvol[0] > 0
+                        ? in.alpha * in.entrainedFraction
+                              * gasVelocity(in.alpha, faceSlip(0))
+                        : (gvol[0] < 0
+                               ? alpha_[0] * entrained_[0]
+                                     * gasVelocity(alpha_[0], faceSlip(0))
+                               : 0.0);
+            }
+            else if (j == n_)
+            {
+                if (out.type == TwoFluidBoundary::Type::phaseRates)
+                    dflux[n_] = out.entrainedFraction * flux[n_];
+                else if (out.type != TwoFluidBoundary::Type::sealed)
+                    dflux[n_] = gvol[n_] < 0
+                        ? out.alpha * out.entrainedFraction
+                              * gasVelocity(out.alpha, faceSlip(n_))
+                        : (gvol[n_] > 0
+                               ? alpha_[n_ - 1] * entrained_[n_ - 1]
+                                     * gasVelocity(alpha_[n_ - 1],
+                                                   faceSlip(n_))
+                               : 0.0);
+            }
+            else if (gvol[j] > 0)
+            {
+                dflux[j] = alpha_[j - 1] * entrained_[j - 1]
+                         * gasVelocity(alpha_[j - 1], faceSlip(j));
+            }
+            else if (gvol[j] < 0)
+            {
+                dflux[j] = alpha_[j] * entrained_[j]
+                         * gasVelocity(alpha_[j], faceSlip(j));
+            }
+        }
+    }
     liquidFaceFlux_ = flux;
     gasFaceFlux_ = gvol;
 
@@ -684,6 +757,8 @@ void TwoFluidPipe::transportStep(double dt)
             cfFatal("twoFluid: holdup left [0,1] - reduce dt");
         const double afOld = alpha_[i] * water_[i];
         const double ahOld = cfg_.hydrateOn ? alpha_[i] * hydrate_[i] : 0.0;
+        const double aentOld
+            = cfg_.entrainmentOn ? alpha_[i] * entrained_[i] : 0.0;
         double afNew = afOld + dt / dxs_[i] * (wflux[i] - wflux[i + 1]);
         const double aCap = std::max(aNew, 0.0);
         if (afNew < -kTol || afNew > aCap + kTol)
@@ -701,6 +776,16 @@ void TwoFluidPipe::transportStep(double dt)
             ahNew = std::min(std::max(ahNew, 0.0), aCap);
             hydrate_[i] = aCap > kTol ? ahNew / aCap : 0.0;
         }
+        if (cfg_.entrainmentOn)
+        {
+            // the droplet content rides its own flux with the same clamp
+            // semantics (aentOld against the pre-transport holdup); the
+            // film content alpha (1 - d) then follows by linearity
+            double aentNew = aentOld
+                           + dt / dxs_[i] * (dflux[i] - dflux[i + 1]);
+            aentNew = std::min(std::max(aentNew, 0.0), aCap);
+            entrained_[i] = aCap > kTol ? aentNew / aCap : 0.0;
+        }
         if (eosOn())
         {
             // gas mass continuity on the per-unit-area inventory
@@ -716,6 +801,26 @@ void TwoFluidPipe::transportStep(double dt)
                 cfFatal("twoFluid: gas mass went negative - reduce dt");
             gasMass_[i] = std::max(numer, 0.0);
         }
+    }
+}
+
+void TwoFluidPipe::entrainmentStep(double dt)
+{
+    if (!cfg_.entrainmentOn) return;
+    static constexpr double kTol = 1e-9;
+    const TwoFluidEntrainment& en = cfg_.entrainment;
+    for (int i = 0; i < n_; ++i)
+    {
+        if (alpha_[i] <= kTol) continue; // no liquid: nothing to split
+        // the equilibrium fraction reads the closure gas velocity of the
+        // just-transported state; implicit Euler on the linear relaxation
+        // dd/dt = (E_eq(vG) - d) / relaxTime
+        const double vG = gasVelocity(alpha_[i],
+                                      cfg_.closure.model == 2 ? slip_[i]
+                                                              : 0.0);
+        const double eEq = std::min(
+            std::max((vG - en.vCrit) / en.vRef, 0.0), 1.0);
+        entrained_[i] += (eEq - entrained_[i]) * dt / (en.relaxTime + dt);
     }
 }
 
@@ -780,6 +885,7 @@ void TwoFluidPipe::step(double dt)
     else momentumSolve(dt);
     slipStep(dt);
     transportStep(dt);
+    entrainmentStep(dt);
     hydrateStep(dt);
     thermalStep(dt);
     vMOld_ = vM_;
@@ -971,6 +1077,7 @@ TwoFluidBoundary loadTwoFluidBoundary(const Dictionary& d)
     b.alpha = d.getScalarOr("alpha", 0.0);
     b.waterFraction = d.getScalarOr("waterFraction", 0.0);
     b.hydrateFraction = d.getScalarOr("hydrateFraction", 0.0);
+    b.entrainedFraction = d.getScalarOr("entrainedFraction", 0.0);
     b.temperature = d.getScalarOr("temperature", 0.0);
     return b;
 }
@@ -1054,6 +1161,16 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.hydrate.gasContent = hd.getScalar("gasContent");
         c.hydrate.latentHeat = hd.getScalar("latentHeat");
         c.hydrate.initial = hd.getScalarOr("initial", 0.0);
+    }
+
+    if (caseDict.has("entrainment"))
+    {
+        c.entrainmentOn = true;
+        const Dictionary& ed = caseDict.getDict("entrainment");
+        c.entrainment.vCrit = ed.getScalarOr("vCrit", 0.0);
+        c.entrainment.vRef = ed.getScalarOr("vRef", 1.0);
+        c.entrainment.relaxTime = ed.getScalarOr("relaxTime", 0.0);
+        c.entrainment.initial = ed.getScalarOr("initial", 0.0);
     }
 }
 
@@ -1241,6 +1358,9 @@ TwoFluidNetwork::TwoFluidNetwork(const TwoFluidNetworkCase& c)
         jn.waterJ = cfg_.perPipe.water0;
         jn.hydrateJ = cfg_.perPipe.hydrateOn ? cfg_.perPipe.hydrate.initial
                                              : 0.0;
+        jn.entrJ = cfg_.perPipe.entrainmentOn
+                       ? cfg_.perPipe.entrainment.initial
+                       : 0.0;
         jn.tJ = cfg_.perPipe.temperature0;
         jn.rhoJ = cfg_.perPipe.fluid.rhoG;
         bool pressureRef = false;
@@ -1301,6 +1421,8 @@ TwoFluidNetwork::TwoFluidNetwork(const TwoFluidNetworkCase& c)
         junctionGhost.waterFraction = pc.water0;
         junctionGhost.hydrateFraction
             = pc.hydrateOn ? pc.hydrate.initial : 0.0;
+        junctionGhost.entrainedFraction
+            = pc.entrainmentOn ? pc.entrainment.initial : 0.0;
         junctionGhost.temperature = pc.temperature0;
         bool jIn = false, jOut = false;
         for (const Junction& jn : junctions_)
@@ -1487,8 +1609,8 @@ void TwoFluidNetwork::solveNetwork(double dt)
     for (int j = 0; j < nj; ++j)
     {
         Junction& jn = junctions_[j];
-        double qL = 0, qG = 0, wNum = 0, hNum = 0, eNum = 0, eDen = 0,
-               gNum = 0;
+        double qL = 0, qG = 0, wNum = 0, hNum = 0, enNum = 0, eNum = 0,
+               eDen = 0, gNum = 0;
         for (const EndRef& e : jn.ends)
         {
             const double s = e.atOutlet ? 1.0 : -1.0;
@@ -1507,6 +1629,7 @@ void TwoFluidNetwork::solveNetwork(double dt)
             qG += aG;
             wNum += aL * p.endWater(atInlet);
             hNum += aL * p.endHydrate(atInlet);
+            enNum += aL * p.endEntrained(atInlet);
             eNum += (aL * f.rhoL * f.cL + aG * rhoG * f.cG)
                   * p.endTemperature(atInlet);
             eDen += aL * f.rhoL * f.cL + aG * rhoG * f.cG;
@@ -1520,6 +1643,7 @@ void TwoFluidNetwork::solveNetwork(double dt)
             {
                 jn.waterJ = wNum / qL;
                 jn.hydrateJ = hNum / qL;
+                jn.entrJ = enNum / qL;
             }
             if (eDen > 0) jn.tJ = eNum / eDen;
             if (qG > 0) jn.rhoJ = gNum / qG;
@@ -1542,6 +1666,7 @@ void TwoFluidNetwork::solveNetwork(double dt)
             b.alpha = jn.alphaJ;
             b.waterFraction = jn.waterJ;
             b.hydrateFraction = jn.hydrateJ;
+            b.entrainedFraction = jn.entrJ;
             b.temperature = jn.tJ;
             b.rhoGInjected = jn.rhoJ;
             if (s * uOf(e.pipe, x) > 0)

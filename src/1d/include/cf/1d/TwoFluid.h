@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cmath>
+#include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -143,6 +145,10 @@ struct TwoFluidBoundary
     double temperature = 0;  // K, temperature of the inflow ghost cell
                              // (required on both ends when thermal is on,
                              // the unused one for potential backflow)
+    double rhoGInjected = 0; // gas density the boundary injects, kg/m3
+                             // (junction mixing); 0 = the fluid reference
+                             // rhoG. Consulted at rate-type faces by the
+                             // gas mass flux and the enthalpy advection.
 };
 
 /// Wall/formation heat exchange for the mixture temperature equation.
@@ -201,6 +207,32 @@ struct TwoFluidCase
     TwoFluidThermal thermal;
     bool hydrateOn = false;      // hydrate kinetics solved (hydrate{} present)
     TwoFluidHydrate hydrate;
+    bool networkMode = false;    // branch-network member: the junction end
+                                 // boundary is owned by the TwoFluidNetwork
+                                 // (mutated every step), so the constructor
+                                 // skips the serial boundary-combination
+                                 // checks
+};
+
+/// One junction of a branch network: the named pipe ends it joins, each
+/// "pipeName.inlet" or "pipeName.outlet".
+struct TwoFluidJunctionSpec
+{
+    std::string name;
+    std::vector<std::string> ends;
+};
+
+/// Branch-network case: several TwoFluidPipe objects sharing junction
+/// nodes. The per-pipe physics (fluid/closure/initial/thermal/hydrate) is
+/// shared; geometry and the non-junction boundary of each pipe are per
+/// pipe. Every pipe has exactly one junction end (spans between two
+/// junctions are a follow-up), so junctions solve independently.
+struct TwoFluidNetworkCase
+{
+    TwoFluidCase perPipe; // networkMode = true; pipes/inlet/outlet unused
+    std::vector<TwoFluidGeo> pipes;
+    std::vector<TwoFluidJunctionSpec> junctions;
+    std::map<std::string, TwoFluidBoundary> boundaries; // "pipe.inlet"
 };
 
 class TwoFluidPipe
@@ -246,6 +278,77 @@ public:
     double wallHeatRate() const { return wallHeatRate_; }
     /// Enthalpy the inflow boundaries inject, W (transport + sources only).
     double inletHeatRate() const { return inletHeatRate_; }
+
+    // ---- junction support (used by TwoFluidNetwork) ----
+
+    /// Bore area, m2.
+    double area() const { return M_PI * diameter_ * diameter_ / 4.0; }
+    /// Impose the mixture velocity for the next step (the network's
+    /// coupled junction Newton owns the momentum equation of junction
+    /// branches; the flag is consumed by the next step()).
+    void setExternalMomentum(double vM)
+    {
+        externalMomentum_ = true;
+        vM_ = vM;
+    }
+    /// Overwrite one end's boundary. The network rewrites the junction
+    /// end every step: a fixed-pressure ghost at the mixed state for
+    /// branches feeding the junction, or the imposed junction split
+    /// (phaseRates with the mixed composition) for branches it supplies.
+    void setInletBoundary(const TwoFluidBoundary& b) { cfg_.inlet = b; }
+    void setOutletBoundary(const TwoFluidBoundary& b) { cfg_.outlet = b; }
+    /// Fixed-pressure-style momentum residual at trial velocity u with
+    /// the caller's signed driving difference folded in:
+    ///   inertia (u - uOld)/dt - slipInertia + fr(u) + grav - dpDrive
+    /// on the frozen holdup. The junction Newton assembles one row per
+    /// pressure-driven branch from this.
+    double momentumResidual(double dt, double u, double dpDrive) const;
+    /// Natural magnitude of that residual (Newton tolerance anchor):
+    /// inertia (|uOld| + 1)/dt + |grav| + 1.
+    double momentumScale(double dt) const;
+    /// State at the given end (atInlet = face 0, else face n): the
+    /// boundary-cell holdup/water/hydrate/temperature/gas density the
+    /// junction mixing draws from, and the pipe's own phase volume
+    /// fluxes there (feeding branches deliver these to the junction).
+    double endAlpha(bool atInlet) const
+    {
+        return atInlet ? alpha_[0] : alpha_[n_ - 1];
+    }
+    double endWater(bool atInlet) const
+    {
+        return atInlet ? water_[0] : water_[n_ - 1];
+    }
+    double endHydrate(bool atInlet) const
+    {
+        return cfg_.hydrateOn ? (atInlet ? hydrate_[0] : hydrate_[n_ - 1])
+                              : 0.0;
+    }
+    double endTemperature(bool atInlet) const
+    {
+        return cfg_.thermalOn ? (atInlet ? T_[0] : T_[n_ - 1])
+                              : cfg_.temperature0;
+    }
+    double endGasDensity(bool atInlet) const
+    {
+        return atInlet ? cellGasDensity(0) : cellGasDensity(n_ - 1);
+    }
+    double endLiquidFlux(bool atInlet) const
+    {
+        return liquidFlux(atInlet ? alpha_[0] : alpha_[n_ - 1], 0.0);
+    }
+    double endGasVolumeFlux(bool atInlet) const
+    {
+        return gasVolumeFlux(atInlet ? alpha_[0] : alpha_[n_ - 1], 0.0);
+    }
+    /// The pipe's phase volume fluxes at an arbitrary holdup with its own
+    /// (signed) mixture velocity - the junction split a supplied branch
+    /// receives: F(aJ), G(aJ) with F + G = vM for every closure, so the
+    /// volume balance survives the split exactly.
+    double liquidFluxAt(double alpha) const { return liquidFlux(alpha, 0.0); }
+    double gasVolumeFluxAt(double alpha) const
+    {
+        return gasVolumeFlux(alpha, 0.0);
+    }
 
 private:
     void momentumSolve(double dt);
@@ -311,6 +414,8 @@ private:
     double vM_ = 0;   // current mixture velocity
     double vMOld_ = 0;
     double t_ = 0;
+    bool externalMomentum_ = false; // one-shot: the next step() skips
+                                    // momentumSolve (junction branches)
 };
 
 /// Case grammar (see tests/cases/twoFluidFront/case.dict):
@@ -356,5 +461,90 @@ private:
 ///   }
 ///   time { dt 0.25; endTime 30; reportEvery 4; }
 TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict);
+
+/// Branch network of TwoFluidPipe objects joined at junction nodes. Each
+/// pipe has one junction end; its other end carries a real boundary. Every
+/// step each junction solves independently: a coupled Newton over the
+/// free-branch (pressure-driven far end) mixture velocities and the shared
+/// junction pressure - one implicit-Euler branch momentum residual per
+/// free branch plus the junction volume balance sum(s A vM) = 0 - then the
+/// inflow streams mix (holdup/water/hydrate volume-flow-weighted,
+/// temperature heat-capacity-flow-weighted, gas density mass-flux-weighted)
+/// and every junction face is set: feeding branches get a fixed-pressure
+/// ghost at the mixed state, supplied branches get the junction split
+/// imposed as phaseRates with the pipe's own flux functions at the mixed
+/// holdup (F + G = vM keeps the volume balance exact; the phase split is
+/// exact for the homogeneous closure and closure-approximate with slip).
+/// Rate-driven far ends fix their branch velocity, sealed far ends are
+/// dead legs; each junction needs at least one fixed-pressure far end as
+/// its pressure reference. The dynamic closure is not supported yet.
+class TwoFluidNetwork
+{
+public:
+    explicit TwoFluidNetwork(const TwoFluidNetworkCase& c);
+
+    /// One network step: solve every junction (branch velocities + node
+    /// pressure + face state), then advance every pipe.
+    void step(double dt);
+
+    double time() const { return t_; }
+    std::vector<std::string> pipeNames() const;
+    const TwoFluidPipe& pipe(const std::string& name) const;
+    std::vector<std::string> junctionNames() const;
+    /// Last solved junction pressure, Pa.
+    double junctionPressure(const std::string& name) const;
+    /// Signed net mixture volume rate into the junction, m3/s (the
+    /// balance the Newton closed; ~0 at machine precision).
+    double junctionNetRate(const std::string& name) const;
+    /// Signed mixture volume rate of each connected pipe INTO the
+    /// junction, m3/s (connection order: positive = the pipe feeds the
+    /// junction).
+    std::vector<double> junctionPipeRates(const std::string& name) const;
+
+private:
+    struct EndRef
+    {
+        int pipe = 0;            // index into pipes_
+        bool atOutlet = false;   // the junction sits at the pipe's outlet
+        TwoFluidBoundary far;    // the pipe's non-junction boundary
+    };
+    struct Junction
+    {
+        std::string name;
+        std::vector<EndRef> ends;
+        double p = 0;            // last solved junction pressure
+        double net = 0;          // last balance residual (diagnostic)
+        std::vector<double> rates; // signed per-pipe rates into the node
+        // last mixed junction-face state (kept when nothing flows in)
+        double alphaJ = 0, waterJ = 0, hydrateJ = 0, tJ = 0, rhoJ = 0;
+    };
+    void solveJunction(double dt, Junction& jn);
+
+    TwoFluidNetworkCase cfg_;
+    std::vector<std::unique_ptr<TwoFluidPipe>> pipes_;
+    std::map<std::string, int> pipeIndex_;
+    std::vector<Junction> junctions_;
+    double t_ = 0;
+};
+
+/// Network case grammar: the shared physics blocks are the serial ones
+/// (fluid/closure/initial/thermal/hydrate); the topology lives in a
+/// network{} block:
+///   network
+///   {
+///       pipes { branchA { length 10; diameter 0.02; angleDeg 0;
+///                         sections 10; } ... }
+///       junctions { J { ends ( branchA.outlet branchB.outlet
+///                             outlet.inlet ); } }
+///       boundaries
+///       {
+///           branchA.inlet { type phaseRates; vsl 0.5; vsg 0;
+///                           temperature 300; }
+///           outlet.outlet { type fixedPressure; p 0; temperature 300; }
+///       }
+///   }
+/// (boundary keys name the pipe end; ends claimed by a junction must not
+/// carry a boundary, every other end must.)
+TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict);
 
 } // namespace cf

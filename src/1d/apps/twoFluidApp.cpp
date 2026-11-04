@@ -31,12 +31,71 @@ int main(int argc, char** argv)
     try
     {
         const Dictionary caseDict = Dictionary::parseFile(argv[1]);
-        const TwoFluidCase c = loadTwoFluidCase(caseDict);
 
         const double dt = caseDict.getDict("time").getScalar("dt");
         const double endTime = caseDict.getDict("time").getScalar("endTime");
         const int reportEvery = static_cast<int>(
             caseDict.getDict("time").getScalarOr("reportEvery", 1.0));
+        const int report = reportEvery > 0 ? reportEvery : 1;
+        const int nSteps = static_cast<int>(std::round(endTime / dt));
+
+        if (caseDict.has("network"))
+        {
+            const TwoFluidNetworkCase nc = loadTwoFluidNetworkCase(caseDict);
+            int sections = 0;
+            for (const TwoFluidGeo& g : nc.pipes) sections += g.sections;
+            log::info("twoFluid network: ", nc.pipes.size(), " pipes ",
+                      sections, " sections, ", nc.junctions.size(),
+                      " junctions, dt=", num(dt), " endTime=", num(endTime));
+
+            TwoFluidNetwork net(nc);
+            auto emit = [&](const TwoFluidNetwork& n)
+            {
+                log::info("t ", num(n.time()), " net");
+                for (const std::string& j : n.junctionNames())
+                    log::info("junction ", j, " p ",
+                              num(n.junctionPressure(j)), " net ",
+                              num(n.junctionNetRate(j)));
+                for (const std::string& pn : n.pipeNames())
+                {
+                    const TwoFluidPipe& s = n.pipe(pn);
+                    log::info("pipe ", pn, " vm ", num(s.mixtureVelocity()),
+                              " dp ", num(s.pressureDrop()));
+                    const std::vector<double> p = s.nodePressure();
+                    for (std::size_t q = 0; q < p.size(); ++q)
+                        log::info("pnode ", pn, " ", q, " p ", num(p[q]));
+                    const std::vector<double> a = s.cellAlpha();
+                    const std::vector<double> w = s.cellWater();
+                    const std::vector<double> vsl = s.cellVsl();
+                    const std::vector<double> vsg = s.cellVsg();
+                    const std::vector<double> T = s.cellTemperature();
+                    const std::vector<double> ep
+                        = nc.perPipe.fluid.gasR > 0 ? s.cellPressure()
+                                                    : std::vector<double>();
+                    const std::vector<double> hy
+                        = nc.perPipe.hydrateOn ? s.cellHydrate()
+                                               : std::vector<double>();
+                    for (int i = 0; i < s.sections(); ++i)
+                        log::info("pcell ", pn, " ", i, " alpha ",
+                                  num(a[i]), " water ", num(w[i]), " vsl ",
+                                  num(vsl[i]), " vsg ", num(vsg[i]),
+                                  T.empty() ? "" : (" T " + num(T[i])),
+                                  ep.empty() ? "" : (" p " + num(ep[i])),
+                                  hy.empty() ? "" : (" h " + num(hy[i])));
+                }
+            };
+
+            emit(net);
+            for (int i = 1; i <= nSteps; ++i)
+            {
+                net.step(dt);
+                if (i % report == 0 || i == nSteps) emit(net);
+            }
+            log::info("twoFluid network solved: steps=", nSteps);
+            return 0;
+        }
+
+        const TwoFluidCase c = loadTwoFluidCase(caseDict);
 
         int sections = 0;
         for (const TwoFluidGeo& g : c.pipes) sections += g.sections;
@@ -80,8 +139,6 @@ int main(int argc, char** argv)
         };
 
         emit(sim);
-        const int report = reportEvery > 0 ? reportEvery : 1;
-        const int nSteps = static_cast<int>(std::round(endTime / dt));
         for (int i = 1; i <= nSteps; ++i)
         {
             sim.step(dt);

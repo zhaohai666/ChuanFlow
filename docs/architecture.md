@@ -395,12 +395,34 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
   from/to 按链入口弧长定位，CFL 取最小元长。斜井/水平混合下各段独立
   稳态根由该段逐元 drive（摩阻 + 重位）决定，交界由**驻激波**衔接——
   交界通量恰为 vsl，晕圈只有几个元；
+- **分支管网（network{} 块，Y/T 节点首增量）**：`pipes{}`/`junctions{}`/
+  `boundaries{}` 三个子块把多根 `TwoFluidPipe` 拼成管网——每根管恰一端
+  接节点（该端无边界，另一端携带边界：定压/速率；速率驱动的远端必须
+  节点在出口侧且总注入率 ≥ 0），节点端以 `pipe.inlet`/`pipe.outlet`
+  引用。每个时间步先解节点再推进各管：**节点 Newton** 的未知量是
+  [自由支路（定压远端）混合速度 …, 共享节点压力 p_J]，动量行逐支路独立
+  （残差 = 集总动量 `ρ̄L(u − uⁿ)/dt + fr(u) + 重位 − s(p_far − p_J)`，对
+  u 数值求导、对 p_J 解析 = s），体积衡算行 `Σ s_i A_i v_i = 0` 把它们
+  耦合（DenseSolve 求解，收敛 |r| ≤ 1e-12·scale，60 次迭代）；动态闭合
+  与负注入暂不支持（fatal）。收敛后**来流混合**：持液率按体积流量加权、
+  水相/水合物按液相体积流量加权、温度按热容流量
+  `A(|F|ρ_L c_L + |G|ρ_G c_G)` 加权、气密度按气相质量流量加权（EOS 下
+  节点气质量衡算精确闭合）；相向流动的支路端 fatal。随后改写节点端
+  边界：**供给支**（s·v > 0）得到混合态定压 ghost（面通量自然从边界元
+  迎风），**被供支**得到 `phaseRates`——`vsl/vsg` 取该管自身通量函数在
+  混合持液率处的分配（F + G = v_m 对一切闭合精确保住体积衡算，均相
+  闭合下相分配也精确）；节点混合密度经 `rhoGInjected` 注入 EOS 质量通量
+  与导热系数。串接语义不受影响：逐位复用同一 momentumResidual/
+  momentumScale（serial Newton 与节点 Newton 共享算术），serial 7 个
+  边界组合校验仅对单管生效；
 - **应用** `chflow-1d-twofluid <case.dict>`：输出 `t … vm … dp …` /
   `node <j> p …` / `cell <i> alpha … water … vsl … vsg …`（thermal 时
   追加 `T …`，动态闭合时追加 `s …`，EOS 开启时追加 `p …`，水合物开启时
-  追加 `h …`）+ `thermal: qWall … qInlet …`。
+  追加 `h …`）+ `thermal: qWall … qInlet …`；`network{}` 算例改发
+  `t … net` / `junction <名> p … net …` / `pipe <名> vm … dp …` /
+  `pnode <名> <j> p …` / `pcell <名> <i> alpha … water … vsl … vsg … [T/p/h]`。
 
-十一个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
+十二个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
 
 | 算例 | 校验内容 |
 |---|---|
@@ -415,6 +437,7 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 | `twoFluidWellChain` | 串接管链：竖直 riser（20 m/10 元，sinθ=1）+ 水平 flowline（20 m/10 元）动态闭合，交界共享 Godunov 面。全耦合逐元复现（1e-9）；两段独立稳态根——riser (α*, s*) = (0.7580622562, 1.9523156870)、flowline (0.5529126041, 0.6185778539)——bulk 元分别 1e-3 / 1e-9 对齐（交界晕圈 riser 第 7–9 元为驻激波边界层，豁免）；逐元相分配恒等式 `vsl + vsg = v_m`（1e-12）；压降按复现稳态像逐项重算（Churchill 摩阻 + 重位，实测 169374.682443 Pa）；末两帧全等（真稳态）|
 | `twoFluidHydrateSealed` | 封闭静置水合物：wallis 滑移 0 使一切输运通量恒为零，各元跑纯逐元递推（生长对自由水隐式 + 气源封顶 + 1:1 体积移动 + 化学计量气汇 + 带潜热的对角热步）逐帧复现（1e-9）；闭式终态 `h* = water0 = 0.5`、`water* → 0`（实测 2.2e-16）、`T* = 壁温 280`、`p* = m_G*·gasR·T_wall`，`m_G* = 200 − 122·0.5·0.5·2 = 139 kg/m²` ⇒ `p* = 1.117004e7 Pa` 精确；末两帧全等（转换壁面受限，尾部指数衰减后弛豫到壁温）|
 | `twoFluidHydrateFlow` | 流动水合物（rate 驱动 + EOS + thermal + 动力学全开）：整步全耦合逐元复现（1e-9）——Godunov 输运 α（wallis F 凸迎风取左）、水/水合物骑同一液相通量同 clamp 语义、气量按 wallis G 迎风 + 化学计量气汇、相通量导热的隐式温度解；恒等式：逐元组成 `w + h = 0.25`（1e-12）、相分配 `vsl + vsg = v_m`（1e-12）、发射 EOS 气量对复现 m_G（1e-9）、稳态气衡算 `ρ_G 注入·vsg − ρ_G,out·vsg,out = gasContent·vsl_out·h_out`（实测 8.4795689623 对 8.4795689622 kg/m²/s）、Churchill 压降逐项重算（4774.6772 Pa）、壁面换热求和、稳态能量衡算 `入口焓 + 壁面 + 潜热 = 出口焓`（1.7736709e5 W，潜热 = gasContent 消耗率×面积×latent）；水沿程单调耗尽/水合物单调累积；末两帧全等 |
+| `twoFluidJunction` | 对称 Y 节点合流（branchA/branchB 定压 200/300 Pa → 节点 J → outlet 0 Pa，均匀持液 0.5 + wallis 滑移 0 ⇒ 混合物性处处常数）：校验器独立积分消元后的 2×2 层流隐式 Euler 系统（每步，rtol 1e-4 覆盖 Churchill 与层流 ~1e-6 偏差），并逐元复现节点混合 + Godunov 水相输运（1e-9）+ 隐式迎风温度解（1e-7——轨迹速度携带层流偏差）。逐帧：节点体积衡算 net ≈ 0（Newton 衡算行，1e-12）、p_J/三管 vm 对齐轨迹、发射 dp = Churchill 摩阻和逐项重算（1e-9）、α 恒 0.5（1e-9）、`vsl + vsg = v_m`（1e-9）。稳态闭式锚：`p_J* = Σ(A_i/K_i)p_i / Σ(A_i/K_i) = 60.0375234522 Pa`（K_i = 32μ̄L_i/D_i²）、`u_A* = 0.0349556635`、`u_B* = 0.0599306884`、`u_C* = 0.0421717120` m/s（Re 71–129 层流）、三管损失行进节点压力收于 p_J*；来流混合闭式：`φ_J* = 0.2473580247`（液相体积流加权，branchB 注入 0.1 前沿冲刷）、`T_J* = 312.6320988 K`（热容流加权，branchB 注入 320 K），前沿 ~713 s 清空几何，末端帧对齐 1e-10 |
 
 三个温度回归（`tests/check_two_fluid_thermal.py`，断言离散闭式而非
 连续指数）：
@@ -1224,8 +1247,8 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
   进口交出的体积精确、clamp 恰为 0——这是 α 方程的一阶迎风做不到的；40×40 圆盘自转
   40 步逐步相体积漂移 ≤ 6.9e-16 相对、clamp ≤ 4.42e-17、α ∈ [0,1]、带 60→70 格、
   限流最多 336 面且最小因子 0.5（同格两个出流棱柱在角上重合处）；
-- `tests/cases/*`：三十五个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
-  `twoFluid*` 十一个见 §4.3 的表）：
+- `tests/cases/*`：三十六个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
+  `twoFluid*` 十二个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug` / `transientValve`（见 4.2）

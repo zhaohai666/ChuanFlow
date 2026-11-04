@@ -100,6 +100,24 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             pressure drop term by term, the wall-heat sum, and the steady
             energy balance qInlet + qWall + latent release = outflow
             enthalpy.
+  mode = junction        : symmetric Y junction - two pressure-driven
+            branches (inlets 200/300 Pa) merging at junction J into a
+            common outlet line (0 Pa). With wallis slip 0 and a uniform
+            holdup the mixture properties are constant, so each branch is
+            exactly the laminar implicit-Euler momentum ODE
+            I_i du_i/dt + K_i u_i = s_i (p_i - p_J) with I_i = rho_m L_i
+            and K_i = 32 mu_m L_i / D_i^2, closed by the volume balance
+            sum s_i A_i u_i = 0 and p_J = p_C + I_C (u_C - u_C_old)/dt
+            + K_C u_C. The checker integrates the eliminated 2x2 system
+            independently every step (rtol 1e-4 covers the ~1e-6
+            Churchill-vs-laminar deviation) and replicates the junction
+            mixing + Godunov water transport + implicit upwind thermal
+            solve cell by cell (1e-9): the feeding branches'
+            liquid-volume-flow-weighted water cut and
+            heat-capacity-flow-weighted temperature set the supplied
+            line's inflow state. The steady state anchors on the closed
+            form p_J* = sum (A_i/K_i) p_i / sum (A_i/K_i) with the
+            front-flushed phi_J* and T_J*.
 """
 import math
 import subprocess
@@ -115,43 +133,74 @@ if proc.returncode != 0:
     raise SystemExit(f"solver failed rc={proc.returncode}\n{proc.stdout}\n{proc.stderr}")
 
 # ---- parse the time series ----
-times, frames = [], []
-cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = None, None, None, [], []
-cur_qwall, cur_qinlet = 0.0, 0.0
+if mode == "junction":
+    # network emission: per frame a "t" line, then per junction a
+    # "junction" line and per pipe "pipe" / "pnode" / "pcell" lines
+    times, frames = [], []
+    for line in proc.stdout.splitlines():
+        tok = line.replace("[chflow]", "").split()
+        if not tok:
+            continue
+        if tok[0] == "t":
+            times.append(float(tok[1]))
+            frames.append({"t": float(tok[1]), "junctions": {},
+                           "pipes": {}, "pnode": {}, "pcell": {}})
+            continue
+        if not frames:
+            continue
+        f = frames[-1]
+        if tok[0] == "junction":
+            f["junctions"][tok[1]] = {"p": float(tok[3]),
+                                      "net": float(tok[5])}
+        elif tok[0] == "pipe":
+            f["pipes"][tok[1]] = {"vm": float(tok[3]), "dp": float(tok[5])}
+        elif tok[0] == "pnode":
+            f["pnode"].setdefault(tok[1], []).append(float(tok[4]))
+        elif tok[0] == "pcell":
+            c = {"alpha": float(tok[4]), "water": float(tok[6]),
+                 "vsl": float(tok[8]), "vsg": float(tok[10])}
+            for k in range(11, len(tok), 2):
+                c[tok[k]] = float(tok[k + 1])
+            f["pcell"].setdefault(tok[1], []).append(c)
+    if not times:
+        raise SystemExit("no time series parsed")
+else:
+    times, frames = [], []
+    cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = None, None, None, [], []
+    cur_qwall, cur_qinlet = 0.0, 0.0
 
+    def flush():
+        global cur_t, cur_vm, cur_dp, cur_nodes, cur_cells
+        global cur_qwall, cur_qinlet
+        if cur_t is not None:
+            times.append(cur_t)
+            frames.append({"t": cur_t, "vm": cur_vm, "dp": cur_dp,
+                           "nodes": cur_nodes, "cells": cur_cells,
+                           "qwall": cur_qwall, "qinlet": cur_qinlet})
+            cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = \
+                None, None, None, [], []
+            cur_qwall, cur_qinlet = 0.0, 0.0
 
-def flush():
-    global cur_t, cur_vm, cur_dp, cur_nodes, cur_cells
-    global cur_qwall, cur_qinlet
-    if cur_t is not None:
-        times.append(cur_t)
-        frames.append({"t": cur_t, "vm": cur_vm, "dp": cur_dp,
-                       "nodes": cur_nodes, "cells": cur_cells,
-                       "qwall": cur_qwall, "qinlet": cur_qinlet})
-        cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = None, None, None, [], []
-        cur_qwall, cur_qinlet = 0.0, 0.0
-
-
-for line in proc.stdout.splitlines():
-    tok = line.replace("[chflow]", "").split()
-    if not tok:
-        continue
-    if tok[0] == "t":
-        flush()
-        cur_t, cur_vm, cur_dp = float(tok[1]), float(tok[3]), float(tok[5])
-    elif tok[0] == "node":
-        cur_nodes.append(float(tok[3]))
-    elif tok[0] == "thermal:":
-        cur_qwall, cur_qinlet = float(tok[2]), float(tok[4])
-    elif tok[0] == "cell":
-        c = {"alpha": float(tok[3]), "water": float(tok[5]),
-             "vsl": float(tok[7]), "vsg": float(tok[9])}
-        for k in range(10, len(tok), 2):
-            c[tok[k]] = float(tok[k + 1])
-        cur_cells.append(c)
-flush()
-if not times:
-    raise SystemExit("no time series parsed")
+    for line in proc.stdout.splitlines():
+        tok = line.replace("[chflow]", "").split()
+        if not tok:
+            continue
+        if tok[0] == "t":
+            flush()
+            cur_t, cur_vm, cur_dp = float(tok[1]), float(tok[3]), float(tok[5])
+        elif tok[0] == "node":
+            cur_nodes.append(float(tok[3]))
+        elif tok[0] == "thermal:":
+            cur_qwall, cur_qinlet = float(tok[2]), float(tok[4])
+        elif tok[0] == "cell":
+            c = {"alpha": float(tok[3]), "water": float(tok[5]),
+                 "vsl": float(tok[7]), "vsg": float(tok[9])}
+            for k in range(10, len(tok), 2):
+                c[tok[k]] = float(tok[k + 1])
+            cur_cells.append(c)
+    flush()
+    if not times:
+        raise SystemExit("no time series parsed")
 
 fails = []
 
@@ -1238,6 +1287,228 @@ elif mode == "hydrateflow":
         fails.append("state still drifting between the last two frames")
     else:
         print("ok:   steady state held over the final 20 s")
+
+elif mode == "junction":
+    # symmetric Y junction (case.dict constants): two pressure-driven
+    # branches merging at J into a common outlet line, uniform holdup and
+    # wallis slip 0 - the mixture properties are constant, so the coupled
+    # transient is the conductance network below
+    RHO_L, RHO_G, MU_L, MU_G = 1000.0, 20.0, 0.01, 1e-5
+    CL, CG = 4180.0, 2150.0
+    ALPHA = 0.5
+    RHO_M = ALPHA * RHO_L + (1.0 - ALPHA) * RHO_G
+    MU_M = ALPHA * MU_L + (1.0 - ALPHA) * MU_G
+    NA, N_OUT = 10, 8
+    LA, LB, LC = 10.0, 10.0, 8.0
+    DA, DB, DC = 0.02, 0.02, 0.03
+    AA = math.pi * DA * DA / 4.0
+    AB = math.pi * DB * DB / 4.0
+    AC = math.pi * DC * DC / 4.0
+    DXA, DXC = LA / NA, LC / N_OUT
+    PA, PB, PC = 200.0, 300.0, 0.0
+    WF_A, WF_B, T_A, T_B = 0.5, 0.1, 300.0, 320.0
+    T0 = 300.0
+    KA = 32.0 * MU_M * LA / DA ** 2
+    KB = 32.0 * MU_M * LB / DB ** 2
+    KC = 32.0 * MU_M * LC / DC ** 2
+    IA, IB, IC = RHO_M * LA, RHO_M * LB, RHO_M * LC
+    DT = 0.1
+    N_STEPS = 12000
+    REPORT = 100
+
+    # steady closed form: conductance-weighted junction pressure
+    cond_a, cond_b, cond_c = AA / KA, AB / KB, AC / KC
+    pj_star = (cond_a * PA + cond_b * PB + cond_c * PC) \
+        / (cond_a + cond_b + cond_c)
+    ua_star = (PA - pj_star) / KA
+    ub_star = (PB - pj_star) / KB
+    uc_star = (AA * ua_star + AB * ub_star) / AC
+    # inflow mixing: liquid-volume-flow-weighted water cut,
+    # heat-capacity-flow-weighted temperature
+    qla = AA * ua_star * ALPHA
+    qlb = AB * ub_star * ALPHA
+    qga = AA * ua_star * (1.0 - ALPHA)
+    qgb = AB * ub_star * (1.0 - ALPHA)
+    phi_star = (qla * WF_A + qlb * WF_B) / (qla + qlb)
+    e_a = qla * RHO_L * CL + qga * RHO_G * CG
+    e_b = qlb * RHO_L * CL + qgb * RHO_G * CG
+    tj_star = (e_a * T_A + e_b * T_B) / (e_a + e_b)
+
+    # independent trajectory: per step the eliminated 2x2 laminar
+    # implicit-Euler momentum system, then the junction mixing and the
+    # transport/thermal replication with the new velocities
+    def advect_water(w, dx, f, w_in):
+        # water rides the uniform liquid flux f (holdup stays ALPHA);
+        # upwind Godunov with the ghost value feeding face 0 and the
+        # outlet cell feeding face n, then the kernel's clamp semantics
+        n = len(w)
+        wf = [w_in * f] + [w[j - 1] * f for j in range(1, n)] \
+            + [w[n - 1] * f]
+        out = []
+        for i in range(n):
+            afn = ALPHA * w[i] + DT / dx * (wf[i] - wf[i + 1])
+            afn = min(max(afn, 0.0), ALPHA)
+            out.append(afn / ALPHA)
+        return out
+
+    def thermal(T, area, dx, u, t_in):
+        # implicit upwind enthalpy advection: the donor cell drains at its
+        # own (new) temperature, the receiver gains the donor's (new)
+        # temperature, face 0 is fed by the ghost reservoir
+        n = len(T)
+        cap = area * dx * (ALPHA * RHO_L * CL
+                           + (1.0 - ALPHA) * RHO_G * CG)
+        kf = area * u * (RHO_L * CL * ALPHA + RHO_G * CG * (1.0 - ALPHA))
+        diag = [cap / DT] * n
+        rhs = [cap / DT * T[i] for i in range(n)]
+        rhs[0] += kf * t_in
+        for i in range(n - 1):
+            diag[i] += kf
+        diag[n - 1] += kf
+        # lower-bidiagonal system: forward substitution
+        out = [rhs[0] / diag[0]]
+        for i in range(1, n):
+            out.append((rhs[i] + kf * out[i - 1]) / diag[i])
+        return out
+
+    u_a_old = u_b_old = u_c_old = 0.0
+    w_a = [0.5] * NA
+    w_b = [0.5] * NA
+    w_c = [0.5] * N_OUT
+    t_a = [T0] * NA
+    t_b = [T0] * NA
+    t_c = [T0] * N_OUT
+    traj = [{"t": 0.0, "uA": 0.0, "uB": 0.0, "uC": 0.0, "pJ": pj_star,
+             "wA": w_a[:], "wB": w_b[:], "wC": w_c[:],
+             "TA": t_a[:], "TB": t_b[:], "TC": t_c[:]}]
+    for step in range(1, N_STEPS + 1):
+        ac_i = IC / DT + KC
+        k = ac_i / AC
+        a11 = IA / DT + KA + k * AA
+        a12 = k * AB
+        a21 = k * AA
+        a22 = IB / DT + KB + k * AB
+        b1 = PA - PC + IA / DT * u_a_old + IC / DT * u_c_old
+        b2 = PB - PC + IB / DT * u_b_old + IC / DT * u_c_old
+        det = a11 * a22 - a12 * a21
+        u_a = (b1 * a22 - b2 * a12) / det
+        u_b = (a11 * b2 - a21 * b1) / det
+        u_c = (AA * u_a + AB * u_b) / AC
+        p_j = PC + IC * (u_c - u_c_old) / DT + KC * u_c
+
+        # junction mix from the feeding branches' end cells at the new
+        # velocities, before the transport advances the fields
+        ala = AA * u_a * ALPHA
+        alb = AB * u_b * ALPHA
+        aga = AA * u_a * (1.0 - ALPHA)
+        agb = AB * u_b * (1.0 - ALPHA)
+        phi = (ala * w_a[-1] + alb * w_b[-1]) / (ala + alb)
+        ea = ala * RHO_L * CL + aga * RHO_G * CG
+        eb = alb * RHO_L * CL + agb * RHO_G * CG
+        tj = (ea * t_a[-1] + eb * t_b[-1]) / (ea + eb)
+
+        w_a = advect_water(w_a, DXA, u_a * ALPHA, WF_A)
+        w_b = advect_water(w_b, DXA, u_b * ALPHA, WF_B)
+        w_c = advect_water(w_c, DXC, u_c * ALPHA, phi)
+        t_a = thermal(t_a, AA, DXA, u_a, T_A)
+        t_b = thermal(t_b, AB, DXA, u_b, T_B)
+        t_c = thermal(t_c, AC, DXC, u_c, tj)
+        u_a_old, u_b_old, u_c_old = u_a, u_b, u_c
+        if step % REPORT == 0:
+            traj.append({"t": step * DT, "uA": u_a, "uB": u_b, "uC": u_c,
+                         "pJ": p_j, "wA": w_a[:], "wB": w_b[:],
+                         "wC": w_c[:], "TA": t_a[:], "TB": t_b[:],
+                         "TC": t_c[:]})
+
+    if len(frames) != len(traj):
+        fails.append(f"frame count {len(frames)} != {len(traj)}")
+    else:
+        print(f"ok:   {len(frames)} frames at reportEvery {REPORT}")
+    geo = {"branchA": (NA, DXA, DA, AA, KA), "branchB": (NA, DXA, DB, AB, KB),
+           "outlet": (N_OUT, DXC, DC, AC, KC)}
+    for fr, tr in zip(frames, traj):
+        t = fr["t"]
+        jn = fr["junctions"]["J"]
+        # the Newton balance row is exact: net = sum s A u at the
+        # converged velocities (tolerance 1e-12 * rate scale ~ 1e-15)
+        check(f"junction net balance (t={t})", jn["net"], 0.0, 0.0, 1e-12)
+        # junction pressure + branch velocities vs the independent
+        # laminar trajectory (rtol covers the Churchill deviation)
+        check(f"p_J (t={t})", jn["p"], tr["pJ"], 1e-4)
+        for pn, ukey in (("branchA", "uA"), ("branchB", "uB"),
+                         ("outlet", "uC")):
+            n, dx, d, a, kk = geo[pn]
+            u = tr[ukey]
+            check(f"vm {pn} (t={t})", fr["pipes"][pn]["vm"], u, 1e-4)
+            # the emitted dp is the friction sum alone (the inertia lives
+            # in p_J, not in the loss-marched node pressures)
+            re = RHO_M * abs(u) * d / MU_M
+            dp_want = n * churchill(re, 0.0) * (dx / d) * 0.5 * RHO_M * u * u
+            check(f"dp {pn} (t={t})", fr["pipes"][pn]["dp"], dp_want, 1e-9)
+        for pn, wkey, tkey in (("branchA", "wA", "TA"), ("branchB", "wB", "TB"),
+                               ("outlet", "wC", "TC")):
+            cells = fr["pcell"][pn]
+            for i, c in enumerate(cells):
+                if abs(c["alpha"] - ALPHA) > 1e-9:
+                    fails.append(f"{pn} alpha[{i}](t={t}) drifted")
+                    break
+                if abs(c["vsl"] + c["vsg"] - fr["pipes"][pn]["vm"]) > 1e-9:
+                    fails.append(f"{pn} phase split [{i}](t={t})")
+                    break
+                if abs(c["water"] - tr[wkey][i]) > 1e-9:
+                    fails.append(f"{pn} water[{i}](t={t}): got={c['water']}"
+                                 f" want={tr[wkey][i]}")
+                    break
+                # the trajectory's velocities carry the ~1e-6
+                # Churchill-vs-laminar deviation, so the implicit thermal
+                # solve can only be matched to ~1e-9 (atol 1e-7)
+                if abs(c["T"] - tr[tkey][i]) > 1e-7:
+                    fails.append(f"{pn} T[{i}](t={t}): got={c['T']}"
+                                 f" want={tr[tkey][i]}")
+                    break
+            else:
+                print(f"ok:   {pn} alpha/water/T fields (t={t}) "
+                      f"(1e-9 / 1e-9 / 1e-7)")
+
+    # steady anchors on the closed form (last frame)
+    fr = frames[-1]
+    check("steady p_J*", fr["junctions"]["J"]["p"], pj_star, 1e-4)
+    check("steady vm branchA*", fr["pipes"]["branchA"]["vm"], ua_star, 1e-4)
+    check("steady vm branchB*", fr["pipes"]["branchB"]["vm"], ub_star, 1e-4)
+    check("steady vm outlet*", fr["pipes"]["outlet"]["vm"], uc_star, 1e-4)
+    # the loss-marched node pressures meet at the junction at steady state
+    check("branchA far node = p_J*", fr["pnode"]["branchA"][-1], pj_star,
+          1e-4)
+    check("branchB far node = p_J*", fr["pnode"]["branchB"][-1], pj_star,
+          1e-4)
+    check("outlet head node = p_J*", fr["pnode"]["outlet"][0], pj_star, 1e-4)
+    # front-flushed composition/temperature of the supplied line
+    check("steady phi_J* (outlet water)", fr["pcell"]["outlet"][-1]["water"],
+          phi_star, 1e-4)
+    check("steady T_J* (outlet temperature)",
+          fr["pcell"]["outlet"][-1]["T"], tj_star, 1e-4)
+    check("branchA water undisturbed", fr["pcell"]["branchA"][-1]["water"],
+          WF_A, 1e-9)
+    check("branchB water flushed", fr["pcell"]["branchB"][-1]["water"],
+          WF_B, 1e-9)
+    check("branchA temperature undisturbed",
+          fr["pcell"]["branchA"][-1]["T"], T_A, 1e-9)
+    check("branchB temperature flushed", fr["pcell"]["branchB"][-1]["T"],
+          T_B, 1e-9)
+    drift = []
+    for pn in ("branchA", "branchB", "outlet"):
+        p1, p0 = fr["pipes"][pn], frames[-2]["pipes"][pn]
+        if abs(p1["vm"] - p0["vm"]) > 1e-9 or abs(p1["dp"] - p0["dp"]) > 1e-9:
+            drift.append(pn)
+        for c1, c0 in zip(fr["pcell"][pn], frames[-2]["pcell"][pn]):
+            for key in ("alpha", "water", "vsl", "vsg", "T"):
+                if abs(c1[key] - c0[key]) > 1e-9:
+                    drift.append(f"{pn}.{key}")
+    if drift:
+        fails.append(f"state still drifting between the last two frames: "
+                     f"{drift[:4]}")
+    else:
+        print("ok:   steady state held over the final 10 s")
 
 else:
     raise SystemExit(f"unknown mode {mode}")

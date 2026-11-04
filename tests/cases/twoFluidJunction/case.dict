@@ -1,0 +1,90 @@
+// Symmetric Y junction merging two pressure-driven branches into a common
+// outlet line - the branch-network increment of the distributed two-fluid
+// kernel. branchA (inlet 200 Pa) and branchB (inlet 300 Pa) join at
+// junction J (both at their outlets), discharging through `outlet`
+// (junction at its inlet) to 0 Pa. Wallis slip 0 and a uniform holdup
+// alpha0 = 0.5 keep the mixture properties constant everywhere, so the
+// coupled transient is exactly the conductance network: each branch is the
+// laminar implicit-Euler momentum ODE
+//   I_i du_i/dt + K_i u_i = s_i (p_i - p_J),  I_i = rho_m L_i,
+//   K_i = 32 mu_m L_i / D_i^2,
+// closed by the volume balance sum s_i A_i u_i = 0, with
+//   p_J = p_C + I_C (u_C - u_C_old)/dt + K_C u_C.
+// The steady state is the conductance-weighted pressure
+//   p_J* = sum (A_i/K_i) p_i / sum (A_i/K_i) = 60.0477 Pa,
+// with u_A* = 0.0349, u_B* = 0.0599, u_C* = 0.0422 m/s (Re 71-129, laminar).
+// The junction also mixes the inflows: branchB carries waterFraction 0.1
+// (against 0.5) and 320 K (against 300 K), so the outlet line is flushed by
+// the liquid-volume-flow-weighted water cut phi_J* = 0.2473 and the
+// heat-capacity-flow-weighted temperature T_J* = 312.63 K; both fronts
+// clear the geometry by ~713 s and the implicit thermal tail decays below
+// the checker's drift tolerance by endTime 1200.
+// tests/check_two_fluid.py mode junction integrates the coupled 2x2
+// laminar system independently (every step) and replicates the Godunov
+// water transport + implicit upwind thermal solve cell by cell, then
+// anchors the last frame on the closed-form steady state.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+    cL   4180;
+    cG   2150;
+    gasR 0;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.5;
+    temperature 300;
+}
+
+network
+{
+    pipes
+    {
+        branchA { length 10; diameter 0.02; roughness 0; angleDeg 0;
+                  sections 10; }
+        branchB { length 10; diameter 0.02; roughness 0; angleDeg 0;
+                  sections 10; }
+        outlet  { length 8;  diameter 0.03; roughness 0; angleDeg 0;
+                  sections 8; }
+    }
+
+    junctions
+    {
+        J { ends ( branchA.outlet branchB.outlet outlet.inlet ); }
+    }
+
+    boundaries
+    {
+        branchA.inlet { type fixedPressure; p 200; alpha 0.5;
+                        waterFraction 0.5; temperature 300; }
+        branchB.inlet { type fixedPressure; p 300; alpha 0.5;
+                        waterFraction 0.1; temperature 320; }
+        outlet.outlet  { type fixedPressure; p 0; alpha 0.5;
+                         waterFraction 0.5; temperature 280; }
+    }
+}
+
+thermal
+{
+    wallHeatTransfer 0;
+    wallModel constant;
+    wallTemperature 300;
+}
+
+time
+{
+    dt 0.1;
+    endTime 1200;
+    reportEvery 100;
+}

@@ -1,0 +1,85 @@
+// Gas-hydrate kinetics, sealed line: a still gas/water slurry (alpha 0.5,
+// water cut 0.5, wallis closure with slipVelocity 0 so every transport
+// flux is identically zero) converts its free water to hydrate under
+// subcooling dT = T_eq(p) - T. All dynamics is per-cell kinetics + thermal
+// + EOS. The equilibrium curve ln(p[Pa]) = curveA + curveB / T_eq
+// (curveA 35.2, curveB -5684) anchors T_eq(p0) ~ 306.7 K at the initial
+// EOS pressure p0 = rhoG gasR T0 = 1.722e7 Pa (rhoG 200, gasR 287, T0 300);
+// the wall holds T at 280 K, so the line stays undersaturated and the
+// conversion runs to the end state
+//   h* = water0 = 0.5 (full 1:1 conversion, water* = 0),
+//   gas inventory m* = m0 - gasContent alpha0 water0 dx = 139 kg/m2,
+//   rhoG* = 139 / ((1-alpha0) dx) = 139,  p* = rhoG* gasR T_wall
+//         = 139 * 287 * 280 = 1.117004e7 Pa,  T* = wall 280 K
+// (T_eq(p*) ~ 299.6 K > 280: growth persists to the full conversion; the
+// latent heat release is absorbed by the wall between growth bursts). The
+// conversion is wall-limited: quasi-steady T tracks slightly below T_eq(p)
+// and the free water decays at dwater/dt ~ -kw dT / (latent alpha dx area)
+// ~ -0.02 /s, with the last ~20% decaying exponentially at kg dT ~ 0.2 /s;
+// the T tail then relaxes to the wall with cap/kw ~ 14.5 s, so the final
+// frames are identical. tests/check_two_fluid.py mode hydratesealed
+// replicates the per-cell recursion (1e-9) and checks the closed-form end
+// state plus the gas-inventory identity.
+fluid
+{
+    rhoL 1000;
+    rhoG 200;
+    muL  0.01;
+    muG  1e-5;
+    cL   4180;
+    cG   2150;
+    gasR 287;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 10;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.5;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet  { type sealed; }
+    outlet { type sealed; }
+}
+
+thermal
+{
+    wallHeatTransfer 50;
+    wallModel constant;
+    wallTemperature 280;
+}
+
+hydrate
+{
+    curveA 35.2;
+    curveB -5684;
+    growthRate 0.01;
+    dissociationRate 0.01;
+    gasContent 122;
+    latentHeat 4.2e8;
+    initial 0;
+}
+
+time
+{
+    dt 0.5;
+    endTime 800;
+    reportEvery 160;
+}

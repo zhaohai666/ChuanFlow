@@ -1,0 +1,80 @@
+// Gas-hydrate kinetics, flowing line: a rate-driven gas/water stream
+// (vM = vsl + vsg = 1 m/s, wallis slip 0.3, alpha 0.5, water cut 0.25)
+// enters subcooled (inlet 290 K, wall 280 K) against the equilibrium curve
+// ln(p[Pa]) = curveA + curveB / T_eq (T_eq ~ 306 K at the EOS pressure
+// rhoG gasR T ~ 1.7e7 Pa), so the free water converts to hydrate in transit
+// while the hydrate fraction rides the liquid Godunov flux. The gas mass
+// sink gasContent kg per m3 of formed hydrate depletes rhoG along the pipe
+// and the latent heat warms the stream against the wall cooling; the steady
+// state is a rising hydrate / falling water profile with declining p.
+// tests/check_two_fluid.py mode hydrateflow replicates the full coupled
+// recursion cell by cell (1e-9) - Godunov transport of alpha, water and
+// hydrate, upwind gas-mass continuity, implicit hydrate kinetics, implicit
+// tridiagonal temperature with the latent source - and checks the global
+// hydrate-able inventory identity (water + hydrate conserved through the
+// 1:1 conversion), the gas inventory with the stoichiometric sink, the
+// phase-split identity and the flatness of the final frames.
+fluid
+{
+    rhoL 1000;
+    rhoG 200;
+    muL  0.01;
+    muG  1e-5;
+    cL   4180;
+    cG   2150;
+    gasR 287;
+}
+
+pipe
+{
+    length 10;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 20;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.3;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.25;
+    temperature 290;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.4; vsg 0.6; waterFraction 0.25;
+             temperature 290; }
+    outlet { type fixedPressure; p 1.0e6; temperature 280; }
+}
+
+thermal
+{
+    wallHeatTransfer 50;
+    wallModel constant;
+    wallTemperature 280;
+}
+
+hydrate
+{
+    curveA 35.2;
+    curveB -5684;
+    growthRate 0.01;
+    dissociationRate 0.01;
+    gasContent 122;
+    latentHeat 4.2e8;
+    initial 0;
+}
+
+time
+{
+    dt 0.2;
+    endTime 200;
+    reportEvery 100;
+}

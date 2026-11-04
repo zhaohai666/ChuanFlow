@@ -41,11 +41,16 @@ namespace cf
 /// instead - the distributed pressure momentum form: the gas share of the
 /// mixture row alpha_g dp (with the proportional wall split alpha_g fr
 /// cancelling against the gas friction share) minus gas gravity minus the
-/// interfacial drag drives dvG/dt, which with vG = vM + alpha s reduces to
-///   ds/dt = [(rho_m - rhoG)(g sinT + du/dt) - sigma/alpha_g]/(alpha rhoG),
+/// interfacial drag drives the gas material acceleration
+/// dvG/dt = du/dt + alpha ds/dt + vG dvG/dx, which with vG = vM + alpha s
+/// reduces to
+///   ds/dt = [(rho_m - rhoG)(g sinT + du/dt) - rhoG vG dvG/dx
+///            - sigma/alpha_g]/(alpha rhoG),
 /// terminal slip s* = sign(R) sqrt(alpha_g |R| / C) with
-/// R = (rho_m - rhoG)(g sinT + du/dt): buoyancy and mixture acceleration
-/// drive the slip, wall friction rides the pressure field.
+/// R = (rho_m - rhoG)(g sinT + du/dt): buoyancy, mixture acceleration and
+/// the gas convection drive the slip, wall friction rides the pressure
+/// field. At a uniform steady state the convective term vanishes identically
+/// (steady fluxes are uniform, so rhoG and vG are).
 /// Phases are incompressible and the area is constant, so the mixture
 /// velocity is uniform along the pipe. With the gas EOS on (fluid gasR > 0)
 /// the gas density becomes a per-section state evolved by gas mass
@@ -60,7 +65,8 @@ namespace cf
 /// The mixture momentum itself stays lumped (one velocity per pipe) - the
 /// thermodynamic p_i is not a local momentum driver, so acoustic dynamics
 /// and the friction pressure profile inside the pipe are beyond this
-/// reduced form (distributed pressure momentum is the follow-up).
+/// reduced form (the model-full slip ODE carries the mixture-row pressure
+/// gradient as its drive; a per-section mixture momentum is the follow-up).
 /// Holdup transport advances with the exact Godunov flux of the
 /// quadratic liquid-flux function F(alpha) = alpha vL(alpha), so shocks
 /// propagate at the Rankine-Hugoniot speed and the CFL-limited scheme is

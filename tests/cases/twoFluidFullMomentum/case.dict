@@ -1,14 +1,19 @@
-// Full gas momentum closure (distributed pressure momentum, first
-// increment): a rate-driven vertical riser with the ideal-gas EOS on and
-// closure model "full". The per-section slip state is driven by the gas
-// momentum balance with the local mixture-row pressure gradient substituted
-// (the gas share alpha_g dp with the proportional wall split alpha_g fr
-// cancelling it), which reduces to
-//   ds/dt = [(rho_m - rhoG)(g sinT + du/dt) - sigma/alpha_g]/(alpha rhoG),
-// sigma = C s|s| semi-implicit through the origin secant, so the terminal
-// slip is s* = sign(R) sqrt(alpha_g |R| / C) with R = (rho_m - rhoG) g sinT
-// (du/dt = 0 for a rate-driven line). Wall friction rides the pressure
-// field: the drive carries buoyancy and mixture acceleration only.
+// Full gas momentum closure (distributed pressure momentum): a rate-driven
+// vertical riser with the ideal-gas EOS on and closure model "full". The
+// per-section slip state is driven by the gas momentum balance with the
+// local mixture-row pressure gradient substituted (the gas share alpha_g dp
+// with the proportional wall split alpha_g fr cancelling it), and the gas
+// material acceleration dvG/dt = aM + alpha ds/dt + vG dvG/dx expanded,
+// which reduces to
+//   ds/dt = [(rho_m - rhoG)(g sinT + aM) - rhoG vG dvG/dx
+//            - sigma/alpha_g]/(alpha rhoG),
+// sigma = C s|s| semi-implicit through the origin secant. The convective
+// term (forward difference, zero gradient at the outlet face) is active
+// through the front-propagation transient and vanishes identically at the
+// uniform fixed point, so the terminal slip is s* = sign(R) sqrt(alpha_g
+// |R| / C) with R = (rho_m - rhoG) g sinT (du/dt = 0 for a rate-driven
+// line). Wall friction rides the pressure field: the drive carries
+// buoyancy, mixture acceleration and gas convection only.
 //
 // Closed-form steady state (volume conservation pins the phase fluxes at
 // the injected rates, and the gas mass flux in = out at the injected

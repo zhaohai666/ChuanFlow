@@ -445,12 +445,17 @@ void TwoFluidPipe::slipStep(double dt)
         // form): alpha_g rhoG dx dvG/dt = alpha_g dp (the gas share of the
         // mixture row, whose alpha_g fr part cancels the proportional gas
         // wall split) - alpha_g rhoG g sinT dx - sigma dx. Substituting
-        // vG = vM + alpha s gives
-        //   ds/dt = [(rho_m - rhoG)(g sinT + aM) - sigma/alpha_g]/(alpha rhoG)
-        // with sigma = C s|s| semi-implicit through the origin secant: the
+        // vG = vM + alpha s and expanding the material acceleration
+        // dvG/dt = aM + alpha ds/dt + vG dvG/dx gives
+        //   ds/dt = [(rho_m - rhoG)(g sinT + aM) - rhoG vG dvG/dx
+        //            - sigma/alpha_g]/(alpha rhoG)
+        // with sigma = C s|s| semi-implicit through the origin secant. At
+        // a uniform steady state the convective term vanishes identically
+        // (steady fluxes are uniform, so rhoG and vG are), leaving the
         // terminal slip s* = sign(R) sqrt(alpha_g |R| / C) with
-        // R = (rho_m - rhoG)(g sinT + aM). Buoyancy and the mixture
-        // acceleration drive the slip; wall friction rides the pressure.
+        // R = (rho_m - rhoG)(g sinT + aM). Buoyancy, the mixture
+        // acceleration and the gas convection drive the slip; wall
+        // friction rides the pressure.
         const double aM = (vM_ - vMOld_) / dt;
         std::vector<double> old = slip_;
         for (int i = 0; i < n_; ++i)
@@ -467,8 +472,20 @@ void TwoFluidPipe::slipStep(double dt)
             // per-section gas density: with the EOS the drive and the drag
             // denominator are section-local
             const double rhoG = cellGasDensity(i);
+            // gas convective acceleration vG dvG/dx: forward difference
+            // along the flow (vM cancels in the difference), zero gradient
+            // at the outlet face - the same face convention as the outlet
+            // fluxes
+            double conv = 0.0;
+            if (i + 1 < n_)
+            {
+                const double vGi = vM_ + a * old[i];
+                const double vGj = vM_ + alpha_[i + 1] * old[i + 1];
+                conv = vGi * (vGj - vGi) / dxs_[i];
+            }
             const double r = (mixtureRhoCell(i) - rhoG)
-                           * (kGravity * sinT_[i] + aM);
+                           * (kGravity * sinT_[i] + aM)
+                           - rhoG * conv;
             const double rate = cfg_.closure.interfacialDrag
                               * std::abs(old[i]) / (ag * a * rhoG);
             slip_[i] = (old[i] / dt + r / (a * rhoG))

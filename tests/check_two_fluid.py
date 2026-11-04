@@ -157,17 +157,22 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             (alpha* (vG* + dx/tau)) — the flushed water cut and the
             per-cell Churchill pressure drop.
   mode = fullmomentum    : full gas momentum closure (distributed pressure
-            momentum first increment) - rate-driven vertical riser with the
-            ideal-gas EOS on. The per-section slip solves
-            ds/dt = [(rho_m - rhoG)(g sinT + aM) - sigma/alpha_g]
-                    / (alpha rhoG)
+            momentum) - rate-driven vertical riser with the ideal-gas EOS
+            on. The per-section slip solves
+            ds/dt = [(rho_m - rhoG)(g sinT + aM) - rhoG vG dvG/dx
+                     - sigma/alpha_g] / (alpha rhoG)
             with sigma = C s|s| semi-implicit through the origin secant:
             the mixture-row pressure gradient is substituted (the gas share
-            alpha_g fr cancels the proportional gas wall split), so only
-            buoyancy and the mixture acceleration drive the slip and wall
-            friction rides the pressure field. Rate-driven: aM = 0, so the
-            terminal slip is s* = sqrt(alpha_g alpha (rhoL - rhoG) g / C)
-            and the coupled fixed point F(alpha*, s*) = vsl with
+            alpha_g fr cancels the proportional gas wall split), so
+            buoyancy, the mixture acceleration and the gas convection
+            drive the slip and wall friction rides the pressure field.
+            Rate-driven: aM = 0; the convective term vG dvG/dx (forward
+            difference, zero gradient at the outlet face) is active through
+            the front-propagation transient and vanishes identically at the
+            uniform fixed point (steady fluxes are uniform, so rhoG and vG
+            are) - the steady anchors double as that identity. The terminal
+            slip is s* = sqrt(alpha_g alpha (rhoL - rhoG) g / C) and the
+            coupled fixed point F(alpha*, s*) = vsl with
             F(a) = s a^2 + (vM - s) a; volume conservation pins rhoG* = rhoG
             exactly (EOS pressure p* = rhoG gasR T0 uniform). The checker
             replicates the coupled slip + Godunov holdup + water + gas-mass
@@ -2042,17 +2047,30 @@ elif mode == "fullmomentum":
         ag = 1.0 - a
         return mg / (ag * DX) if ag > 1e-12 else RHO_G
 
-    def slip_map(a, s_old, mg, dt):
-        # kernel slipStep model full: buoyancy drive (rate-driven aM = 0),
-        # section-local gas density, origin-secant semi-implicit drag
-        ag = 1.0 - a
-        if a <= 1e-12 or ag <= 1e-12:
-            return 0.0
-        rho_g = rho_g_cell(mg, a)
-        rho_m = a * RHO_L + ag * rho_g
-        drive = (rho_m - rho_g) * G * SIN_T
-        rate = C_DRAG * abs(s_old) / (ag * a * rho_g)
-        return (s_old / dt + drive / (a * rho_g)) / (1.0 / dt + rate)
+    def slip_step(alpha, slip, mg, dt):
+        # kernel slipStep model full: buoyancy drive (rate-driven aM = 0)
+        # minus the gas convective acceleration vG dvG/dx (forward
+        # difference, zero gradient at the outlet face), section-local gas
+        # density, origin-secant semi-implicit drag
+        out = []
+        for i in range(N):
+            a = alpha[i]
+            ag = 1.0 - a
+            if a <= 1e-12 or ag <= 1e-12:
+                out.append(0.0)
+                continue
+            rho_g = rho_g_cell(mg[i], a)
+            rho_m = a * RHO_L + ag * rho_g
+            conv = 0.0
+            if i + 1 < N:
+                v_gi = VM + a * slip[i]
+                v_gj = VM + alpha[i + 1] * slip[i + 1]
+                conv = v_gi * (v_gj - v_gi) / DX
+            drive = (rho_m - rho_g) * G * SIN_T - rho_g * conv
+            rate = C_DRAG * abs(slip[i]) / (ag * a * rho_g)
+            out.append((slip[i] / dt + drive / (a * rho_g))
+                       / (1.0 / dt + rate))
+        return out
 
     def face_fluxes(alpha, slip):
         # liquid and gas volume fluxes of the full closure: the same face
@@ -2096,10 +2114,16 @@ elif mode == "fullmomentum":
     mg = [RHO_G * (1.0 - A0) * DX] * N
     steps_done = 0
     net_in = 0.0
+    max_conv = 0.0
     for k, fr in enumerate(frames):
         want_steps = 0 if k == 0 else k * 400
         while steps_done < want_steps:
-            slip = [slip_map(alpha[i], slip[i], mg[i], DT) for i in range(N)]
+            max_conv = max(max_conv, max(
+                (abs((VM + alpha[i] * slip[i])
+                     * ((VM + alpha[i + 1] * slip[i + 1])
+                        - (VM + alpha[i] * slip[i])) / DX)
+                 if i + 1 < N else 0.0) for i in range(N)))
+            slip = slip_step(alpha, slip, mg, DT)
             flux, gvol = face_fluxes(alpha, slip)
             wf = [PHI_IN * flux[0]]
             for j in range(1, N):
@@ -2161,6 +2185,9 @@ elif mode == "fullmomentum":
     m_end = sum(c["p"] * (1.0 - c["alpha"]) * DX / (GAS_R * T0)
                 for c in frames[-1]["cells"])
     check("gas inventory balance", m_end, m0 + net_in, 1e-9)
+    print(f"ok:   gas convective acceleration vG dvG/dx exercised in the"
+          f" transient (peak {max_conv:.6e} m/s2) and gone at the fixed"
+          " point")
     # steady state: the coupled (alpha*, s*) fixed point with rhoG* = RHO_G
     rho_m = a_star * RHO_L + (1.0 - a_star) * RHO_G
     mu_m = a_star * MU_L + (1.0 - a_star) * MU_G

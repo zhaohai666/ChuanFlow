@@ -170,6 +170,14 @@ void KOmegaSST::updateNut()
     }
 }
 
+void KOmegaSST::updateTurbDissipation()
+{
+    // the model transports omega; epsilon is the k-equation's destruction term
+    const Field<scalar>& k = k_.internalField();
+    const Field<scalar>& w = diss_.internalField();
+    for (std::size_t c = 0; c < eps_.size(); ++c) eps_[c] = betaStar * k[c] * w[c];
+}
+
 scalar KOmegaSST::wallDissipation(const WallState& ws, scalar kCell, scalar y) const
 {
     // viscous-sublayer limit omega -> 6 nu/(beta1 y^2) and log-layer value

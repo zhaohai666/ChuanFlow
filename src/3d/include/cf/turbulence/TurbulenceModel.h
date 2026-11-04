@@ -106,6 +106,12 @@ public:
     const Field<scalar>& nut() const { return nut_; }
     const Field<scalar>& k() const { return k_.internalField(); }
     const Field<scalar>& dissipation() const { return diss_.internalField(); }
+    /// epsilon [m2/s3]: the rate turbulent kinetic energy is dissipated at,
+    /// which is the heat the cascade deposits in the fluid. For k-epsilon this
+    /// is the dissipation variable itself; SST transports omega and applies the
+    /// conversion eps = betaStar k omega here; the laminar model reports zeros.
+    /// Refreshed at the end of every correctTurbulence().
+    const Field<scalar>& turbDissipation() const { return eps_; }
     const volScalarField& kField() const { return k_; }
     const volScalarField& dissipationField() const { return diss_; }
     /// |S| = sqrt(2 S:S) per cell, from the current velocity gradient
@@ -147,6 +153,9 @@ protected:
     virtual void solveDissipation(scalar dt) = 0;
     /// nut from k and the dissipation variable
     virtual void updateNut() = 0;
+    /// refill eps_ from the current k and dissipation variable; called at the
+    /// end of correctTurbulence, after the transports have run
+    virtual void updateTurbDissipation() = 0;
     /// multiplier of nut in the k-equation diffusion coefficient
     /// nu + nut*kDiffusivity(): 1/sigma_eps for k-epsilon, sigma_k for SST
     virtual Field<scalar> kDiffusivity() const = 0;
@@ -200,6 +209,7 @@ protected:
     Field<scalar> nuEffFace_;
     Field<scalar> strain_;
     Field<scalar> prod_;
+    Field<scalar> eps_;
 
     std::vector<label> wallFaces_;
     Field<scalar> uTau_, yPlus_, nutWall_, wallDist_;
@@ -247,6 +257,7 @@ protected:
     void initializeFields() override;
     bool hasDissipation() const override { return false; }
     void solveDissipation(scalar) override {}
+    void updateTurbDissipation() override {}
     void updateNut() override;
     Field<scalar> kDiffusivity() const override;
     Field<scalar> destructionSp() const override;

@@ -54,6 +54,7 @@ protected:
     void initializeFields() override;
     void solveDissipation(scalar dt) override;
     void updateNut() override;
+    void updateTurbDissipation() override;
     Field<scalar> kDiffusivity() const override;
     Field<scalar> kProduction() const override;
     Field<scalar> destructionSp() const override;

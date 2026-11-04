@@ -85,8 +85,9 @@ struct CaseEnergy
 
 /// The energy{} block of a case, or a null model when the case does not ask for
 /// a thermal field. The model owns T and reads the flux - and, through `turb`,
-/// the eddy viscosity and strain rate - on every advance, so build it once the
-/// fields it reads exist and keep it alive for as long as the solver runs.
+/// the eddy viscosity, strain rate and turbulent dissipation - on every
+/// advance, so build it once the fields it reads exist and keep it alive for
+/// as long as the solver runs.
 ///
 /// Thermal patch conditions come from the same patches{} block as the flow
 /// ones:
@@ -116,7 +117,8 @@ inline CaseEnergy makeEnergy(const Dictionary& caseDict, const polyMesh& mesh,
     }
     std::unique_ptr<EnergyModel> model = std::make_unique<EnergyModel>(
         mesh, phi, schemes, props, nu, turb ? &turb->nut() : nullptr,
-        turb ? &turb->strainRate() : nullptr, turb ? &wl : nullptr);
+        turb ? &turb->strainRate() : nullptr,
+        turb ? &turb->turbDissipation() : nullptr, turb ? &wl : nullptr);
 
     if (caseDict.has("patches"))
     {
@@ -155,6 +157,7 @@ inline CaseEnergy makeEnergy(const Dictionary& caseDict, const polyMesh& mesh,
     log::info("energy: rho=", props.rho, " cp=", props.cp, " kappa=", props.kappa,
               " alpha=", props.alphaMolecular(), " expansion=", props.beta,
               " dissipation=", props.viscousDissipation ? "on" : "off",
+              " turbulentDissipation=", props.turbulentDissipation ? "on" : "off",
               " thermalPatches=", names.size());
     return CaseEnergy{mesh, std::move(model), std::move(names)};
 }

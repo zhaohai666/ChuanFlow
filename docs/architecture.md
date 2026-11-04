@@ -747,7 +747,9 @@ case 带 `energy{}` 块时，SIMPLE 与 PISO 各自多解一个温度场；不�
 与 §5.5–5.7 完全一致（`IEnergyCoupling*` 是新的可选形参，缺省 nullptr）。
 
 **方程与单位**：`dT/dt + div(u,T) − div(α∇T) = S`，
-`α = κ/(ρcp) + nut/Pr_t` [m²/s]，`S = volumetricSource/(ρcp) + ν|S_ij|²/cp` [K/s]。
+`α = κ/(ρcp) + nut/Pr_t` [m²/s]，
+`S = volumetricSource/(ρcp) + ν|S_ij|²/cp + ε/cp` [K/s]
+（分子耗散由 `viscousDissipation` 开、湍流释热由 `turbulentDissipation` 开，ε 由湍流层给）。
 求解器本身保持**运动学**（压力方程里 ρ=1、`force` 是加速度），所以 `rho`、`cp`
 只用来把 κ 与 W/m³ 的源折算成扩散系数和升温速率，浮力也以加速度进入动量。
 
@@ -814,8 +816,24 @@ y+_T 是两支的交点（从最小值点 `Prt/(κPr)` 向上括根二分）。�
 同一个代码路径对两类网格都成立。分子 Pr < 0.5（液态金属，两支律失效）直接
 `cfFatal`。`patchHeatRate` 与装配矩阵共用同一个 `faceGamma()`，报告的墙速率和
 方程实际用的通量恒等；`thermalWall` 逐 patch 报 12 位的 u_tau/y+/T+/q。
-黏性耗散只算分子应力（`ν|S_ij|²/cp`，`strainRate` 由湍流层给），湍流动能的释热
-要等 k 方程本身（未做）。
+黏性耗散两项都可开：分子应力 `ν|S_ij|²/cp`（`strainRate` 由湍流层给）与
+**湍流释热** `ε/cp`（`turbulentDissipation`）。ε 存在湍流层上
+（`RansModel::eps_`，`turbDissipation()` 访问器；每次 `correctTurbulence` 与
+`initializeUniform` 末尾经虚函数 `updateTurbDissipation()` 刷新）：k-ε 就是
+输运变量本身，SST 按 `ε = β* k ω` 换算，层流模型报零；能量层在
+`turbulentDissipation true` 而没有湍流模型、或场尺寸不符时直接 `cfFatal`。
+`volumetricHeatRate()` 报**全部已开源项的体积分**（ρcp·ΣV·S），不再只是
+volumetricSource 一项。守恒语义要读对：总平均内能加热 = 分子 ν|S̄|² + ε——
+`nut|S|²` 把平均动能抽进 k，ε 再把它放出来，两项无重复计算；但**壁面函数的
+壁单元不是能量守恒的**：那里的 (k, ε) 对被 `imposeWallEquilibrium` 代数钉在
+对数层平衡上，不是输运出来的。湍流渠道实测 `source/pump`（源 vs 泵功
+`force·Ub·V`）：SIMPLE 0.9548 / 1.1082、PISO（endTime 8）0.7623 / 1.1774
+（k-ε / SST）；把 ε 源整个关掉读数只有 0.004 / 0.03。所以 checker
+（`tests/check_turbulent_channel.py` 第 8 组断言）对泵功只断言可见性带
+[0.5, 2]，tight 的断言放在离散能量平衡（SIMPLE 8.7e-16 / 2.6e-16 W、
+PISO 2.9e-9 / 1.1e-7 W——瞬态残余就是储能率）、`∫ε dV` 对报告 source
+（vtu 复核 1e-8 相对）与壁单元 `ε = u_τ³/(κ y₁) = 475.23`（两模型都对，
+SST 经 `β* k ω` 读出）上。
 
 **七个回归算例**（`tests/check_energy.py` + `tests/check_thermal_wall.py`，每个模式都拿内核**没被给的**数对表；
 实测值即 ctest 打印的 notes）：
@@ -828,6 +846,7 @@ y+_T 是两支的交点（从最小值点 `Prt/(κPr)` 向上括根二分）。�
 | `energyDecay` | 隐式 Euler + 绝热均值守恒 + **扩散算子自己的离散误差** | 200 步；离散特征值 9.864532 对连续 k² 9.869604；离散衰减因子 0.373802218 对连续 0.372707839（比真 PDE 慢 0.294%）；幅值历史离离散本征模 4.640e-13 相对；离散均值 0.000e+00；balance 0 |
 | `energyBuoyantRest` | 浮力进入**压力能回答**的地方（含上面那条地板） | max\|U\| 2.706e-04 对无平衡时的 Stokes 尺度 2.453e+00；`dp/dz` 0.099972 对 `f_z` 0.098100，直线残差 3.475e-04 比 `f·H` = 0.04905；T 不漂移；balance 2.254e-11 |
 | `energyChannelFlux` | 对流↔连续性通量的耦合 + `Nu_Dh = 140/17` + 剖面形状不变量 | 23 次扫描收敛；`Umax` 0.100000000833 对 `aH²/8ν`；流量 0.00134 m³/s（沿程散布 9.915e-09）；混杯升温 **0.0189393944 W** 对面供给 **0.0189393945 W**；`Tw−Tb` 2.42409318 K 对 `17qh/35k` = 2.42857143（`Nu_Dh` 8.2505 对 8.2353）；两壁不对称 0.000e+00 K；形状比 `(Tb−T_centre)/(Tw−Tb)` = 0.285116 对 `39/136` = 0.286765；balance −9.898e-15 |
+| `turbulentChannel`（能量块） | 湍流释热 ε/cp：离散焓平衡闭合、source = ∫ε、壁单元 ε 对数层平衡、source/pump 可见性带（与摩阻断言同一个 checker，`tests/check_turbulent_channel.py` 第 8 组） | balance 8.7e-16 / 2.6e-16 W（SIMPLE）、2.9e-9 / 1.1e-7 W（PISO t=8）；∫ε(vtu) 对 source 1e-8 相对；壁单元 ε 475.23 = u_τ³/(κ y₁)（两模型，SST 经 β* k ω）；source/pump 0.76~1.18，关掉 ε 源读 0.004 / 0.03 |
 | `thermalWallChannel` | 温度壁面律接入能量方程（湍流传热的墙面闭合） | 力驱动湍流渠道列（u_tau 0.6245 是输入，首格 y+ 52.04 = 4.2 个热副层），底/顶壁 310/300 K：两模型报告的 T+ 对 Python 重写律 **11.8956036 全同**（1e-8）；墙速率 = ρcp·u_tau·A·ΔT/T+（1e-8）；vtu 场对 checker 重述的离散问题（内部调和 γ + 墙面 u_tau·y/T+）最大偏差 **3.5e-5 K**（kEpsilon）/ **1.7e-5 K**（SST），重述系统通量恒定 1.5e-12 相对；壁函数通量是分子首格通量的 **3.08 倍**（闭合确实在起作用）；镜像对称 0.0；balance ~1e-11 相对 |
 
 `energyChannelFlux` 的两条设计值得记：几何是 y ∈ [0, 0.2] 的平行板渠道，所以
@@ -883,7 +902,8 @@ initialAmplitude initialAxis }`（除 `volumetricSource` 之类缺省外，`from
 40→80→160 也只从 8.34° 走到 7.59°：一格 α 里的方向信息本来就只有一格。这条由 5.14 的 `fit` 解掉。
 ② 带均值 κ = −3.696 对 −1/R = −5（−0.74），因为 κ 仍走 §5.10 的单元中心散度模板，一格带撑不起它。
 所以**本增量是测量，不是动力学**：这一节的 α 仍由 §5.10 的迎风方程输运、CSF 仍读梯度路径的 κ；
-动力学在 5.13（α 交给平面带走），法向换成邻域面积加权平面在 5.14，κ 直接由截面多边形给仍未做。
+动力学在 5.13（α 交给平面带走），法向换成邻域面积加权平面在 5.14，κ 换成截面几何在
+5.15（`interfaceCurvaturePlic`，`surfaceTension{ kappaPlic true; }` 接入动量路径）。
 `vofPlic` case（40×40、R/dx = 8、`fill exact` + `reconstruction{ normal mixed; }`、刚体旋转 0.1 rad）
 实测：α 带 = 平面数 = 报告值 = 60，|n|−1 ≤ 6.4e-13，截面色心躺在自己平面上 ≤ 9.2e-13，一格带跨的
 界面面积 0.111878 对圆周拉伸面积 2πR·dz = 0.125664（89%），相体积 π R² dz 守到 5.9e-15 且 40 步内漂移
@@ -1166,6 +1186,12 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
     跨过 `y+ = 52` 到中心线的网格只能把这个数核对到网格自己的精度，因此带宽取
     20%，而近壁闭合严格复查。checker 把 case 复制到临时目录再改 `model`，剖面
     一律从 vtu 质心取（两种耦合因此比的是同一组数），产物不落进仓库。
+    case 的能量块（`turbulentDissipation`，300 K 双壁是唯一热出口）在第 8 组
+    断言里核对湍流释热：离散平衡（SIMPLE 1e-15、PISO ≤1.1e-7 W，瞬态残余即
+    储能率）、source 对 ∫ε(vtu) 1e-8 相对、壁单元 `ε = u_τ³/(κ y₁) = 475.23`
+    （两模型），source/pump 落在 [0.5, 2] 的可见性带（壁函数壁单元非能量
+    守恒，实测 0.76~1.18；关掉 ε 源读 0.004/0.03——见 5.11）。
+    piso 的 `endTime` 3 → 8（2000 步）让热平衡进入准定常。
   - `vofTranslation`（平面界面被匀速平移携带过域：160 单元、入口 α=1；
     `max|div(phi)|` 恰为 0、α ∈ [0,1]（最小 1.2e-6 就是迎风干尾）、0.5 穿越位置
     与速度对 `x0 + U t`（0.9986·U，落后 0.33 dx）、vtu 与日志两条独立路径互校

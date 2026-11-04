@@ -13,18 +13,19 @@
 //
 // dy = 2.5e-3 puts the first cell centre at y+ ~ 52, inside the log layer where
 // the wall function belongs. Both couplings are regression-tested on this case:
-// the transient is advanced in physical time until the shear production and the
-// driving force balance, steady SIMPLE reaches the same balance in a few dozen
-// outer iterations -- which it can only do because momentumTol gates the stop,
+// the transient is advanced to endTime 8 (2000 steps), by which time the heat
+// balance has gone quasi-steady (the residual below is the storage rate), and
+// steady SIMPLE reaches the same balance in a few dozen outer iterations --
+// which it can only do because momentumTol gates the stop,
 // since on a streamwise-uniform column every phi is zero and continuity reads 0
 // on the first iteration.
 //
 // Measured (Ub from the vtu centroids, Pope's law gives 12.98 m/s):
 //                 u_tau    Ub      Ub/u_tau    iterations
-//   piso  kEpsilon  0.624486 11.10   17.8       750 steps    (-14.5%)
-//   piso  kOmegaSST 0.624266 13.67   21.9       750 steps    ( +5.4%)
-//   simple kEpsilon 0.624500 10.96   17.6        27          (-15.5%)
-//   simple kOmegaSST0.624500 13.78   22.1        39          ( +6.2%)
+//   piso  kEpsilon  0.6245   11.10   17.8       2000 steps    (-14.5%)
+//   piso  kOmegaSST 0.6245   13.68   21.9       2000 steps    ( +5.4%)
+//   simple kEpsilon 0.6245   10.96   17.6        27          (-15.5%)
+//   simple kOmegaSST0.6245   13.78   22.1        39          ( +6.2%)
 // The shear itself is right to 4e-4 relative in every run, because it is the
 // balance and not a prediction; the deficit is the friction law read on a mesh
 // that resolves the log layer with eight cells. The checker therefore bounds the
@@ -33,8 +34,30 @@
 // tests/check_turbulent_channel.py runs this case for both models and both
 // couplings and checks the wall shear against the driving force, the first cell
 // against the law of the wall, the bulk velocity against Pope's friction law,
-// the equilibrium of the wall-adjacent cell, and that the run is steady,
-// symmetric and finite.
+// the equilibrium of the wall-adjacent cell, that the run is steady, symmetric
+// and finite, and that the heat the turbulence releases leaves through the
+// walls (assertion 8 below).
+//
+// The energy block makes the column carry the heat the turbulence releases:
+// turbulentDissipation switches the eps/cp source into the energy equation,
+// rho = cp = 1 keeps the bookkeeping kinematic, and Pr = nu/alpha = 1 sits
+// inside the thermal wall function's band. The 300 K walls are the only exit
+// for the generated heat, so the discrete balance closes with the wall flux
+// carrying exactly the generated heat; measured balance (in + source
+// - enthalpyOut) 8.7e-16 / 2.6e-16 W for SIMPLE and 2.9e-9 / 1.1e-7 W for
+// PISO at endTime 8 (the transient is still storing a little heat), and the
+// volume integral of eps over the vtu equals the reported source to 1e-8
+// relative. The wall-adjacent cell is held at the log-layer pair, so its
+// eps = u_tau^3/(kappa y1) = 475.23 in every run of both models (for SST read
+// through eps = betaStar k omega).
+//
+// The thermodynamic identity source = pump power (force * Ub * V) is only a
+// visibility band here, not an equality: the wall-function closure holds the
+// wall cells algebraically at the log-layer pair, which is not
+// energy-conservative. Measured source/pump 0.76..1.18 over the four runs;
+// dropping the eps source entirely reads 0.004 (kEpsilon) to 0.03 (SST),
+// far below the band the checker asserts -- so the check still sees a
+// missing or a doubled source.
 block
 {
     min   (0 0 0);
@@ -64,8 +87,18 @@ patches
     // x-invariant flow: zero normal gradient on both ends, one pressure anchor
     left  { UType zeroGradient; p 0; pType fixedValue; }
     right { UType zeroGradient; pType zeroGradient;    }
-    bottom{ U (0 0 0); UType fixedValue; pType zeroGradient; }
-    top   { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    bottom{ U (0 0 0); UType fixedValue; pType zeroGradient; T 300; }
+    top   { U (0 0 0); UType fixedValue; pType zeroGradient; T 300; }
+}
+
+energy
+{
+    rho 1;
+    cp 1;
+    kappa 1.5e-5;
+    turbulentDissipation true;
+    initialT 300;
+    relaxation 1;
 }
 
 turbulence
@@ -104,7 +137,7 @@ piso
     // nu_eff*dt/dy^2 = 3.3e-4*4e-3/6.25e-6 = 0.21: inside the diffusion-number
     // limit documented in PisoSolver.h
     dt            0.004;
-    endTime       3;
+    endTime       8;
     correctors    2;
     continuityTol 1e-8;
     reportEvery   250;

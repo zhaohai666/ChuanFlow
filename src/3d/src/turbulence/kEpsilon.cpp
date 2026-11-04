@@ -97,6 +97,12 @@ void KEpsilon::updateNut()
     }
 }
 
+void KEpsilon::updateTurbDissipation()
+{
+    // the model transports epsilon itself
+    eps_ = diss_.internalField();
+}
+
 scalar KEpsilon::wallDissipation(const WallState& ws, scalar /*kCell*/, scalar y) const
 {
     // homogeneous decay of the log layer: eps = u_tau^3/(kappa y)

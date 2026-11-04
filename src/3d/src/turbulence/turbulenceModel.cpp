@@ -92,7 +92,8 @@ RansModel::RansModel(const polyMesh& mesh, volVectorField& U, const surfaceScala
       nutFace_(static_cast<std::size_t>(mesh.nFaces()), 0.0),
       nuEffFace_(static_cast<std::size_t>(mesh.nFaces()), nu),
       strain_(static_cast<std::size_t>(mesh.nCells()), 0.0),
-      prod_(static_cast<std::size_t>(mesh.nCells()), 0.0)
+      prod_(static_cast<std::size_t>(mesh.nCells()), 0.0),
+      eps_(static_cast<std::size_t>(mesh.nCells()), 0.0)
 {
     if (!(nu_ > 0)) cfFatal("turbulence: molecular viscosity must be positive");
 
@@ -169,6 +170,7 @@ void RansModel::initializeUniform(scalar k0, scalar diss0)
     }
 
     updateNut();
+    updateTurbDissipation();
     refreshFaceNut();
 }
 
@@ -344,6 +346,7 @@ void RansModel::correctTurbulence(scalar dt)
         imposeWallEquilibrium();
     }
     updateNut();
+    updateTurbDissipation();
     refreshFaceNut();
 }
 

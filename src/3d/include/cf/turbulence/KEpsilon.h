@@ -34,6 +34,7 @@ protected:
     void initializeFields() override;
     void solveDissipation(scalar dt) override;
     void updateNut() override;
+    void updateTurbDissipation() override;
     Field<scalar> kDiffusivity() const override;
     Field<scalar> destructionSp() const override;
     scalar wallDissipation(const WallState& ws, scalar kCell, scalar y) const override;

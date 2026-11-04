@@ -44,6 +44,8 @@ EnergyProps EnergyProps::fromCase(const Dictionary& caseDict)
     p.turbulentPrandtl = e.getScalarOr("turbulentPrandtl", p.turbulentPrandtl);
     p.volumetricSource = e.getScalarOr("volumetricSource", p.volumetricSource);
     p.viscousDissipation = e.has("viscousDissipation") ? e.getBool("viscousDissipation") : false;
+    p.turbulentDissipation =
+        e.has("turbulentDissipation") ? e.getBool("turbulentDissipation") : false;
     p.beta = e.getScalarOr("expansion", p.beta);
     p.tRef = e.getScalarOr("referenceT", p.tRef);
     if (e.has("gravity"))
@@ -75,9 +77,9 @@ void EnergyProps::validate() const
 EnergyModel::EnergyModel(const polyMesh& mesh, const surfaceScalarField& phi,
                          const Schemes& schemes, const EnergyProps& props, scalar nu,
                          const Field<scalar>* nut, const Field<scalar>* strainRate,
-                         const EnergyWallLayer* wallLayer)
+                         const Field<scalar>* turbDiss, const EnergyWallLayer* wallLayer)
     : mesh_(mesh), phi_(phi), schemes_(schemes), props_(props), nu_(nu), nut_(nut),
-      strainRate_(strainRate), t_(mesh, "T", props.initialT),
+      strainRate_(strainRate), eps_(turbDiss), t_(mesh, "T", props.initialT),
       buoyancy_(static_cast<std::size_t>(mesh.nCells()), Vector::zero())
 {
     if (static_cast<label>(phi_.values().size()) != mesh_.nFaces())
@@ -89,6 +91,11 @@ EnergyModel::EnergyModel(const polyMesh& mesh, const surfaceScalarField& phi,
     if (props_.viscousDissipation && !strainRate_)
         cfFatal("energy: viscousDissipation needs the strain rate the turbulence "
                 "layer evaluates; add turbulence { model laminar; }");
+    if (eps_ && static_cast<label>(eps_->size()) != mesh_.nCells())
+        cfFatal("energy: turbulent dissipation size does not match the mesh");
+    if (props_.turbulentDissipation && !eps_)
+        cfFatal("energy: turbulentDissipation needs the dissipation rate the "
+                "turbulence layer evaluates; add turbulence { model kEpsilon; }");
     if (wallLayer) wallLayer_ = *wallLayer;
 
     hasBuoyancy_ = props_.beta != 0 && mag2(props_.gravity) > 0;
@@ -137,14 +144,20 @@ Field<scalar> EnergyModel::sourceRate() const
     Field<scalar> s(n, props_.volumetricSource / (props_.rho * props_.cp));
     if (props_.viscousDissipation)
     {
-        // molecular stress only: the turbulent work goes into k and its heat
-        // release would come from the k transport, which this increment does not
-        // read. cp converts m2/s3 to K/s.
+        // molecular stress only: the turbulent part of the effective stress
+        // enters through the eps term below
         for (std::size_t u = 0; u < n; ++u)
         {
             const scalar g = (*strainRate_)[u];
             s[u] += nu_ * g * g / props_.cp;
         }
+    }
+    if (props_.turbulentDissipation)
+    {
+        // the cascade's release: eps is the k-equation's destruction, and in a
+        // steady state eps = P_k, so molecular + eps is the effective-stress
+        // dissipation (nu + nut) |S|^2 the momentum equation drains at
+        for (std::size_t u = 0; u < n; ++u) s[u] += (*eps_)[u] / props_.cp;
     }
     return s;
 }
@@ -273,7 +286,11 @@ scalar EnergyModel::patchHeatRate(label patch) const
 
 scalar EnergyModel::volumetricHeatRate() const
 {
-    return props_.volumetricSource * sum(mesh_.cellVolumes());
+    const Field<scalar> src = sourceRate();
+    const auto& vol = mesh_.cellVolumes();
+    scalar rate = 0;
+    for (std::size_t u = 0; u < src.size(); ++u) rate += vol[u] * src[u];
+    return rate * props_.rho * props_.cp;
 }
 
 scalar EnergyModel::netEnthalpyRate() const

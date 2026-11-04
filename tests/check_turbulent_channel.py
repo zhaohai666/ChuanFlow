@@ -8,10 +8,16 @@ force * half-height. What the turbulence model has to deliver is the bulk
 velocity that balance can sustain, and the shape of the near-wall profile.
 
 The same assertions run on the transient (chflow-piso-foam, which reaches the
-balance over 750 steps) and on the steady loop (chflow-simple-foam, which
+balance over 2000 steps) and on the steady loop (chflow-simple-foam, which
 reaches it in a few dozen iterations); which one is in play is read off the
 log. The profile always comes from the vtu cell centroids, so the two couplings
 are compared on the same numbers.
+
+The case also carries an energy block with turbulentDissipation on, so the
+heat the turbulence releases through eps/cp is part of what is checked: the
+discrete energy balance, the source against the volume integral of eps, and
+the source against the pump power in the band the wall-function closure
+leaves (assertion 8).
 
 usage: check_turbulent_channel.py <solver-binary> <case.dict>
 """
@@ -41,7 +47,8 @@ def case_constants(path):
     end_time = float(re.search(r'endTime\s+([0-9.eE+-]+);', txt).group(1))
     if cells[0] != 1 or cells[2] != 1:
         raise SystemExit("the channel has to be a single column in x and z")
-    return dict(nu=nu, height=maxv[1], force=force, ny=cells[1], end_time=end_time)
+    return dict(nu=nu, height=maxv[1], width=maxv[0], depth=maxv[2],
+                force=force, ny=cells[1], end_time=end_time)
 
 
 def spalding_u_plus(y_plus):
@@ -270,6 +277,49 @@ def check(model, res, c):
         failures.append("wall cell dissipation is not the equilibrium value")
     if not ok_nut:
         failures.append("wall cell eddy viscosity is not the log-layer value")
+
+    # 8. the heat the turbulence releases. turbulentDissipation puts eps/cp
+    #    into the energy equation and the 300 K walls are the only exit, so
+    #    the discrete balance closes with the wall flux carrying exactly the
+    #    generated heat -- the residual that remains on the transient is the
+    #    storage rate. The source itself is the volume integral of eps (the
+    #    vtu stores it, through betaStar k omega for SST), which is what the
+    #    k-equation actually transports. Against the pump power force*Ub*V
+    #    the ratio only sits in a band: the wall-function closure holds the
+    #    wall cells algebraically at the log-layer pair, which is not
+    #    energy-conservative -- measured 0.76..1.18 over the four runs of
+    #    this case. Without the eps source the ratio reads 0.004 (kEpsilon)
+    #    to 0.03 (SST), far outside the band, so a missing or doubled source
+    #    still shows.
+    energy = re.search(r'energy: in (\S+) source (\S+) enthalpyOut (\S+)'
+                       r' balance (\S+)', out)
+    if energy is None:
+        raise SystemExit("%s: no energy balance line in the log" % model)
+    q_in, src, h_out, bal = (float(energy.group(i)) for i in (1, 2, 3, 4))
+    heat = re.findall(r'heatPatch (\w+) Q (\S+)', out)
+    if not heat:
+        raise SystemExit("%s: no heatPatch report in the log" % model)
+    eps_cell = cell_scalars(res["vtu"], "epsilon" if model == "kEpsilon"
+                            else "omega")
+    if model == "kOmegaSST":
+        eps_cell = [BETA_STAR * kk * ww for kk, ww in zip(k, eps_cell)]
+    v_cell = c["width"] * (c["height"] / c["ny"]) * c["depth"]
+    src_vtu = v_cell * sum(eps_cell)
+    pump = c["force"] * ub * c["width"] * c["height"] * c["depth"]
+    ratio = src / pump
+    print("%s: heat in %.6e over %d patches, source %.6e (integral of eps "
+          "%.6e), balance %.1e; source/pump %.4f"
+          % (model, q_in, len(heat), src, src_vtu, bal, ratio))
+    if abs(bal) > 1e-4 * abs(src):
+        failures.append("the energy balance does not close (storage left)")
+    if abs(abs(q_in) / src - 1.0) > 1e-4:
+        failures.append("the walls do not carry the generated heat out")
+    if abs(h_out) > 1e-3 * abs(src):
+        failures.append("enthalpy leaves through the ends of a uniform column")
+    if abs(src_vtu / src - 1.0) > 1e-6:
+        failures.append("the reported source is not the integral of eps")
+    if not 0.5 < ratio < 2.0:
+        failures.append("the heat source is not of the pump-power order")
 
     return ub, failures
 

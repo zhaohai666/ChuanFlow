@@ -15,7 +15,7 @@ namespace cf
 ///
 ///   dT/dt + div(u, T) - div(alpha grad T) = S
 ///   alpha = kappa/(rho cp) + nut/turbulentPrandtl      [m2/s]
-///   S     = volumetricSource/(rho cp) + nu |S_ij|^2/cp  [K/s]
+///   S     = volumetricSource/(rho cp) + nu |S_ij|^2/cp + eps/cp  [K/s]
 ///
 /// Everything the equation itself needs is in these units; the solvers stay
 /// kinematic (density 1), so `rho` only scales the conductivity and the source,
@@ -28,6 +28,7 @@ struct EnergyProps
     scalar turbulentPrandtl = 0.9; // Pr_t of the eddy diffusivity
     scalar volumetricSource = 0;   // W/m3, uniform heat generation
     bool viscousDissipation = false;
+    bool turbulentDissipation = false;
     scalar beta = 0;               // 1/K thermal expansion
     scalar tRef = 0;               // K, temperature the buoyancy force vanishes at
     Vector gravity = Vector::zero(); // m/s2, e.g. (0 0 -9.81)
@@ -113,15 +114,17 @@ class EnergyModel : public IEnergyCoupling
 {
 public:
     /// `phi` is the solver's continuity flux and is read on every correct().
-    /// `nut` and `strainRate` are optional turbulence state, read as it stands
-    /// when the equation is assembled (null for laminar). `wallLayer` is the
-    /// turbulence model's wall faces (null keeps the wall flux molecular). The
-    /// solver owns the mesh, flux and turbulence model, so this object must not
-    /// outlive them.
+    /// `nut`, `strainRate` and `turbDiss` are optional turbulence state, read
+    /// as it stands when the equation is assembled (null for laminar);
+    /// `turbDiss` is the model's turbulent dissipation rate eps. `wallLayer` is
+    /// the turbulence model's wall faces (null keeps the wall flux molecular).
+    /// The solver owns the mesh, flux and turbulence model, so this object must
+    /// not outlive them.
     EnergyModel(const polyMesh& mesh, const surfaceScalarField& phi,
                 const Schemes& schemes, const EnergyProps& props, scalar nu,
                 const Field<scalar>* nut = nullptr,
                 const Field<scalar>* strainRate = nullptr,
+                const Field<scalar>* turbDiss = nullptr,
                 const EnergyWallLayer* wallLayer = nullptr);
 
     const EnergyProps& props() const { return props_; }
@@ -147,7 +150,8 @@ public:
     /// fluid, so over all patches it balances the volumetric source and the
     /// net enthalpy flux.
     scalar patchHeatRate(label patch) const;
-    /// integral of the volumetric source over the domain (W).
+    /// integral of the whole source over the domain (W): uniform generation
+    /// plus every dissipation term the case switched on.
     scalar volumetricHeatRate() const;
     /// rho cp times the net volumetric flux leaving through the boundary faces,
     /// each weighted by its own face temperature (W): the enthalpy the fluid
@@ -169,7 +173,8 @@ public:
     ThermalWallReport wallLayerReport(label patch) const;
 
   private:
-    /// Sources [K/s] per cell: volumetric generation and viscous dissipation.
+    /// Sources [K/s] per cell: volumetric generation, the molecular stress
+    /// dissipation and the turbulent dissipation eps.
     Field<scalar> sourceRate() const;
     /// f = -beta (T - tRef) gravity over the current temperature.
     void refreshBuoyancy();
@@ -186,6 +191,7 @@ public:
     scalar nu_;
     const Field<scalar>* nut_;
     const Field<scalar>* strainRate_;
+    const Field<scalar>* eps_;
     EnergyWallLayer wallLayer_;
     volScalarField t_;
     Field<Vector> buoyancy_;

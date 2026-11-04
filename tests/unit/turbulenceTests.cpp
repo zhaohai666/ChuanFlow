@@ -13,6 +13,7 @@
 #include "cf/common/Dictionary.h"
 #include "cf/common/Error.h"
 #include "cf/fvm/BlockMesh.h"
+#include "cf/fvm/EnergySolver.h"
 #include "cf/fvm/Fields.h"
 #include "cf/turbulence/KEpsilon.h"
 #include "cf/turbulence/KOmegaSST.h"
@@ -571,6 +572,119 @@ int main()
               "SST: nut = k/omega where the shear branch is inactive");
         std::cout << "info: SST decay k=" << m.k()[0] << " (exact " << kExact
                   << ") omega=" << m.dissipation()[0] << " (exact " << wExact << ")\n";
+    }
+
+    // ---------------- turbulent dissipation heating ----------------
+    {
+        // eps is what the energy equation turns into heat. k-epsilon transports
+        // it directly; SST's eps is the k-equation's destruction betaStar k
+        // omega; and in the wall cell the equilibrium closure puts both models
+        // at the log-layer value u_tau^3/(kappa y).
+        for (const std::string& model : {std::string("kEpsilon"), std::string("kOmegaSST")})
+        {
+            Box box(true);
+            const std::size_t nC = static_cast<std::size_t>(box.mesh.nCells());
+            for (std::size_t c = 0; c < nC; ++c)
+            {
+                const scalar yf = box.yOf(static_cast<label>(c)) / 0.02;
+                box.U.internalField()[c] = Vector{13.0 * std::pow(yf, 1.0 / 7.0), 0, 0};
+            }
+
+            auto m = RansModel::create(box.mesh, box.U, box.phi, NU_AIR, Schemes{}, cfg(model));
+            m->initializeUniform(0.02, 50.0);
+            m->correctTurbulence(0.0);
+
+            bool conv = true;
+            for (std::size_t c = 0; c < nC; ++c)
+            {
+                const scalar expect = model == "kEpsilon"
+                    ? m->dissipation()[c]
+                    : KOmegaSST::betaStar * m->k()[c] * m->dissipation()[c];
+                conv = conv && relNear(m->turbDissipation()[c], expect, 1e-12);
+            }
+            CHECK(conv, model + ": eps follows its model's conversion");
+
+            bool eqWall = true;
+            for (std::size_t i = 0; i < m->wallFaces().size(); ++i)
+            {
+                const scalar uTau = m->wallUTau()[i];
+                const scalar y = m->wallDistance()[i];
+                const std::size_t c = static_cast<std::size_t>(
+                    m->mesh().owner()[static_cast<std::size_t>(m->wallFaces()[i])]);
+                eqWall = eqWall && relNear(m->turbDissipation()[c],
+                                           std::pow(uTau, 3) / (turb::kappa * y), 1e-12);
+            }
+            CHECK(eqWall, model + ": the wall cell's eps is the log-layer u_tau^3/(kappa y)");
+        }
+
+        // laminar: no cascade, no heat
+        {
+            Box box(true);
+            auto m = RansModel::create(box.mesh, box.U, box.phi, NU_AIR, Schemes{},
+                                       cfg("laminar"));
+            m->correctTurbulence(0.0);
+            bool zero = true;
+            for (const scalar v : m->turbDissipation()) zero = zero && v == 0.0;
+            CHECK(zero, "laminar model reports no turbulent dissipation");
+        }
+
+        // the energy equation turns eps into heat: with rho = cp = 1 the source
+        // is exactly the molecular stress dissipation plus eps, and off it is
+        // the molecular part alone
+        {
+            Box box(true);
+            const std::size_t nC = static_cast<std::size_t>(box.mesh.nCells());
+            for (std::size_t c = 0; c < nC; ++c)
+            {
+                const scalar yf = box.yOf(static_cast<label>(c)) / 0.02;
+                box.U.internalField()[c] = Vector{13.0 * std::pow(yf, 1.0 / 7.0), 0, 0};
+            }
+            auto m = RansModel::create(box.mesh, box.U, box.phi, NU_AIR, Schemes{},
+                                       cfg("kEpsilon"));
+            m->initializeUniform(0.02, 50.0);
+            m->correctTurbulence(0.0);
+
+            EnergyProps props;
+            props.rho = 1;
+            props.cp = 1;
+            props.kappa = NU_AIR;
+            props.viscousDissipation = true;
+            props.turbulentDissipation = true;
+            EnergyModel heat(box.mesh, box.phi, Schemes{}, props, NU_AIR, &m->nut(),
+                             &m->strainRate(), &m->turbDissipation());
+            // with rho = cp = 1 the reported power (W) is the volume integral of
+            // nu |S|^2 + eps itself
+            const auto& vol = box.mesh.cellVolumes();
+            scalar full = 0;
+            for (std::size_t c = 0; c < nC; ++c)
+            {
+                const scalar g = m->strainRate()[c];
+                full += vol[c] * (NU_AIR * g * g + m->turbDissipation()[c]);
+            }
+            CHECK(relNear(heat.volumetricHeatRate(), full, 1e-12),
+                  "the reported power integrates nu |S|^2 + eps");
+
+            EnergyProps quiet = props;
+            quiet.turbulentDissipation = false;
+            EnergyModel cold(box.mesh, box.phi, Schemes{}, quiet, NU_AIR, &m->nut(),
+                             &m->strainRate(), &m->turbDissipation());
+            scalar molecularOnly = 0;
+            for (std::size_t c = 0; c < nC; ++c)
+                molecularOnly += vol[c] * NU_AIR * m->strainRate()[c]
+                                       * m->strainRate()[c];
+            CHECK(relNear(cold.volumetricHeatRate(), molecularOnly, 1e-12),
+                  "with the switch off the power is the molecular part only");
+
+            bool refused = false;
+            try
+            {
+                EnergyProps bad = props;
+                EnergyModel noEps(box.mesh, box.phi, Schemes{}, bad, NU_AIR);
+                (void)noEps;
+            }
+            catch (const Error&) { refused = true; }
+            CHECK(refused, "turbulentDissipation without a turbulence model is refused");
+        }
     }
 
     // ---------------- case configuration ----------------

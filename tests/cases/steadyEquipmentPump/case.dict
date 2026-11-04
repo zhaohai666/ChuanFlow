@@ -1,0 +1,31 @@
+// A centrifugal pump holding a closed hydraulic loop: both end pressures are
+// equal, so every Pascal the pipe burns in friction has to come from the pump
+// curve. The steady operating point is where the system curve (laminar:
+// linear in q) crosses the descending quadratic pump curve
+//   rho g (h0 - (h0 - h1)(q/q1)^2) = 128 mu L q / (pi D^4),
+// again an explicit quadratic on the checker side. The pump lifts the line by
+// rho g H(q*) and the friction consumes exactly that: dp = 0 across the whole
+// line while the pump reports dpPump = -rho g H(q*).
+//
+// Measured (rho 850, mu 0.1, L 1000, D 0.05, h0 = 40 m, h1 = 25 m @ 3e-4):
+//   q* = 3.085629e-4 m3/s, Re = 66.8 (laminar)
+//   H(q*) = 24.1315 m, dpPump = -2.01152e5 Pa = friction drop (identity)
+// verified by tests/check_steady_equipment.py (ctest verify.steadyEquipmentPump).
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    Suction { pressure 1.0e5; }
+    Discharge { pressure 1.0e5; }
+}
+
+pipes
+{
+    P1 { from Suction; to Discharge; length 1000; diameter 0.05; roughness 0;
+         pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40; }
+}
+
+solve { maxIter 50; tol 1e-10; }

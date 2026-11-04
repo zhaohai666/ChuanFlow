@@ -29,6 +29,14 @@ struct NetworkPipe
     double diameter = 0;   // m
     double roughness = 0;  // m, absolute roughness
     double elevation = 0;  // m, z(to) - z(from); adds rho*g*dz to the drop
+
+    // inline equipment (single-phase pipes; the black-oil march ignores it)
+    double valveK = 0;         // valve loss coefficient: dp = K rho v^2/2,
+                               // always opposing the flow
+    double pumpHead = 0;       // m of head at pumpRate (> 0 switches the
+                               // pump on); constant head when pumpRate = 0
+    double pumpShutoffHead = 0;// m at zero rate (defaults to pumpHead)
+    double pumpRate = 0;       // m3/s where pumpHead is quoted
 };
 
 /// Steady single-phase node-model pipeline network (the M1 "SteadySolver"
@@ -76,7 +84,12 @@ struct PipeFlowResult
 {
     std::string name;
     double dpTotal = 0;     // p(from) - p(to), Pa
-    double dpFriction = 0;  // dpTotal - rho*g*dz
+    double dpFriction = 0;  // dpTotal - rho*g*dz (equipment included; the
+                            // pipe friction alone is dpFriction - dpValve
+                            // - dpPump)
+    double dpValve = 0;     // valve loss, K rho |v| v / 2 (opposes the flow)
+    double dpPump = 0;      // pump contribution, -rho*g*H(q): negative when
+                            // the pump adds head in the from -> to direction
     double velocity = 0;    // m/s, signed from -> to
     double flowRate = 0;    // m3/s
     double reynolds = 0;
@@ -127,7 +140,11 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
 ///   fluid { rho 850; mu 0.1; }
 ///   nodes { W1 {}; Outlet { pressure 1.0e6; } }
 ///   pipes { P1 { from W1; to Outlet; length 1000; diameter 0.05;
-///                roughness 0; elevation 5; } }
+///                roughness 0; elevation 5;
+///                valve 2.5;                 // loss coefficient K
+///                pumpHead 25;               // m of head at pumpRate
+///                pumpRate 0.02;             // 0 = constant-head pump
+///                pumpShutoffHead 30; } }    // defaults to pumpHead
 ///   sources { s1 { node W1; rate 0.002; } }
 ///   solve { maxIter 100; tol 1e-10; relax 1.0; }
 OneDNetwork loadNetworkFromDict(const Dictionary& caseDict);

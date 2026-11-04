@@ -38,34 +38,103 @@ struct RawFlow
     double friction = 0;
 };
 
-/// Solve |dpFriction| = f(Re) L/D rho v^2 / 2 for |v| and re-apply the sign.
-RawFlow pipeFlowRaw(const NetworkPipe& pipe, const FluidProperties& fluid,
-                    double dpTotal)
+/// Pump head at rate q (m of fluid): H(q) = h0 - (h0 - h1)(q/q1)^2 clamped at
+/// 0; constant h0 when q1 = 0. Even in q: the machine adds the same head
+/// magnitude whichever way the flow runs (never sucks).
+double pumpHeadOf(const NetworkPipe& p, double q)
 {
-    RawFlow r;
-    const double dpFriction = dpTotal - fluid.rho * kGravity * pipe.elevation;
-    const double target = std::abs(dpFriction);
-    if (target <= 0 || !(pipe.length > 0) || !(pipe.diameter > 0)) return r;
+    if (!(p.pumpHead > 0)) return 0.0;
+    const double h0 = p.pumpShutoffHead > 0 ? p.pumpShutoffHead : p.pumpHead;
+    if (!(p.pumpRate > 0)) return std::max(h0, 0.0);
+    const double h = h0 - (h0 - p.pumpHead) * q * q / (p.pumpRate * p.pumpRate);
+    return std::max(h, 0.0);
+}
 
-    const double relRough = pipe.roughness / pipe.diameter;
-    // seed with the laminar closed form, then fixed-point on Churchill:
-    // v_new = sqrt(2 D target / (rho f(v) L)); the map is contractive at both
-    // roots (derivative 1/2 in the laminar regime, <1 once turbulent)
-    double vm = target * pipe.diameter * pipe.diameter
-              / (32.0 * fluid.mu * pipe.length);
+/// Friction + valve loss (Pa, positive) at an imposed rate magnitude q:
+/// explicit Churchill evaluation, no iteration needed forward.
+double pipeLossAt(const NetworkPipe& pipe, const FluidProperties& fluid,
+                  double q)
+{
+    const double v = q / pipeArea(pipe);
+    const double re = fluid.rho * v * pipe.diameter / fluid.mu;
+    const double f = churchillFriction(re, pipe.roughness / pipe.diameter);
+    return (f * pipe.length / pipe.diameter + pipe.valveK)
+         * fluid.rho * v * v / 2.0;
+}
+
+/// Pipe + equipment law Q(dpTotal): dpTotal = rho g dz + loss(q) - rho g H(q).
+/// Solved as a bracketed Illinois secant on the rate. The pump-head fixed
+/// point (hydraulics need the head, the curve needs the rate) is NOT
+/// contractive whenever the curve falls faster than the system rises
+/// (rho g |H'| > d(loss)/dq): it oscillates and latches onto the H = 0 clamp.
+/// Root-solving is monotone on the branch picked by the sign of
+/// G(0) = rho g dz - rho g h0 - dpTotal: loss grows without bound in |q|
+/// while -rho g H(q) stays bounded, so exactly one crossing per branch.
+RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
+                      double dpTotal, double& Hq)
+{
+    const bool forward = fluid.rho * kGravity * pipe.elevation
+                       - fluid.rho * kGravity * pumpHeadOf(pipe, 0.0)
+                       - dpTotal <= 0.0;
+    auto g = [&](double x) // residual along the chosen branch, |q| = x >= 0
+    {
+        const double s = forward ? 1.0 : -1.0;
+        return s * pipeLossAt(pipe, fluid, x)
+             + fluid.rho * kGravity * pipe.elevation
+             - fluid.rho * kGravity * pumpHeadOf(pipe, x) - dpTotal;
+    };
+
+    // bracket: forward g(0) <= 0, expand to a positive sample; reverse
+    // g(0) > 0, expand to a negative sample (keep the near-zero endpoint)
+    const double pScale = std::max(std::abs(dpTotal),
+                                   fluid.rho * kGravity
+                                     * (std::abs(pipe.elevation)
+                                        + pumpHeadOf(pipe, 0.0)));
+    const double xSeed = std::max(1e-3 * pipeArea(pipe), 1e-8);
+    double xLo = 0.0, fLo = g(0.0);
+    double xHi = xSeed, fHi = g(xHi);
+    int expansions = 0;
+    while (!(forward ? fHi > 0.0 : fHi < 0.0))
+    {
+        if (forward ? fHi <= 0.0 : fHi >= 0.0)
+        {
+            xLo = xHi;
+            fLo = fHi;
+        }
+        xHi *= 4.0;
+        fHi = g(xHi);
+        if (++expansions > 60) break; // loss dominates long before this
+    }
+
+    double x = xLo + (xHi - xLo) * fLo / (fLo - fHi);
     for (int it = 0; it < 100; ++it)
     {
-        const double re = fluid.rho * vm * pipe.diameter / fluid.mu;
-        const double f = churchillFriction(re, relRough);
-        const double vmNew = std::sqrt(2.0 * pipe.diameter * target
-                                       / (f * pipe.length * fluid.rho));
-        const double err = std::abs(vmNew - vm) / std::max(vmNew, 1e-300);
-        vm = vmNew;
-        if (err < 1e-13) break;
+        const double fx = g(x);
+        if (std::abs(fx) < 1e-13 * std::max(pScale, 1.0)) break;
+        if (forward ? fx > 0.0 : fx < 0.0)
+        {
+            xHi = x;
+            fHi = fx;
+            // Illinois: bias the retained endpoint against re-selection
+            fHi *= 0.5;
+        }
+        else
+        {
+            xLo = x;
+            fLo = fx;
+            fLo *= 0.5;
+        }
+        const double xNew = xLo + (xHi - xLo) * fLo / (fLo - fHi);
+        if (!(xNew > xLo && xNew < xHi)) x = 0.5 * (xLo + xHi);
+        else x = xNew;
+        if (std::abs(xHi - xLo) < 1e-9 * std::max(xHi, 1e-30)) break;
     }
-    r.reynolds = fluid.rho * vm * pipe.diameter / fluid.mu;
-    r.friction = churchillFriction(r.reynolds, relRough);
-    r.velocity = (dpFriction < 0 ? -vm : vm);
+
+    RawFlow r;
+    r.velocity = (forward ? x : -x) / pipeArea(pipe);
+    r.reynolds = fluid.rho * std::abs(r.velocity) * pipe.diameter / fluid.mu;
+    r.friction = churchillFriction(r.reynolds, pipe.roughness / pipe.diameter);
+    Hq = pumpHeadOf(pipe, std::abs(r.velocity) * pipeArea(pipe));
     return r;
 }
 
@@ -121,10 +190,14 @@ double churchillFriction(double reynolds, double relativeRoughness)
 void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
                    double dpTotal, PipeFlowResult& out)
 {
-    const RawFlow r = pipeFlowRaw(pipe, fluid, dpTotal);
+    double Hq = 0;
+    const RawFlow r = equipmentFlow(pipe, fluid, dpTotal, Hq);
     out.name = pipe.name;
     out.dpTotal = dpTotal;
     out.dpFriction = dpTotal - fluid.rho * kGravity * pipe.elevation;
+    out.dpValve = pipe.valveK * fluid.rho * std::abs(r.velocity) * r.velocity
+                / 2.0;
+    out.dpPump = -fluid.rho * kGravity * Hq;
     out.velocity = r.velocity;
     out.flowRate = r.velocity * pipeArea(pipe);
     out.reynolds = r.reynolds;
@@ -138,8 +211,9 @@ void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     const double lam = laminarConductance(pipe, fluid);
     if (h > 0)
     {
-        const RawFlow rp = pipeFlowRaw(pipe, fluid, dpTotal + h);
-        const RawFlow rm = pipeFlowRaw(pipe, fluid, dpTotal - h);
+        double Hp, Hm;
+        const RawFlow rp = equipmentFlow(pipe, fluid, dpTotal + h, Hp);
+        const RawFlow rm = equipmentFlow(pipe, fluid, dpTotal - h, Hm);
         const double g = (rp.velocity - rm.velocity) * pipeArea(pipe) / (2.0 * h);
         out.conductance = (std::isfinite(g) && g > 0) ? std::min(g, lam) : lam;
     }
@@ -547,6 +621,19 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.diameter = pd.getScalar("diameter");
         p.roughness = pd.getScalarOr("roughness", 0.0);
         p.elevation = pd.getScalarOr("elevation", 0.0);
+        p.valveK = pd.getScalarOr("valve", 0.0);
+        p.pumpHead = pd.getScalarOr("pumpHead", 0.0);
+        p.pumpRate = pd.getScalarOr("pumpRate", 0.0);
+        p.pumpShutoffHead = pd.getScalarOr("pumpShutoffHead", p.pumpHead);
+        if (p.valveK < 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' has a negative valve"
+                    " coefficient");
+        if (p.pumpHead < 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' has a negative pump"
+                    " head");
+        if (p.pumpHead > 0 && p.pumpShutoffHead < p.pumpHead)
+            cfFatal("steadyNetwork: pipe '" + name + "' has a pump curve that"
+                    " rises with rate (pumpShutoffHead < pumpHead)");
         net.addPipe(p);
     }
 

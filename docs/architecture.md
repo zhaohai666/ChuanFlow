@@ -211,8 +211,29 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
     q* = J(p_r − p_static) 到 1e-6、过号稳定性 f(0.9q)<0<f(1.1q)、静液柱
     march 回落井口 <1e-4 Pa、死井井底=静液柱）。
 
-M1 剩余的井筒热力耦合与环路迭代（对标完整 Pipesim）尚未实现；单相模式的
+- **设备单元：阀 + 泵（对标 Pipesim 稳态设备）**。pipe 字典可带
+  `valve <K>`（kq² 损失系数，`dp = K·ρ|v|v/2`，恒与流向相反）与
+  `pumpHead <h1> / pumpRate <q1> / pumpShutoffHead <h0>`（离心泵扬程曲线
+  `H(q) = h0 − (h0−h1)(q/q1)²` 钳位 ≥ 0、对 q 偶），管 law 变为
+  `dpTotal = ρg·dz + (fL/D + K)ρ|v|v/2 − ρg·H(q)`。流量—压降反解用**对
+  流量括根的 Illinois secant**（残差 `G(q) = loss(q) + ρg·dz − ρg·H(q) −
+  dpTotal`）而不是泵扬程定点迭代——后者在扬程曲线下降快于系统曲线上升
+  （`ρg|H'| > d(loss)/dq`，本算例比值 ≈ 1.32）时不收缩，振荡后锁死在
+  H=0 钳位支，流量与管网 Newton 全错；按 `G(0) = ρg·dz − ρg·h0 −
+  dpTotal` 的符号选支后残差严格单调（loss 无界增长、−ρg·H 有界），每支
+  恰一根。输出增列 `dpValve` / `dpPump`；
+- **设备回归**：三算例 `tests/check_steady_equipment.py`（闭式二次根
+  1e-9）：
+
+  | 算例 | 校验内容 |
+  |---|---|
+  | `steadyEquipmentValve` | 定压差 + K=500 阀：q 对层流二次根 1e-9，dpValve = Kρq²/2A²（占压降 2.5%）|
+  | `steadyEquipmentPump` | 闭环路（两端等压）：工作点 = 系统曲线∩扬程曲线二次根（q*=3.085629e-4、H=24.1315 m），dpPump = −ρg·H(q*) 与摩阻逐 Pa 相等（回路恒等式），净 dp = 0 |
+  | `steadyEquipmentNetwork` | 源率驱动串联网（阀→自由节点→泵 + 10 m 高程→定压终端）：p_J1=72750 / p_W1=173511 对闭式链 1e-6；泵几乎顶平高程（p_J1 < 终端压力）——泵头符号错误的符号测试（差 ~4 bar）|
+
+M1 剩余的环路迭代（对标完整 Pipesim）尚未实现；单相模式的
 `rho/mu` 仍由 case.dict 直接给定，黑油模式下物性由 §3.6 按 (p) 实时求取。
+井筒热力耦合见 §4.3。
 
 ### 4.2 瞬态水力 + 持液率输运 + 水合物动力学（M2 首增量）
 

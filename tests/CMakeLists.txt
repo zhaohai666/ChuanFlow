@@ -265,6 +265,21 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetwork/case.dict)
 
+# inline equipment on laminar single-phase pipes: the pipe law reduces to an
+# explicit quadratic (valve loss K, quadratic pump curve), so the checker
+# never iterates; the network mode is also a pump-head sign test
+foreach(tcase steadyEquipmentValve steadyEquipmentPump steadyEquipmentNetwork)
+    string(REGEX REPLACE "^steadyEquipment" "" mode ${tcase})
+    string(TOLOWER ${mode} mode)
+    add_test(
+        NAME verify.${tcase}
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_equipment.py
+            $<TARGET_FILE:chflow-1d-steady>
+            ${CMAKE_CURRENT_SOURCE_DIR}/cases/${tcase}/case.dict
+            ${mode})
+endforeach()
+
 # black-oil Beggs-Brill gathering network: balance, holdup/regime sanity and
 # a dry-oil GOR sensitivity twin
 add_test(

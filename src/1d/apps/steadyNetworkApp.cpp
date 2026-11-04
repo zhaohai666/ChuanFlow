@@ -62,6 +62,8 @@ int main(int argc, char** argv)
                       + num(f.frictionFactor);
             }
             line += " dp " + num(f.dpTotal);
+            if (f.dpValve != 0) line += " dpValve " + num(f.dpValve);
+            if (f.dpPump != 0) line += " dpPump " + num(f.dpPump);
             log::info(line);
         }
 

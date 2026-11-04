@@ -1,0 +1,30 @@
+// A valve on a laminar single-phase line, both ends fixed. The pipe law with
+// inline equipment is
+//   dp = 128 mu L q / (pi D^4) + K rho q^2 / (2 A^2) + rho g dz,
+// so for the laminar pipe + horizontal layout the flow rate is the positive
+// root of an explicit quadratic -- no iteration on the checker side. The
+// valve term is K rho q^2/(2A^2), ~2.5% of the drop here: visible, and the
+// checker also asserts the reported dpValve against the same closed form.
+//
+// Measured (rho 850, mu 0.1, L 1000, D 0.05, K = 500, dp = 2e5):
+//   q = 2.9922e-4 m3/s (quadratic root), Re = 64.8 (laminar)
+//   dpValve = 4934 Pa
+// verified by tests/check_steady_equipment.py (ctest verify.steadyEquipmentValve).
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    W1 { pressure 3.0e5; }
+    Outlet { pressure 1.0e5; }
+}
+
+pipes
+{
+    P1 { from W1; to Outlet; length 1000; diameter 0.05; roughness 0;
+         valve 500; }
+}
+
+solve { maxIter 50; tol 1e-10; }

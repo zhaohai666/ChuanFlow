@@ -345,7 +345,8 @@ ReconstructionControls loadReconstruction(const Dictionary& caseDict)
     if (w == "youngs") rc.choice = vof::NormalChoice::Youngs;
     else if (w == "centroid") rc.choice = vof::NormalChoice::Centroid;
     else if (w == "mixed") rc.choice = vof::NormalChoice::Mixed;
-    else cfFatal("vof: reconstruction normal must be youngs, centroid or mixed");
+    else if (w == "fit") rc.choice = vof::NormalChoice::Fit;
+    else cfFatal("vof: reconstruction normal must be youngs, centroid, mixed or fit");
     rc.bandTolerance = rd.getScalarOr("bandTolerance", 1e-6);
     if (!(rc.bandTolerance >= 0.0)) cfFatal("vof: bandTolerance must not be negative");
     const std::string tr = rd.getWordOr("transport", "alpha");
@@ -359,12 +360,14 @@ ReconstructionControls loadReconstruction(const Dictionary& caseDict)
 /// against the field they were given, and the curvature of the reconstructed
 /// normals. `stamp` says when the geometry was taken, so a checker can follow the
 /// band as the field moves. `k` is the curvature the case also writes, so the
-/// report and the file describe the same geometry.
+/// report and the file describe the same geometry. A fitted normal reports last
+/// what its neighbourhood was worth: the mean distance its planes still disagree
+/// by, and the most rounds any cell took.
 void logReconstruction(const volScalarField& alpha, const vof::Reconstruction& r,
                        const Field<scalar>& k, const std::string& stamp)
 {
     const Field<scalar>& a = alpha.internalField();
-    scalar area = 0, readBack = 0, kappaSum = 0;
+    scalar area = 0, readBack = 0, kappaSum = 0, scatter = 0;
     int counted = 0;
     for (std::size_t u = 0; u < a.size(); ++u)
     {
@@ -373,6 +376,7 @@ void logReconstruction(const volScalarField& alpha, const vof::Reconstruction& r
         area += r.area[u];
         readBack = std::max(readBack, std::abs(r.fraction[u] - a[u]));
         kappaSum += k[u];
+        scatter += r.fitScatter[u];
     }
     if (counted == 0)
     {
@@ -381,7 +385,10 @@ void logReconstruction(const volScalarField& alpha, const vof::Reconstruction& r
     }
     log::info("plic ", stamp, ": band ", r.bandCells, " cells area ", num(area),
               " readBack ", num(readBack), " kappa ",
-              num(kappaSum / static_cast<scalar>(counted)));
+              num(kappaSum / static_cast<scalar>(counted)),
+              r.fitRounds > 0 ? " scatter " + num(scatter / static_cast<scalar>(counted))
+                                + " rounds " + std::to_string(r.fitRounds)
+                              : "");
 }
 
 /// Mean pressure on each side of the interface, away from the band. The jump the
@@ -462,7 +469,8 @@ int main(int argc, char** argv)
         if (plic.enabled)
             log::info("vof reconstruction: planes in every band cell, normal from ",
                       plic.choice == vof::NormalChoice::Youngs ? "youngs"
-                      : plic.choice == vof::NormalChoice::Centroid ? "centroid" : "mixed",
+                      : plic.choice == vof::NormalChoice::Centroid ? "centroid"
+                      : plic.choice == vof::NormalChoice::Fit ? "fit" : "mixed",
                       " bandTolerance ", num(plic.bandTolerance));
 
         vof::Controls vc;

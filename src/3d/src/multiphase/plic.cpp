@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <tuple>
 
 #include "cf/common/Error.h"
 #include "cf/fvm/FvMatrix.h"
@@ -400,6 +401,144 @@ scalar offsetForFraction(const std::vector<CellFace>& cell, const Vector& unitNo
     return c;
 }
 
+namespace
+{
+
+/// One neighbour's say about where the interface is: the plane that cuts its own
+/// fraction exactly, told by its constant, the area of the cut and the centre of that
+/// area.
+struct PlaneSample
+{
+    scalar offset = 0;
+    scalar area = 0;
+    Vector centre = Vector::zero();
+};
+
+/// Two unit vectors spanning the plane perpendicular to `n`: the directions a tilt of
+/// the normal lives in. Starting from the axis `n` is least aligned with keeps the
+/// Gram-Schmidt step away from dividing by what it just removed.
+void tangentBasis(const Vector& n, Vector& e1, Vector& e2)
+{
+    Vector a = Vector::zero();
+    if (std::abs(n.x) <= std::abs(n.y) && std::abs(n.x) <= std::abs(n.z)) a = Vector{1, 0, 0};
+    else if (std::abs(n.y) <= std::abs(n.z)) a = Vector{0, 1, 0};
+    else a = Vector{0, 0, 1};
+    e1 = a - n * dot(a, n);
+    e1 = e1 * (1.0 / mag(e1));
+    e2 = cross(n, e1);
+}
+
+/// The tilt of a plane normal that brings a neighbourhood of exact-volume cuts
+/// together, and what they still disagree by once it is applied.
+///
+/// Cell j, cut to its own fraction by the plane with normal n, holds its interface at
+/// the constant `o_j`. Turning the normal by `d` - perpendicular to n, so it is a
+/// rotation and not a stretch - moves that constant to `o_j + d . p_j`, with `p_j` the
+/// centre of the cut: a plane rotated about a point of itself leaves the volume on
+/// either side unchanged to first order, because its area moments about that point
+/// vanish. So one plane explains the neighbourhood when `o_j + d . p_j` is the same for
+/// every cell, and the least-squares `d` is the slope of the offsets along the
+/// interface. The cut area weights the statement, because a cell the plane grazes has
+/// that much less to say about where the interface runs.
+///
+/// The two scatters are that disagreement without and with the tilt, on the same
+/// weighting. On a plane front both are nothing; on a curved one what is left is the
+/// sagitta over the neighbourhood, which no single plane can hold and no normal fit
+/// can know.
+struct PlaneTilt
+{
+    Vector tilt = Vector::zero();
+    scalar rmsBefore = 0;
+    scalar rms = 0;
+};
+
+PlaneTilt fitTilt(const std::vector<PlaneSample>& samples, const Vector& n)
+{
+    PlaneTilt out;
+    if (samples.size() < 2) return out; // nothing else to agree with
+
+    scalar weight = 0, offsetSum = 0;
+    Vector centreSum = Vector::zero();
+    for (const PlaneSample& s : samples)
+    {
+        weight += s.area;
+        offsetSum += s.offset * s.area;
+        centreSum += s.centre * s.area;
+    }
+    if (!(weight > 0)) return out;
+    const scalar offsetMean = offsetSum / weight;
+    const Vector centreMean = centreSum * (1.0 / weight);
+
+    Vector e1, e2;
+    tangentBasis(n, e1, e2);
+
+    scalar g[2][2] = {{0, 0}, {0, 0}}, b[2] = {0, 0}, scatter = 0;
+    for (const PlaneSample& s : samples)
+    {
+        const Vector q = s.centre - centreMean;
+        const scalar t[2] = {dot(q, e1), dot(q, e2)};
+        const scalar e = s.offset - offsetMean;
+        scatter += s.area * e * e;
+        for (int i = 0; i < 2; ++i)
+        {
+            b[i] += s.area * e * t[i];
+            for (int j = 0; j < 2; ++j) g[i][j] += s.area * t[i] * t[j];
+        }
+    }
+    out.rmsBefore = std::sqrt(scatter / weight);
+
+    const scalar trace = g[0][0] + g[1][1];
+    if (!(trace > 0)) return out; // every cut in one place: no slope to read
+    // Levenberg-Marquardt damping, and it is doing the work here rather than
+    // rounding off a singularity. A neighbourhood whose cut faces lie nearly along
+    // one line - a front crossing the mesh diagonally does exactly that - has little
+    // in one of the two tilt directions, so the slope read along it is the noise of
+    // the other: the iteration walks that way and stops somewhere the neighbourhood
+    // does not agree with at all. Damped, the disk's worst cell is off the radial by
+    // 1.8 deg where undamped it is 23 at every mesh, and the disagreement the fit
+    // reports there falls with the cell instead of staying a tenth of one. Nothing
+    // is biased by it: the plane the iteration stops at is the one with no slope left
+    // in b, which the damping cannot move, and 1e-3 gives the same numbers as 1e-2.
+    g[0][0] += 1e-2 * trace;
+    g[1][1] += 1e-2 * trace;
+    const scalar det = g[0][0] * g[1][1] - g[0][1] * g[1][0];
+    if (!(det > 0)) return out;
+
+    scalar d[2] = {-(g[1][1] * b[0] - g[0][1] * b[1]) / det,
+                   -(-g[1][0] * b[0] + g[0][0] * b[1]) / det};
+    // One statement about where each neighbour's cut sits is good for a rotation of it,
+    // not for a different interface: past this the slope has stopped being the tilt.
+    const scalar magnitude = std::sqrt(d[0] * d[0] + d[1] * d[1]);
+    if (magnitude > 0.35)
+    {
+        d[0] *= 0.35 / magnitude;
+        d[1] *= 0.35 / magnitude;
+    }
+    out.tilt = e1 * d[0] + e2 * d[1];
+
+    scalar left = 0;
+    for (const PlaneSample& s : samples)
+    {
+        const scalar r = s.offset - offsetMean + dot(out.tilt, s.centre - centreMean);
+        left += s.area * r * r;
+    }
+    out.rms = std::sqrt(left / weight);
+    return out;
+}
+
+/// How many neighbourhoods of tilt one fit is allowed to take, and a round that
+/// changes nothing stops early. Four is where the disk says to stop. A front that
+/// really is a plane is settled by then - 0 deg off its analytic normal, its plane
+/// constant off by 5e-8 of a cell, and the neighbourhood agreeing to 6e-9 of one,
+/// where two rounds still leave 0.004 deg and 6e-5 of a cell - and on a curved front
+/// more rounds cost rather than buy: at sixteen the mean angle of the R/dx = 8 disk
+/// has gone from 1.2 to 2.9 deg and its reported area from 97 to 91 per cent of the
+/// perimeter. The extra rounds are spent explaining the staircase of the fractions,
+/// which is the thing the fit is here not to look at.
+constexpr int kFitRounds = 4;
+
+} // namespace
+
 Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
                            const Field<Vector>& youngsGradient, NormalChoice choice,
                            scalar bandTolerance)
@@ -416,8 +555,26 @@ Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
                      Field<scalar>(n, 0.0),
                      Field<Vector>(n, Vector::zero()),
                      Field<scalar>(n, 0.0),
+                     Field<scalar>(n, 0.0),
                      0,
                      bandTolerance};
+
+    // ---- the band, and the normal every cell starts from ----
+    // What the fit reads is the neighbours' fractions rather than their first planes,
+    // so this round keeps only what the reported plane needs: the cell, its volume and
+    // the direction the field's own gradient gives it.
+    struct Seed
+    {
+        label cell = -1;
+        std::vector<CellFace> boundary;
+        scalar volume = 0;
+        scalar fraction = 0;
+        Vector normal = Vector::zero();
+        Vector phase1MinusPhase0 = Vector::zero();
+        bool centroidWorks = false;
+    };
+    std::vector<Seed> seeds;
+    Field<label> seedOf(n, -1);
 
     for (label c = 0; c < nC; ++c)
     {
@@ -427,24 +584,137 @@ Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
 
         const Vector g = youngsGradient[u];
         if (mag2(g) <= 0) continue; // no direction to start the cut from
-        const Vector n0 = g * (1.0 / mag(g));
 
-        const std::vector<CellFace> cell = cellBoundary(mesh, c);
-        const scalar volume = absoluteSolid(loopsOf(cell)).volume;
-        if (!(volume > 0)) cfFatal("plic: cell with no volume in the interface band");
+        Seed s;
+        s.cell = c;
+        s.boundary = cellBoundary(mesh, c);
+        s.fraction = a;
+        s.normal = g * (1.0 / mag(g));
+        s.volume = absoluteSolid(loopsOf(s.boundary)).volume;
+        if (!(s.volume > 0)) cfFatal("plic: cell with no volume in the interface band");
 
-        const scalar o0 = offsetForFraction(cell, n0, a);
-        Cut phase1 = clipConvexCell(cell, n0, o0);
-        Cut phase0 = clipConvexCell(cell, Vector{-n0.x, -n0.y, -n0.z}, -o0);
+        if (choice == NormalChoice::Centroid || choice == NormalChoice::Mixed)
+        {
+            // the two halves of the first cut, for the direction from one centroid to
+            // the other: both have to be there for that difference to mean anything
+            const scalar o0 = offsetForFraction(s.boundary, s.normal, a);
+            const Cut phase1 = clipConvexCell(s.boundary, s.normal, o0);
+            const Vector neg{-s.normal.x, -s.normal.y, -s.normal.z};
+            const Cut phase0 = clipConvexCell(s.boundary, neg, -o0);
+            if (!phase1.whole && !phase1.void_ && !phase0.whole && !phase0.void_)
+            {
+                s.centroidWorks = true;
+                s.phase1MinusPhase0 = phase1.centroid - phase0.centroid;
+            }
+        }
 
-        Vector n = n0;
-        if (choice != NormalChoice::Youngs && !phase1.whole && !phase1.void_
-            && !phase0.whole && !phase0.void_)
+        seedOf[u] = static_cast<label>(seeds.size());
+        seeds.push_back(std::move(s));
+    }
+
+    // ---- the band cells that meet at each vertex ----
+    // The neighbourhood the offset fit reads. Along the interface the band cells of a
+    // cell-filled front touch at corners rather than faces, so face adjacency would
+    // leave a cell with nothing but its own cut to agree with.
+    std::vector<std::vector<label>> neighbourhood;
+    if (choice == NormalChoice::Fit)
+    {
+        std::vector<std::vector<label>> vertexCells(
+            static_cast<std::size_t>(mesh.nPoints()));
+        std::vector<label> vs;
+        for (label c = 0; c < nC; ++c)
+        {
+            vs.clear();
+            for (label f : mesh.cells()[static_cast<std::size_t>(c)])
+                for (label v : mesh.faces()[static_cast<std::size_t>(f)]) vs.push_back(v);
+            std::sort(vs.begin(), vs.end());
+            vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+            for (label v : vs) vertexCells[static_cast<std::size_t>(v)].push_back(c);
+        }
+
+        neighbourhood.resize(seeds.size());
+        std::vector<char> mark(n, 0);
+        std::vector<label> touched;
+        for (std::size_t k = 0; k < seeds.size(); ++k)
+        {
+            vs.clear();
+            touched.clear();
+            for (label f : mesh.cells()[static_cast<std::size_t>(seeds[k].cell)])
+                for (label v : mesh.faces()[static_cast<std::size_t>(f)]) vs.push_back(v);
+            std::sort(vs.begin(), vs.end());
+            vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+
+            for (label v : vs)
+                for (label nb : vertexCells[static_cast<std::size_t>(v)])
+                {
+                    if (mark[static_cast<std::size_t>(nb)]) continue;
+                    mark[static_cast<std::size_t>(nb)] = 1;
+                    touched.push_back(nb);
+                    const label s = seedOf[static_cast<std::size_t>(nb)];
+                    if (s >= 0) neighbourhood[k].push_back(s);
+                }
+            for (label nb : touched) mark[static_cast<std::size_t>(nb)] = 0;
+        }
+    }
+
+    std::vector<PlaneSample> samples;
+
+    for (std::size_t si = 0; si < seeds.size(); ++si)
+    {
+        const Seed& s = seeds[si];
+        const std::size_t u = static_cast<std::size_t>(s.cell);
+        Vector n = s.normal;
+        scalar scatter = 0, scatterBefore = 0;
+        label rounds = 0;
+
+        // The cell's own sub-cell geometry gives the direction for the estimators
+        // that read a cell on its own; for the fit it only starts the search, and the
+        // direction itself comes from the neighbourhood.
+        if (choice == NormalChoice::Fit)
+        {
+            // Tilt a candidate normal until the neighbourhood's own cuts lie in one
+            // plane, and report what still disagrees.
+            const auto settle = [&](const Vector& start)
+            {
+                Vector m = start;
+                scalar first = 0, rest = 0;
+                label took = 0;
+                for (int round = 0; round < kFitRounds; ++round)
+                {
+                    // every neighbour of the band, cut to its own fraction by the normal
+                    // as it stands: the data the fit is allowed to see
+                    samples.clear();
+                    for (label k : neighbourhood[si])
+                    {
+                        const Seed& t = seeds[static_cast<std::size_t>(k)];
+                        PlaneSample ps;
+                        ps.offset = offsetForFraction(t.boundary, m, t.fraction);
+                        const Cut c = clipConvexCell(t.boundary, m, ps.offset);
+                        ps.area = c.area;
+                        ps.centre = c.areaCentroid;
+                        samples.push_back(ps);
+                    }
+                    const PlaneTilt tilt = fitTilt(samples, m);
+                    if (round == 0) first = tilt.rmsBefore;
+                    rest = tilt.rms;
+                    ++took;
+                    if (mag2(tilt.tilt) <= 1e-16) break; // the normal the neighbourhood agrees on
+                    const Vector nt = m + tilt.tilt;
+                    m = nt * (1.0 / mag(nt));
+                }
+                return std::make_tuple(m, first, rest, took);
+            };
+
+            Vector m;
+            std::tie(m, scatterBefore, scatter, rounds) = settle(n);
+            n = m;
+        }
+        else if (s.centroidWorks)
         {
             // from the centroid of what is not phase 1 to the centroid of what
             // is: the direction the phase actually increases along, measured on
             // the sub-cell geometry rather than on the field's slope
-            const Vector cd = phase1.centroid - phase0.centroid;
+            const Vector cd = s.phase1MinusPhase0;
             if (mag2(cd) > 0)
             {
                 const Vector u1 = cd * (1.0 / mag(cd));
@@ -454,15 +724,15 @@ Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
                 }
                 else
                 {
-                    const Vector m = u1 + n0;
+                    const Vector m = u1 + n;
                     if (mag2(m) > 0) n = m * (1.0 / mag(m));
                 }
             }
         }
 
         // the plane the final normal cuts is the reconstruction that is reported
-        const scalar off = offsetForFraction(cell, n, a);
-        const Cut kept = clipConvexCell(cell, n, off);
+        const scalar off = offsetForFraction(s.boundary, n, s.fraction);
+        const Cut kept = clipConvexCell(s.boundary, n, off);
         if (kept.whole || kept.void_ || !(kept.volume > 0))
             cfFatal("plic: the reconstruction lost the interface it was given");
 
@@ -470,9 +740,13 @@ Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
         r.offset[u] = off;
         r.area[u] = kept.area;
         r.areaCentroid[u] = kept.areaCentroid;
-        r.fraction[u] = kept.volume / volume;
+        r.fraction[u] = kept.volume / s.volume;
+        r.fitScatter[u] = scatter;
+        r.fitScatterBefore += scatterBefore;
+        r.fitRounds = std::max(r.fitRounds, rounds);
         ++r.bandCells;
     }
+    if (r.bandCells > 0) r.fitScatterBefore /= static_cast<scalar>(r.bandCells);
     return r;
 }
 

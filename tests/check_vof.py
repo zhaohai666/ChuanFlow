@@ -61,6 +61,13 @@ The geometric case (chflow-vof with a reconstruction{} block):
       smeared over the front's own width, and the shape error of the disk reduced
       to a fraction of R.
 
+  vofFit - the same droplet, the same turn and the same planes, but the plane of every
+      band cell is the least-squares plane of the neighbourhood around it
+      (`reconstruction{ normal fit }`) rather than the one the cell's own staircase
+      reads. Everything owed above is owed here too, because it is the same cut; what
+      the fit adds to the log is the distance the planes of one neighbourhood still
+      disagree by and the rounds it took to agree, and the checker follows both.
+
 usage: check_vof.py <chflow-vof> <case.dict>
 """
 import math
@@ -239,10 +246,13 @@ def log_numbers(out):
                     r'advect (true|false) kappa ([0-9.eE+-]+) max \|f\| ([0-9.eE+-]+)', out)
     plic = []
     for m in re.finditer(r'^\[chflow\] plic (start|t [0-9.eE+-]+): band (\d+) cells '
-                         r'area ([0-9.eE+-]+) readBack ([0-9.eE+-]+) kappa ([0-9.eE+-]+)',
+                         r'area ([0-9.eE+-]+) readBack ([0-9.eE+-]+) kappa ([0-9.eE+-]+)'
+                         r'(?: scatter ([0-9.eE+-]+) rounds (\d+))?',
                          out, re.M):
         plic.append(dict(stamp=m.group(1), band=int(m.group(2)), area=float(m.group(3)),
-                         read_back=float(m.group(4)), kappa=float(m.group(5))))
+                         read_back=float(m.group(4)), kappa=float(m.group(5)),
+                         scatter=None if m.group(6) is None else float(m.group(6)),
+                         rounds=None if m.group(7) is None else int(m.group(7))))
     geo = []
     for m in re.finditer(r'^\[chflow\] geo t ([0-9.eE+-]+) flux (\d+) limited (\d+) '
                          r'rounds (\d+) minFactor ([0-9.eE+-]+) maxCourant ([0-9.eE+-]+) '
@@ -1036,6 +1046,30 @@ def check_plic(c, log, cent, f, init, failures, notes):
     if mean_a > 12.0 or max_a > 20.0:
         failures.append("the reconstructed normal is off the radial direction by %.2f "
                         "deg mean / %.2f max" % (mean_a, max_a))
+
+    # ---- what the fit says its neighbourhood was worth ----
+    # The scatter is the distance the planes of one neighbourhood still disagree by
+    # after the tilt, so it is the part of the interface a single plane cannot hold:
+    # over the disk's own arc it should stay well under a cell, and the rounds should
+    # stop inside the budget the library gives them.
+    if c['normal_choice'] == 'fit':
+        dx = min(c['vol'][0] / c['cells'][0], c['vol'][1] / c['cells'][1])
+        sc = [l['scatter'] / dx for l in log['plic'] if l['scatter'] is not None]
+        rs = [l['rounds'] for l in log['plic'] if l['rounds'] is not None]
+        if len(sc) != len(log['plic']) or len(rs) != len(log['plic']):
+            failures.append("a fit case reported its neighbourhood on %d of its %d "
+                            "reconstructions" % (len(sc), len(log['plic'])))
+        else:
+            notes.append("the planes of one neighbourhood disagree by %.4g to %.4g of a cell "
+                         "over the %d reports, and the fit stopped within %d rounds of the "
+                         "four it is given"
+                         % (min(sc), max(sc), len(sc), max(rs)))
+            if max(sc) > 0.06:
+                failures.append("the fitted neighbourhoods disagree by %.4g of a cell, more "
+                                "than the sagitta of this disk over the cell" % max(sc))
+            if not rs or max(rs) > 4 or min(rs) < 1:
+                failures.append("the fit took %d rounds where the library budgets four"
+                                % (max(rs) if rs else 0))
 
     # ---- through the run: the planes follow the field, not the analytic disk ----
     for line in log['plic']:

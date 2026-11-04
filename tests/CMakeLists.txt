@@ -156,6 +156,16 @@ add_test(
         $<TARGET_FILE:chflow-vof>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofZalesak/case.dict)
 
+# the same turn and the same planes, with each cell's plane found by the least-squares
+# fit of its neighbourhood: the direction converges with the mesh, and the turn leaves a
+# narrower band, a shorter interface and a shape nearer the disk than the cell-local one
+add_test(
+    NAME verify.vofFit
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_vof.py
+        $<TARGET_FILE:chflow-vof>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofFit/case.dict)
+
 # 3D energy equation. The three conduction cases have no flow at all, so they
 # isolate the diffusion operator, the temperature conditions (fixedValue,
 # heatFlux, adiabatic) and the heat-balance report; the decay case runs the same

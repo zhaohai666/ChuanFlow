@@ -1,0 +1,105 @@
+// Zalesak's rigid rotation, cell sharp and carried by its own planes, with the plane
+// every band cell is cut by found the way its neighbourhood agrees rather than the way
+// one cell's staircase reads: `reconstruction{ normal fit; }` is the area-weighted
+// least-squares plane of the band cells meeting at this cell's vertices, each of them
+// weighted by the area its own cut has.
+//
+// What that is worth on this droplet, against the same turn with `normal mixed`
+// (ctest verify.vofZalesak):
+//   the planes at t=0     off the analytic radial by 1.16 deg mean / 3.10 max, where
+//                         the cell-local ones are 8.34 / 14.11 - and plicTests follows
+//                         both across three meshes, where the fitted angle falls as the
+//                         cell halves and the cell-local one does not move at all
+//   after a full turn     the band is 65 cells rather than 76 and spans 0.128212468 of
+//                         interface for the perimeter 0.125663706, where it spans
+//                         0.1337231 - the planes of neighbours step less along the front
+//   the shape it leaves   3.3292% of the disk's area away from the disk turned through
+//                         omega t, its boundary displaced by 0.133 dx and its centroid
+//                         0.141 dx off the analytic centre, against 3.8453%, 0.154 and
+//                         0.198; and none of the 65 band cells ends on the wrong side
+//                         of its own front, where two of the 76 did
+// What the geometric path owes does not change with the normal, because it is the same
+// cut and the same flux:
+//   max |div(phi)|        2.17e-19, round-off of the Gauss identity
+//   exact filling         pi R^2 dz = 0.0125663706144 to 5.9e-15 relative, 60 band cells
+//                         at t=0 and nothing outside them within 3.3e-22 of half-filled
+//   read-back             <= 2.05e-15 over the 14 reports, so every plane keeps the
+//                         fraction of the cell it was cut in however far the droplet
+//                         has turned
+//   conservation          the fluxes one cell's faces disagree about at most 2.2e-14 of
+//                         the phase, and nothing had to be reconciled afterwards
+//   boundedness           alpha exactly in [0,1] with at most 2.48e-17 of the phase
+//                         clipped; the two-limit pass up to 34 rounds, up to 302 of the
+//                         442 faces carrying flux restricted, smallest factor 0.5 at a
+//                         Courant number of 0.165
+//   the checker's form    its own disk/rectangle integral reproduces the filled field
+//                         to 5.03e-13 per cell, so the reference is geometry rather
+//                         than a copy of the solver's arithmetic
+// The price is the fit: the same 628 geometric steps take four and a half times the
+// wall of `mixed` (51 s against 11 s under ctest on this machine), four rounds of
+// re-cutting a neighbourhood for every band cell against no round at all.
+//
+// Verified by tests/check_vof.py (ctest verify.vofFit), on what the solver wrote.
+
+block
+{
+    min   (-0.5 -0.5 0);
+    max   ( 0.5  0.5 0.1);
+    cells (40 40 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+velocity
+{
+    type   rotation;
+    omega  1.0;
+    center (0 0 0);
+}
+
+alpha
+{
+    // R/dx = 8, the droplet vofPlic reconstructs, filled by its exact overlap area
+    circle { center (0.2 0 0); radius 0.2; fill exact; }
+}
+
+reconstruction
+{
+    normal fit; transport geometric;
+}
+
+patches
+{
+    left   { alphaType fixedValue; alpha 0; }
+    right  { alphaType fixedValue; alpha 0; }
+    bottom { alphaType fixedValue; alpha 0; }
+    top    { alphaType fixedValue; alpha 0; }
+}
+
+time
+{
+    dt                0.01;      // Courant 0.165 across the band, 0.2 at the walls
+    endTime           6.28;      // a full turn, back to where the disk started
+    reportEvery       50;
+    interfaceThreshold 0.1;      // what the gradient path marks, for the comparison
+}
+
+schemes
+{
+    ddt  Euler;
+    div  upwind;
+    grad corrected;
+}
+
+solverTol 1e-13;
+
+output
+{
+    vtk         out_vof_fit.vtu;
+    vtkInitial  initial_vof_fit.vtu;
+}

@@ -161,6 +161,7 @@ struct Measured
     double area = 0;         ///< the interface area of the band
     double meanAngle = 0;    ///< normal off the radial direction, degrees
     double worstAngle = 0;
+    double meanScatter = 0;  ///< band-mean of the residual disagreement of the fitted planes
     double kappaMean = 0;    ///< band-mean of div(normal)
 };
 
@@ -171,7 +172,7 @@ Measured measure(const polyMesh& mesh, const volScalarField& alpha,
     const Vector c = diskCentre();
     const Field<scalar> k = vof::interfaceCurvature(mesh, r.normal);
     label kappaN = 0;
-    double angle = 0, kappa = 0;
+    double angle = 0, kappa = 0, scatter = 0;
 
     for (label cell = 0; cell < mesh.nCells(); ++cell)
     {
@@ -188,15 +189,22 @@ Measured measure(const polyMesh& mesh, const volScalarField& alpha,
         m.worstRead = std::max(m.worstRead, std::abs(kept.volume / v - a));
         m.area += r.area[u];
 
-        // towards increasing alpha is into the disk, and the interface of a disk
-        // is radial through its own sub-cell centre
+        // towards increasing alpha is into the disk. The interface is the extrusion
+        // of a circle, so its normal is the in-plane radial: the analytic direction
+        // is that radial with no z-component, and a fitted normal that tilts out of
+        // the plane is charged for it. Measuring against the full centroid
+        // difference instead would add the extrusion's own half-depth to every
+        // angle, which is a property of the test box, not of the estimator.
         const Vector d = r.areaCentroid[u] - c;
-        const double deg = angleDegrees(r.normal[u], d * (-1.0 / mag(d)));
+        const Vector radial{-d.x, -d.y, 0.0};
+        const double deg = angleDegrees(r.normal[u], radial);
         angle += deg;
         m.worstAngle = std::max(m.worstAngle, deg);
         kappa += k[u]; ++kappaN;
+        scatter += r.fitScatter[u];
     }
     m.meanAngle = m.reconstructed > 0 ? angle / m.reconstructed : 0;
+    m.meanScatter = m.reconstructed > 0 ? scatter / m.reconstructed : 0;
     m.kappaMean = kappaN > 0 ? kappa / kappaN : 0;
 
     // the band the smeared-interface path keeps: the same field, but selected by
@@ -482,7 +490,8 @@ int main()
         for (const auto& entry : std::vector<std::pair<std::string, vof::NormalChoice>>{
                  {"youngs", vof::NormalChoice::Youngs},
                  {"centroid", vof::NormalChoice::Centroid},
-                 {"mixed", vof::NormalChoice::Mixed}})
+                 {"mixed", vof::NormalChoice::Mixed},
+                 {"fit", vof::NormalChoice::Fit}})
         {
             const Measured m = measure(mesh, alpha, exact,
                                             vof::reconstruct(alpha, "corrected",
@@ -492,7 +501,8 @@ int main()
                       << " (the gradient threshold sees " << m.gradientBand << ")"
                       << ", read-back error " << std::setprecision(3) << m.worstRead
                       << ", normal off-radial " << m.meanAngle << " deg mean /"
-                      << m.worstAngle << " deg max\n     " << std::setw(8) << ""
+                      << m.worstAngle << " deg max, plane disagreement " << m.meanScatter
+                      << " (0 for a cell-local normal, which does not report it)\n     " << std::setw(8) << ""
                       << "interface area " << std::setprecision(6) << m.area
                       << " vs the extruded perimeter 2 pi R dz = "
                       << 2 * M_PI * R * kDiskDepth << ", mean kappa " << std::setprecision(5)
@@ -502,67 +512,194 @@ int main()
                       .c_str());
             CHECK(m.reconstructed == m.band,
                   (entry.first + ": every cell of the band is reconstructed").c_str());
+            // The area a one-cell plane model reports is the area of the chord
+            // polygon it tiles, so it comes in under the circle's perimeter and rises
+            // towards it as the mesh refines. Every estimator lands within the tenth
+            // of it that a neighbourhood three cells wide can hold.
             CHECK(m.area > 0.85 * 2 * M_PI * R * kDiskDepth && m.area < 2 * M_PI * R * kDiskDepth,
                   (entry.first + ": the band's interface area is the perimeter's").c_str());
         }
     }
 
-    // ---- 7. what PLIC adds, measured on the mesh it is asked for ----
-    // Two things, and the numbers say which is which.
+    // ---- 7. what the normal is worth, measured on the mesh it is asked for ----
+    // Two estimators on the same exact field, at three refinements.
     //
-    // The band: it comes from alpha alone, so on a cell-filled interface it is
-    // exactly the cells that hold one - all of them, and no others. The
-    // gradient-threshold operator the smeared-band path uses cannot say that: on
-    // the same field it marks the ring around the band, whose alpha is 0 or 1, as
-    // carrying an interface, and the curvature stencil then reads faces into it.
-    //
-    // The geometry: the plane, its area and its centre are exact, so what is left
-    // approximate is the DIRECTION the plane is given - the normal estimator, not
-    // the clipping. A one-cell-thick alpha field is a staircase along the circle
-    // and its slope barely converges with the mesh, which is why the angle below
-    // hardly moves from 8 to 16 cells per radius, and why a smoothing or
-    // area-based normal estimator is the next step rather than this one.
+    // `mixed` reads the cell on its own: the gradient and the phase centroid
+    // difference of the staircase that cell is filled with. `fit` reads the
+    // neighbourhood: the tilt that makes every band cell's own exact cut lie in one
+    // plane. The cut, the area and the read-back are the same machinery in both, so
+    // whatever separates the numbers below is the direction the plane is given.
     {
         const scalar R = kDiskRadius;
         const scalar perimeter = static_cast<scalar>(2 * M_PI * R * kDiskDepth);
-        Measured m40, m80;
-        for (const label n : {40, 80})
+        const std::vector<std::pair<std::string, vof::NormalChoice>> kinds
+            = {{"mixed", vof::NormalChoice::Mixed}, {"fit", vof::NormalChoice::Fit}};
+        Measured seen[2][3];
+        for (std::size_t ki = 0; ki < kinds.size(); ++ki)
         {
-            const polyMesh mesh = boxXY(n, n, kDiskDepth);
-            const Field<scalar> exact = vof::exactDiskAlpha(mesh, diskCentre(), R);
-            volScalarField alpha(mesh, "alpha", 0.0);
-            for (std::size_t u = 0; u < alpha.internalField().size(); ++u)
-                alpha.internalField()[u] = exact[u];
+            for (label ni = 0; ni < 3; ++ni)
+            {
+                const label n = ni == 0 ? 40 : (ni == 1 ? 80 : 160);
+                const polyMesh mesh = boxXY(n, n, kDiskDepth);
+                const Field<scalar> exact = vof::exactDiskAlpha(mesh, diskCentre(), R);
+                volScalarField alpha(mesh, "alpha", 0.0);
+                for (std::size_t u = 0; u < alpha.internalField().size(); ++u)
+                    alpha.internalField()[u] = exact[u];
 
-            const Measured m = measure(mesh, alpha, exact,
-                                       vof::reconstruct(alpha, "corrected",
-                                                        vof::NormalChoice::Mixed));
-            std::cout << "     " << n << "x" << n << ", R/dx = " << R * n
-                      << ": alpha band " << m.band << ", PLIC " << m.reconstructed
-                      << ", gradient threshold " << m.gradientBand << " of which "
-                      << m.gradientOutside << " hold no interface\n     normal off-radial "
-                      << std::setprecision(4) << m.meanAngle << " deg mean /"
-                      << m.worstAngle << " deg max, read-back " << std::setprecision(3)
-                      << m.worstRead << ", interface area " << std::setprecision(6) << m.area
-                      << " vs " << perimeter << ", kappa " << std::setprecision(5)
-                      << m.kappaMean << " vs " << -1.0 / R << "\n";
-            (n == 40 ? m40 : m80) = m;
-            CHECK(m.reconstructed == m.band,
-                  "the reconstruction covers the whole band on a one-cell-thick front");
-            CHECK(m.worstRead < 1e-10, "and reproduces the fraction everywhere");
+                const Measured m = measure(mesh, alpha, exact,
+                                           vof::reconstruct(alpha, "corrected",
+                                                            kinds[ki].second));
+                std::cout << "     " << std::setw(6) << kinds[ki].first << " "
+                          << n << "x" << n << ", R/dx = " << R * n
+                          << ": alpha band " << m.band << ", PLIC " << m.reconstructed
+                          << ", gradient threshold " << m.gradientBand << " of which "
+                          << m.gradientOutside << " hold no interface\n     " << std::setw(6) << ""
+                          << " normal off-radial " << std::setprecision(4) << m.meanAngle
+                          << " deg mean /" << m.worstAngle << " deg max, read-back "
+                          << std::setprecision(3) << m.worstRead;
+                if (kinds[ki].second == vof::NormalChoice::Fit)
+                    std::cout << ", planes still disagree by " << std::setprecision(4)
+                              << m.meanScatter * n << " cells";
+                std::cout << "\n     "
+                          << std::setw(6) << ""
+                          << "interface area " << std::setprecision(6) << m.area
+                          << " vs " << perimeter << ", kappa " << std::setprecision(5)
+                          << m.kappaMean << " vs " << -1.0 / R << "\n";
+                seen[ki][ni] = m;
+                CHECK(m.reconstructed == m.band,
+                      (kinds[ki].first + ": the reconstruction covers the whole band on a "
+                                       "one-cell-thick front").c_str());
+                CHECK(m.worstRead < 1e-10,
+                      (kinds[ki].first + ": and reproduces the fraction everywhere").c_str());
+            }
         }
-        CHECK(m40.gradientOutside > 0 && m80.gradientOutside > 0,
+        CHECK(seen[0][0].gradientOutside > 0 && seen[0][2].gradientOutside > 0,
               "the gradient threshold marks cells that hold no interface; the alpha band does not");
-        CHECK(m40.meanAngle < 20.0 && m80.meanAngle < 20.0 && m40.worstAngle < 25.0
-                  && m80.worstAngle < 25.0,
-              "the reconstructed normal stays within 20 deg mean of the analytic radial");
-        CHECK(m40.area > 0.85 * perimeter && m80.area > 0.85 * perimeter
-                  && m40.area <= perimeter && m80.area <= perimeter,
-              "the band's interface area is the circle's perimeter to within 15%");
-        CHECK(std::abs(m40.kappaMean * R + 1.0) < 0.4
-                  && std::abs(m80.kappaMean * R + 1.0) < 0.4,
-              "and its mean curvature is -1/R to within what a one-cell stencil can resolve");
+        CHECK(seen[0][0].meanAngle < 20.0 && seen[0][2].meanAngle < 20.0,
+              "the cell-local normal stays within 20 deg mean of the analytic radial");
+
+        // The claim the fit is here for: the direction converges as the mesh does,
+        // which the cell-local estimator, reading the same staircase one cell at a
+        // time, does not do at any of the three meshes - it moves by less than a
+        // tenth and its worst cell gets no sharper.
+        CHECK(seen[1][0].meanAngle * 5 < seen[0][0].meanAngle
+                  && seen[1][1].meanAngle * 5 < seen[0][1].meanAngle
+                  && seen[1][2].meanAngle * 5 < seen[0][2].meanAngle,
+              "at every mesh the fitted normal is five times closer to the radial than the "
+              "cell-local one");
+        CHECK(seen[1][1].meanAngle < 0.75 * seen[1][0].meanAngle
+                  && seen[1][2].meanAngle < 0.75 * seen[1][1].meanAngle,
+              "and the fitted normal's mean angle off the radial falls by more than a quarter "
+              "every time the cell halves");
+        CHECK(seen[1][2].meanAngle < 0.3 * seen[1][0].meanAngle,
+              "and to under a third of itself over the two refinements together");
+        CHECK(seen[0][1].meanAngle > 0.9 * seen[0][0].meanAngle
+                  && seen[0][2].meanAngle > 0.9 * seen[0][1].meanAngle,
+              "while the cell-local one moves by less than a tenth over each of the same "
+              "refinements");
+        CHECK(seen[1][0].worstAngle * 4 < seen[0][0].worstAngle
+                  && seen[1][1].worstAngle * 4 < seen[0][1].worstAngle
+                  && seen[1][2].worstAngle * 4 < seen[0][2].worstAngle,
+              "and the fit's worst cell is under a quarter of the cell-local worst at every "
+              "mesh");
+        CHECK(seen[1][1].meanScatter < 0.6 * seen[1][0].meanScatter
+                  && seen[1][2].meanScatter < 0.6 * seen[1][1].meanScatter,
+              "and the neighbourhood's planes agree about twice as closely at each one");
+
+        // The area a one-cell plane model reports is the chord it tiles, under the
+        // perimeter and rising to it. The read-back and the band are what do not move
+        // between estimators.
+        CHECK(seen[0][0].area < perimeter && seen[0][1].area > seen[0][0].area
+                  && seen[0][2].area > seen[0][1].area && seen[0][2].area < perimeter,
+              "the cell-local band's interface area is under the perimeter and rises towards "
+              "it at every refinement");
+        CHECK(seen[1][0].area < perimeter && seen[1][1].area < perimeter
+                  && seen[1][2].area < perimeter && seen[1][0].area > 0.9 * perimeter
+                  && seen[1][1].area > 0.9 * perimeter && seen[1][2].area > 0.9 * perimeter,
+              "and the fit keeps its chord within a tenth of the perimeter at all three "
+              "meshes");
+        CHECK(std::abs(seen[0][0].kappaMean * R + 1.0) < 0.4
+                  && std::abs(seen[0][1].kappaMean * R + 1.0) < 0.4
+                  && std::abs(seen[0][2].kappaMean * R + 1.0) < 0.4
+                  && std::abs(seen[1][0].kappaMean * R + 1.0) < 0.4
+                  && std::abs(seen[1][1].kappaMean * R + 1.0) < 0.4
+                  && std::abs(seen[1][2].kappaMean * R + 1.0) < 0.4,
+              "and the band-mean curvature is -1/R to within what the cell-centred divergence "
+              "stencil of a one-cell band resolves - which is what limits it, not the normal");
     }
+
+    // ---- 7b. the fit on the field it is exact for: one plane ----
+    // A front that really is a plane is the fit's contract: every band cell's own
+    // cut is a piece of that plane, so the neighbourhood agrees with no tilt left
+    // over, and the recovered normal is the analytic one rather than an average of
+    // the staircase. The field is built by clipping each cell with the analytic
+    // plane, which is the same exact arithmetic the read-back is checked with, so
+    // the only thing the test can get wrong is the direction - which is the point.
+    {
+        const label n = 16;
+        const scalar dx = 1.0 / n;
+        const polyMesh mesh = boxXY(n, n, 1.0);
+        // 30 deg off the x axis: not a direction the cell-centred difference of a
+        // plane field happens to get right, which is what makes the comparison below
+        // a comparison and not a tautology
+        const Vector analytic{std::sqrt(3.0) / 2.0, 0.5, 0.0};
+        const scalar analyticOffset = 0.5 * (analytic.x + analytic.y);
+
+        const Field<scalar>& vol = mesh.cellVolumes();
+        Field<scalar> exact(static_cast<std::size_t>(n * n), 0.0);
+        int band = 0;
+        for (label cell = 0; cell < mesh.nCells(); ++cell)
+        {
+            const std::size_t u = static_cast<std::size_t>(cell);
+            const vof::Cut kept = vof::clipConvexCell(vof::cellBoundary(mesh, cell),
+                                                      analytic, analyticOffset);
+            // a cut that swallows or empties the cell reports the flag rather than a
+            // volume, so the fraction has to come from the flag first
+            exact[u] = kept.whole ? 1.0 : (kept.void_ ? 0.0 : kept.volume / vol[u]);
+            if (exact[u] > 1e-6 && exact[u] < 1.0 - 1e-6) ++band;
+        }
+        volScalarField alpha(mesh, "alpha", 0.0);
+        alpha.internalField() = exact;
+
+        const vof::Reconstruction r
+            = vof::reconstruct(alpha, "corrected", vof::NormalChoice::Fit);
+        const vof::Reconstruction local
+            = vof::reconstruct(alpha, "corrected", vof::NormalChoice::Mixed);
+
+        double worstAngle = 0, worstScatter = 0, worstOffset = 0, localAngle = 0, worstRead = 0;
+        label counted = 0;
+        for (std::size_t u = 0; u < exact.size(); ++u)
+        {
+            if (mag2(r.normal[u]) == 0) continue;
+            ++counted;
+            worstAngle = std::max(worstAngle, angleDegrees(r.normal[u], analytic));
+            localAngle += mag2(local.normal[u]) == 0 ? 180.0
+                                                     : angleDegrees(local.normal[u], analytic);
+            worstScatter = std::max(worstScatter, r.fitScatter[u]);
+            // the plane reported is the analytic one: same direction, and the same
+            // place, because the cell's own fraction has to sit on it
+            worstOffset = std::max(worstOffset, std::abs(r.offset[u] - analyticOffset));
+            worstRead = std::max(worstRead, std::abs(r.fraction[u] - exact[u]));
+        }
+        std::cout << "     plane front on " << n << "x" << n
+                  << ": band " << r.bandCells << " of " << band << " cells, fitted normal off "
+                  << std::setprecision(6) << worstAngle << " deg worst (cell-local mean "
+                  << localAngle / counted << " deg), offset off " << std::setprecision(2)
+                  << worstOffset << ", planes disagree by " << worstScatter / dx
+                  << " cells worst, read-back " << std::setprecision(3) << worstRead << "\n";
+        CHECK(r.bandCells == band, "the fit reconstructs the whole band");
+        CHECK(worstRead < 1e-10, "and still cuts each cell's own fraction exactly");
+        // What is left over is the arithmetic, not the search: four rounds settle a
+        // flat front - two still leave 0.004 deg of direction and 6e-5 of a cell for
+        // the neighbourhood to disagree about - and the residual then is 5e-8 of a
+        // cell in the plane constant and 6e-9 of one in what the planes disagree by.
+        CHECK(worstAngle < 1e-6, "the fitted normal is the analytic one, to round-off");
+        CHECK(worstOffset < 1e-6 * dx,
+              "the plane it reports is the analytic plane, to a millionth of a cell");
+        CHECK(worstScatter < 1e-7 * dx, "and the neighbourhood agrees with nothing left over");
+        CHECK(localAngle / counted > 1.0, "the cell-local normal of the same plane front is not");
+    }
+
 
     // ---- 8. a region cut again ----
     // ConvexRegion is what the swept-prism flux needs: a cell's phase region has to

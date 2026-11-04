@@ -180,6 +180,22 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             flushed water cut, the Churchill + gravity pressure drop and the
             pnode march from the outlet anchor, and the uniform steady state
             (alpha*, s*, rhoG* = rhoG).
+
+  mode = slugpulse      : coalescing packets under a piecewise-constant
+            inlet rate schedule (horizontal incompressible pipe, Wallis
+            closure). Fronts ride Rankine-Hugoniot shock speeds and fan
+            levels move at F'(alpha); the liquid inventory follows
+            dI/dt = vsl(t) - F(alpha_outlet) with EXACT window slopes
+            (discrete telescoping). Pulse 1 lays a packet, the dip opens a
+            sub-threshold stretch (E frozen, front slows, tail fan drains),
+            pulse 2 launches a second body whose shock overtakes body 1's
+            rear cell in-pipe - count 2 -> 1 coalescence observed. The
+            checker replicates the Godunov holdup + water recursion with
+            the scheduled vM (1e-9), verifies the closed-form shock/fan
+            speeds (+-1.5 cells), the exact inventory checkpoints, the
+            slug detection statistics against the replicated fields, the
+            observed coalescence, and the uniform steady state with the
+            pnode march from the outlet anchor.
 """
 import math
 import subprocess
@@ -230,18 +246,22 @@ else:
     times, frames = [], []
     cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = None, None, None, [], []
     cur_qwall, cur_qinlet = 0.0, 0.0
+    cur_slug_count, cur_bodies = 0, []
 
     def flush():
         global cur_t, cur_vm, cur_dp, cur_nodes, cur_cells
-        global cur_qwall, cur_qinlet
+        global cur_qwall, cur_qinlet, cur_slug_count, cur_bodies
         if cur_t is not None:
             times.append(cur_t)
             frames.append({"t": cur_t, "vm": cur_vm, "dp": cur_dp,
                            "nodes": cur_nodes, "cells": cur_cells,
-                           "qwall": cur_qwall, "qinlet": cur_qinlet})
+                           "qwall": cur_qwall, "qinlet": cur_qinlet,
+                           "slug_count": cur_slug_count,
+                           "bodies": cur_bodies})
             cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = \
                 None, None, None, [], []
             cur_qwall, cur_qinlet = 0.0, 0.0
+            cur_slug_count, cur_bodies = 0, []
 
     for line in proc.stdout.splitlines():
         tok = line.replace("[chflow]", "").split()
@@ -254,6 +274,13 @@ else:
             cur_nodes.append(float(tok[3]))
         elif tok[0] == "thermal:":
             cur_qwall, cur_qinlet = float(tok[2]), float(tok[4])
+        elif tok[0] == "slug" and tok[1] == "count":
+            cur_slug_count = int(tok[2])
+        elif tok[0] == "slugbody":
+            cur_bodies.append({"rear": float(tok[3]),
+                               "front": float(tok[5]),
+                               "length": float(tok[7]),
+                               "inv": float(tok[9])})
         elif tok[0] == "cell":
             c = {"alpha": float(tok[3]), "water": float(tok[5]),
                  "vsl": float(tok[7]), "vsg": float(tok[9])}
@@ -2246,6 +2273,338 @@ elif mode == "fullmomentum":
                      f"{drift[:4]}")
     else:
         print("ok:   steady state held over the final 20 s")
+
+elif mode == "slugpulse":
+    # slug first increment: coalescing packets under a piecewise-constant
+    # inlet rate schedule. Horizontal incompressible pipe, Wallis closure
+    # us = 0.5. A rate pair at steady state gives the holdup root of the
+    # convex flux F(a) = us a^2 + (vM - us) a = vsl; packet fronts ride
+    # Rankine-Hugoniot shock speeds s = (F(aL) - F(aR))/(aL - aR), fan
+    # levels move at F'(a) = 2 us a + (vM - us), and the liquid inventory
+    # I = sum alpha dx obeys dI/dt = vsl(t) - F(alpha_outlet) - the window
+    # slopes are EXACT (discrete telescoping with a constant outlet level).
+    # Timeline: base vsl 0.05 (vM 0.6, alpha_lo), pulse 1 vsl 0.15 @ t=30
+    # (vM 0.7, alpha_hi1, shock s1), dip vsl 0.05 @ t=57 (E frozen, front
+    # slows to s1', the tail fan opens a sub-threshold stretch), pulse 2
+    # vsl 1.2 @ t=65 (vM 1.75, alpha_hi2): a second body races forward at
+    # s2 while body 1's rear advances at F'(0.3) = 1.55, and the discrete
+    # shock overtakes body 1's rear cell in-pipe - count 2 -> 1 observed.
+    # Godunov captures the shocks as monotone staircases (geometric tails
+    # reaching ~1e-6 a few cells ahead of the 0.3 contour), so positions
+    # carry +-1.5 cell tolerances and the outlet-adjacent inventory
+    # checkpoints stop before the pulse-2 tail reaches the outlet.
+    N, L, DI, DT = 40, 40.0, 0.02, 0.05
+    US, VSG = 0.5, 0.55
+    RHO_L, RHO_G, MU_L, MU_G = 1000.0, 20.0, 0.01, 1e-5
+    PHI_IN, P_OUT = 0.3, 5e6
+    A_THRESH, MIN_LEN = 0.3, 0.5
+    DX = L / N
+    T1, VSL1 = 30.0, 0.15   # pulse 1
+    T2, VSL2 = 57.0, 0.05   # dip (8 s, opens the merge gap)
+    T3, VSL3 = 65.0, 1.2    # pulse 2 (the coalescing kick)
+    VSL0 = 0.05
+
+    def sched_vsl(t):
+        # applySchedule: the last point whose time the step interval
+        # covers (evaluated at the midpoint) governs, the scalar rates
+        # before the first point (t = 0 reads the scalars too)
+        if t >= T3:
+            return VSL3
+        if t >= T2:
+            return VSL2
+        if t >= T1:
+            return VSL1
+        return VSL0
+
+    def F_of(a, vM):
+        return US * a * a + (vM - US) * a
+
+    def root(vM, vsl):
+        qb = vM - US
+        return (-qb + math.sqrt(qb * qb + 4.0 * US * vsl)) / (2.0 * US)
+
+    A_LO = root(0.6, VSL0)
+    A_HI1 = root(0.7, VSL1)
+    A_HI2 = root(1.75, VSL3)
+    S1 = (F_of(A_HI1, 0.7) - F_of(A_LO, 0.7)) / (A_HI1 - A_LO)
+    S1P = (F_of(A_HI1, 0.6) - F_of(A_LO, 0.6)) / (A_HI1 - A_LO)
+    S2 = (F_of(A_HI2, 1.75) - F_of(A_LO, 1.75)) / (A_HI2 - A_LO)
+    S1PP = (F_of(A_HI1, 1.75) - F_of(A_LO, 1.75)) / (A_HI1 - A_LO)
+    S2A = (F_of(A_HI2, 1.75) - F_of(A_HI1, 1.75)) / (A_HI2 - A_HI1)
+    FRONT_57 = S1 * (T2 - T1)
+    FRONT_65 = FRONT_57 + S1P * (T3 - T2)
+    T_EXIT = T3 + (L - FRONT_65) / S1PP   # merged front reaches the outlet
+    SLOPE1 = VSL1 - F_of(A_LO, 0.7)
+    SLOPE2A = VSL3 - F_of(A_LO, 1.75)
+
+    def detect(alpha):
+        # mirror TwoFluidPipe::slugBodies
+        out, in_run, rear, length, inv, x = [], False, 0.0, 0.0, 0.0, 0.0
+        for a in alpha:
+            if a >= A_THRESH:
+                if not in_run:
+                    in_run, rear, length, inv = True, x, 0.0, 0.0
+                length += DX
+                inv += a * DX
+            else:
+                if in_run and length >= MIN_LEN:
+                    out.append((rear, rear + length, length, inv))
+                in_run = False
+            x += DX
+        if in_run and length >= MIN_LEN:
+            out.append((rear, rear + length, length, inv))
+        return out
+
+    # field replication: scheduled vM (rate-driven pin), godunov interior
+    # faces, inlet face the scheduled vsl exactly, outlet face F(a_last),
+    # water riding the liquid flux upwinded, clamps [0,1] / [0, alpha]
+    alpha = [A_LO] * N
+    water = [PHI_IN] * N
+    steps_done = 0
+    merge_t = None
+    saw_two = False
+    for k, fr in enumerate(frames):
+        want_steps = 0 if k == 0 else k * 10
+        while steps_done < want_steps:
+            t0 = steps_done * DT
+            vsl = sched_vsl(t0 + 0.5 * DT)
+            vM = vsl + VSG
+            qb = vM - US
+            flux = [vsl]
+            for j in range(1, N):
+                flux.append(godunov(US, qb, 0.0, alpha[j - 1], alpha[j]))
+            flux.append(alpha[N - 1] * (qb + US * alpha[N - 1]))
+            wf = [PHI_IN * flux[0]]
+            for j in range(1, N):
+                wf.append((water[j - 1] if flux[j] >= 0 else water[j])
+                          * flux[j])
+            wf.append(water[N - 1] * flux[N])
+            new_a, new_w = [], []
+            for i in range(N):
+                na = min(max(alpha[i] + DT / DX * (flux[i] - flux[i + 1]),
+                             0.0), 1.0)
+                cap = max(na, 0.0)
+                af = min(max(alpha[i] * water[i]
+                             + DT / DX * (wf[i] - wf[i + 1]), 0.0), cap)
+                new_a.append(na)
+                new_w.append(af / cap if cap > 1e-9 else 0.0)
+            alpha, water = new_a, new_w
+            steps_done += 1
+        t = fr["t"]
+        # vM pinned at the scheduled rates of the last applied step (the
+        # initial frame reads the boundary's scalar rates)
+        check(f"vm scheduled (t={t})", fr["vm"],
+              sched_vsl(t - 0.5 * DT) + VSG, 1e-12)
+        ok_frame = True
+        for i in range(N):
+            c = fr["cells"][i]
+            qb = fr["vm"] - US
+            vsl_i = US * alpha[i] * alpha[i] + qb * alpha[i]
+            vsg_i = (1.0 - alpha[i]) * (fr["vm"] + US * alpha[i])
+            if (abs(c["alpha"] - alpha[i]) > 1e-9 + 1e-9 * abs(alpha[i])
+                    or abs(c["water"] - water[i])
+                    > 1e-9 + 1e-9 * abs(water[i])
+                    or abs(c["vsl"] - vsl_i) > 1e-9 + 1e-9 * abs(vsl_i)
+                    or abs(c["vsg"] - vsg_i) > 1e-9 + 1e-9 * abs(vsg_i)):
+                fails.append(f"cell {i} (t={t}): got={c} want alpha="
+                             f"{alpha[i]} water={water[i]} vsl={vsl_i} "
+                             f"vsg={vsg_i}")
+                ok_frame = False
+                break
+        if ok_frame:
+            print(f"ok:   alpha/water/vsl/vsg fields replicated at t={t}"
+                  " (1e-9)")
+        # slug statistics vs the replicated detection
+        bodies = detect(alpha)
+        if fr["slug_count"] != len(bodies):
+            fails.append(f"slug count (t={t}): got {fr['slug_count']} "
+                         f"want {len(bodies)}")
+        else:
+            stat_ok = True
+            for bg, bw in zip(fr["bodies"], bodies):
+                for nm, gv, wv in (("rear", bg["rear"], bw[0]),
+                                   ("front", bg["front"], bw[1]),
+                                   ("length", bg["length"], bw[2]),
+                                   ("inv", bg["inv"], bw[3])):
+                    if abs(gv - wv) > 1e-9 + 1e-9 * abs(wv):
+                        fails.append(f"slug {nm} (t={t}): got {gv} want "
+                                     f"{wv}")
+                        stat_ok = False
+                        break
+                if not stat_ok:
+                    break
+            if stat_ok and bodies:
+                print(f"ok:   slug statistics replicated at t={t} "
+                      f"(count {len(bodies)})")
+
+        # ---- window physics ----
+        a_cells = [c["alpha"] for c in fr["cells"]]
+        if t < T1:
+            bad = [i for i in range(N) if abs(a_cells[i] - A_LO) > 1e-9]
+            if bad:
+                fails.append(f"base window not uniform alpha_lo at t={t}: "
+                             f"cells {bad[:4]}")
+            elif fr["slug_count"] != 0:
+                fails.append(f"base window slug count {fr['slug_count']}"
+                             " != 0")
+            elif abs(t - 10.0) < 1e-9:
+                print("ok:   base window uniform alpha_lo, no slug bodies")
+        if T1 < t < T2:
+            xf = S1 * (t - T1)
+            if t > 31.5 and fr["slug_count"] != 1:
+                # the inlet cell needs ~1.5 s to fill past the threshold
+                fails.append(f"pulse-1 slug count {fr['slug_count']} != 1 "
+                             f"at t={t}")
+            elif fr["slug_count"] == 1:
+                if abs(fr["bodies"][0]["rear"]) > 1e-9:
+                    fails.append(f"pulse-1 body rear "
+                                 f"{fr['bodies'][0]['rear']} != 0 at t={t}")
+                elif abs(fr["bodies"][0]["front"] - xf) > 1.5:
+                    fails.append(f"pulse-1 front "
+                                 f"{fr['bodies'][0]['front']} vs RH shock "
+                                 f"{xf} off by > 1.5 at t={t}")
+                elif abs(t - 40.0) < 1e-9 or abs(t - 56.5) < 1e-9:
+                    print(f"ok:   pulse-1 RH shock at t={t}: front "
+                          f"{fr['bodies'][0]['front']:.4f} vs s1*(t-30) "
+                          f"{xf:.4f}, body [0, front]")
+            if t >= 33.0:
+                # TVD: the captured shock is a monotone staircase
+                mono_bad = [i for i in range(N - 1)
+                            if a_cells[i] < a_cells[i + 1] - 1e-10]
+                if mono_bad:
+                    fails.append(f"pulse-1 profile not monotone at t={t}: "
+                                 f"{mono_bad[:4]}")
+        if T2 < t < T3:
+            rear_x = 0.4 * (t - T2)   # F'(0.3) at vM 0.6
+            xf = FRONT_57 + S1P * (t - T2)
+            if fr["slug_count"] != 1:
+                fails.append(f"dip slug count {fr['slug_count']} != 1 at "
+                             f"t={t}")
+            elif fr["bodies"]:
+                dr = abs(fr["bodies"][0]["rear"] - rear_x)
+                df = abs(fr["bodies"][0]["front"] - xf)
+                if dr > 1.5 or df > 1.5:
+                    fails.append(f"dip body rear/front vs fan contour "
+                                 f"{rear_x:.3f} / shock {xf:.3f} off at "
+                                 f"t={t}: rear "
+                                 f"{fr['bodies'][0]['rear']:.3f} front "
+                                 f"{fr['bodies'][0]['front']:.3f}")
+                elif abs(t - 64.5) < 1e-9:
+                    print(f"ok:   dip fan/shock at t={t}: rear "
+                          f"{fr['bodies'][0]['rear']:.4f} vs F'(0.3)*(t-57)"
+                          f" {rear_x:.4f}, front "
+                          f"{fr['bodies'][0]['front']:.4f} vs s1' path "
+                          f"{xf:.4f}")
+        if t > T3:
+            # observed coalescence: count 2 in the first pulse-2 frame(s),
+            # then 1 once the s2 shock swallows body 1's rear cell
+            if abs(t - 65.5) < 1e-9 and fr["slug_count"] != 2:
+                fails.append(f"slug count {fr['slug_count']} != 2 at "
+                             "t=65.5 (two bodies racing)")
+            if 66.0 <= t <= 79.5 and fr["slug_count"] != 1:
+                fails.append(f"slug count {fr['slug_count']} != 1 at t={t}"
+                             " (post-merge)")
+            if fr["slug_count"] == 2:
+                saw_two = True
+                b2f = fr["bodies"][0]["front"]
+                if abs(b2f - S2 * (t - T3)) > 2.0:
+                    fails.append(f"body-2 front {b2f} vs s2*(t-65) "
+                                 f"{S2 * (t - T3):.3f} off by > 2 at t={t}")
+                elif abs(a_cells[-1] - A_LO) > 1e-6:
+                    fails.append(f"pulse-2 ahead outlet {a_cells[-1]} not "
+                                 f"alpha_lo at t={t}")
+                else:
+                    print(f"ok:   two bodies race at t={t}: body-2 front "
+                          f"{b2f:.4f} vs s2*(t-65) {S2 * (t - T3):.4f}")
+            elif fr["slug_count"] == 1 and saw_two and merge_t is None:
+                merge_t = t
+            if (fr["slug_count"] == 1 and saw_two
+                    and 66.5 <= t <= 79.5):
+                b1f = fr["bodies"][0]["front"]
+                xf_m = FRONT_65 + S1PP * (t - T3)
+                if abs(b1f - xf_m) > 1.5:
+                    fails.append(f"merged front {b1f} vs s1'' path {xf_m:.3f}"
+                                 f" off by > 1.5 at t={t}")
+                elif any(abs(t - v) < 1e-9 for v in (67.0, 70.0, 76.0)):
+                    print(f"ok:   merged front rides s1'' at t={t}: "
+                          f"{b1f:.4f} vs {xf_m:.4f}")
+            if (80.5 <= t < T_EXIT + 2.0 and fr["slug_count"] == 1
+                    and abs(fr["bodies"][0]["front"] - L) > 1e-9):
+                fails.append(f"post-exit body front "
+                             f"{fr['bodies'][0]['front']} != {L} at t={t}")
+        # ---- closed-form inventory checkpoints (outlet cell pristine) ----
+        E_rep = sum(a_cells) * DX
+        if abs(t - 30.0) < 1e-9:
+            check("inventory at t=30 (uniform base)", E_rep, A_LO * L,
+                  1e-9, 1e-8)
+        elif abs(t - 56.5) < 1e-9:
+            check("inventory pulse-1 slope (vsl - F(alpha_lo))", E_rep,
+                  A_LO * L + SLOPE1 * (T2 - T1 - 0.5), 1e-9, 1e-8)
+        elif abs(t - 64.5) < 1e-9:
+            check("inventory frozen through the dip", E_rep,
+                  A_LO * L + SLOPE1 * (T2 - T1), 1e-9, 1e-8)
+        elif abs(t - 65.5) < 1e-9:
+            check("inventory pulse-2 slope (vsl - F(alpha_lo))", E_rep,
+                  A_LO * L + SLOPE1 * (T2 - T1) + SLOPE2A * 0.5, 1e-9,
+                  1e-8)
+
+    if merge_t is None or not saw_two:
+        fails.append(f"coalescence not observed: saw_two={saw_two} "
+                     f"merge_t={merge_t}")
+    else:
+        print(f"ok:   coalescence observed: count 2 -> 1 at t={merge_t} "
+              "(the s2 shock swallows body 1's rear cell in-pipe)")
+
+    # ---- steady tail: uniform alpha_hi2 ----
+    last = frames[-1]
+    a_bad = [i for i in range(N)
+             if abs(last["cells"][i]["alpha"] - A_HI2) > 1e-9]
+    w_bad = [i for i in range(N)
+             if abs(last["cells"][i]["water"] - PHI_IN) > 1e-9]
+    v_bad = []
+    for i in range(N):
+        c = last["cells"][i]
+        if abs(c["vsl"] - VSL3) > 1e-9 or abs(c["vsg"] - VSG) > 1e-9:
+            v_bad.append(i)
+    if a_bad or w_bad or v_bad:
+        fails.append(f"steady tail off at t={last['t']}: alpha {a_bad[:3]} "
+                     f"water {w_bad[:3]} vsl/vsg {v_bad[:3]}")
+    else:
+        print(f"ok:   uniform steady alpha_hi2 = {A_HI2:.10f} with the "
+              "flux identity vsl + vsg = vM (1e-9)")
+    E_end = sum(c["alpha"] for c in last["cells"]) * DX
+    check("final inventory = alpha_hi2 * L", E_end, A_HI2 * L, 1e-9)
+    if (last["slug_count"] != 1 or not last["bodies"]
+            or abs(last["bodies"][0]["rear"]) > 1e-9
+            or abs(last["bodies"][0]["front"] - L) > 1e-9
+            or abs(last["bodies"][0]["length"] - L) > 1e-9
+            or abs(last["bodies"][0]["inv"] - A_HI2 * L) > 1e-9):
+        fails.append(f"steady slug body {last['bodies']} != full pipe at "
+                     "alpha_hi2 * L")
+    else:
+        print("ok:   steady slug body = the full pipe with inventory "
+              "alpha_hi2 * L (1e-9)")
+
+    # ---- pressure: churchill march from the outlet anchor ----
+    vM_end = last["vm"]
+    losses = []
+    for i in range(N):
+        a = last["cells"][i]["alpha"]
+        rho_m = a * RHO_L + (1.0 - a) * RHO_G
+        mu_m = a * MU_L + (1.0 - a) * MU_G
+        re = rho_m * abs(vM_end) * DI / mu_m
+        losses.append(churchill(re, 0.0) * (DX / DI) * 0.5 * rho_m
+                      * vM_end * vM_end)
+    node_bad = [j for j in range(N + 1)
+                if abs(last["nodes"][j]
+                       - (P_OUT + sum(losses[j:]))) > 1e-9 * P_OUT]
+    if node_bad:
+        fails.append(f"pnode march off at nodes {node_bad[:4]}")
+    else:
+        print(f"ok:   pnode marches from the outlet anchor {P_OUT:.6e} by"
+              f" the per-cell loss {losses[0]:.6e} (1e-9)")
+    check("pressure drop (uniform Churchill)", last["dp"], sum(losses),
+          1e-9)
 
 else:
     raise SystemExit(f"unknown mode {mode}")

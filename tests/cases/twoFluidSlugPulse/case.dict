@@ -1,0 +1,100 @@
+// Slug first increment: coalescing packets under a pulsed inlet rate
+// schedule. Horizontal incompressible pipe (rhoG 20, no gasR), Wallis
+// closure us = 0.5. A rate pair (vsl, vsg) at steady state gives the
+// mixture velocity vM = vsl + vsg and the holdup root of the convex flux
+//   F(a) = us a^2 + (vM - us) a = vsl,
+// i.e. alpha = [-(vM - us) + sqrt((vM - us)^2 + 4 us vsl)] / (2 us).
+// Fronts ride Rankine-Hugoniot shock speeds s = (F(aL) - F(aR))/(aL - aR)
+// and fan levels move at F'(a) = 2 us a + (vM - us); the liquid inventory
+// I = sum alpha dx evolves exactly as dI/dt = vsl(t) - F(alpha_outlet).
+//
+// Timeline (the schedule imposes vsg 0.55 throughout, only vsl pulses):
+//   base   [0, 30)    vsl 0.05 -> vM 0.60, alpha_lo = 0.23166247903554
+//   pulse1 [30, 57)   vsl 0.15 -> vM 0.70, alpha_hi1 = 0.38309518948453
+//                     front shock s1 = F1(a_hi1)-F1(a_lo))/(a_hi1-a_lo)
+//                       = 0.50739027146868 (F1(a) = 0.5 a^2 + 0.2 a)
+//   dip    [57, 65)   vsl 0.05 -> vM 0.60 again: E frozen (vsl = F1(a_lo)),
+//                     the front slows to s1' = s1 - 0.1 = 0.40739027146868,
+//                     fan levels drain the tail behind it (the alpha = 0.3
+//                     contour moves at 0.4 and falls ~3.2 behind the front
+//                     by t = 65, opening a >= 3-cell sub-threshold stretch)
+//   pulse2 [65, ...)  vsl 1.20 -> vM 1.75, alpha_hi2 = 0.74060292618042
+//                     (F2(a) = 0.5 a^2 + 1.25 a). Two bodies now race:
+//                     body 2's front shock s2 = 1.73608724052384 while
+//                     body 1's rear (the sub-threshold stretch) erodes from
+//                     behind - the alpha_hi1 level sweeps rearward at
+//                     1.75 - F2'(alpha_hi1) = 0.116895 and the merged front
+//                     jumps to s2a = (F2(a_hi2)-F2(a_hi1))/(a_hi2-a_hi1)
+//                       = 1.81162547837342.
+//                     The shock overtakes the fan gap in-pipe (~t = 83):
+//                     count 2 -> 1 observed merge.
+//   steady ~[90, 120) uniform alpha_hi2, I = alpha_hi2 * 40.
+//
+// CFL: pulse-2 wave speed max(|vM-us|, |vM+us|) = 2.25, dt 0.05 / dx 1
+// gives 0.1125 - safe.
+//
+// tests/check_two_fluid.py mode slugpulse replicates the Godunov holdup +
+// water recursion cell by cell with the scheduled vM (1e-9), verifies the
+// closed-form shock/fan speeds in clean windows (+-1 cell), the exact
+// inventory accounting dI/dt = vsl - F(a_out), the slug detection
+// statistics against the replicated fields, the observed 2 -> 1 coalescence
+// and the uniform steady state with the pnode march from the outlet anchor.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 40;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 40;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.5;
+}
+
+initial
+{
+    alpha 0.23166247903554;
+    water 0.3;
+}
+
+slug
+{
+    alphaThreshold 0.3;
+    minLength 0.5;
+}
+
+boundaries
+{
+    inlet
+    {
+        type phaseRates;
+        vsl 0.05;
+        vsg 0.55;
+        waterFraction 0.3;
+        schedule
+        {
+            p1 { t 30; vsl 0.15; vsg 0.55; }
+            p2 { t 57; vsl 0.05; vsg 0.55; }
+            p3 { t 65; vsl 1.2;  vsg 0.55; }
+        }
+    }
+    outlet { type fixedPressure; p 5e6; }
+}
+
+time
+{
+    dt 0.05;
+    endTime 120;
+    reportEvery 10;
+}

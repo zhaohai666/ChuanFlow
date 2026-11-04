@@ -166,12 +166,27 @@ struct TwoFluidClosure
                                // required > 0 for models 2 and 3
 };
 
+/// One piecewise-constant inlet-rate point: from t on the phaseRates
+/// boundary imposes vsl/vsg until the next point; the boundary's scalar
+/// rates govern before the first point. The loader resolves missing keys
+/// to "hold the previous rate" and sorts the points by t (t must be > 0,
+/// the constructor reads the scalar rates at t = 0).
+struct TwoFluidSchedulePoint
+{
+    double t = 0;   // s, when this rate pair takes over
+    double vsl = 0; // m/s, imposed liquid superficial velocity
+    double vsg = 0; // m/s, imposed gas superficial velocity
+};
+
 struct TwoFluidBoundary
 {
     enum class Type { sealed, phaseRates, fixedPressure };
     Type type = Type::sealed;
     double vsl = 0;          // phaseRates: imposed liquid superficial velocity
     double vsg = 0;          // phaseRates: imposed gas superficial velocity
+    std::vector<TwoFluidSchedulePoint> schedule; // inlet rate schedule
+                                                 // (piecewise constant,
+                                                 // see TwoFluidSchedulePoint)
     double pressure = 0;     // fixedPressure: Pa
     double alpha = 0;        // fixedPressure inlet: composition of the
                              // inflow ghost cell
@@ -213,6 +228,27 @@ struct TwoFluidFill
     double from = 0;  // m along the pipe (cells whose centre is inside)
     double to = 0;
     double alpha = 0;
+};
+
+/// Slug-body detection over the transported holdup field: a statistics
+/// layer, not a two-regime model. A body is a maximal run of consecutive
+/// sections with alpha >= alphaThreshold whose total length reaches
+/// minLength; slugBodies() reports each run's face positions, length and
+/// liquid inventory. The detection rides the holdup the transport already
+/// solves and adds no physics - it is the bookkeeping a slug-tracking
+/// capability reports and verifies its models against.
+struct TwoFluidSlug
+{
+    double alphaThreshold = 0.5; // liquid fraction a body needs
+    double minLength = 0;        // m, shortest run that counts
+};
+
+struct TwoFluidSlugBody
+{
+    double rear = 0;      // m along the pipe (face coordinate)
+    double front = 0;     // m
+    double length = 0;    // m
+    double inventory = 0; // liquid volume per m2 of bore, sum alpha dx
 };
 
 /// Gas-hydrate kinetics (see the class documentation above). The equilibrium
@@ -265,6 +301,8 @@ struct TwoFluidCase
     bool entrainmentOn = false;  // film-droplet split solved (entrainment{}
                                  // present)
     TwoFluidEntrainment entrainment;
+    bool slugOn = false;         // slug-body statistics solved (slug{} present)
+    TwoFluidSlug slug;
     bool networkMode = false;    // branch-network member: the junction end
                                  // boundary is owned by the TwoFluidNetwork
                                  // (mutated every step), so the constructor
@@ -335,6 +373,10 @@ public:
     /// Droplet fraction of the liquid per section (entrainment on);
     /// zeros unless the entrainment{} block is present.
     std::vector<double> cellEntrained() const { return entrained_; }
+    /// Slug bodies in the current holdup field: maximal runs of sections
+    /// with alpha >= alphaThreshold and length >= minLength, in flow
+    /// order (empty unless the slug{} block is present). See TwoFluidSlug.
+    std::vector<TwoFluidSlugBody> slugBodies() const;
     /// Wall heat the sections absorb this step, W (positive = into the fluid);
     /// zero unless thermal is on.
     double wallHeatRate() const { return wallHeatRate_; }
@@ -425,6 +467,10 @@ private:
     void entrainmentStep(double dt);
     void hydrateStep(double dt);
     void thermalStep(double dt);
+    /// Evaluate the inlet rate schedule at the step midpoint (robust to
+    /// t_ accumulation drift) into the boundary's scalar rates (no-op
+    /// without a schedule).
+    void applySchedule(double dt);
     double wallTemperature(int i) const;
     // hydrate equilibrium temperature T_eq(p) from ln(p) = A + B / T_eq
     double equilibriumTemperature(double p) const
@@ -515,8 +561,19 @@ private:
 ///   boundaries
 ///   {
 ///       inlet { type phaseRates; vsl 1; vsg 0; waterFraction 0.25;
-///               temperature 330; }
-///       outlet { type fixedPressure; p 0; temperature 300; }
+///               temperature 330;
+///               schedule                    // optional inlet rate
+///               {                           // schedule (phaseRates only):
+///                   p30 { t 30; vsl 0.4; vsg 0; }   // from t on these
+///                   p35 { t 35; vsl 1;   vsg 0; }   // rates hold until
+///               }                                   // the next point;
+///       }                                           // missing keys hold
+///       outlet { type fixedPressure; p 0; temperature 300; }  // the
+///   }                                               // previous rate
+///   slug         // optional: slug-body statistics over the holdup field
+///   {
+///       alphaThreshold 0.3;      // liquid fraction a body needs
+///       minLength 1;             // m, shortest run that counts
 ///   }
 ///   thermal      // optional: presence switches the temperature state on
 ///   {

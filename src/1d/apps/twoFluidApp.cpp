@@ -143,6 +143,17 @@ int main(int argc, char** argv)
                           hy.empty() ? "" : (" h " + num(hy[i])),
                           ent.empty() ? "" : (" entr " + num(ent[i])));
             }
+            if (c.slugOn)
+            {
+                const std::vector<TwoFluidSlugBody> bodies = s.slugBodies();
+                log::info("slug count ", bodies.size());
+                for (std::size_t k = 0; k < bodies.size(); ++k)
+                    log::info("slugbody ", k, " rear ",
+                              num(bodies[k].rear), " front ",
+                              num(bodies[k].front), " length ",
+                              num(bodies[k].length), " inv ",
+                              num(bodies[k].inventory));
+            }
             if (!T.empty())
                 log::info("thermal: qWall ", num(s.wallHeatRate()),
                           " qInlet ", num(s.inletHeatRate()));

@@ -220,7 +220,13 @@ print(result.pressure_profile)
   与 model dynamic 共用逐面 Godunov 机器（model 0/1/2 路径逐位不变），
   竖直 riser + EOS 回归整步逐元复现 1e-9，稳态 (α*, s*) = (0.776065,
   0.923114) 耦合不动点 + 体积守恒钉住 ρ_G* = 注入参考密度精确
-  （p* = 1.5e8 Pa 均匀）+ pnode 逐元行进——已落地
+  （p* = 1.5e8 Pa 均匀）+ pnode 逐元行进——已落地；
+  **入口速率时间表 + 段塞体统计**——boundaries.inlet.schedule 按表逐点
+  改写标量入口率（每步在区间中点判定，对 t 累加漂移鲁棒），slug{} 开启
+  slugBodies() 逐帧扫描 α ≥ 阈值的连续段、汇出长度 ≥ 最小长的段塞体
+  {rear, front, length, inv} 并计数——三段速率表驱动两个段塞追撞合并的
+  算例：激波速/特征速/液量积分闭式锚 + 合并时刻 65.5→66.0 s 观测 +
+  统计逐帧复现 1e-9——已落地
 - M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 🚧
   （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE（全压力回路 +
   Rhie-Chow 一致动量插值，Poiseuille 算例 1411 → 47 外迭代）+ 瞬态 PISO +

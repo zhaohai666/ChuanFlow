@@ -930,9 +930,29 @@ void TwoFluidPipe::hydrateStep(double dt)
     }
 }
 
+void TwoFluidPipe::applySchedule(double dt)
+{
+    const std::vector<TwoFluidSchedulePoint>& sch = cfg_.inlet.schedule;
+    if (sch.empty()) return;
+    // the last point whose time the step interval [t_, t_ + dt] covers
+    // governs; evaluation at the interval midpoint keeps that decision
+    // exact even though the accumulated t_ drifts by ~1e-12 after a
+    // thousand additions (a point at an exact step boundary would
+    // otherwise fire a step late)
+    const double tEval = t_ + 0.5 * dt;
+    std::size_t k = 0;
+    while (k + 1 < sch.size() && sch[k + 1].t <= tEval) ++k;
+    if (sch[k].t <= tEval)
+    {
+        cfg_.inlet.vsl = sch[k].vsl;
+        cfg_.inlet.vsg = sch[k].vsg;
+    }
+}
+
 void TwoFluidPipe::step(double dt)
 {
     if (!(dt > 0)) cfFatal("twoFluid: dt must be positive");
+    applySchedule(dt);
     // junction branches have their mixture velocity imposed by the
     // network's coupled Newton (externalMomentum_ is a one-shot flag)
     if (externalMomentum_) externalMomentum_ = false;
@@ -1112,6 +1132,43 @@ std::vector<double> TwoFluidPipe::cellVsg() const
     return v;
 }
 
+std::vector<TwoFluidSlugBody> TwoFluidPipe::slugBodies() const
+{
+    std::vector<TwoFluidSlugBody> out;
+    if (!cfg_.slugOn) return out;
+    const TwoFluidSlug& cfg = cfg_.slug;
+    bool inRun = false;
+    double rear = 0, len = 0, inv = 0, x = 0;
+    auto closeRun = [&]()
+    {
+        if (inRun && len >= cfg.minLength)
+            out.push_back({rear, rear + len, len, inv});
+        inRun = false;
+    };
+    for (int i = 0; i < n_; ++i)
+    {
+        if (alpha_[i] >= cfg.alphaThreshold)
+        {
+            if (!inRun)
+            {
+                inRun = true;
+                rear = x;
+                len = 0;
+                inv = 0;
+            }
+            len += dxs_[i];
+            inv += alpha_[i] * dxs_[i];
+        }
+        else
+        {
+            closeRun();
+        }
+        x += dxs_[i];
+    }
+    closeRun();
+    return out;
+}
+
 namespace
 {
 
@@ -1127,6 +1184,32 @@ TwoFluidBoundary loadTwoFluidBoundary(const Dictionary& d)
     else cfFatal("twoFluid: unknown boundary type '" + type + "'");
     b.vsl = d.getScalarOr("vsl", 0.0);
     b.vsg = d.getScalarOr("vsg", 0.0);
+    if (d.has("schedule"))
+    {
+        const Dictionary& sd = d.getDict("schedule");
+        for (const std::string& name : sd.keys())
+        {
+            const Dictionary& pd = sd.getDict(name);
+            TwoFluidSchedulePoint pt;
+            pt.t = pd.getScalar("t");
+            // missing keys hold the previous rate (the scalar rates
+            // before the first point)
+            pt.vsl = pd.getScalarOr("vsl", b.vsl);
+            pt.vsg = pd.getScalarOr("vsg", b.vsg);
+            b.schedule.push_back(pt);
+        }
+        std::sort(b.schedule.begin(), b.schedule.end(),
+                  [](const TwoFluidSchedulePoint& x,
+                     const TwoFluidSchedulePoint& y) { return x.t < y.t; });
+        for (std::size_t k = 0; k < b.schedule.size(); ++k)
+        {
+            if (!(b.schedule[k].t > 0))
+                cfFatal("twoFluid: schedule points need t > 0 (the scalar"
+                        " rates govern at t = 0)");
+            if (k && !(b.schedule[k - 1].t < b.schedule[k].t))
+                cfFatal("twoFluid: schedule points need distinct times");
+        }
+    }
     b.pressure = d.getScalarOr("p", 0.0);
     b.alpha = d.getScalarOr("alpha", 0.0);
     b.waterFraction = d.getScalarOr("waterFraction", 0.0);
@@ -1227,6 +1310,18 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.entrainment.relaxTime = ed.getScalarOr("relaxTime", 0.0);
         c.entrainment.initial = ed.getScalarOr("initial", 0.0);
     }
+
+    if (caseDict.has("slug"))
+    {
+        c.slugOn = true;
+        const Dictionary& sd = caseDict.getDict("slug");
+        c.slug.alphaThreshold = sd.getScalarOr("alphaThreshold", 0.5);
+        c.slug.minLength = sd.getScalarOr("minLength", 0.0);
+        if (c.slug.alphaThreshold <= 0 || c.slug.alphaThreshold >= 1)
+            cfFatal("twoFluid: slug alphaThreshold must be in (0, 1)");
+        if (c.slug.minLength < 0)
+            cfFatal("twoFluid: negative slug minLength");
+    }
 }
 
 } // namespace
@@ -1278,6 +1373,12 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
     c.inlet = loadTwoFluidBoundary(bd.getDict("inlet"));
     c.outlet = loadTwoFluidBoundary(bd.getDict("outlet"));
 
+    if (c.outlet.schedule.size() > 0)
+        cfFatal("twoFluid: rate schedules are only supported on the inlet");
+    if (c.inlet.schedule.size() > 0
+        && c.inlet.type != TwoFluidBoundary::Type::phaseRates)
+        cfFatal("twoFluid: a rate schedule needs a phaseRates inlet");
+
     return c;
 }
 
@@ -1327,6 +1428,10 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
             nc.boundaries[k] = loadTwoFluidBoundary(bd.getDict(k));
         }
     }
+    for (const auto& entry : nc.boundaries)
+        if (entry.second.schedule.size() > 0)
+            cfFatal("twoFluid: rate schedules do not support network"
+                    " junctions (boundary '" + entry.first + "')");
 
     // topology validation: every pipe joins one or two junctions (a span
     // carries none), that/those ends boundary-free, a single-junction

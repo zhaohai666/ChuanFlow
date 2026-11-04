@@ -278,8 +278,18 @@ M1 剩余的井筒热力耦合与环路迭代（对标完整 Pipesim）尚未实
   （残差对 v_m 单调），速率边界直接施加 `v_m = vsl + vsg`，双封闭端
   强制 `v_m ≡ 0`（不可压约束）+ 静水压报告；
 - **水相分数**：`∂(αϕ)/∂t + ∂(ϕ·F)/∂x = 0`，按通量方向迎风，ϕ ∈ [0, α]；
+- **温度方程（thermal{} 块出现时）**：各段混合温度（两相热平衡），
+  `C_i dT_i/dt = H_in,i − H_out,i + k'·Δx·(T_wall,i − T_i)`，`C_i` 是相加权
+  `ρc` 容量（`α ρ_L c_L + (1−α) ρ_G c_G`），焓通量骑混合速度、取迎风元
+  的相加权组成（与摩阻同一均匀流闭合；`phaseRates` 入口的组成按
+  `vsl/vsg` 构造，开放边界的 ghost 温度两侧都必须给——出口那侧只在
+  回流时被用到，而回流是定压端的正常结果）。壁温 constant 或 geothermal
+  （`T = 地表温 + 梯度·垂深`，垂深 = inletDepth − s·sinθ，出地即 fatal）。
+  温度隐式，不加新的 CFL；每步与输运共用 DenseSolve 稠密求解（段数
+  ≤ 数百）；
 - **应用** `chflow-1d-twofluid <case.dict>`：输出 `t … vm … dp …` /
-  `node <j> p …` / `cell <i> alpha … water … vsl … vsg …`。
+  `node <j> p …` / `cell <i> alpha … water … vsl … vsg …`（thermal 时
+  追加 `T …`）+ `thermal: qWall … qInlet …`。
 
 五个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
 
@@ -290,6 +300,18 @@ M1 剩余的井筒热力耦合与环路迭代（对标完整 Pipesim）尚未实
 | `twoFluidSteadyHoldupZuber` | 线性闭合的稳态根 `α* = (vsl − v_m(1−C0) + v_d)/(C0·v_m + v_d)` + 水平摩阻压降 |
 | `twoFluidSettling` | 封闭水平管重力分异：双激波各以 `u_s·α0` 精确推进（±2.5Δx）、液量守恒 1e-9、壁面平台 α→1/气袋 α→0 |
 | `twoFluidPressureLaminar` | 定压启动：独立二分解隐式 Euler 动量 ODE（1e-8）+ 指数包络 `u* = ΔpD²/32μL`、时间常数 `ρ/8πμ`（3%）|
+
+三个温度回归（`tests/check_two_fluid_thermal.py`，断言离散闭式而非
+连续指数）：
+
+| 算例 | 校验内容 |
+|---|---|
+| `twoFluidThermalRelax` | 封闭管、恒壁温：每段独立集总容量，逐元对齐离散闭式 `T^n = T_w + (T_0−T_w)/(1 + dt·k'Δx/C_i)^n`（1e-9）——液段（C = 656.6 J/K → 316.511874 K）与气段（C = 6.75 J/K → 280.016706 K）弛豫速率相差四个量级，直接考相加权容量 |
+| `twoFluidThermalExchanger` | 稳态单相流 + 恒壁温：离散稳态是精确递推 `T_i − T_w = (T_{i−1} − T_w)·r`，`r = ṁc/(ṁc + k'Δx)`（1e-9，逐元），且稳态恒等式 `Σ k'Δx(T_i − T_w) = ṁc(T_in − T_out)`（实测双侧 1023.5341 W）；连续 Ramey 指数 290.9027 K 只作参照打印（O(Δx) 壁面离散差）|
+| `twoFluidThermalGeothermal` | 竖直关井弛豫到地温线：稳态逐元 `T_i = 288 + 0.03·d_i`（1e-9）、沿深度单调、终态 qWall → 0（2.3e-10 W）——关井井温测井的极限形态 |
+
+注意瞬态寿命由**驻留时间**决定而非弛豫时间：扰动每穿过管程衰减
+`r^N`，换热器算例要跑 20 个驻留时间（2000 s）才到稳态。
 
 ### 4.4 Python 绑定 `src/bindings` + `python/chflow`
 pybind11（FetchContent v2.13.6，`-DCHFLOW_WITH_PYTHON=ON`，缺少 Python

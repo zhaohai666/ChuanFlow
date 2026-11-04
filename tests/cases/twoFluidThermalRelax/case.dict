@@ -1,0 +1,51 @@
+// Thermal relaxation of a sealed, insulated-from-flow pipe: with the mixture
+// velocity identically zero each section is an independent lumped capacity
+//   C_i dT_i/dt = k' dx (T_wall - T_i),
+// and implicit Euler on that ODE has an exact discrete answer,
+//   T_i^{n} = T_wall + (T_0 - T_wall) / (1 + dt k' dx / C_i)^n,
+// with C_i the section's phase-weighted rho*c capacity. The case fills half
+// the pipe with liquid (alpha = 1) and leaves gas (alpha = 0) in the rest, so
+// the two capacity groups relax at visibly different rates -- the checker
+// asserts every cell against its own closed form, which exercises the phase
+// weighting of C_i to 1e-9.
+//
+// Measured (k' = 2 W/(m K), dx = 0.5, dt = 2, 30 steps, T0 = 320, T_wall = 280):
+//   liquid cells (C = 656.59 J/K):  T -> 316.511874
+//   gas cells    (C =   6.75 J/K):  T -> 280.016706
+// verified by tests/check_twofluid_thermal.py (ctest verify.twoFluidThermalRelax).
+fluid
+{
+    rhoL 1000; rhoG 20; muL 0.01; muG 1e-5;
+    cL 4180; cG 2150;
+}
+
+pipe
+{
+    length 10; diameter 0.02; roughness 0; angleDeg 0; sections 20;
+}
+
+closure
+{
+    model wallis; slipVelocity 0;
+}
+
+initial
+{
+    alpha 0; temperature 320;
+    fills { column { from 0; to 5; alpha 1; } }
+}
+
+boundaries
+{
+    inlet { type sealed; }
+    outlet { type sealed; }
+}
+
+thermal
+{
+    wallHeatTransfer 2;
+    wallModel constant;
+    wallTemperature 280;
+}
+
+time { dt 2; endTime 60; reportEvery 10; }

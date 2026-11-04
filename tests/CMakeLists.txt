@@ -303,6 +303,22 @@ foreach(tcase twoFluidFront twoFluidSteadyHoldupWallis
             ${mode})
 endforeach()
 
+# temperature equation: lumped-capacity relaxation onto the discrete closed
+# form, the steady heat-exchanger recurrence + wall/stream enthalpy identity,
+# and a shut-in well relaxing onto the geothermal line
+foreach(tcase twoFluidThermalRelax twoFluidThermalExchanger
+              twoFluidThermalGeothermal)
+    string(REGEX REPLACE "^twoFluidThermal" "" mode ${tcase})
+    string(TOLOWER ${mode} mode)
+    add_test(
+        NAME verify.${tcase}
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_thermal.py
+            $<TARGET_FILE:chflow-1d-twofluid>
+            ${CMAKE_CURRENT_SOURCE_DIR}/cases/${tcase}/case.dict
+            ${mode})
+endforeach()
+
 # The PVT case sweeps a pressure envelope through the flash; the checker
 # asserts thermodynamic identities (material balance, fugacity equality,
 # envelope collapse, table vs direct EOS) rather than stored numbers.

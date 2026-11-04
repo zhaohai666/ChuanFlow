@@ -1,0 +1,57 @@
+// The heat-exchanger limit of the temperature equation: steady single-phase
+// flow through a pipe with a constant wall temperature. The discrete steady
+// state of the upwind implicit scheme is the exact recurrence
+//   T_i - T_wall = (T_{i-1} - T_wall) * r,  r = mcd / (mcd + k' dx),
+// so after N cells T_N - T_wall = (T_in - T_wall) r^N -- the discrete analogue
+// of the Ramey exponential, with the checker asserting the recurrence itself
+// (not the continuous exponential, which differs at O(dx) wall discretisation).
+// The second thing it verifies is the identity the steady state implies: the
+// wall heat the sections absorb equals the enthalpy the stream loses,
+//   sum_i k' dx (T_i - T_wall) = mcd (T_in - T_out),
+// recomputed from the solved profile in the checker.
+//
+// The run length is set by the transient, not the relaxation time: a
+// perturbation dies per RESIDENCE time (r^N per transit of L/vM = 100 s), so
+// the case runs 20 residence times (2000 s) before the steady state is read.
+//
+// Measured (mcd = 26.2637 W/K, k' dx = 0.4, 100 sections):
+//   r = 0.984997, r^100 = 0.220570 -> T_out = 291.028586 K
+//   wall heat 1023.5341 W = stream enthalpy loss 1023.5341 W (1e-9 rel)
+//   continuous Ramey 290.9027 K (the O(dx) wall discretisation gap)
+// verified by tests/check_twofluid_thermal.py
+// (ctest verify.twoFluidThermalExchanger).
+fluid
+{
+    rhoL 1000; rhoG 20; muL 0.01; muG 1e-5;
+    cL 4180; cG 2150;
+}
+
+pipe
+{
+    length 2; diameter 0.02; roughness 0; angleDeg 0; sections 100;
+}
+
+closure
+{
+    model wallis; slipVelocity 0;
+}
+
+initial
+{
+    alpha 1; temperature 300;
+}
+
+boundaries
+{
+    inlet { type phaseRates; vsl 0.02; vsg 0; temperature 330; }
+    outlet { type fixedPressure; p 0; temperature 330; }
+}
+
+thermal
+{
+    wallHeatTransfer 20;
+    wallModel constant;
+    wallTemperature 280;
+}
+
+time { dt 0.8; endTime 2000; reportEvery 500; }

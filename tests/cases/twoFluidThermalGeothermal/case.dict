@@ -1,0 +1,54 @@
+// A shut-in vertical well relaxing onto the geothermal profile. The pipe
+// stands upright (angleDeg 90, inlet at the bottom), the formation carries
+//   T_wall(d) = 288 + 0.03 d   [K, d = true vertical depth below surface],
+// and the well is sealed, so the mixture velocity is identically zero and
+// each section relaxes onto its own wall temperature. The steady state is
+// exact and needs no flow model: T_i = T_wall(d_i) with d_i the section
+// centre's depth, which is the temperature log a shut-in well converges to.
+// The checker asserts the final profile against the geothermal line at the
+// cell-centre depths, the monotone-in-depth ordering, and that the wall heat
+// rate has vanished.
+//
+// Measured (k' = 500 W/(m K) -- deliberately strong so 60 implicit steps kill
+// the 20 K initial mismatch to 1e-12):
+//   final |T_i - (288 + 0.03 d_i)| < 1e-9 K, depths 299 m .. 101 m
+//   qWall final < 1e-9 W
+// verified by tests/check_twofluid_thermal.py
+// (ctest verify.twoFluidThermalGeothermal).
+fluid
+{
+    rhoL 1000; rhoG 20; muL 0.01; muG 1e-5;
+    cL 4180; cG 2150;
+}
+
+pipe
+{
+    length 200; diameter 0.05; roughness 0; angleDeg 90; sections 100;
+}
+
+closure
+{
+    model wallis; slipVelocity 0;
+}
+
+initial
+{
+    alpha 1; temperature 320;
+}
+
+boundaries
+{
+    inlet { type sealed; }
+    outlet { type sealed; }
+}
+
+thermal
+{
+    wallHeatTransfer 500;
+    wallModel geothermal;
+    surfaceTemperature 288;
+    gradient 0.03;
+    inletDepth 300;
+}
+
+time { dt 10000; endTime 600000; reportEvery 30; }

@@ -54,12 +54,17 @@ int main(int argc, char** argv)
             const std::vector<double> w = s.cellWater();
             const std::vector<double> vsl = s.cellVsl();
             const std::vector<double> vsg = s.cellVsg();
+            const std::vector<double> T = s.cellTemperature();
             for (int i = 0; i < s.sections(); ++i)
             {
                 log::info("cell ", i, " alpha ", num(a[i]), " water ",
                           num(w[i]), " vsl ", num(vsl[i]), " vsg ",
-                          num(vsg[i]));
+                          num(vsg[i]),
+                          T.empty() ? "" : (" T " + num(T[i])));
             }
+            if (!T.empty())
+                log::info("thermal: qWall ", num(s.wallHeatRate()),
+                          " qInlet ", num(s.inletHeatRate()));
         };
 
         emit(sim);

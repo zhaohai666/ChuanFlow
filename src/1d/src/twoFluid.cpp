@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <vector>
 
 #include "cf/common/Error.h"
 
 #include "cf/1d/Network.h" // churchillFriction
+#include "DenseSolve.h"
 
 namespace cf
 {
@@ -98,6 +100,35 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
     // from t = 0; pressure-driven and sealed pipes start from rest
     if (cfg_.inlet.type == TwoFluidBoundary::Type::phaseRates)
         vM_ = vMOld_ = cfg_.inlet.vsl + cfg_.inlet.vsg;
+
+    if (cfg_.thermalOn)
+    {
+        const TwoFluidThermal& th = cfg_.thermal;
+        if (!(f.cL > 0) || !(f.cG > 0))
+            cfFatal("twoFluid: thermal on needs positive fluid cL/cG");
+        if (th.wallModel != 0 && th.wallModel != 1)
+            cfFatal("twoFluid: thermal wallModel is constant or geothermal");
+        if (th.wallModel == 1)
+        {
+            if (!(th.geothermalGradient > 0))
+                cfFatal("twoFluid: geothermal wall needs a positive gradient");
+            const double dExit = th.inletDepth
+                               - cfg_.geo.length * sinTheta_;
+            if (dExit < 0)
+                cfFatal("twoFluid: geothermal pipe leaves the ground "
+                        "(depth at the outlet is " + std::to_string(dExit)
+                        + " m)");
+        }
+        // both ghost temperatures are required: the outlet one only feeds
+        // backflow, but backflow is a normal fixed-pressure outcome
+        if (cfg_.inlet.type != TwoFluidBoundary::Type::sealed
+            && !(cfg_.inlet.temperature > 0))
+            cfFatal("twoFluid: thermal on needs an inlet boundary temperature");
+        if (cfg_.outlet.type != TwoFluidBoundary::Type::sealed
+            && !(cfg_.outlet.temperature > 0))
+            cfFatal("twoFluid: thermal on needs an outlet boundary temperature");
+        T_.assign(n_, cfg_.temperature0);
+    }
 }
 
 void TwoFluidPipe::fluxCoeffs(double& qa, double& qb, double& qc) const
@@ -295,8 +326,85 @@ void TwoFluidPipe::step(double dt)
     if (!(dt > 0)) cfFatal("twoFluid: dt must be positive");
     momentumSolve(dt);
     transportStep(dt);
+    thermalStep(dt);
     vMOld_ = vM_;
     t_ += dt;
+}
+
+double TwoFluidPipe::wallTemperature(int i) const
+{
+    const TwoFluidThermal& th = cfg_.thermal;
+    if (th.wallModel == 0) return th.wallTemperature;
+    const double depth = th.inletDepth - (i + 0.5) * dx_ * sinTheta_;
+    return th.surfaceTemperature + th.geothermalGradient * depth;
+}
+
+void TwoFluidPipe::thermalStep(double dt)
+{
+    if (!cfg_.thermalOn) return;
+    const TwoFluidFluid& f = cfg_.fluid;
+    const TwoFluidThermal& th = cfg_.thermal;
+    const double area = M_PI * cfg_.geo.diameter * cfg_.geo.diameter / 4.0;
+    auto rhoc = [&](double a)
+    {
+        return a * f.rhoL * f.cL + (1.0 - a) * f.rhoG * f.cG;
+    };
+
+    // |K| per face: enthalpy conductance W/K of the mixture stream, with the
+    // upwind composition of each face (ghost cells at the open boundaries)
+    std::vector<double> kFace(n_ + 1, 0.0);
+    if (vM_ > 0)
+    {
+        double rhocUp;
+        if (cfg_.inlet.type == TwoFluidBoundary::Type::phaseRates)
+            rhocUp = (cfg_.inlet.vsl * f.rhoL * f.cL
+                      + cfg_.inlet.vsg * f.rhoG * f.cG) / vM_;
+        else
+            rhocUp = rhoc(cfg_.inlet.alpha);
+        kFace[0] = area * vM_ * rhocUp;
+        for (int j = 1; j <= n_; ++j)
+            kFace[j] = area * vM_ * rhoc(alpha_[j - 1]);
+    }
+    else if (vM_ < 0)
+    {
+        for (int j = 0; j < n_; ++j)
+            kFace[j] = area * (-vM_) * rhoc(alpha_[j]);
+        kFace[n_] = area * (-vM_) * rhoc(cfg_.outlet.alpha);
+    }
+
+    // implicit Euler: diagonal = capacity + outflow + wall; the inflow face
+    // couples the upwind neighbour (or the ghost temperature at the boundary)
+    std::vector<std::vector<double>> mat(n_, std::vector<double>(n_, 0.0));
+    std::vector<double> rhs(n_, 0.0);
+    for (int i = 0; i < n_; ++i)
+    {
+        const double cap = area * dx_ * rhoc(alpha_[i]);
+        const double kw = th.wallHeatTransfer * dx_;
+        mat[i][i] = cap / dt + kFace[vM_ >= 0 ? i + 1 : i] + kw;
+        rhs[i] = cap / dt * T_[i] + kw * wallTemperature(i);
+        if (vM_ > 0)
+        {
+            if (i > 0) mat[i][i - 1] = -kFace[i];
+            else rhs[i] += kFace[0] * cfg_.inlet.temperature;
+        }
+        else if (vM_ < 0)
+        {
+            if (i < n_ - 1) mat[i][i + 1] = -kFace[i + 1];
+            else rhs[i] += kFace[n_] * cfg_.outlet.temperature;
+        }
+    }
+    detail::solveDenseLinear(mat, rhs);
+
+    inletHeatRate_ = 0;
+    if (vM_ > 0) inletHeatRate_ = kFace[0] * cfg_.inlet.temperature;
+    else if (vM_ < 0) inletHeatRate_ = kFace[n_] * cfg_.outlet.temperature;
+    wallHeatRate_ = 0;
+    for (int i = 0; i < n_; ++i)
+    {
+        wallHeatRate_ += th.wallHeatTransfer * dx_
+                       * (wallTemperature(i) - rhs[i]);
+        T_[i] = rhs[i];
+    }
 }
 
 double TwoFluidPipe::pressureDrop() const
@@ -352,6 +460,8 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
     c.fluid.rhoG = fd.getScalar("rhoG");
     c.fluid.muL = fd.getScalar("muL");
     c.fluid.muG = fd.getScalar("muG");
+    c.fluid.cL = fd.getScalarOr("cL", 0.0);
+    c.fluid.cG = fd.getScalarOr("cG", 0.0);
 
     if (!caseDict.has("pipe")) cfFatal("twoFluid: case has no pipe{} block");
     const Dictionary& pd = caseDict.getDict("pipe");
@@ -378,6 +488,7 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
     const Dictionary& id = caseDict.getDict("initial");
     c.alpha0 = id.getScalarOr("alpha", 0.0);
     c.water0 = id.getScalarOr("water", 0.0);
+    c.temperature0 = id.getScalarOr("temperature", 300.0);
     if (c.alpha0 < 0 || c.alpha0 > 1 || c.water0 < 0 || c.water0 > 1)
         cfFatal("twoFluid: initial alpha/water must be in [0,1]");
     if (id.has("fills"))
@@ -411,12 +522,32 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
         b.pressure = d.getScalarOr("p", 0.0);
         b.alpha = d.getScalarOr("alpha", 0.0);
         b.waterFraction = d.getScalarOr("waterFraction", 0.0);
+        b.temperature = d.getScalarOr("temperature", 0.0);
         return b;
     };
     if (!bd.has("inlet") || !bd.has("outlet"))
         cfFatal("twoFluid: boundaries{} needs inlet{} and outlet{}");
     c.inlet = loadBoundary(bd.getDict("inlet"));
     c.outlet = loadBoundary(bd.getDict("outlet"));
+
+    if (caseDict.has("thermal"))
+    {
+        c.thermalOn = true;
+        const Dictionary& th = caseDict.getDict("thermal");
+        c.thermal.wallHeatTransfer = th.getScalar("wallHeatTransfer");
+        const std::string wm = th.getWordOr("wallModel", "constant");
+        if (wm == "constant") c.thermal.wallModel = 0;
+        else if (wm == "geothermal") c.thermal.wallModel = 1;
+        else cfFatal("twoFluid: unknown thermal wallModel '" + wm + "'");
+        c.thermal.wallTemperature = th.getScalarOr("wallTemperature", 0.0);
+        c.thermal.surfaceTemperature
+            = th.getScalarOr("surfaceTemperature", 0.0);
+        c.thermal.geothermalGradient
+            = th.getScalarOr("gradient", 0.0);
+        c.thermal.inletDepth = th.getScalarOr("inletDepth", 0.0);
+        if (c.thermal.wallHeatTransfer < 0)
+            cfFatal("twoFluid: negative wallHeatTransfer");
+    }
 
     return c;
 }

@@ -27,6 +27,13 @@ namespace cf
 /// speed and the CFL-limited scheme is monotone (alpha stays in [0, 1]).
 /// Wall friction is the homogeneous Churchill law on mixture properties;
 /// gravity uses the local mixture density.
+/// With a thermal{} block the sections also carry a mixture temperature (the
+/// phases stay in thermal equilibrium): implicit Euler on
+///   C_i dT_i/dt = H_in,i - H_out,i + k' dx (T_wall,i - T_i),
+/// C_i the section's phase-weighted rho*c capacity and the enthalpy flux
+/// riding the mixture velocity with the upwind cell's composition (the same
+/// homogeneous closure as the friction law). Implicit in T, so no CFL on top
+/// of the transport one.
 
 struct TwoFluidFluid
 {
@@ -34,6 +41,8 @@ struct TwoFluidFluid
     double rhoG = 20;   // kg/m3
     double muL = 0.01;  // Pa s
     double muG = 1e-5;  // Pa s
+    double cL = 0;      // J/(kg K), needed when the thermal block is present
+    double cG = 0;      // J/(kg K)
 };
 
 struct TwoFluidGeo
@@ -65,6 +74,26 @@ struct TwoFluidBoundary
     double alpha = 0;        // fixedPressure inlet: composition of the
                              // inflow ghost cell
     double waterFraction = 0;// water cut of the inflow liquid
+    double temperature = 0;  // K, temperature of the inflow ghost cell
+                             // (required on both ends when thermal is on,
+                             // the unused one for potential backflow)
+};
+
+/// Wall/formation heat exchange for the mixture temperature equation.
+/// wallHeatTransfer is an overall coefficient per unit pipe length (W/(m K)):
+/// the film, wall and cement resistances folded into one number, so the
+/// exchange per section is k' dx (T_wall - T). The wall temperature is either
+/// constant or a geothermal profile T = surfaceTemperature + gradient * d,
+/// with d the true vertical depth below surface (inletDepth at s = 0,
+/// decreasing uphill along the pipe).
+struct TwoFluidThermal
+{
+    double wallHeatTransfer = 0;   // W/(m K), 0 = insulated wall
+    int wallModel = 0;             // 0 = constant, 1 = geothermal
+    double wallTemperature = 0;    // K (constant model)
+    double surfaceTemperature = 0; // K (geothermal at depth 0)
+    double geothermalGradient = 0; // K/m
+    double inletDepth = 0;         // m below surface at s = 0
 };
 
 struct TwoFluidFill
@@ -84,6 +113,9 @@ struct TwoFluidCase
     double alpha0 = 0;    // uniform initial liquid fraction
     double water0 = 0;    // uniform initial water cut of the liquid
     std::vector<TwoFluidFill> fills; // sub-range overrides of alpha0
+    bool thermalOn = false;      // energy equation solved (thermal{} present)
+    double temperature0 = 300;   // K, uniform initial temperature
+    TwoFluidThermal thermal;
 };
 
 class TwoFluidPipe
@@ -112,10 +144,18 @@ public:
     std::vector<double> cellWater() const;  // water cut of the liquid
     std::vector<double> cellVsl() const;    // superficial liquid velocity
     std::vector<double> cellVsg() const;    // superficial gas velocity
+    std::vector<double> cellTemperature() const { return T_; }
+    /// Wall heat the sections absorb this step, W (positive = into the fluid);
+    /// zero unless thermal is on.
+    double wallHeatRate() const { return wallHeatRate_; }
+    /// Enthalpy the inflow boundaries inject, W (transport + sources only).
+    double inletHeatRate() const { return inletHeatRate_; }
 
 private:
     void momentumSolve(double dt);
     void transportStep(double dt);
+    void thermalStep(double dt);
+    double wallTemperature(int i) const;
     // liquid-flux function coefficients F(a) = qa a^2 + qb a + qc at the
     // current mixture velocity
     void fluxCoeffs(double& qa, double& qb, double& qc) const;
@@ -127,22 +167,34 @@ private:
     TwoFluidCase cfg_;
     int n_ = 0;
     double dx_ = 0, sinTheta_ = 0;
-    std::vector<double> alpha_, water_;
+    std::vector<double> alpha_, water_, T_;
+    double wallHeatRate_ = 0;
+    double inletHeatRate_ = 0;
     double vM_ = 0;   // current mixture velocity
     double vMOld_ = 0;
     double t_ = 0;
 };
 
 /// Case grammar (see tests/cases/twoFluidFront/case.dict):
-///   fluid { rhoL 1000; rhoG 20; muL 0.01; muG 1e-5; }
+///   fluid { rhoL 1000; rhoG 20; muL 0.01; muG 1e-5; cL 4180; cG 2150; }
 ///   pipe { length 100; diameter 0.1; roughness 0; angleDeg 0; sections 200; }
 ///   closure { model wallis; slipVelocity 0.3; }   // or model zuber;
 ///                                                 //      C0 1.2; driftVelocity 0.15;
-///   initial { alpha 0; water 0; fills { column { from 0; to 40; alpha 1; } } }
+///   initial { alpha 0; water 0; temperature 300; fills { ... } }
 ///   boundaries
 ///   {
-///       inlet { type phaseRates; vsl 1; vsg 0; waterFraction 0.25; }
-///       outlet { type fixedPressure; p 0; }
+///       inlet { type phaseRates; vsl 1; vsg 0; waterFraction 0.25;
+///               temperature 330; }
+///       outlet { type fixedPressure; p 0; temperature 300; }
+///   }
+///   thermal      // optional: presence switches the temperature state on
+///   {
+///       wallHeatTransfer 5;      // W/(m K), 0 = insulated
+///       wallModel constant;      // or geothermal;
+///       wallTemperature 280;     // constant model
+///       surfaceTemperature 288;  // geothermal: T(d) = surf + gradient*d
+///       gradient 0.03;           // K/m of true vertical depth
+///       inletDepth 2000;         // m below surface at s = 0
 ///   }
 ///   time { dt 0.25; endTime 30; reportEvery 4; }
 TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict);

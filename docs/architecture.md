@@ -226,7 +226,44 @@ M1 剩余的井筒/热力耦合与环路迭代（对标完整 Pipesim）尚未�
 尚未实现（M2 后续增量）：真两相动量交换（气/液各自动量方程）、非等温与
 成核/生长动力学、液膜夹带与段塞合并破碎、管件/阀门模型。
 
-### 4.3 Python 绑定 `src/bindings` + `python/chflow`
+### 4.3 分布式两流体瞬态内核（M2 第二增量，OLGA 主干）
+
+`src/1d/include/cf/1d/TwoFluid.h` + `src/1d/src/twoFluid.cpp`。与 §4.2 的
+集总节点容腔模型互补，这是**沿管长分布**的漂移流两流体模型（不可压相的
+三方程核心）：状态是逐网格元的持液率 α（气相 1−α）与随液相输运的
+水相分数 ϕ：
+
+- **质量守恒**：`∂α/∂t + ∂(α·v_L)/∂x = 0`，气相由体积守恒
+  `α_g = 1 − α` 给出；不可压 + 等截面 ⇒ 混合体积通量 `v_m` 沿程均匀
+  （气相 EOS 压缩性是下一个增量，届时动量才真正逐段分布）；
+- **漂移流闭合**：Wallis 常滑移 `v_G = v_m + α·u_s` ⇒ 液相通量
+  `F(α) = u_s·α² + (v_m − u_s)·α`（凸二次）；或 Zuber-Findlay
+  `v_G = C0·v_m + v_d` ⇒ `F(α)` 退化为线性。相内速度由
+  `v_m = α·v_L + (1−α)·v_G` 反解；
+- **Godunov 通量**：对二次通量函数取精确黎曼解——凸 F 落差为激波
+  （Rankine-Hugoniot 速度 `s = ΔF/Δα`）、上升为稀疏波（声速点
+  `−q_b/2q_a` 处取值），线性时按符号迎风。CFL 条件
+  `dt·max|F'|/Δx ≤ 1` 违反即 fatal，格式单调 ⇒ α 严格保持在 [0,1]；
+- **混合动量**：隐式 Euler `ρ̄L/A·(v_m − v_m^n)/dt = Δp − Σ fr_i −
+  Σ ρ_m(α_i)g·sinθ·Δx`，摩阻用同一条 Churchill 曲线的均匀流模型
+  （混合物 `ρ_m/μ_m` 体积加权，Re 逐元），固定压差端用标量 Newton
+  （残差对 v_m 单调），速率边界直接施加 `v_m = vsl + vsg`，双封闭端
+  强制 `v_m ≡ 0`（不可压约束）+ 静水压报告；
+- **水相分数**：`∂(αϕ)/∂t + ∂(ϕ·F)/∂x = 0`，按通量方向迎风，ϕ ∈ [0, α]；
+- **应用** `chflow-1d-twofluid <case.dict>`：输出 `t … vm … dp …` /
+  `node <j> p …` / `cell <i> alpha … water … vsl … vsg …`。
+
+五个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
+
+| 算例 | 校验内容 |
+|---|---|
+| `twoFluidFront` | 液柱推气：激波位置 = 液量积分 = `40 + v_m·t`（1e-9，与 u_s 无关）、水相前沿同速、剖面 TVD 单调；注：Wallis 闭合下 `F'(0.5) = v_m` 与激波速结构简并，一阶格式前沿按 √t 扩散 |
+| `twoFluidSteadyHoldupWallis` | 稳态分层持液率 = 二次方程 `F(α*) = vsl` 的物理根（1e-9）+ 压降逐项重算（Churchill 摩阻 + 30° 重位）|
+| `twoFluidSteadyHoldupZuber` | 线性闭合的稳态根 `α* = (vsl − v_m(1−C0) + v_d)/(C0·v_m + v_d)` + 水平摩阻压降 |
+| `twoFluidSettling` | 封闭水平管重力分异：双激波各以 `u_s·α0` 精确推进（±2.5Δx）、液量守恒 1e-9、壁面平台 α→1/气袋 α→0 |
+| `twoFluidPressureLaminar` | 定压启动：独立二分解隐式 Euler 动量 ODE（1e-8）+ 指数包络 `u* = ΔpD²/32μL`、时间常数 `ρ/8πμ`（3%）|
+
+### 4.4 Python 绑定 `src/bindings` + `python/chflow`
 pybind11（FetchContent v2.13.6，`-DCHFLOW_WITH_PYTHON=ON`，缺少 Python
 开发头文件时自动跳过）。模块 `chflow_core` 导出
 `OneDNetwork / NetworkPipe / FluidProperties / SteadyControls /
@@ -243,7 +280,7 @@ vapour_density_table / vapour_fraction_table / load_flash_case`。C++ 侧的
 `cf::Error` 自动转成 Python `RuntimeError`。Python 包 `chflow` 只是
 再导出层。求解与闪蒸调用释放 GIL。
 
-### 4.4 CLI `cli/`（Rust）
+### 4.5 CLI `cli/`（Rust）
 零依赖 std-only 二进制 `chuanflow`：
 `chuanflow run steady|transient|pvt <case.dict>` 通过 `$CHUANFLOW_BIN_DIR`（或 PATH）
 定位 `chflow-1d-steady` / `chflow-1d-transient` / `chflow-pvt` 并转发

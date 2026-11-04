@@ -1,0 +1,48 @@
+// Two-fluid verification D: pressure-driven laminar start-up. Pure liquid
+// (alpha = 1 everywhere) accelerated by a fixed 2000 Pa drop through a
+// viscous line. The momentum equation reduces to the linear implicit-Euler
+// ODE  rho L/A (u - u_old)/dt = dp - K u with K = 32 mu L / D^2 (Churchill
+// laminar branch, Re = 25), so tests/check_two_fluid.py replicates the
+// discrete recursion exactly and checks the physical decay envelope towards
+// u* = dp D^2 / (32 mu L) = 0.125 m/s with the time constant rho / (8 pi mu).
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.1;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 2;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 4;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type fixedPressure; p 2000; alpha 1; waterFraction 0; }
+    outlet { type fixedPressure; p 0; }
+}
+
+time
+{
+    dt 2;
+    endTime 1000;
+    reportEvery 25;
+}

@@ -158,6 +158,23 @@ foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug")
             ${mode})
 endforeach()
 
+# distributed two-fluid kernel: Godunov shock/fan kinematics, steady
+# drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
+# segregation, laminar pressure-driven start-up
+foreach(tcase twoFluidFront twoFluidSteadyHoldupWallis
+              twoFluidSteadyHoldupZuber twoFluidSettling
+              twoFluidPressureLaminar)
+    string(REGEX REPLACE "^twoFluid" "" mode ${tcase})
+    string(TOLOWER ${mode} mode)
+    add_test(
+        NAME verify.${tcase}
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid.py
+            $<TARGET_FILE:chflow-1d-twofluid>
+            ${CMAKE_CURRENT_SOURCE_DIR}/cases/${tcase}/case.dict
+            ${mode})
+endforeach()
+
 # The PVT case sweeps a pressure envelope through the flash; the checker
 # asserts thermodynamic identities (material balance, fugacity equality,
 # envelope collapse, table vs direct EOS) rather than stored numbers.

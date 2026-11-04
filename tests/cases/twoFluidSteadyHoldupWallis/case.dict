@@ -1,0 +1,49 @@
+// Two-fluid verification B (Wallis closure): steady stratified holdup. With
+// imposed phase rates vsl = 0.4, vsg = 0.6 (vm = 1) and constant slip
+// us = 0.3, the steady state satisfies F(alpha*) = vsl, i.e. the quadratic
+// 0.3 alpha^2 + 0.7 alpha - 0.4 = 0 whose only physical root is
+// alpha* = 0.474815... The pipe settles to that uniform holdup exactly once
+// the initial-condition waves wash out. Inclined 30 degrees so the pressure
+// drop carries both friction (laminar Churchill) and the mixture gravity
+// head; tests/check_two_fluid.py recomputes both term by term.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 10;
+    diameter 0.02;
+    roughness 2e-5;
+    angleDeg 30;
+    sections 40;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.3;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.4; vsg 0.6; waterFraction 0; }
+    outlet { type fixedPressure; p 1.0e5; }
+}
+
+time
+{
+    dt 0.1;
+    endTime 60;
+    reportEvery 100;
+}

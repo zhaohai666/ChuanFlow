@@ -1,0 +1,48 @@
+// Two-fluid verification A: liquid column pushing into gas through a
+// constant-slip (Wallis) closure. The liquid-flux function
+// F(alpha) = us alpha^2 + (vm - us) alpha is convex, so the front is a
+// Rankine-Hugoniot shock whose speed is F(1) - F(0) = vm exactly,
+// independent of the slip velocity. tests/check_two_fluid.py replicates the
+// Godunov recursion and checks the shock position from the liquid inventory.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 200;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.3;
+}
+
+initial
+{
+    alpha 0;
+    water 0;
+    fills { column { from 0; to 40; alpha 1; } }
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 1; vsg 0; waterFraction 0.25; }
+    outlet { type fixedPressure; p 0; }
+}
+
+time
+{
+    dt 0.25;
+    endTime 30;
+    reportEvery 4;
+}

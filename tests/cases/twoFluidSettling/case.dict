@@ -1,0 +1,49 @@
+// Two-fluid verification C: gravity segregation in a sealed horizontal
+// pipe. With vm identically zero the liquid flux F(alpha) = -us alpha(1-alpha)
+// drives a counter-current: liquid drifts to the inlet wall, gas pools at
+// the outlet wall. For a uniform initial holdup alpha0 the exact solution is
+// a pair of shocks both moving at us*alpha0 = 0.1 m/s (the settled alpha = 1
+// plateau grows from the inlet wall, the alpha = 0 gas pocket from the
+// outlet wall), with the total inventory conserved. tests/check_two_fluid.py
+// replicates the Godunov recursion and locates both shocks.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 50;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.2;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type sealed; }
+    outlet { type sealed; }
+}
+
+time
+{
+    dt 4;
+    endTime 400;
+    reportEvery 20;
+}

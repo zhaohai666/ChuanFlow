@@ -1,0 +1,47 @@
+// Two-fluid verification B (Zuber-Findlay closure): same steady-holdup
+// physics with the linear drift-flux law vG = C0 vM + vD. With C0 = 1.2,
+// vD = 0.15 and vm = 1 the liquid flux is F(alpha) = 1.35 alpha - 0.35, so
+// the steady holdup solves F(alpha*) = vsl = 0.4 giving alpha* = 0.5556.
+// Horizontal pipe: the pressure drop is friction only.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 10;
+    diameter 0.02;
+    roughness 2e-5;
+    angleDeg 0;
+    sections 40;
+}
+
+closure
+{
+    model zuber;
+    C0 1.2;
+    driftVelocity 0.15;
+}
+
+initial
+{
+    alpha 0.3;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.4; vsg 0.6; waterFraction 0; }
+    outlet { type fixedPressure; p 1.0e5; }
+}
+
+time
+{
+    dt 0.1;
+    endTime 60;
+    reportEvery 100;
+}

@@ -38,7 +38,9 @@ int main(int argc, char** argv)
         const int reportEvery = static_cast<int>(
             caseDict.getDict("time").getScalarOr("reportEvery", 1.0));
 
-        log::info("twoFluid: ", c.geo.sections, " sections, dt=", num(dt),
+        int sections = 0;
+        for (const TwoFluidGeo& g : c.pipes) sections += g.sections;
+        log::info("twoFluid: ", sections, " sections, dt=", num(dt),
                   " endTime=", num(endTime));
 
         TwoFluidPipe sim(c);

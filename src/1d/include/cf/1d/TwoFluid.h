@@ -62,6 +62,17 @@ namespace cf
 /// riding the mixture velocity with the upwind cell's composition (the same
 /// homogeneous closure as the friction law). Implicit in T, so no CFL on top
 /// of the transport one.
+/// A case may chain several pipe segments (pipes{} block of named
+/// sub-blocks in flow order - e.g. a vertical riser followed by a horizontal
+/// flowline, a well trajectory). Each segment carries its own
+/// length/diameter/roughness/angle/sections; the cells are concatenated and
+/// every junction face is an ordinary interior face of the same Godunov
+/// transport (the junction slip averages the two neighbouring states). The
+/// chain needs a uniform bore: the mixture momentum is lumped on ONE
+/// velocity, which requires a constant area. Per-section dx/slope/relative
+/// roughness drive the friction, gravity head, thermal capacity and CFL per
+/// cell; the fills' from/to coordinates measure the arc position from the
+/// chain inlet.
 
 struct TwoFluidFluid
 {
@@ -141,7 +152,7 @@ struct TwoFluidFill
 struct TwoFluidCase
 {
     TwoFluidFluid fluid;
-    TwoFluidGeo geo;
+    std::vector<TwoFluidGeo> pipes; // serial chain in flow order
     TwoFluidClosure closure;
     TwoFluidBoundary inlet;
     TwoFluidBoundary outlet;
@@ -165,7 +176,8 @@ public:
 
     double time() const { return t_; }
     int sections() const { return n_; }
-    double cellSize() const { return dx_; }
+    /// Per-cell arc step, m (one entry per section along the chain).
+    std::vector<double> cellSizes() const { return dxs_; }
 
     /// Signed mixture (total volume-flux) velocity, m/s.
     double mixtureVelocity() const { return vM_; }
@@ -224,7 +236,12 @@ private:
 
     TwoFluidCase cfg_;
     int n_ = 0;
-    double dx_ = 0, sinTheta_ = 0;
+    double diameter_ = 0, length_ = 0; // uniform bore and total arc length
+    std::vector<double> dxs_;    // per-cell arc step
+    std::vector<double> sinT_;   // per-cell slope
+    std::vector<double> relrough_;
+    std::vector<double> centerDrop_; // vertical drop of each cell centre
+                                     // from the chain inlet
     std::vector<double> alpha_, water_, T_;
     std::vector<double> slip_;    // dynamic closure: vG - vL per section
     std::vector<double> sDotOld_; // last step's ds/dt, the lagged slip
@@ -244,6 +261,11 @@ private:
 ///           gasR 287; }   // gasR > 0: ideal-gas EOS on, rhoG is the
 ///                         // gas density the injected rates refer to
 ///   pipe { length 100; diameter 0.1; roughness 0; angleDeg 0; sections 200; }
+///         // or a serial chain of segments in flow order (uniform bore):
+///         // pipes { riser { length 400; diameter 0.02; roughness 0;
+///         //                 angleDeg 90; sections 40; }
+///         //         flowline { length 400; diameter 0.02; roughness 0;
+///         //                    angleDeg 0; sections 40; } }
 ///   closure { model wallis; slipVelocity 0.3; }   // or model zuber;
 ///                                                 //      C0 1.2; driftVelocity 0.15;
 ///                                                 // or model dynamic;

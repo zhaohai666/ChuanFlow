@@ -55,12 +55,24 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         cfFatal("twoFluid: fluid needs positive densities and viscosities");
     if (f.gasR < 0)
         cfFatal("twoFluid: negative gasR");
-    const TwoFluidGeo& g = cfg_.geo;
-    if (!(g.length > 0) || !(g.diameter > 0) || g.sections < 1)
-        cfFatal("twoFluid: pipe needs positive length/diameter and >= 1"
-                " sections");
-    if (g.roughness < 0)
-        cfFatal("twoFluid: negative roughness");
+    if (cfg_.pipes.empty())
+        cfFatal("twoFluid: case has no pipe segment");
+    diameter_ = cfg_.pipes.front().diameter;
+    length_ = 0;
+    for (const TwoFluidGeo& g : cfg_.pipes)
+    {
+        if (!(g.length > 0) || !(g.diameter > 0) || g.sections < 1)
+            cfFatal("twoFluid: pipe needs positive length/diameter and >= 1"
+                    " sections");
+        if (g.roughness < 0)
+            cfFatal("twoFluid: negative roughness");
+        // the mixture momentum is lumped on one velocity, which needs a
+        // constant bore along the chain
+        if (g.diameter != diameter_)
+            cfFatal("twoFluid: a serial chain needs a uniform diameter"
+                    " (the lumped mixture momentum carries one velocity)");
+        length_ += g.length;
+    }
 
     const TwoFluidBoundary& in = cfg_.inlet;
     const TwoFluidBoundary& out = cfg_.outlet;
@@ -80,13 +92,33 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         cfFatal("twoFluid: the dynamic closure needs a positive"
                 " interfacialDrag");
 
-    n_ = g.sections;
-    dx_ = g.length / n_;
-    sinTheta_ = std::sin(g.angleDeg * M_PI / 180.0);
+    n_ = 0;
+    for (const TwoFluidGeo& g : cfg_.pipes) n_ += g.sections;
+    dxs_.reserve(n_);
+    sinT_.reserve(n_);
+    relrough_.reserve(n_);
+    for (const TwoFluidGeo& g : cfg_.pipes)
+    {
+        const double dx = g.length / g.sections;
+        const double st = std::sin(g.angleDeg * M_PI / 180.0);
+        for (int k = 0; k < g.sections; ++k)
+        {
+            dxs_.push_back(dx);
+            sinT_.push_back(st);
+            relrough_.push_back(g.roughness / g.diameter);
+        }
+    }
     alpha_.assign(n_, cfg_.alpha0);
     water_.assign(n_, cfg_.water0);
     slip_.assign(n_, 0.0);
     sDotOld_.assign(n_, 0.0);
+    std::vector<double> centers(n_);
+    double arc = 0;
+    for (int i = 0; i < n_; ++i)
+    {
+        centers[i] = arc + 0.5 * dxs_[i];
+        arc += dxs_[i];
+    }
     for (const TwoFluidFill& fill : cfg_.fills)
     {
         if (fill.from > fill.to || fill.alpha < 0 || fill.alpha > 1)
@@ -94,8 +126,8 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
                     " [0,1]");
         for (int i = 0; i < n_; ++i)
         {
-            const double x = (i + 0.5) * dx_;
-            if (x >= fill.from && x <= fill.to) alpha_[i] = fill.alpha;
+            if (centers[i] >= fill.from && centers[i] <= fill.to)
+                alpha_[i] = fill.alpha;
         }
     }
     // incompressible phases: an imposed rate is felt along the whole pipe
@@ -103,12 +135,23 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
     if (cfg_.inlet.type == TwoFluidBoundary::Type::phaseRates)
         vM_ = vMOld_ = cfg_.inlet.vsl + cfg_.inlet.vsg;
 
+    // vertical drop of each cell centre from the chain inlet (geothermal
+    // depth), accumulated along the per-segment slopes
+    centerDrop_.assign(n_, 0.0);
+    double drop = 0;
+    for (int i = 0; i < n_; ++i)
+    {
+        drop += 0.5 * dxs_[i] * sinT_[i];
+        centerDrop_[i] = drop;
+        drop += 0.5 * dxs_[i] * sinT_[i];
+    }
+
     // gas inventory per unit area: rhoG (1 - alpha) dx; with the EOS on it
     // is the transported state, otherwise it stays at its initial value
     // and every density lookup falls back to the constant fluid rhoG
     gasMass_.resize(n_);
     for (int i = 0; i < n_; ++i)
-        gasMass_[i] = f.rhoG * (1.0 - alpha_[i]) * dx_;
+        gasMass_[i] = f.rhoG * (1.0 - alpha_[i]) * dxs_[i];
 
     if (cfg_.thermalOn)
     {
@@ -121,8 +164,9 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         {
             if (!(th.geothermalGradient > 0))
                 cfFatal("twoFluid: geothermal wall needs a positive gradient");
-            const double dExit = th.inletDepth
-                               - cfg_.geo.length * sinTheta_;
+            double dropTotal = 0;
+            for (int i = 0; i < n_; ++i) dropTotal += dxs_[i] * sinT_[i];
+            const double dExit = th.inletDepth - dropTotal;
             if (dExit < 0)
                 cfFatal("twoFluid: geothermal pipe leaves the ground "
                         "(depth at the outlet is " + std::to_string(dExit)
@@ -211,7 +255,7 @@ double TwoFluidPipe::mixtureRhoCell(int i) const
     if (eosOn())
     {
         const double ag = 1.0 - alpha_[i];
-        rhoG = ag > 1e-12 ? gasMass_[i] / (ag * dx_) : cfg_.fluid.rhoG;
+        rhoG = ag > 1e-12 ? gasMass_[i] / (ag * dxs_[i]) : cfg_.fluid.rhoG;
     }
     return alpha_[i] * cfg_.fluid.rhoL + (1.0 - alpha_[i]) * rhoG;
 }
@@ -225,7 +269,7 @@ std::vector<double> TwoFluidPipe::cellPressure() const
         const double ag = 1.0 - alpha_[i];
         // a section with no gas volume has no meaningful pressure
         p[i] = ag > 1e-12 ? gasMass_[i] * cfg_.fluid.gasR
-                            * sectionTemperature(i) / (ag * dx_)
+                            * sectionTemperature(i) / (ag * dxs_[i])
                           : 0.0;
     }
     return p;
@@ -234,7 +278,7 @@ std::vector<double> TwoFluidPipe::cellPressure() const
 double TwoFluidPipe::cellGasDensity(int i) const
 {
     const double ag = 1.0 - alpha_[i];
-    return eosOn() && ag > 1e-12 ? gasMass_[i] / (ag * dx_)
+    return eosOn() && ag > 1e-12 ? gasMass_[i] / (ag * dxs_[i])
                                  : cfg_.fluid.rhoG;
 }
 
@@ -254,10 +298,9 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     const double mu = mixtureMu(f, a);
     const double v = std::abs(vM);
     if (v == 0) return 0.0;
-    const double re = rho * v * cfg_.geo.diameter / mu;
-    const double fr = churchillFriction(re, cfg_.geo.roughness
-                                               / cfg_.geo.diameter)
-                    * (dx_ / cfg_.geo.diameter) * 0.5 * rho * v * v;
+    const double re = rho * v * diameter_ / mu;
+    const double fr = churchillFriction(re, relrough_[i])
+                    * (dxs_[i] / diameter_) * 0.5 * rho * v * v;
     return fr;
 }
 
@@ -267,7 +310,7 @@ std::vector<double> TwoFluidPipe::cellPressureLosses(double vM) const
     std::vector<double> loss(n_);
     for (int i = 0; i < n_; ++i)
     {
-        const double grav = mixtureRhoCell(i) * kGravity * sinTheta_ * dx_;
+        const double grav = mixtureRhoCell(i) * kGravity * sinT_[i] * dxs_[i];
         loss[i] = (vM >= 0 ? cellFriction(i, vM) : -cellFriction(i, vM)) + grav;
     }
     return loss;
@@ -300,15 +343,15 @@ void TwoFluidPipe::momentumSolve(double dt)
     // vM is a velocity, so the inertia of the column is its mass per unit
     // area rho_m L (not divided by the area - that would be the
     // volumetric-flow-rate form)
-    const double inertia = rhoBar * cfg_.geo.length;
+    const double inertia = rhoBar * length_;
     double gravSum = 0;
     double slipInertia = 0;
     for (int i = 0; i < n_; ++i)
     {
-        gravSum += mixtureRhoCell(i) * kGravity * sinTheta_ * dx_;
+        gravSum += mixtureRhoCell(i) * kGravity * sinT_[i] * dxs_[i];
         slipInertia += alpha_[i] * (1.0 - alpha_[i])
                      * (cellGasDensity(i) - cfg_.fluid.rhoL) * sDotOld_[i]
-                     * dx_;
+                     * dxs_[i];
     }
     const double dpDrive = in.pressure - out.pressure;
 
@@ -369,9 +412,9 @@ void TwoFluidPipe::slipStep(double dt)
         const double ks = 1.0 + a * ag * drho * drho / (f.rhoL * rhoG);
         const double loss = (vM_ >= 0 ? cellFriction(i, vM_)
                                       : -cellFriction(i, vM_))
-                          + mixtureRhoCell(i) * kGravity * sinTheta_ * dx_;
+                          + mixtureRhoCell(i) * kGravity * sinT_[i] * dxs_[i];
         const double drive = invRhoDiff
-                           * (mixtureRhoCell(i) * aM + loss / dx_);
+                           * (mixtureRhoCell(i) * aM + loss / dxs_[i]);
         const double d = 1.0 / (f.rhoL * a) + 1.0 / (rhoG * ag);
         const double rate = cfg_.closure.interfacialDrag
                           * std::abs(old[i]) * d / ks;
@@ -412,9 +455,10 @@ void TwoFluidPipe::transportStep(double dt)
     {
         cmax = std::max(std::abs(qb), std::abs(2.0 * qa + qb));
     }
-    if (dt * cmax / dx_ > 1.0 + 1e-12)
+    const double dxMin = *std::min_element(dxs_.begin(), dxs_.end());
+    if (dt * cmax / dxMin > 1.0 + 1e-12)
         cfFatal("twoFluid: CFL violated (dt * |dF/dalpha| / dx = "
-                + std::to_string(dt * cmax / dx_)
+                + std::to_string(dt * cmax / dxMin)
                 + ") - reduce dt");
 
     const TwoFluidBoundary& in = cfg_.inlet;
@@ -541,11 +585,11 @@ void TwoFluidPipe::transportStep(double dt)
     static constexpr double kTol = 1e-9;
     for (int i = 0; i < n_; ++i)
     {
-        const double aNew = alpha_[i] + dt / dx_ * (flux[i] - flux[i + 1]);
+        const double aNew = alpha_[i] + dt / dxs_[i] * (flux[i] - flux[i + 1]);
         if (aNew < -kTol || aNew > 1.0 + kTol)
             cfFatal("twoFluid: holdup left [0,1] - reduce dt");
         const double afOld = alpha_[i] * water_[i];
-        double afNew = afOld + dt / dx_ * (wflux[i] - wflux[i + 1]);
+        double afNew = afOld + dt / dxs_[i] * (wflux[i] - wflux[i + 1]);
         const double aCap = std::max(aNew, 0.0);
         if (afNew < -kTol || afNew > aCap + kTol)
             cfFatal("twoFluid: water cut left [0, holdup] - reduce dt");
@@ -560,7 +604,7 @@ void TwoFluidPipe::transportStep(double dt)
             const double agNew = 1.0 - alpha_[i];
             const double numer
                 = gasMass_[i] - dt * (gmflux[i + 1] - gmflux[i]);
-            const double trace = kTol * cfg_.fluid.rhoG * dx_;
+            const double trace = kTol * cfg_.fluid.rhoG * dxs_[i];
             if (agNew <= 1e-12 && numer > trace)
                 cfFatal("twoFluid: gas sealed in a closing cell - reduce dt");
             if (numer < -trace)
@@ -585,7 +629,7 @@ double TwoFluidPipe::wallTemperature(int i) const
 {
     const TwoFluidThermal& th = cfg_.thermal;
     if (th.wallModel == 0) return th.wallTemperature;
-    const double depth = th.inletDepth - (i + 0.5) * dx_ * sinTheta_;
+    const double depth = th.inletDepth - centerDrop_[i];
     return th.surfaceTemperature + th.geothermalGradient * depth;
 }
 
@@ -594,7 +638,7 @@ void TwoFluidPipe::thermalStep(double dt)
     if (!cfg_.thermalOn) return;
     const TwoFluidFluid& f = cfg_.fluid;
     const TwoFluidThermal& th = cfg_.thermal;
-    const double area = M_PI * cfg_.geo.diameter * cfg_.geo.diameter / 4.0;
+    const double area = M_PI * diameter_ * diameter_ / 4.0;
     auto rhoc = [&](double a, double rhoG)
     {
         return a * f.rhoL * f.cL + (1.0 - a) * rhoG * f.cG;
@@ -629,8 +673,8 @@ void TwoFluidPipe::thermalStep(double dt)
     std::vector<double> rhs(n_, 0.0);
     for (int i = 0; i < n_; ++i)
     {
-        const double cap = area * dx_ * rhoc(alpha_[i], cellGasDensity(i));
-        const double kw = th.wallHeatTransfer * dx_;
+        const double cap = area * dxs_[i] * rhoc(alpha_[i], cellGasDensity(i));
+        const double kw = th.wallHeatTransfer * dxs_[i];
         mat[i][i] = cap / dt + kFace[vM_ >= 0 ? i + 1 : i] + kw;
         rhs[i] = cap / dt * T_[i] + kw * wallTemperature(i);
         if (vM_ > 0)
@@ -652,7 +696,7 @@ void TwoFluidPipe::thermalStep(double dt)
     wallHeatRate_ = 0;
     for (int i = 0; i < n_; ++i)
     {
-        wallHeatRate_ += th.wallHeatTransfer * dx_
+        wallHeatRate_ += th.wallHeatTransfer * dxs_[i]
                        * (wallTemperature(i) - rhs[i]);
         T_[i] = rhs[i];
     }
@@ -716,14 +760,39 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
     c.fluid.cG = fd.getScalarOr("cG", 0.0);
     c.fluid.gasR = fd.getScalarOr("gasR", 0.0);
 
-    if (!caseDict.has("pipe")) cfFatal("twoFluid: case has no pipe{} block");
-    const Dictionary& pd = caseDict.getDict("pipe");
-    c.geo.name = pd.getWordOr("name", "pipe");
-    c.geo.length = pd.getScalar("length");
-    c.geo.diameter = pd.getScalar("diameter");
-    c.geo.roughness = pd.getScalarOr("roughness", 0.0);
-    c.geo.angleDeg = pd.getScalarOr("angleDeg", 0.0);
-    c.geo.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));
+    if (caseDict.has("pipe"))
+    {
+        const Dictionary& pd = caseDict.getDict("pipe");
+        TwoFluidGeo g;
+        g.name = pd.getWordOr("name", "pipe");
+        g.length = pd.getScalar("length");
+        g.diameter = pd.getScalar("diameter");
+        g.roughness = pd.getScalarOr("roughness", 0.0);
+        g.angleDeg = pd.getScalarOr("angleDeg", 0.0);
+        g.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));
+        c.pipes.push_back(g);
+    }
+    else if (caseDict.has("pipes"))
+    {
+        // named sub-blocks in first-occurrence order form the serial chain
+        const Dictionary& ps = caseDict.getDict("pipes");
+        for (const std::string& k : ps.keys())
+        {
+            const Dictionary& pd = ps.getDict(k);
+            TwoFluidGeo g;
+            g.name = k;
+            g.length = pd.getScalar("length");
+            g.diameter = pd.getScalar("diameter");
+            g.roughness = pd.getScalarOr("roughness", 0.0);
+            g.angleDeg = pd.getScalarOr("angleDeg", 0.0);
+            g.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));
+            c.pipes.push_back(g);
+        }
+    }
+    else
+    {
+        cfFatal("twoFluid: case has no pipe{} or pipes{} block");
+    }
 
     if (!caseDict.has("closure"))
         cfFatal("twoFluid: case has no closure{} block");

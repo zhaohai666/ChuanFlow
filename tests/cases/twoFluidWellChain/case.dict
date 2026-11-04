@@ -1,0 +1,68 @@
+// Serial-chain verification: a vertical riser (angleDeg 90, 20 m) welded to
+// a horizontal flowline (angleDeg 0, 20 m), uniform bore D = 0.02, dynamic
+// interfacial-drag closure, imposed phase rates (vM = vsl + vsg = 1 m/s).
+// Each cell carries its own dx, slope and relative roughness; the junction
+// between the segments is an ordinary interior Godunov face whose slip is
+// the average of the two neighbouring slip states, so the discrete steady
+// state is a smooth profile: away from a few-cell junction halo each
+// segment settles to its own per-cell root
+//   riser    (sinT = 1): alpha* ~= 0.7581, s* ~= 1.9523
+//   flowline (sinT = 0): alpha* ~= 0.5529, s* ~= 0.6186
+// with drive = (1/rhoG - 1/rhoL) [fr(alpha)/dx + rho_m g sinT_i]
+// (friction per cell plus gravity for the vertical cells). The checker
+// replicates the full transient cell by cell, verifies the global liquid
+// inventory against the boundary fluxes, recomputes the pressure drop in
+// closed form from the replicated fields, and checks flatness of the final
+// frames. tests/check_two_fluid.py mode wellchain.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipes
+{
+    riser
+    {
+        length 20;
+        diameter 0.02;
+        roughness 0;
+        angleDeg 90;
+        sections 10;
+    }
+    flowline
+    {
+        length 20;
+        diameter 0.02;
+        roughness 0;
+        angleDeg 0;
+        sections 10;
+    }
+}
+
+closure
+{
+    model dynamic;
+    interfacialDrag 500;
+}
+
+initial
+{
+    alpha 0.9;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.4; vsg 0.6; }
+    outlet { type fixedPressure; p 0; }
+}
+
+time
+{
+    dt 0.05;
+    endTime 400;
+    reportEvery 1600;
+}

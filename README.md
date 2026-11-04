@@ -179,7 +179,11 @@ print(result.pressure_profile)
   Godunov 与 CFL 界）+ 理想气体 p = ρ_G·gasR·T 逐段报告 + 密度反馈进
   摩阻/重位/惯性/滑移驱动/热容量（EOS 关闭逐位回退），稳态气量平衡钉住
   ρ_G* = 注入密度（可压缩稳态 = 不可压稳态 1 个回归）——已落地；
-  接入管网待做）
+  **多段串接管链**——`pipes{}` 具名子块按序串链（井轨迹：逐段
+  length/diameter/roughness/angleDeg/sections，逐元 Δx/sinθ/相对粗糙度/
+  垂降，等径校验），段交界共享普通 Godunov 内部面，斜井/水平混合段各
+  自独立稳态根、交界驻激波衔接（竖直 riser + 水平 flowline 1 个回归）
+  ——已落地（分支管网接入待做）
 - M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 🚧
   （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE（全压力回路 +
   Rhie-Chow 一致动量插值，Poiseuille 算例 1411 → 47 外迭代）+ 瞬态 PISO +

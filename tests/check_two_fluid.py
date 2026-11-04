@@ -49,6 +49,23 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             p = rhoG gasR T0 per section, the global gas inventory balance,
             and the steady state rhoG* = rhoG (injection-pinned) with the
             incompressible (alpha*, s*) pair.
+  mode = wellchain        : serial pipe chain (vertical riser + horizontal
+            flowline, uniform bore, dynamic closure, imposed rates). Each
+            cell carries its own slope; the slip-ODE drive gains the
+            per-cell gravity head
+            drive_i = (1/rhoG - 1/rhoL) [fr_i/dx + rho_m g sinT_i]
+            (rate-driven: du/dt = 0), and the segment junction is an
+            ordinary interior Godunov face on the averaged slip. Each
+            segment settles to its own per-cell root
+            F(alpha*, s*(alpha*)) = vsl, s* = sqrt(drive/(C D))
+            (riser alpha* ~= 0.7581 / s* ~= 1.9523; flowline
+            alpha* ~= 0.5529 / s* ~= 0.6186), joined across a few-cell
+            riser halo by a stationary shock carrying the flux from the
+            riser root to the flowline root. The checker replicates the
+            full transient cell by cell (1e-9), root-finds both segments'
+            (alpha*, s*) independently for the bulk fields, recomputes the
+            pressure drop term by term from the replicated profile, and
+            requires flatness of the final frames.
 """
 import math
 import subprocess
@@ -689,6 +706,151 @@ elif mode == "compressibleholdup":
         fails.append("state still drifting between the last two frames")
     else:
         print("ok:   steady state held over the final 20 s")
+
+elif mode == "wellchain":
+    # serial chain: vertical riser (cells 0-9, sin(theta) = 1) welded to a
+    # horizontal flowline (cells 10-19, sin(theta) = 0), uniform bore,
+    # dynamic closure, imposed phase rates (vM = vsl + vsg = 1 m/s). The
+    # slip-ODE drive gains the per-cell gravity head
+    #   drive_i = (1/rhoG - 1/rhoL) [fr_i/dx + rho_m g sinT_i]
+    # (rate-driven: du/dt = 0), and the segment junction is an ordinary
+    # interior Godunov face on the averaged slip, so each segment settles
+    # to its own per-cell root F(alpha*, s*(alpha*)) = vsl with
+    # F(a) = s a^2 + (vM - s) a, s* = sqrt(drive/(C D))
+    # (riser alpha* ~= 0.7581 / s* ~= 1.9523; flowline alpha* ~= 0.5529 /
+    # s* ~= 0.6186), joined across a few-cell riser halo by a stationary
+    # shock: the junction face flux is exactly vsl. The checker replicates
+    # the full transient cell by cell (1e-9), root-finds both segments'
+    # (alpha*, s*) independently for the bulk fields, recomputes the
+    # pressure drop term by term from the replicated steady profile, and
+    # requires flatness of the final frames.
+    N, DI, DT = 20, 0.02, 0.05
+    C_DRAG, VSL, VSG, VM = 500.0, 0.4, 0.6, 1.0
+    DX = 2.0
+    SIN_T = [1.0] * 10 + [0.0] * 10
+    STEPS_PER_FRAME = 1600
+    INV_DR = 1.0 / RHO_G - 1.0 / RHO_L
+    DRHO = RHO_G - RHO_L
+
+    def drive_cell(a, sin_t):
+        # loss/dx per cell of the slip ODE: Churchill friction + gravity
+        rho_m = a * RHO_L + (1.0 - a) * RHO_G
+        mu_m = a * MU_L + (1.0 - a) * MU_G
+        re = rho_m * VM * DI / mu_m
+        fr = churchill(re, 0.0) * (DX / DI) * 0.5 * rho_m * VM * VM
+        return INV_DR * (fr / DX + rho_m * G * sin_t)
+
+    def slip_star(a, sin_t):
+        d = 1.0 / (RHO_L * a) + 1.0 / (RHO_G * (1.0 - a))
+        dr = drive_cell(a, sin_t)
+        return math.copysign(math.sqrt(abs(dr) / (C_DRAG * d)), dr)
+
+    def seg_root(sin_t):
+        # coupled steady state: F(alpha*, s*(alpha*)) = vsl (F monotone
+        # rising)
+        lo, hi = 1e-9, 1.0 - 1e-9
+        for _ in range(200):
+            mid = 0.5 * (lo + hi)
+            s = slip_star(mid, sin_t)
+            f_mid = s * mid * mid + (VM - s) * mid
+            if f_mid > VSL:
+                hi = mid
+            else:
+                lo = mid
+        a_star = 0.5 * (lo + hi)
+        return a_star, slip_star(a_star, sin_t)
+
+    A_R, S_R = seg_root(1.0)
+    A_F, S_F = seg_root(0.0)
+
+    def slip_map(a, s_old, sin_t, dt):
+        ag = 1.0 - a
+        if a <= 1e-12 or ag <= 1e-12:
+            return 0.0
+        rho_m = a * RHO_L + ag * RHO_G
+        ks = 1.0 + a * ag * DRHO * DRHO / (RHO_L * RHO_G)
+        # rate-driven: vm imposed constant -> du/dt = 0
+        drive = drive_cell(a, sin_t)
+        d = 1.0 / (RHO_L * a) + 1.0 / (RHO_G * ag)
+        rate = C_DRAG * abs(s_old) * d / ks
+        return (s_old / dt + drive / ks) / (1.0 / dt + rate)
+
+    # replicate the coupled transient over the concatenated chain
+    alpha = [0.9] * N
+    slip = [0.0] * N
+    steps_done = 0
+    for k, fr in enumerate(frames):
+        want_steps = 0 if k == 0 else k * STEPS_PER_FRAME
+        while steps_done < want_steps:
+            slip = [slip_map(alpha[i], slip[i], SIN_T[i], DT)
+                    for i in range(N)]
+            flux = [VSL]
+            for j in range(1, N):
+                s = 0.5 * (slip[j - 1] + slip[j])
+                flux.append(godunov(s, VM - s, 0.0, alpha[j - 1], alpha[j]))
+            sl = slip[N - 1]
+            a_end = alpha[N - 1]
+            flux.append(sl * a_end * a_end + (VM - sl) * a_end)
+            alpha = [min(max(alpha[i] + DT / DX * (flux[i] - flux[i + 1]),
+                             0.0), 1.0)
+                     for i in range(N)]
+            steps_done += 1
+        t = fr["t"]
+        check(f"vm imposed (t={t})", fr["vm"], VM, 1e-12)
+        for i in range(N):
+            got, want = fr["cells"][i]["alpha"], alpha[i]
+            if abs(got - want) > 1e-9 + 1e-9 * abs(want):
+                fails.append(f"alpha[{i}](t={t}): got={got} want={want}")
+                break
+            gots = fr["cells"][i].get("s")
+            if gots is None or abs(gots - slip[i]) > 1e-9 + 1e-9 * abs(slip[i]):
+                fails.append(f"slip[{i}](t={t}): got={gots} want={slip[i]}")
+                break
+        else:
+            print(f"ok:   alpha/slip fields replicated at t={t} (1e-9)")
+    # steady state: bulk cells of each segment sit at that segment's
+    # independent root (riser halo cells 7-9 are the stationary-shock
+    # boundary layer and are exempt from the root check)
+    for i in range(7):
+        c = frames[-1]["cells"][i]
+        if (abs(c["alpha"] - A_R) > 1e-3) or (abs(c["s"] - S_R) > 1e-3):
+            fails.append(f"riser bulk cell {i}: alpha={c['alpha']} "
+                         f"s={c['s']} != root ({A_R:.10f}, {S_R:.10f})")
+            break
+    else:
+        print(f"ok:   riser bulk cells 0-6 at the independent root "
+              f"({A_R:.10f}, {S_R:.10f}) (1e-3)")
+    for i in range(10, N):
+        c = frames[-1]["cells"][i]
+        if (abs(c["alpha"] - A_F) > 1e-9) or (abs(c["s"] - S_F) > 1e-9):
+            fails.append(f"flowline cell {i}: alpha={c['alpha']} "
+                         f"s={c['s']} != root ({A_F:.10f}, {S_F:.10f})")
+            break
+    else:
+        print(f"ok:   flowline cells 10-19 at the independent root "
+              f"({A_F:.10f}, {S_F:.10f}) (1e-9)")
+    for i, c in enumerate(frames[-1]["cells"]):
+        if abs(c["vsl"] + c["vsg"] - VM) > 1e-12:
+            fails.append(f"phase-split identity cell {i}: vsl={c['vsl']} "
+                         f"vsg={c['vsg']} sum={c['vsl'] + c['vsg']}")
+            break
+    else:
+        print(f"ok:   per-cell phase split vsl + vsg = vM = {VM} (1e-12)")
+    # closed-form pressure drop, term by term over the emitted profile
+    dp_want = 0.0
+    for i, c in enumerate(frames[-1]["cells"]):
+        a = c["alpha"]
+        rho_m = a * RHO_L + (1.0 - a) * RHO_G
+        mu_m = a * MU_L + (1.0 - a) * MU_G
+        re = rho_m * VM * DI / mu_m
+        dp_want += churchill(re, 0.0) * (DX / DI) * 0.5 * rho_m * VM * VM \
+                 + rho_m * G * SIN_T[i] * DX
+    check("pressure drop (Churchill friction + gravity, term by term)",
+          frames[-1]["dp"], dp_want, 1e-9)
+    if frames[-1]["cells"] != frames[-2]["cells"]:
+        fails.append("state still drifting between the last two frames")
+    else:
+        print("ok:   steady state held over the final 80 s")
 
 else:
     raise SystemExit(f"unknown mode {mode}")

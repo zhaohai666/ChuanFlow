@@ -19,6 +19,7 @@
 #include "cf/fvm/MeshLoader.h"
 #include "cf/fvm/PisoSolver.h"
 #include "cf/fvm/VtkWriter.h"
+#include "cf/multiphase/Plic.h"
 #include "cf/multiphase/VoF.h"
 
 using namespace cf;
@@ -144,11 +145,15 @@ void loadMomentumPatches(const Dictionary& caseDict, const polyMesh& mesh,
     if (!anchored) cfFatal("vof: the momentum mode needs one patch with p to anchor the pressure");
 }
 
-/// The initial interface. `plane` and `circle` without `smooth` fill whole
-/// cells, which is the standard VOF filling; `smooth > 0` writes a tanh profile
-/// that many cells thick, because a geometry measurement needs an interface the
-/// normal operator can actually see while the dynamics do not care how the step
-/// is smeared.
+/// The initial interface. `plane` and `circle` with `fill cell` (the default)
+/// fill whole cells, which is the standard VOF filling; `smooth > 0` writes a
+/// tanh profile that many cells thick, because a geometry measurement needs an
+/// interface the normal operator can actually see while the dynamics do not care
+/// how the step is smeared. `fill exact` instead gives every cell the fraction of
+/// itself the geometry really covers, which is what a PLIC reconstruction is
+/// measured against: the field then holds no information the interface does not,
+/// so anything the reconstruction reports is the scheme's and not the
+/// initialisation's.
 void loadAlpha(const Dictionary& caseDict, volScalarField& alpha)
 {
     if (!caseDict.has("alpha")) cfFatal("vof: case has no alpha{} block");
@@ -187,6 +192,17 @@ void loadAlpha(const Dictionary& caseDict, volScalarField& alpha)
         const scalar radiusA = cd.getScalar(round ? "radius" : "radiusA");
         const scalar radiusB = round ? radiusA : cd.getScalar("radiusB");
         const scalar smooth = cd.getScalarOr("smooth", 0.0);
+        const std::string fill = cd.getWordOr("fill", "cell");
+        if (fill == "exact")
+        {
+            if (!round) cfFatal("vof: alpha fill exact is a circle's; an ellipse fills by cell");
+            if (smooth > 0) cfFatal("vof: an exactly filled interface has no smoothing to smear");
+            a = vof::exactDiskAlpha(mesh, center, radiusA);
+            log::info("alpha: circle centre (", center.x, ", ", center.y, ", ", center.z,
+                      ") radius ", num(radiusA), " filled by its exact overlap area");
+            return;
+        }
+        if (fill != "cell") cfFatal("vof: alpha fill must be cell or exact");
         // one representative cell edge, used only for the thickness of the
         // profile: the case is 2D by construction, so the diagonal of a cell
         // face is what the interface resolves against
@@ -300,8 +316,69 @@ void interfaceStatistics(const volScalarField& alpha, const Schemes& schemes,
     kappaMean /= static_cast<scalar>(nInterface);
 }
 
-/// Mean pressure on each side of the interface, away from the band. The jump
-/// the surface force has to balance is between the two bulk phases: the cells
+/// The geometric reconstruction the case may ask for: every cell whose alpha says
+/// it holds the interface gets the plane that cuts that fraction, and the report
+/// is the plane's own geometry rather than the field's slope. Absent the block,
+/// the case reports the smeared-band geometry alone.
+///
+/// It is measurement at this increment, not dynamics: the surface force still
+/// reads the gradient path's curvature, because the curvature of a one-cell band
+/// taken through the cell-centred divergence stencil is not yet better than the
+/// smoothed one the droplet cases are verified with.
+struct ReconstructionControls
+{
+    bool enabled = false;
+    vof::NormalChoice choice = vof::NormalChoice::Mixed;
+    scalar bandTolerance = 1e-6;
+};
+
+ReconstructionControls loadReconstruction(const Dictionary& caseDict)
+{
+    ReconstructionControls rc;
+    if (!caseDict.has("reconstruction")) return rc;
+    const Dictionary& rd = caseDict.getDict("reconstruction");
+    const std::string w = rd.getWordOr("normal", "mixed");
+    rc.enabled = true;
+    if (w == "youngs") rc.choice = vof::NormalChoice::Youngs;
+    else if (w == "centroid") rc.choice = vof::NormalChoice::Centroid;
+    else if (w == "mixed") rc.choice = vof::NormalChoice::Mixed;
+    else cfFatal("vof: reconstruction normal must be youngs, centroid or mixed");
+    rc.bandTolerance = rd.getScalarOr("bandTolerance", 1e-6);
+    if (!(rc.bandTolerance >= 0.0)) cfFatal("vof: bandTolerance must not be negative");
+    return rc;
+}
+
+/// The band, the interface area it spans, the fraction the planes read back
+/// against the field they were given, and the curvature of the reconstructed
+/// normals. `stamp` says when the geometry was taken, so a checker can follow the
+/// band as the field moves. `k` is the curvature the case also writes, so the
+/// report and the file describe the same geometry.
+void logReconstruction(const volScalarField& alpha, const vof::Reconstruction& r,
+                       const Field<scalar>& k, const std::string& stamp)
+{
+    const Field<scalar>& a = alpha.internalField();
+    scalar area = 0, readBack = 0, kappaSum = 0;
+    int counted = 0;
+    for (std::size_t u = 0; u < a.size(); ++u)
+    {
+        if (mag2(r.normal[u]) == 0) continue;
+        ++counted;
+        area += r.area[u];
+        readBack = std::max(readBack, std::abs(r.fraction[u] - a[u]));
+        kappaSum += k[u];
+    }
+    if (counted == 0)
+    {
+        log::info("plic ", stamp, ": band 0 cells");
+        return;
+    }
+    log::info("plic ", stamp, ": band ", r.bandCells, " cells area ", num(area),
+              " readBack ", num(readBack), " kappa ",
+              num(kappaSum / static_cast<scalar>(counted)));
+}
+
+/// Mean pressure on each side of the interface, away from the band. The jump the
+/// surface force has to balance is between the two bulk phases: the cells
 /// the force actually acts on carry the smearing of the profile, so reading p
 /// there would report the interface structure rather than the Laplace jump.
 void phasePressures(const volScalarField& p, const Field<scalar>& alpha,
@@ -326,14 +403,13 @@ scalar phaseAspect(const polyMesh& mesh, const Field<scalar>& alpha)
 {
     const Field<Vector>& c = mesh.cellCentres();
     const Vector cen = vof::phaseCentroid(mesh, alpha);
-    double ixx = 0, iyy = 0, mass = 0;
+    double ixx = 0, iyy = 0;
     for (label i = 0; i < mesh.nCells(); ++i)
     {
         const std::size_t u = static_cast<std::size_t>(i);
         const double dx = c[u].x - cen.x, dy = c[u].y - cen.y;
         ixx += alpha[u] * dx * dx;
         iyy += alpha[u] * dy * dy;
-        mass += alpha[u];
     }
     return ixx > 0 && iyy > 0 ? std::sqrt(ixx / iyy) : 1.0;
 }
@@ -375,6 +451,12 @@ int main(int argc, char** argv)
         const scalar endTime = td.getScalar("endTime");
         const int reportEvery = std::max(1, static_cast<int>(td.getScalarOr("reportEvery", 1.0)));
         const scalar threshold = td.getScalarOr("interfaceThreshold", 0.1);
+        const ReconstructionControls plic = loadReconstruction(caseDict);
+        if (plic.enabled)
+            log::info("vof reconstruction: planes in every band cell, normal from ",
+                      plic.choice == vof::NormalChoice::Youngs ? "youngs"
+                      : plic.choice == vof::NormalChoice::Centroid ? "centroid" : "mixed",
+                      " bandTolerance ", num(plic.bandTolerance));
 
         vof::Controls vc;
         vc.tol = caseDict.getScalarOr("solverTol", 1e-10);
@@ -387,6 +469,22 @@ int main(int argc, char** argv)
         log::info("vof start: mass ", num(mass0), " dt ", num(dt),
                   " endTime ", num(endTime), " kappa ", num(kappa0),
                   " iface ", nIface0);
+
+        // The reconstruction of the field as it now is, with the curvature of its
+        // own normals. Both are fields the report and the written geometry read,
+        // and the writer keeps what it is given rather than copying it, so they
+        // live here, next to the state they describe. `stamp` says when the
+        // geometry was taken.
+        vof::Reconstruction plicNow;
+        Field<scalar> kappaPlicNow(static_cast<std::size_t>(mesh.nCells()), 0.0);
+        const auto refreshPlic = [&](const std::string& stamp)
+        {
+            if (!plic.enabled) return;
+            plicNow = vof::reconstruct(alpha, schemes.grad, plic.choice, plic.bandTolerance);
+            kappaPlicNow = vof::interfaceCurvature(mesh, plicNow.normal);
+            logReconstruction(alpha, plicNow, kappaPlicNow, stamp);
+        };
+        refreshPlic("start");
 
         // The initial geometry is the one with an analytic answer, so it is
         // what a case measures the normal and curvature operators against:
@@ -401,6 +499,14 @@ int main(int argc, char** argv)
             w.addCellScalar("alpha", alpha.internalField());
             w.addCellVector("nHat", n);
             w.addCellScalar("kappa", k);
+            if (plic.enabled)
+            {
+                w.addCellVector("nHatPlic", plicNow.normal);
+                w.addCellScalar("offsetPlic", plicNow.offset);
+                w.addCellScalar("areaPlic", plicNow.area);
+                w.addCellVector("centrePlic", plicNow.areaCentroid);
+                w.addCellScalar("kappaPlic", kappaPlicNow);
+            }
             w.write(path);
         };
         std::string vtkInitial;
@@ -441,6 +547,7 @@ int main(int argc, char** argv)
                 scalar kappa = 0;
                 int nIface = 0;
                 interfaceStatistics(alpha, schemes, threshold, kappa, nIface);
+                refreshPlic("t " + num(static_cast<scalar>(step) * dt));
                 log::info("vof t ", num(static_cast<scalar>(step) * dt),
                           " mass ", num(mass), " massErr ", num(mass / mass0 - 1.0),
                           " min ", num(alpha.min()), " max ", num(alpha.max()),
@@ -517,6 +624,7 @@ int main(int argc, char** argv)
                 phasePressures(p, alpha.internalField(), pIn, pOut);
                 scalar uMax = 0;
                 for (const Vector& u : U.internalField()) uMax = std::max(uMax, mag(u));
+                refreshPlic("t " + num(static_cast<scalar>(step) * dt));
                 log::info("vof t ", num(static_cast<scalar>(step) * dt),
                           " mass ", num(mass), " massErr ", num(mass / mass0 - 1.0),
                           " min ", num(alpha.min()), " max ", num(alpha.max()),
@@ -549,6 +657,14 @@ int main(int argc, char** argv)
                 w.addCellVector("U", U.internalField());
                 w.addCellScalar("p", p.internalField());
                 w.addCellVector("csf", force);
+                if (plic.enabled)
+                {
+                    w.addCellVector("nHatPlic", plicNow.normal);
+                    w.addCellScalar("offsetPlic", plicNow.offset);
+                    w.addCellScalar("areaPlic", plicNow.area);
+                    w.addCellVector("centrePlic", plicNow.areaCentroid);
+                    w.addCellScalar("kappaPlic", kappaPlicNow);
+                }
                 w.write(vtk);
             }
         }

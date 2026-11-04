@@ -20,8 +20,9 @@
 // maximum direction error and |kappa*r + 1| = 0.137 at the interface cells; 6 dx
 // gives 0.68 deg / 0.085. At fixed thickness in cells the error does not fall
 // with resolution: 40, 80 and 160 cells across the box read 1.39, 1.40 and
-// 1.40 deg. A sharp alpha needs geometric interface reconstruction, which is the
-// next step for this layer.
+// 1.40 deg. A sharp alpha needs geometric interface reconstruction, which is
+// what tests/cases/vofPlic does: the same box, filled cell-exact, with every
+// band cell cut by a plane.
 //
 // Verified by tests/check_vof.py (ctest verify.vofRotation):
 //   max |div(phi)|                 1.1e-19 (round-off of the Gauss identity)

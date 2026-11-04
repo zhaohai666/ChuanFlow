@@ -40,6 +40,16 @@ The momentum case (chflow-vof with a surfaceTension{} block, no velocity):
       w^2 = 3 sigma/(rho R^3) on R = sqrt(a b) -- not the free-drop
       6 sigma/(rho R^3), which would be 35% off.
 
+The geometric case (chflow-vof with a reconstruction{} block):
+
+  vofPlic - the same droplet, but filled by the disk's exact overlap area, so the
+      interface is one cell thick and the field's slope cannot measure it. The
+      reconstruction cuts a plane in every band cell, and the numbers it owes have
+      closed forms: the plane reads its cell's own fraction back, the planes cover
+      exactly the cells whose alpha is strictly between 0 and 1, the area across a
+      one-cell band is the circle's extruded perimeter, and the volume of phase 1
+      is pi R^2 dz to start with and conserved throughout.
+
 usage: check_vof.py <chflow-vof> <case.dict>
 """
 import math
@@ -115,7 +125,10 @@ def case_constants(path):
         c['center'] = [float(v) for v in
                        re.search(r'center\s*\(([^)]*)\)', al).group(1).split()]
         c['radius'] = float(re.search(r'radius\s+([0-9.eE+-]+);', al).group(1))
-        c['smooth'] = float(re.search(r'smooth\s+([0-9.eE+-]+);', al).group(1))
+        sm = re.search(r'smooth\s+([0-9.eE+-]+);', al)
+        c['smooth'] = float(sm.group(1)) if sm else 0.0
+        fl = re.search(r'fill\s+(\w+)\s*;', al)
+        c['fill'] = fl.group(1) if fl else 'cell'
         if c['kind'] == 'rotation':
             c['r0'] = math.hypot(c['center'][0] - c['axis'][0],
                                  c['center'][1] - c['axis'][1])
@@ -128,6 +141,20 @@ def case_constants(path):
         c['smooth'] = float(re.search(r'smooth\s+([0-9.eE+-]+);', al).group(1))
     else:
         raise SystemExit("the alpha block must be a plane, a circle or an ellipse")
+    # A reconstruction{} block makes the case the geometric one: what is verified
+    # is the planes cut into the band, not the smeared band's slope.
+    rc = re.search(r'reconstruction\s*\{([^}]*)\}', txt, re.S)
+    if rc:
+        if c['momentum'] or c['shape'] != 'circle' or c.get('fill') != 'exact':
+            raise SystemExit("a reconstruction{} case has to drive the transport "
+                             "with a circle filled exact")
+        if c['smooth'] > 0:
+            raise SystemExit("an exactly filled interface has no smoothing to smear")
+        nm = re.search(r'normal\s+(\w+)\s*;', rc.group(1))
+        c['normal_choice'] = nm.group(1) if nm else 'mixed'
+        bt = re.search(r'bandTolerance\s+([0-9.eE+-]+);', rc.group(1))
+        c['band_tolerance'] = float(bt.group(1)) if bt else 1e-6
+        c['kind'] = 'plic'
     return c
 
 
@@ -187,6 +214,12 @@ def log_numbers(out):
     div = re.search(r'\[chflow\] vof velocity: (\w+) max \|div\(phi\)\| ([0-9.eE+-]+)', out)
     csf = re.search(r'\[chflow\] vof csf: sigma/rho ([0-9.eE+-]+) nu ([0-9.eE+-]+) '
                     r'advect (true|false) kappa ([0-9.eE+-]+) max \|f\| ([0-9.eE+-]+)', out)
+    plic = []
+    for m in re.finditer(r'^\[chflow\] plic (start|t [0-9.eE+-]+): band (\d+) cells '
+                         r'area ([0-9.eE+-]+) readBack ([0-9.eE+-]+) kappa ([0-9.eE+-]+)',
+                         out, re.M):
+        plic.append(dict(stamp=m.group(1), band=int(m.group(2)), area=float(m.group(3)),
+                         read_back=float(m.group(4)), kappa=float(m.group(5))))
     if not rows or start is None:
         raise SystemExit("the log does not hold a start line and the report lines "
                          "the checker needs")
@@ -195,6 +228,7 @@ def log_numbers(out):
                          "(transport) and the csf line (momentum)")
     return dict(rows=rows, mass0=float(start.group(1)), kappa0=float(start.group(4)),
                 iface0=int(start.group(5)), kind=div.group(1) if div else 'momentum',
+                plic=plic,
                 max_div=float(div.group(2)) if div else None,
                 sigma_over_rho=float(csf.group(1)) if csf else None,
                 nu=float(csf.group(2)) if csf else None,
@@ -238,6 +272,8 @@ def main():
         if c['kind'] == 'oscillating':
             check_oscillating(c, log, cent, f, alpha, nh, kap, band, init,
                               failures, notes)
+        elif c['kind'] == 'plic':
+            check_plic(c, log, cent, f, init, failures, notes)
         elif c['kind'] == 'droplet':
             check_droplet(c, log, cent, f, alpha, nh, kap, band, init_alpha,
                           failures, notes)
@@ -245,10 +281,13 @@ def main():
             check_translation(c, log, cent, alpha, nh, kap, band, failures, notes)
         else:
             check_rotation(c, log, cent, alpha, nh, kap, band, failures, notes)
-        if init and c['shape'] in ('plane', 'circle'):
+        if init and c['shape'] in ('plane', 'circle') and c['kind'] != 'plic':
             # the ellipse has no cell-by-cell closed form (its curvature varies
             # around the interface); its initial field is checked by
-            # check_oscillating instead
+            # check_oscillating instead. A plic case is excluded because these
+            # thresholds are the smoothed band's contract: on a one-cell front
+            # the gradient normal is grid-aliased by construction, which is the
+            # limitation the reconstruction removes and check_plic measures.
             check_initial_geometry(c, init, failures, notes)
         failures_exit(c, failures, notes)
     finally:
@@ -828,6 +867,172 @@ def check_oscillating(c, log, cent, f, alpha, nh, kap, band, init, failures, not
             failures.append("the initial band mean kappa %.3f is %.0f%% of the "
                             "ellipse's arc-length mean %.3f"
                             % (ikmean, 100.0 * ikmean / k_true, k_true))
+
+
+def check_plic(c, log, cent, f, init, failures, notes):
+    """The reconstruction against the closed forms a cell-sharp disk gives: the
+    band it covers, the fraction each plane reads back, the area a one-cell band
+    spans and the volume the exact filling holds. The planes are re-read from what
+    the solver wrote, so the geometry is checked on the mesh's own coordinates."""
+    if not init:
+        raise SystemExit("a plic case has to write vtkInitial: the field the "
+                         "reconstruction is measured against is the analytic one")
+    if not log['plic']:
+        failures.append("the case asks for a reconstruction but the log holds no "
+                        "plic line for the checker to follow")
+        return
+    n_cells = c['cells'][0] * c['cells'][1] * c['cells'][2]
+    if len(cent) != n_cells:
+        raise SystemExit("the mesh the case wrote is not the block it describes")
+    v_cell = (c['vol'][0] * c['vol'][1] * c['vol'][2]) / n_cells
+    R, dz = c['radius'], c['vol'][2]
+    exact_area, perimeter = math.pi * R * R * dz, 2.0 * math.pi * R * dz
+    tol = c['band_tolerance']
+    # the file holds 12 significant digits, so anything re-derived from it is
+    # compared with a little more slack than the solver's own report
+    wt = 5e-10
+
+    def plic_band(fields):
+        return [i for i, v in enumerate(fields['nHatPlic'])
+                if math.hypot(v[0], v[1], v[2]) > 0.5]
+
+    def alpha_band(values):
+        return [i for i, a in enumerate(values) if tol < a < 1.0 - tol]
+
+    # ---- the exact filling: alpha is the disk's own overlap area ----
+    icent, ifields = init
+    ia = ifields['alpha']
+    mass = sum(ia) * v_cell
+    band0 = alpha_band(ia)
+    notes.append("exact filling over %d cells: phase volume %.12g for pi R^2 dz = "
+                 "%.12g (%.3g relative), %d band cells with %g < alpha < %g"
+                 % (len(ia), mass, exact_area, abs(mass / exact_area - 1.0),
+                    len(band0), tol, 1.0 - tol))
+    if abs(mass / exact_area - 1.0) > 1e-8:
+        failures.append("the exact filling holds %.6g of phase, not the disk's %.6g"
+                        % (mass, exact_area))
+    if abs(log['mass0'] / exact_area - 1.0) > 1e-8:
+        failures.append("the solver's own phase volume %.6g is not the disk's %.6g"
+                        % (log['mass0'], exact_area))
+    # every cell the band does not name is full or empty to the last digits, which
+    # is what makes this interface one cell thick and the gradient path blind on it
+    band_set = set(band0)
+    sharp = max(min(ia[i], 1.0 - ia[i]) for i in range(len(ia)) if i not in band_set)
+    notes.append("outside the band the closest any cell gets to half-filled is %.3g"
+                 % sharp)
+    if sharp > 1e-10:
+        failures.append("cells outside the band are not full or empty (closest %.3g), "
+                        "so the interface is not one cell thick" % sharp)
+
+    # ---- the band the planes cover is the band alpha names ----
+    gplic0, gband0 = log['plic'][0], plic_band(ifields)
+    notes.append("at t=0 the reconstruction reports band %d, the planes it wrote are "
+                 "on %d cells and alpha names %d"
+                 % (gplic0['band'], len(gband0), len(band0)))
+    if set(gband0) != set(band0):
+        failures.append("the planes are not on exactly the cells whose alpha is in "
+                        "(%g, %g): %d vs %d" % (tol, 1.0 - tol, len(gband0), len(band0)))
+    if gplic0['band'] != len(band0):
+        failures.append("the reported band %d is not the %d cells alpha puts on the "
+                        "interface" % (gplic0['band'], len(band0)))
+    # the gradient path the smeared-band operators use is over-inclusive here: it
+    # marks cells that hold no interface at all, which is why the reconstruction
+    # takes its band from alpha instead
+    ggrad0 = [i for i, v in enumerate(ifields['nHat']) if math.hypot(v[0], v[1], v[2]) > 0.5]
+    missed = set(band0) - set(ggrad0)
+    extra = set(ggrad0) - set(band0)
+    notes.append("the gradient threshold marks %d cells at t=0: %d of them hold no "
+                 "interface, and it misses %d of the cells the reconstruction covers"
+                 % (len(ggrad0), len(extra), len(missed)))
+    if missed:
+        failures.append("the gradient path misses %d band cells the reconstruction "
+                        "covers" % len(missed))
+    if not extra:
+        failures.append("the gradient threshold marks no cell outside the band, so "
+                        "this case no longer measures what PLIC adds")
+
+    # ---- the planes themselves ----
+    nrm, off, area, ctr = (ifields['nHatPlic'], ifields['offsetPlic'],
+                           ifields['areaPlic'], ifields['centrePlic'])
+    unit = max(abs(math.hypot(*nrm[i]) - 1.0) for i in gband0)
+    planar = max(abs(nrm[i][0] * ctr[i][0] + nrm[i][1] * ctr[i][1]
+                     + nrm[i][2] * ctr[i][2] - off[i]) for i in gband0)
+    if min(area[i] for i in gband0) <= 0.0:
+        failures.append("a band cell was cut with no interface area")
+    if max(abs(area[i]) for i in range(len(area)) if i not in set(gband0)) > 0.0:
+        failures.append("a cell outside the band carries interface area")
+    a_sum = sum(area[i] for i in gband0)
+    notes.append("%d planes: |n| off 1 by %.3g, the cut face lies on its plane to "
+                 "%.3g, area summed %.9g vs the reported %.9g"
+                 % (len(gband0), unit, planar, a_sum, gplic0['area']))
+    if unit > wt or planar > wt:
+        failures.append("the planes are not the unit planes they report (|n|-1 up to "
+                        "%.3g, offset off by %.3g)" % (unit, planar))
+    if abs(a_sum / gplic0['area'] - 1.0) > 1e-10:
+        failures.append("the written areas sum to %.9g but the log reported %.9g"
+                        % (a_sum, gplic0['area']))
+    if not (0.85 < a_sum / perimeter < 1.05):
+        failures.append("a one-cell band spans %.9g of interface, %.1f%% of the "
+                        "extruded perimeter %.9g" % (a_sum, 100.0 * a_sum / perimeter,
+                                                     perimeter))
+
+    # ---- the direction and curvature the planes imply ----
+    kap_p = ifields['kappaPlic']
+    ang = []
+    for i in gband0:
+        p = ctr[i]
+        rx, ry = p[0] - c['center'][0], p[1] - c['center'][1]
+        r = math.hypot(rx, ry)
+        if r < 1e-9:
+            continue
+        d = -(nrm[i][0] * rx + nrm[i][1] * ry) / r
+        ang.append(math.degrees(math.acos(max(-1.0, min(1.0, d)))))
+    mean_a, max_a = sum(ang) / len(ang), max(ang)
+    kmean = sum(kap_p[i] for i in gband0) / len(gband0)
+    notes.append("normals at the cut faces, against the analytic radial: %.2f deg mean, "
+                 "%.2f deg max -- sharper than the same normals read at cell centres, "
+                 "because a cut face lies on the interface and a cell centre does not; "
+                 "band mean kappaPlic %.4f for -1/R = %.4f (%.3f of it), log reported %.4f"
+                 % (mean_a, max_a, kmean, -1.0 / R, kmean * R, gplic0['kappa']))
+    if abs(kmean * R + 1.0) > 0.45 or kmean >= 0.0:
+        failures.append("the reconstructed band's curvature is %.4f, not the -1/R = %.4f "
+                        "a one-cell stencil can resolve" % (kmean, -1.0 / R))
+    if abs(kmean - gplic0['kappa']) > 1e-9:
+        failures.append("the written kappaPlic means %.6f but the log reported %.6f"
+                        % (kmean, gplic0['kappa']))
+    if mean_a > 12.0 or max_a > 20.0:
+        failures.append("the reconstructed normal is off the radial direction by %.2f "
+                        "deg mean / %.2f max" % (mean_a, max_a))
+
+    # ---- through the run: the planes follow the field, not the analytic disk ----
+    for line in log['plic']:
+        if line['read_back'] > 1e-12:
+            failures.append("at %s a plane reads its cell's fraction back with error "
+                            "%.3g" % (line['stamp'], line['read_back']))
+    for r in log['rows']:
+        if abs(r['massErr']) > 1e-12:
+            failures.append("the closed rotation lost %.3g of the phase volume by t=%g"
+                            % (abs(r['massErr']), r['t']))
+    fb, fband = plic_band(f), alpha_band(f['alpha'])
+    notes.append("after %d steps the band is %d cells (was %d) and spans %.9g of "
+                 "interface: a band thicker than one cell counts the cut face of "
+                 "every cell in the smearing, so this is the front's thickness, "
+                 "not the circle's perimeter"
+                 % (c['steps'], len(fb), len(band0), sum(f['areaPlic'][i] for i in fb)))
+    if set(fb) != set(fband):
+        failures.append("the last reconstruction written is not the one for the last "
+                        "field written: %d planes vs %d band cells" % (len(fb), len(fband)))
+    if log['plic'][-1]['band'] != len(fb):
+        failures.append("the last report says band %d, the file holds %d planes"
+                        % (log['plic'][-1]['band'], len(fb)))
+    if abs(sum(f['areaPlic'][i] for i in fb) / log['plic'][-1]['area'] - 1.0) > 1e-10:
+        failures.append("the last report's area and the last file's do not agree")
+    if len(fb) < len(band0):
+        failures.append("advecting a sharp front narrowed its band from %d cells to %d, "
+                        "which no conservative transport does" % (len(band0), len(fb)))
+    notes.append("read-back stayed under %.3g over %d reports, so every plane keeps "
+                 "the fraction of the cell it was cut in"
+                 % (max(l['read_back'] for l in log['plic']), len(log['plic'])))
 
 
 def check_initial_geometry(c, init, failures, notes):

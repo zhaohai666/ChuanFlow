@@ -87,8 +87,9 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 > k-ε / k-ω SST 两方程 RANS 与 Spalding 壁面函数（含平衡壁面单元），以及
 > VOF 首增量（相分数守恒输运 + 界面法向/曲率，速度给定的 `chflow-vof`）、
 > VOF 的连续表面力（CSF 与 PISO 动量耦合，静止液滴算例验 Laplace 压差）与
-> 两相耦合（解出通量输运 α，椭圆液滴振荡验密度匹配的 2D Lamb 周期）；
-> VOF 的几何界面重构、Euler-Euler 双流体、张量场、
+> 两相耦合（解出通量输运 α，椭圆液滴振荡验密度匹配的 2D Lamb 周期）与
+> 几何界面重构 PLIC（逐单元平面切出精确截体积，α 带 60/60、平面读回 α 到 2e-15）；
+> PLIC 的几何输运、LIC/ELVIRA 法向、Euler-Euler 双流体、张量场、
 > MPI 域分解与 Eigen/PETSc 后端仍待实现。
 
 #### 5. 绑定层 `src/bindings`
@@ -172,7 +173,10 @@ print(result.pressure_profile)
 - M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口 🚧
   （VOF 连续表面力 CSF 与 PISO 动量耦合（静止液滴 Laplace 压差算例）与两相
   耦合——解出通量输运 α、椭圆液滴振荡验密度匹配 Lamb 周期——已落地；
-  几何界面重构、Euler-Euler 双流体在此）
+  **几何界面重构 PLIC**（α 带逐单元平面、牛顿解偏移保证截体积、切面面积与质心，
+  静止液滴算例 `vofPlic` 断言平面自洽与相体积守恒）已落地；
+  PLIC 的几何输运（Zalesak 转盘）、LIC/ELVIRA 法向与由切面读 κ、
+  Euler-Euler 双流体在此）
 - M5：Tauri GUI 管网编辑器、实时曲线面板
 - M6：Kokkos GPU 加速、更多工业模型扩充
 

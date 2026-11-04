@@ -41,6 +41,12 @@ add_executable(vof_tests unit/vofTests.cpp)
 target_link_libraries(vof_tests PRIVATE cf3d)
 add_test(NAME vof.unit COMMAND vof_tests)
 
+add_executable(plic_tests unit/plicTests.cpp)
+target_link_libraries(plic_tests PRIVATE cf3d)
+target_compile_definitions(plic_tests PRIVATE
+    CF_MESH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/meshes")
+add_test(NAME plic.unit COMMAND plic_tests)
+
 # ---- analytic verification cases ----
 add_test(
     NAME verify.advectionDiffusion
@@ -129,6 +135,16 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/check_vof.py
         $<TARGET_FILE:chflow-vof>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofOscillating/case.dict)
+
+# the same droplet cell-sharp, with the interface reconstructed as a plane in every
+# band cell: the band, the fraction each plane reads back, the area of a one-cell
+# band and the volume of the exact filling all have closed forms
+add_test(
+    NAME verify.vofPlic
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_vof.py
+        $<TARGET_FILE:chflow-vof>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofPlic/case.dict)
 
 # 3D energy equation. The three conduction cases have no flow at all, so they
 # isolate the diffusion operator, the temperature conditions (fixedValue,

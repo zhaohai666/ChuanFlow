@@ -1,0 +1,110 @@
+// A cell-sharp droplet carried around a solid-body rotation, with its interface
+// reconstructed geometrically instead of read off the field's slope.
+//
+// The field is filled by the disk's exact overlap area (`fill exact`), so the
+// interface is one cell thick wherever it runs and alpha never sits between 0
+// and 1 outside that band. That is the case the gradient path cannot measure:
+// div(n) is a cell-centred stencil across the band, so on a two-cell-wide band
+// its normals are grid-aliased and vofRotation has to smooth the profile over 4
+// cell widths to get a usable kappa. PLIC does not need the smearing - its
+// normal is chosen per cell and its plane is then cut to the fraction the cell
+// holds, so the input it needs is alpha alone.
+//
+// What this case holds the reconstruction to, at every report:
+//   the planes cover exactly the cells whose alpha says they hold the interface,
+//   each plane reads its own cell's fraction back to round-off,
+//   the area it spans stays the circle's extruded perimeter,
+//   and the rotation's phase volume is conserved while it goes.
+// The rotation is rigid, so nothing here should move the droplet's shape: any
+// drift of the band or of the area is the transport diffusing a sharp front,
+// which first-order upwind does and which the checker measures rather than
+// forgives.
+//
+// Verified by tests/check_vof.py (ctest verify.vofPlic), on what the solver wrote:
+//   max |div(phi)|                 2.2e-19 (round-off of the Gauss identity)
+//   exact filling                  pi R^2 dz = 0.0125663706144 to 5.9e-15 relative,
+//                                  60 band cells, and outside them no cell is
+//                                  within 3.3e-22 of half-filled
+//   band                           60 reported, 60 planes, 60 named by alpha
+//   planes                         |n| - 1 <= 6.4e-13, each cut face lies on its
+//                                  own plane to 9.2e-13
+//   read-back                      <= 2.1e-15 over the 5 reports, so every plane
+//                                  keeps the fraction of the cell it was cut in
+//   interface area                 0.111878 for the extruded perimeter
+//                                  2 pi R dz = 0.125664 (89%)
+//   normal vs radial, at the cut faces: 8.34 deg mean / 14.11 deg max -- sharper
+//                                  than the same normals read at cell centres,
+//                                  because a cut face is on the interface
+//   kappaPlic over the band        -3.696 for -1/R = -5, which is as much of the
+//                                  circle as a cell-centred stencil across a
+//                                  one-cell band resolves
+//   the gradient path at t=0       marks 124 cells, 64 of which hold no interface
+//                                  at all, and misses none of the band's 60
+//   phase volume                   conserved to 6.7e-15 relative over 40 steps
+//   band after advection           421 cells and 0.368 of summed cut area: upwind
+//                                  thickened the front, and a band thicker than one
+//                                  cell counts a cut face for every cell in it, so
+//                                  that number is the front's thickness rather than
+//                                  the circle's perimeter
+block
+{
+    min   (-0.5 -0.5 0);
+    max   ( 0.5  0.5 0.1);
+    cells (40 40 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+velocity
+{
+    type   rotation;
+    omega  1.0;
+    center (0 0 0);
+}
+
+alpha
+{
+    // R/dx = 8, the same droplet the geometry unit test measures
+    circle { center (0.2 0 0); radius 0.2; fill exact; }
+}
+
+reconstruction
+{
+    normal mixed;
+}
+
+patches
+{
+    left   { alphaType fixedValue; alpha 0; }
+    right  { alphaType fixedValue; alpha 0; }
+    bottom { alphaType fixedValue; alpha 0; }
+    top    { alphaType fixedValue; alpha 0; }
+}
+
+time
+{
+    dt                0.0025;   // |U| dt / dx = 0.04 at the far edge of the band
+    endTime           0.1;      // the droplet turns 0.1 rad = 5.7 degrees
+    reportEvery       10;
+    interfaceThreshold 0.1;     // what the gradient path marks, for the comparison
+}
+
+schemes
+{
+    ddt  Euler;
+    div  upwind;
+    grad corrected;
+}
+
+solverTol 1e-13;
+
+output
+{
+    vtk         out_vof_plic.vtu;
+    vtkInitial  initial_vof_plic.vtu;
+}

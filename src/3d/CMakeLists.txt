@@ -19,6 +19,7 @@ add_library(cf3d STATIC
     src/solvers/pisoSolver.cpp
     src/solvers/energySolver.cpp
     src/multiphase/vof.cpp
+    src/multiphase/plic.cpp
 )
 
 target_include_directories(cf3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

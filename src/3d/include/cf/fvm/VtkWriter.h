@@ -10,6 +10,8 @@ namespace cf
 {
 
 /// ASCII VTK unstructured-grid (.vtu) writer; results open directly in ParaView.
+/// The added fields are referenced, not copied, so each one has to outlive the
+/// write it was added for.
 class VtkWriter
 {
 public:

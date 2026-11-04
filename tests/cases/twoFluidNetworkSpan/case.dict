@@ -1,0 +1,101 @@
+// Two-junction pipe span - the network-span increment of the distributed
+// two-fluid kernel. Two pressure-driven sources merge at J1, cross the span
+// `mid` (a pipe with junctions at BOTH ends and no boundary of its own),
+// and split at J2 into two pressure-driven sinks. The per-step hydraulics
+// are one global Newton over [five free-pipe velocities] + [p_J1, p_J2]:
+// momentum row per pipe (a span couples to both junction pressures),
+// volume balance row per junction. Wallis slip 0 and a uniform holdup
+// alpha0 = 0.5 keep the mixture properties constant, so the coupled
+// transient is exactly the resistance network
+//   I_i du_i/dt + K_i u_i = p_endIn - p_endOut,  I_i = rho_m L_i,
+//   K_i = 32 mu_m L_i / D_i^2,
+// closed by sum s A u = 0 at each node. The steady state is the nodal
+// conductance solution (c_i = A_i/K_i):
+//   p1* = 141.9281, p2* = 12.2418 Pa,
+//   u* = 0.0145035 (srcA), 0.0394785 (srcB), 0.0539820 (mid = uA + uB,
+//        equal bores), 0.0171978 (sink1), 0.0152869 (sink2) m/s
+//        (Re 30-110, laminar).
+// srcB carries waterFraction 0.1 (against 0.5) and 320 K (against 300 K),
+// so J1 mixes the inflows to phi1* = 0.2074690 and T1* = 314.62655 K; the
+// span flushes to that state and J2 (fed by the span alone) hands it to
+// both sinks. All fronts clear by ~700 s; the cascaded implicit thermal
+// tail (srcB -> J1 mix -> span -> J2 -> sinks, each stage relaxing at the
+// upwind turnover rate u/dx per cell) decays below the checker's drift
+// tolerance by endTime 2500.
+// tests/check_two_fluid.py mode networkspan solves the coupled 7x7 laminar
+// system independently (every step, dense Gauss with pivoting) and
+// replicates the Godunov water transport + implicit upwind thermal solve
+// cell by cell for all five pipes, then anchors the last frame on the
+// closed-form nodal steady state.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+    cL   4180;
+    cG   2150;
+    gasR 0;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.5;
+    temperature 300;
+}
+
+network
+{
+    pipes
+    {
+        srcA  { length 10; diameter 0.02; roughness 0; angleDeg 0;
+                sections 10; }
+        srcB  { length 10; diameter 0.02; roughness 0; angleDeg 0;
+                sections 10; }
+        mid   { length 6;  diameter 0.02; roughness 0; angleDeg 0;
+                sections 6; }
+        sink1 { length 4;  diameter 0.03; roughness 0; angleDeg 0;
+                sections 4; }
+        sink2 { length 2;  diameter 0.02; roughness 0; angleDeg 0;
+                sections 2; }
+    }
+
+    junctions
+    {
+        J1 { ends ( srcA.outlet srcB.outlet mid.inlet ); }
+        J2 { ends ( mid.outlet sink1.inlet sink2.inlet ); }
+    }
+
+    boundaries
+    {
+        srcA.inlet   { type fixedPressure; p 200; alpha 0.5;
+                       waterFraction 0.5; temperature 300; }
+        srcB.inlet   { type fixedPressure; p 300; alpha 0.5;
+                       waterFraction 0.1; temperature 320; }
+        sink1.outlet { type fixedPressure; p 0; alpha 0.5;
+                       waterFraction 0.5; temperature 280; }
+        sink2.outlet { type fixedPressure; p 0; alpha 0.5;
+                       waterFraction 0.5; temperature 280; }
+    }
+}
+
+thermal
+{
+    wallHeatTransfer 0;
+    wallModel constant;
+    wallTemperature 300;
+}
+
+time
+{
+    dt 0.1;
+    endTime 2500;
+    reportEvery 100;
+}

@@ -100,6 +100,23 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             pressure drop term by term, the wall-heat sum, and the steady
             energy balance qInlet + qWall + latent release = outflow
             enthalpy.
+  mode = networkspan    : two-junction pipe span - two pressure-driven
+            sources (200/300 Pa) merging at J1, a span pipe `mid` with
+            junctions at BOTH ends (no boundary of its own), then a split
+            at J2 into two pressure-driven sinks (0 Pa). The per-step
+            hydraulics are one global Newton over [five free-pipe
+            velocities] + [p_J1, p_J2]; with wallis slip 0 and a uniform
+            holdup each pipe is exactly the laminar implicit-Euler ODE
+            I_i du_i/dt + K_i u_i = p_endIn - p_endOut (the span is driven
+            by p_J1 - p_J2), closed by sum s A u = 0 per node. The checker
+            solves the coupled 7x7 system independently every step (dense
+            Gauss with pivoting; rtol 1e-4 covers the ~1e-6
+            Churchill-vs-laminar deviation) and replicates the per-junction
+            mixing + Godunov water transport + implicit upwind thermal
+            solve cell by cell for all five pipes (1e-9). The steady state
+            anchors on the nodal conductance closed form
+            p1* = 141.9281, p2* = 12.2418 with the front-flushed phi1* and
+            T1* the span hands to both sinks.
   mode = junction        : symmetric Y junction - two pressure-driven
             branches (inlets 200/300 Pa) merging at junction J into a
             common outlet line (0 Pa). With wallis slip 0 and a uniform
@@ -133,7 +150,7 @@ if proc.returncode != 0:
     raise SystemExit(f"solver failed rc={proc.returncode}\n{proc.stdout}\n{proc.stderr}")
 
 # ---- parse the time series ----
-if mode == "junction":
+if mode in ("junction", "networkspan"):
     # network emission: per frame a "t" line, then per junction a
     # "junction" line and per pipe "pipe" / "pnode" / "pcell" lines
     times, frames = [], []
@@ -1503,6 +1520,292 @@ elif mode == "junction":
         for c1, c0 in zip(fr["pcell"][pn], frames[-2]["pcell"][pn]):
             for key in ("alpha", "water", "vsl", "vsg", "T"):
                 if abs(c1[key] - c0[key]) > 1e-9:
+                    drift.append(f"{pn}.{key}")
+    if drift:
+        fails.append(f"state still drifting between the last two frames: "
+                     f"{drift[:4]}")
+    else:
+        print("ok:   steady state held over the final 10 s")
+
+elif mode == "networkspan":
+    # two-junction pipe span (case.dict constants): two pressure-driven
+    # sources merging at J1, the span `mid` with junctions at BOTH ends
+    # (no boundary of its own), then a split at J2 into two pressure-driven
+    # sinks - uniform holdup and wallis slip 0 keep the mixture properties
+    # constant, so the coupled transient is the resistance network below:
+    # one global system over the five velocities and the two node pressures
+    RHO_L, RHO_G, MU_L, MU_G = 1000.0, 20.0, 0.01, 1e-5
+    CL, CG = 4180.0, 2150.0
+    ALPHA = 0.5
+    RHO_M = ALPHA * RHO_L + (1.0 - ALPHA) * RHO_G
+    MU_M = ALPHA * MU_L + (1.0 - ALPHA) * MU_G
+    DT = 0.1
+    N_STEPS = 25000
+    REPORT = 100
+    WF_A, T_A = 0.5, 300.0
+    WF_B, T_B = 0.1, 320.0
+    T0 = 300.0
+    PA, PB = 200.0, 300.0
+    # pipe -> (sections, length, diameter); all bores horizontal
+    geo = {"srcA": (10, 10.0, 0.02), "srcB": (10, 10.0, 0.02),
+           "mid": (6, 6.0, 0.02), "sink1": (4, 4.0, 0.03),
+           "sink2": (2, 2.0, 0.02)}
+    area, kres, iner, dxc = {}, {}, {}, {}
+    for pn, (n, length, d) in geo.items():
+        a = math.pi * d * d / 4.0
+        area[pn] = a
+        kres[pn] = 32.0 * MU_M * length / d ** 2
+        iner[pn] = RHO_M * length
+        dxc[pn] = length / n
+    AAS, AM = area["srcA"], area["mid"]
+    A1, A2 = area["sink1"], area["sink2"]
+    order = ["srcA", "srcB", "mid", "sink1", "sink2"]
+
+    # steady closed form: nodal conductance solution (c = A/K)
+    cond = {pn: area[pn] / kres[pn] for pn in geo}
+    cs, cm = cond["srcA"], cond["mid"]
+    c1, c2 = cond["sink1"], cond["sink2"]
+    beta = cm / (cm + c1 + c2)
+    p1_star = (cs * PA + cs * PB) / (2.0 * cs + cm * (1.0 - beta))
+    p2_star = beta * p1_star
+    u_star = {}
+    u_star["srcA"] = (PA - p1_star) / kres["srcA"]
+    u_star["srcB"] = (PB - p1_star) / kres["srcB"]
+    u_star["mid"] = (p1_star - p2_star) / kres["mid"]
+    u_star["sink1"] = p2_star / kres["sink1"]
+    u_star["sink2"] = p2_star / kres["sink2"]
+    # J1 mixes the inflows: liquid-volume-flow-weighted water cut,
+    # heat-capacity-flow-weighted temperature (the span flushes to that
+    # state and J2, fed by the span alone, hands it to both sinks)
+    qla = area["srcA"] * u_star["srcA"] * ALPHA
+    qlb = area["srcB"] * u_star["srcB"] * ALPHA
+    qga = area["srcA"] * u_star["srcA"] * (1.0 - ALPHA)
+    qgb = area["srcB"] * u_star["srcB"] * (1.0 - ALPHA)
+    phi_star = (qla * WF_A + qlb * WF_B) / (qla + qlb)
+    e_a = qla * RHO_L * CL + qga * RHO_G * CG
+    e_b = qlb * RHO_L * CL + qgb * RHO_G * CG
+    t_star = (e_a * T_A + e_b * T_B) / (e_a + e_b)
+
+    def gauss(Amat, b):
+        # dense Gaussian elimination with partial pivoting (no numpy)
+        n = len(b)
+        M = [list(Amat[i]) + [b[i]] for i in range(n)]
+        for col in range(n):
+            piv = max(range(col, n), key=lambda rr: abs(M[rr][col]))
+            if abs(M[piv][col]) < 1e-300:
+                raise SystemExit("singular network system")
+            M[col], M[piv] = M[piv], M[col]
+            pv = M[col][col]
+            for rr in range(n):
+                if rr != col and M[rr][col] != 0.0:
+                    f = M[rr][col] / pv
+                    for cc in range(col, n + 1):
+                        M[rr][cc] -= f * M[col][cc]
+        return [M[i][n] / M[i][i] for i in range(n)]
+
+    def advect_water(w, dx, f, w_in):
+        # water rides the uniform liquid flux f (holdup stays ALPHA);
+        # upwind Godunov with the ghost value feeding face 0 and the
+        # outlet cell feeding face n, then the kernel's clamp semantics
+        n = len(w)
+        wf = [w_in * f] + [w[j - 1] * f for j in range(1, n)] \
+            + [w[n - 1] * f]
+        out = []
+        for i in range(n):
+            afn = ALPHA * w[i] + DT / dx * (wf[i] - wf[i + 1])
+            afn = min(max(afn, 0.0), ALPHA)
+            out.append(afn / ALPHA)
+        return out
+
+    def thermal(T, areaa, dx, u, t_in):
+        # implicit upwind enthalpy advection: the donor cell drains at its
+        # own (new) temperature, the receiver gains the donor's (new)
+        # temperature, face 0 is fed by the ghost reservoir
+        n = len(T)
+        cap = areaa * dx * (ALPHA * RHO_L * CL
+                            + (1.0 - ALPHA) * RHO_G * CG)
+        kf = areaa * u * (RHO_L * CL * ALPHA + RHO_G * CG * (1.0 - ALPHA))
+        diag = [cap / DT] * n
+        rhs = [cap / DT * T[i] for i in range(n)]
+        rhs[0] += kf * t_in
+        for i in range(n - 1):
+            diag[i] += kf
+        diag[n - 1] += kf
+        # lower-bidiagonal system: forward substitution
+        out = [rhs[0] / diag[0]]
+        for i in range(1, n):
+            out.append((rhs[i] + kf * out[i - 1]) / diag[i])
+        return out
+
+    # per step: the 7x7 laminar system [uA uB uC u1 u2 p1 p2] - one
+    # implicit-Euler momentum row per pipe (the span driven by p1 - p2)
+    # plus one volume-balance row per node; then the node mixes and the
+    # transport/thermal replication with the new velocities
+    u_old = {pn: 0.0 for pn in order}
+    w = {pn: [0.5] * geo[pn][0] for pn in order}
+    tfield = {pn: [T0] * geo[pn][0] for pn in order}
+    traj = [{"t": 0.0, "u": {pn: 0.0 for pn in order},
+             "p1": 250.0, "p2": 0.0,   # kernel warm start (conductance
+                                       # mean of each node's far pressures)
+             "w": {pn: w[pn][:] for pn in order},
+             "T": {pn: tfield[pn][:] for pn in order}}]
+    # momentum rows: (I/dt + K) u_i + s_in p1 + s_out p2 = p_far + I/dt u_old
+    #   srcA: driven by PA - p1  -> +p1
+    #   srcB: driven by PB - p1  -> +p1
+    #   mid:  driven by p1 - p2  -> -p1 +p2   (the span couples to both)
+    #   sink1/2: driven by p2 - 0 -> -p2
+    rows = [("srcA", 1.0, 0.0, PA), ("srcB", 1.0, 0.0, PB),
+            ("mid", -1.0, 1.0, 0.0), ("sink1", 0.0, -1.0, 0.0),
+            ("sink2", 0.0, -1.0, 0.0)]
+    for step in range(1, N_STEPS + 1):
+        Amat = [[0.0] * 7 for _ in range(7)]
+        b = [0.0] * 7
+        for k, (pn, s1, s2, pfar) in enumerate(rows):
+            Amat[k][k] = iner[pn] / DT + kres[pn]
+            Amat[k][5] = s1
+            Amat[k][6] = s2
+            b[k] = pfar + iner[pn] / DT * u_old[pn]
+        # balance rows: sum s A u = 0 (s = +1 when the node is at the
+        # pipe's outlet)
+        Amat[5] = [AAS, AAS, -AM, 0.0, 0.0, 0.0, 0.0]
+        Amat[6] = [0.0, 0.0, AM, -A1, -A2, 0.0, 0.0]
+        x = gauss(Amat, b)
+        uA, uB, uC, u1, u2, p1, p2 = x
+        unew = {"srcA": uA, "srcB": uB, "mid": uC,
+                "sink1": u1, "sink2": u2}
+
+        # node mixes from the feeding branches' end cells at the new
+        # velocities, before the transport advances the fields
+        ala = AAS * uA * ALPHA
+        alb = AAS * uB * ALPHA
+        aga = AAS * uA * (1.0 - ALPHA)
+        agb = AAS * uB * (1.0 - ALPHA)
+        phi1 = (ala * w["srcA"][-1] + alb * w["srcB"][-1]) / (ala + alb)
+        ea = ala * RHO_L * CL + aga * RHO_G * CG
+        eb = alb * RHO_L * CL + agb * RHO_G * CG
+        t1 = (ea * tfield["srcA"][-1] + eb * tfield["srcB"][-1]) / (ea + eb)
+        # J2 is fed by the span alone: the mix is the span's end state
+        phi2 = w["mid"][-1]
+        t2 = tfield["mid"][-1]
+
+        w["srcA"] = advect_water(w["srcA"], dxc["srcA"], uA * ALPHA, WF_A)
+        w["srcB"] = advect_water(w["srcB"], dxc["srcB"], uB * ALPHA, WF_B)
+        w["mid"] = advect_water(w["mid"], dxc["mid"], uC * ALPHA, phi1)
+        w["sink1"] = advect_water(w["sink1"], dxc["sink1"], u1 * ALPHA,
+                                  phi2)
+        w["sink2"] = advect_water(w["sink2"], dxc["sink2"], u2 * ALPHA,
+                                  phi2)
+        tfield["srcA"] = thermal(tfield["srcA"], AAS, dxc["srcA"], uA, T_A)
+        tfield["srcB"] = thermal(tfield["srcB"], AAS, dxc["srcB"], uB, T_B)
+        tfield["mid"] = thermal(tfield["mid"], AM, dxc["mid"], uC, t1)
+        tfield["sink1"] = thermal(tfield["sink1"], A1, dxc["sink1"], u1,
+                                  t2)
+        tfield["sink2"] = thermal(tfield["sink2"], A2, dxc["sink2"], u2,
+                                  t2)
+        u_old = unew
+        if step % REPORT == 0:
+            traj.append({"t": step * DT, "u": dict(unew), "p1": p1,
+                         "p2": p2, "w": {pn: w[pn][:] for pn in order},
+                         "T": {pn: tfield[pn][:] for pn in order}})
+
+    if len(frames) != len(traj):
+        fails.append(f"frame count {len(frames)} != {len(traj)}")
+    else:
+        print(f"ok:   {len(frames)} frames at reportEvery {REPORT}")
+    for fr, tr in zip(frames, traj):
+        t = fr["t"]
+        # the Newton balance rows are exact: net = sum s A u at the
+        # converged velocities (tolerance 1e-12 * rate scale ~ 1e-15)
+        for jn_name, want_p in (("J1", tr["p1"]), ("J2", tr["p2"])):
+            jn = fr["junctions"][jn_name]
+            check(f"{jn_name} net balance (t={t})", jn["net"], 0.0, 0.0,
+                  1e-12)
+            check(f"{jn_name} pressure (t={t})", jn["p"], want_p, 1e-4)
+        for pn in order:
+            n, length, d = geo[pn]
+            u = tr["u"][pn]
+            check(f"vm {pn} (t={t})", fr["pipes"][pn]["vm"], u, 1e-4)
+            # the emitted dp is the friction sum alone (the inertia lives
+            # in the node pressures, not in the loss-marched profiles);
+            # evaluated at the KERNEL's converged vm: the checker's
+            # laminar-trajectory velocity deviates from it by the ~1e-9
+            # Churchill-vs-laminar difference, which the dp ~ u^2
+            # amplification would smear past a 1e-9 march tolerance (the
+            # velocity physics itself is covered by the 1e-4 vm check)
+            vmk = fr["pipes"][pn]["vm"]
+            re = RHO_M * abs(vmk) * d / MU_M
+            dp_want = n * churchill(re, 0.0) * (dxc[pn] / d) * 0.5 \
+                * RHO_M * vmk * vmk
+            check(f"dp {pn} (t={t})", fr["pipes"][pn]["dp"], dp_want, 1e-9)
+            cells = fr["pcell"][pn]
+            for i, c in enumerate(cells):
+                if abs(c["alpha"] - ALPHA) > 1e-9:
+                    fails.append(f"{pn} alpha[{i}](t={t}) drifted")
+                    break
+                if abs(c["vsl"] + c["vsg"] - fr["pipes"][pn]["vm"]) > 1e-9:
+                    fails.append(f"{pn} phase split [{i}](t={t})")
+                    break
+                if abs(c["water"] - tr["w"][pn][i]) > 1e-9:
+                    fails.append(f"{pn} water[{i}](t={t}): got={c['water']}"
+                                 f" want={tr['w'][pn][i]}")
+                    break
+                # the trajectory's velocities carry the ~1e-6
+                # Churchill-vs-laminar deviation, so the implicit thermal
+                # solve can only be matched to ~1e-9 (atol 1e-7)
+                if abs(c["T"] - tr["T"][pn][i]) > 1e-7:
+                    fails.append(f"{pn} T[{i}](t={t}): got={c['T']}"
+                                 f" want={tr['T'][pn][i]}")
+                    break
+            else:
+                print(f"ok:   {pn} alpha/water/T fields (t={t}) "
+                      f"(1e-9 / 1e-9 / 1e-7)")
+
+    # steady anchors on the closed form (last frame)
+    fr = frames[-1]
+    check("steady p1*", fr["junctions"]["J1"]["p"], p1_star, 1e-4)
+    check("steady p2*", fr["junctions"]["J2"]["p"], p2_star, 1e-4)
+    for pn in order:
+        check(f"steady vm {pn}*", fr["pipes"][pn]["vm"], u_star[pn], 1e-4)
+    # the loss-marched node pressures meet at the junctions at steady
+    # state (src pipes anchored at their far inlet, the span and the sinks
+    # at their far outlet / imposed rates)
+    check("srcA far node = p1*", fr["pnode"]["srcA"][-1], p1_star, 1e-4)
+    check("srcB far node = p1*", fr["pnode"]["srcB"][-1], p1_star, 1e-4)
+    check("mid head node = p1*", fr["pnode"]["mid"][0], p1_star, 1e-4)
+    check("mid tail node = p2*", fr["pnode"]["mid"][-1], p2_star, 1e-4)
+    check("sink1 head node = p2*", fr["pnode"]["sink1"][0], p2_star, 1e-4)
+    check("sink2 head node = p2*", fr["pnode"]["sink2"][0], p2_star, 1e-4)
+    # front-flushed composition/temperature: srcA undisturbed, srcB
+    # flushed, the span carries the J1 mix and hands it to both sinks
+    check("steady phi1* (mid water)", fr["pcell"]["mid"][-1]["water"],
+          phi_star, 1e-4)
+    check("steady T1* (mid temperature)", fr["pcell"]["mid"][-1]["T"],
+          t_star, 1e-4)
+    check("sink1 water = phi1*", fr["pcell"]["sink1"][-1]["water"],
+          phi_star, 1e-4)
+    check("sink2 water = phi1*", fr["pcell"]["sink2"][-1]["water"],
+          phi_star, 1e-4)
+    check("sink1 temperature = T1*", fr["pcell"]["sink1"][-1]["T"],
+          t_star, 1e-4)
+    check("sink2 temperature = T1*", fr["pcell"]["sink2"][-1]["T"],
+          t_star, 1e-4)
+    check("srcA water undisturbed", fr["pcell"]["srcA"][-1]["water"],
+          WF_A, 1e-9)
+    check("srcB water flushed", fr["pcell"]["srcB"][-1]["water"],
+          WF_B, 1e-9)
+    check("srcA temperature undisturbed",
+          fr["pcell"]["srcA"][-1]["T"], T_A, 1e-9)
+    check("srcB temperature flushed", fr["pcell"]["srcB"][-1]["T"],
+          T_B, 1e-9)
+    drift = []
+    for pn in order:
+        pn1, pn0 = fr["pipes"][pn], frames[-2]["pipes"][pn]
+        if abs(pn1["vm"] - pn0["vm"]) > 1e-9 \
+                or abs(pn1["dp"] - pn0["dp"]) > 1e-9:
+            drift.append(pn)
+        for c1f, c0f in zip(fr["pcell"][pn], frames[-2]["pcell"][pn]):
+            for key in ("alpha", "water", "vsl", "vsg", "T"):
+                if abs(c1f[key] - c0f[key]) > 1e-9:
                     drift.append(f"{pn}.{key}")
     if drift:
         fails.append(f"state still drifting between the last two frames: "

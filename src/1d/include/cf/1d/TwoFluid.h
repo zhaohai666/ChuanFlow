@@ -225,8 +225,9 @@ struct TwoFluidJunctionSpec
 /// Branch-network case: several TwoFluidPipe objects sharing junction
 /// nodes. The per-pipe physics (fluid/closure/initial/thermal/hydrate) is
 /// shared; geometry and the non-junction boundary of each pipe are per
-/// pipe. Every pipe has exactly one junction end (spans between two
-/// junctions are a follow-up), so junctions solve independently.
+/// pipe. Every pipe joins one or two junctions (a two-junction pipe is a
+/// span between nodes and carries no boundary of its own); the per-step
+/// hydraulics solve as one global Newton over the whole network.
 struct TwoFluidNetworkCase
 {
     TwoFluidCase perPipe; // networkMode = true; pipes/inlet/outlet unused
@@ -463,21 +464,25 @@ private:
 TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict);
 
 /// Branch network of TwoFluidPipe objects joined at junction nodes. Each
-/// pipe has one junction end; its other end carries a real boundary. Every
-/// step each junction solves independently: a coupled Newton over the
-/// free-branch (pressure-driven far end) mixture velocities and the shared
-/// junction pressure - one implicit-Euler branch momentum residual per
-/// free branch plus the junction volume balance sum(s A vM) = 0 - then the
-/// inflow streams mix (holdup/water/hydrate volume-flow-weighted,
-/// temperature heat-capacity-flow-weighted, gas density mass-flux-weighted)
-/// and every junction face is set: feeding branches get a fixed-pressure
-/// ghost at the mixed state, supplied branches get the junction split
-/// imposed as phaseRates with the pipe's own flux functions at the mixed
-/// holdup (F + G = vM keeps the volume balance exact; the phase split is
-/// exact for the homogeneous closure and closure-approximate with slip).
-/// Rate-driven far ends fix their branch velocity, sealed far ends are
-/// dead legs; each junction needs at least one fixed-pressure far end as
-/// its pressure reference. The dynamic closure is not supported yet.
+/// pipe joins one or two junctions: a single-junction pipe has a real
+/// boundary at its other end, a two-junction pipe is a span between nodes.
+/// Every step the hydraulics solve as ONE global Newton: the unknowns are
+/// the pressure-driven pipes' mixture velocities (fixed-pressure far end,
+/// or span) plus every junction pressure; the rows are the implicit-Euler
+/// momentum residual per driven pipe (analytic sensitivity to the junction
+/// pressures at its ends) and the volume balance sum(s A vM) = 0 per
+/// junction. Rate-driven far ends fix their branch velocity, sealed far
+/// ends are dead legs; each junction needs at least one fixed-pressure far
+/// end as its pressure reference. After the solve every junction mixes its
+/// inflows (holdup/water/hydrate volume-flow-weighted, temperature
+/// heat-capacity-flow-weighted, gas density mass-flux-weighted) and every
+/// junction face is set: feeding branches get a fixed-pressure ghost at
+/// the mixed state, supplied branches get the junction split imposed as
+/// phaseRates with the pipe's own flux functions at the mixed holdup
+/// (F + G = vM keeps the volume balance exact; the phase split is exact
+/// for the homogeneous closure and closure-approximate with slip). A span
+/// pipe can feed one junction and be supplied by the other. The dynamic
+/// closure is not supported yet.
 class TwoFluidNetwork
 {
 public:
@@ -507,6 +512,8 @@ private:
         int pipe = 0;            // index into pipes_
         bool atOutlet = false;   // the junction sits at the pipe's outlet
         TwoFluidBoundary far;    // the pipe's non-junction boundary
+                                 // (sealed for a span pipe's junction end:
+                                 // the other end is another junction)
     };
     struct Junction
     {
@@ -518,7 +525,7 @@ private:
         // last mixed junction-face state (kept when nothing flows in)
         double alphaJ = 0, waterJ = 0, hydrateJ = 0, tJ = 0, rhoJ = 0;
     };
-    void solveJunction(double dt, Junction& jn);
+    void solveNetwork(double dt);
 
     TwoFluidNetworkCase cfg_;
     std::vector<std::unique_ptr<TwoFluidPipe>> pipes_;
@@ -544,7 +551,10 @@ private:
 ///       }
 ///   }
 /// (boundary keys name the pipe end; ends claimed by a junction must not
-/// carry a boundary, every other end must.)
+/// carry a boundary, every other end must. A pipe may join two junctions -
+/// a span between nodes with both ends boundary-free:
+///   J1 { ends ( srcA.outlet srcB.outlet mid.inlet ); }
+///   J2 { ends ( mid.outlet sink1.inlet sink2.inlet ); } )
 TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict);
 
 } // namespace cf

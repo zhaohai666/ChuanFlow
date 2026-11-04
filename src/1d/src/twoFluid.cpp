@@ -1156,10 +1156,11 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
         }
     }
 
-    // topology validation: every pipe exactly one junction end, that end
-    // boundary-free, the other end carrying a boundary; a rate-driven far
-    // end must inject toward the junction; the dynamic closure does not
-    // support junctions yet
+    // topology validation: every pipe joins one or two junctions (a span
+    // carries none), that/those ends boundary-free, a single-junction
+    // pipe's other end carrying a boundary; a rate-driven far end must
+    // inject toward the junction; the dynamic closure does not support
+    // junctions yet
     if (nc.perPipe.closure.model == 2)
         cfFatal("twoFluid: the dynamic closure does not support junctions"
                 " yet");
@@ -1193,9 +1194,11 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
     {
         const bool inJ = junctionEnd.count(g.name + ".inlet") > 0;
         const bool outJ = junctionEnd.count(g.name + ".outlet") > 0;
-        if (inJ == outJ)
+        if (!inJ && !outJ)
             cfFatal("twoFluid: pipe '" + g.name
-                    + "' needs exactly one junction end");
+                    + "' needs one or two junction ends");
+        if (inJ && outJ) continue; // span between two junctions: both ends
+                                   // boundary-free, driven by pJ at each
         const std::string farKey = g.name + (inJ ? ".outlet" : ".inlet");
         if (!nc.boundaries.count(farKey))
             cfFatal("twoFluid: pipe '" + g.name + "' end '" + farKey
@@ -1249,7 +1252,12 @@ TwoFluidNetwork::TwoFluidNetwork(const TwoFluidNetworkCase& c)
             e.atOutlet = ref.substr(dot + 1) == "outlet";
             const std::string farKey = cfg_.pipes[e.pipe].name
                                      + (e.atOutlet ? ".inlet" : ".outlet");
-            e.far = cfg_.boundaries.at(farKey);
+            // a span pipe's far end is another junction end: no boundary,
+            // keep the default-constructed (sealed) EndRef.far - the warm
+            // start skips it and the per-step global solve drives the span
+            // from its two junction pressures
+            const auto farIt = cfg_.boundaries.find(farKey);
+            if (farIt != cfg_.boundaries.end()) e.far = farIt->second;
             pressureRef |= e.far.type
                         == TwoFluidBoundary::Type::fixedPressure;
             jn.ends.push_back(e);
@@ -1285,7 +1293,7 @@ TwoFluidNetwork::TwoFluidNetwork(const TwoFluidNetworkCase& c)
         TwoFluidCase pc = cfg_.perPipe;
         pc.pipes.assign(1, g);
         // the junction end gets a placeholder ghost (fixed pressure at the
-        // initial state) that the per-step junction solve overwrites
+        // initial state) that the per-step network solve overwrites
         TwoFluidBoundary junctionGhost;
         junctionGhost.type = TwoFluidBoundary::Type::fixedPressure;
         junctionGhost.pressure = 0;
@@ -1294,21 +1302,17 @@ TwoFluidNetwork::TwoFluidNetwork(const TwoFluidNetworkCase& c)
         junctionGhost.hydrateFraction
             = pc.hydrateOn ? pc.hydrate.initial : 0.0;
         junctionGhost.temperature = pc.temperature0;
-        bool jAtOutlet = false;
+        bool jIn = false, jOut = false;
         for (const Junction& jn : junctions_)
             for (const EndRef& e : jn.ends)
-                if (e.pipe == i) jAtOutlet = e.atOutlet;
-        const std::string farKey = g.name + (jAtOutlet ? ".inlet" : ".outlet");
-        if (jAtOutlet)
-        {
-            pc.inlet = cfg_.boundaries.at(farKey);
-            pc.outlet = junctionGhost;
-        }
-        else
-        {
-            pc.inlet = junctionGhost;
-            pc.outlet = cfg_.boundaries.at(farKey);
-        }
+                if (e.pipe == i) (e.atOutlet ? jOut : jIn) = true;
+        // junction ends get the placeholder ghost the per-step network
+        // solve overwrites; the loader guarantees every non-junction end
+        // carries a boundary
+        pc.inlet = jIn ? junctionGhost
+                       : cfg_.boundaries.at(g.name + ".inlet");
+        pc.outlet = jOut ? junctionGhost
+                         : cfg_.boundaries.at(g.name + ".outlet");
         pipes_.push_back(std::make_unique<TwoFluidPipe>(pc));
     }
 }
@@ -1316,206 +1320,243 @@ TwoFluidNetwork::TwoFluidNetwork(const TwoFluidNetworkCase& c)
 void TwoFluidNetwork::step(double dt)
 {
     if (!(dt > 0)) cfFatal("twoFluid: dt must be positive");
-    for (Junction& jn : junctions_) solveJunction(dt, jn);
+    solveNetwork(dt);
     for (auto& p : pipes_) p->step(dt);
     t_ += dt;
 }
 
-void TwoFluidNetwork::solveJunction(double dt, Junction& jn)
+void TwoFluidNetwork::solveNetwork(double dt)
 {
-    struct Branch
+    const int np = static_cast<int>(pipes_.size());
+    const int nj = static_cast<int>(junctions_.size());
+
+    // per-pipe junction ends (-1 = no junction at that end)
+    std::vector<int> jIn(np, -1), jOut(np, -1);
+    for (int j = 0; j < nj; ++j)
+        for (const EndRef& e : junctions_[j].ends)
+            (e.atOutlet ? jOut : jIn)[e.pipe] = j;
+
+    auto endBoundary = [&](int i, bool atInlet) -> const TwoFluidBoundary*
     {
-        int pipe = 0;
-        double s = 0;      // +1 junction at the outlet, -1 at the inlet
-        double area = 0;
-        bool free = false; // pressure-driven far end: velocity unknown
-        double vM = 0;     // known velocity (rate far end / dead leg)
-        double pFar = 0;   // far fixed pressure (free branches)
-        int pos = -1;      // row/column in the Newton system (free branches)
+        const std::string key = cfg_.pipes[i].name
+                              + (atInlet ? ".inlet" : ".outlet");
+        const auto it = cfg_.boundaries.find(key);
+        return it == cfg_.boundaries.end() ? nullptr : &it->second;
     };
-    std::vector<Branch> br;
-    for (const EndRef& e : jn.ends)
-    {
-        Branch b;
-        b.pipe = e.pipe;
-        b.s = e.atOutlet ? 1.0 : -1.0;
-        b.area = pipes_[e.pipe]->area();
-        b.free = e.far.type == TwoFluidBoundary::Type::fixedPressure;
-        if (b.free) b.pFar = e.far.pressure;
-        else if (e.far.type == TwoFluidBoundary::Type::phaseRates)
-            b.vM = e.far.vsl + e.far.vsg;
-        // sealed far end: dead leg, vM = 0
-        br.push_back(b);
-    }
-    const int m = static_cast<int>(br.size());
+
+    // pipe classification: free = pressure-driven (unknown velocity) -
+    // either a fixed-pressure far end or a span between two junctions;
+    // otherwise the velocity is imposed (rate far end, or sealed dead leg)
+    std::vector<bool> freePipe(np, false);
+    std::vector<double> pFarIn(np, 0.0), pFarOut(np, 0.0), uImposed(np, 0.0);
+    std::vector<int> pos(np, -1); // row/column of the free pipes
     int nf = 0;
-    for (int k = 0; k < m; ++k)
-        if (br[k].free) br[k].pos = nf++;
-
-    // unknowns: the free-branch velocities, then the shared junction
-    // pressure; the momentum rows are branch-diagonal (each free branch's
-    // residual sees only its own velocity), the balance row couples them
-    std::vector<double> x(nf + 1);
-    for (int k = 0; k < m; ++k)
-        if (br[k].free) x[br[k].pos] = pipes_[br[k].pipe]->mixtureVelocity();
-    x[nf] = jn.p;
-
-    auto vMOf = [&](const std::vector<double>& xv, int k)
+    for (int i = 0; i < np; ++i)
     {
-        return br[k].free ? xv[br[k].pos] : br[k].vM;
-    };
-    auto balance = [&](const std::vector<double>& xv)
+        const bool span = jIn[i] >= 0 && jOut[i] >= 0;
+        const TwoFluidBoundary* far
+            = span ? nullptr : endBoundary(i, jIn[i] < 0);
+        if (span
+            || (far && far->type == TwoFluidBoundary::Type::fixedPressure))
+        {
+            freePipe[i] = true;
+            pos[i] = nf++;
+            if (!span)
+            {
+                if (jIn[i] < 0) pFarIn[i] = far->pressure;
+                else pFarOut[i] = far->pressure;
+            }
+        }
+        else if (far && far->type == TwoFluidBoundary::Type::phaseRates)
+            uImposed[i] = far->vsl + far->vsg;
+        // sealed far end: dead leg, uImposed stays 0
+    }
+
+    // unknowns: the free pipes' velocities (pipe order), then the junction
+    // pressures; the momentum rows are pipe-diagonal in the velocities but
+    // couple to the junction pressures at the pipe's ends (a span couples
+    // to both), the balance rows couple the free velocities per junction
+    const int pBase = nf;
+    std::vector<double> x(nf + nj, 0.0);
+    for (int i = 0; i < np; ++i)
+        if (freePipe[i]) x[pos[i]] = pipes_[i]->mixtureVelocity();
+    for (int j = 0; j < nj; ++j) x[pBase + j] = junctions_[j].p;
+
+    // the pressure at a pipe end: the junction pressure there, or the far
+    // fixed pressure
+    auto pEnd = [&](int i, bool atInlet, const std::vector<double>& xv)
     {
-        double q = 0;
-        for (int k = 0; k < m; ++k)
-            q += br[k].s * br[k].area * vMOf(xv, k);
-        return q;
+        const int j = atInlet ? jIn[i] : jOut[i];
+        if (j >= 0) return xv[pBase + j];
+        return atInlet ? pFarIn[i] : pFarOut[i];
     };
-    auto dpDriveOf = [&](int k, double pJ)
+    auto uOf = [&](int i, const std::vector<double>& xv)
     {
-        // the driving difference toward the junction, signed like the
-        // serial fixed-pressure form: positive drives flow into the
-        // junction for s = +1 branches
-        return br[k].s * (br[k].pFar - pJ);
+        return freePipe[i] ? xv[pos[i]] : uImposed[i];
     };
 
-    std::vector<double> r(nf + 1), scale(nf + 1);
+    std::vector<double> r(nf + nj, 0.0), scale(nf + nj, 0.0);
     auto residuals = [&](const std::vector<double>& xv)
     {
-        for (int k = 0; k < m; ++k)
+        for (int i = 0; i < np; ++i)
         {
-            if (!br[k].free) continue;
-            r[br[k].pos] = pipes_[br[k].pipe]->momentumResidual(
-                dt, vMOf(xv, k), dpDriveOf(k, xv[nf]));
+            if (!freePipe[i]) continue;
+            r[pos[i]] = pipes_[i]->momentumResidual(
+                dt, xv[pos[i]], pEnd(i, true, xv) - pEnd(i, false, xv));
         }
-        r[nf] = balance(xv);
+        for (int j = 0; j < nj; ++j)
+        {
+            double q = 0;
+            for (const EndRef& e : junctions_[j].ends)
+                q += (e.atOutlet ? 1.0 : -1.0) * pipes_[e.pipe]->area()
+                   * uOf(e.pipe, xv);
+            r[pBase + j] = q;
+        }
     };
-    for (int k = 0; k < m; ++k)
+    for (int i = 0; i < np; ++i)
     {
-        if (!br[k].free) continue;
-        scale[br[k].pos] = pipes_[br[k].pipe]->momentumScale(dt)
-                         + std::abs(br[k].pFar) + std::abs(x[nf]);
+        if (!freePipe[i]) continue;
+        scale[pos[i]] = pipes_[i]->momentumScale(dt)
+                      + std::abs(pEnd(i, true, x))
+                      + std::abs(pEnd(i, false, x));
     }
-    double qScale = 1e-12;
-    for (int k = 0; k < m; ++k)
-        qScale += br[k].area * (std::abs(vMOf(x, k)) + 1.0);
-    scale[nf] = qScale;
+    for (int j = 0; j < nj; ++j)
+    {
+        double qs = 1e-12;
+        for (const EndRef& e : junctions_[j].ends)
+            qs += pipes_[e.pipe]->area() * (std::abs(uOf(e.pipe, x)) + 1.0);
+        scale[pBase + j] = qs;
+    }
 
     bool ok = false;
     for (int it = 0; it < 60; ++it)
     {
         residuals(x);
         ok = true;
-        for (int q = 0; q <= nf; ++q)
+        for (int q = 0; q < nf + nj; ++q)
             if (!(std::abs(r[q]) <= 1e-12 * scale[q])) { ok = false; break; }
         if (ok) break;
 
         std::vector<std::vector<double>> J(
-            nf + 1, std::vector<double>(nf + 1, 0.0));
-        for (int k = 0; k < m; ++k)
+            nf + nj, std::vector<double>(nf + nj, 0.0));
+        for (int i = 0; i < np; ++i)
         {
-            if (!br[k].free) continue;
-            TwoFluidPipe& p = *pipes_[br[k].pipe];
-            const double u = x[br[k].pos];
+            if (!freePipe[i]) continue;
+            TwoFluidPipe& p = *pipes_[i];
+            const double u = x[pos[i]];
+            const double dp = pEnd(i, true, x) - pEnd(i, false, x);
             const double h
                 = std::max(1e-6 * std::max(std::abs(u), 1e-3), 1e-12);
             const double slope
-                = (p.momentumResidual(dt, u + h, dpDriveOf(k, x[nf]))
-                   - p.momentumResidual(dt, u - h, dpDriveOf(k, x[nf])))
-                  / (2.0 * h);
+                = (p.momentumResidual(dt, u + h, dp)
+                   - p.momentumResidual(dt, u - h, dp)) / (2.0 * h);
             if (!(slope > 0))
-                cfFatal("twoFluid: non-monotone branch momentum at junction '"
-                        + jn.name + "'");
-            J[br[k].pos][br[k].pos] = slope;
-            J[br[k].pos][nf] = br[k].s; // dR/dpJ = s (R = ... - s(pFar-pJ))
+                cfFatal("twoFluid: non-monotone pipe momentum at pipe '"
+                        + cfg_.pipes[i].name + "'");
+            J[pos[i]][pos[i]] = slope;
+            // dR/dpEnd = -1 each way, so dR/dpJ = -d(dpDrive)/dpJ:
+            // -1 when the junction sits at the pipe's inlet, +1 at its
+            // outlet (a span pipe carries both)
+            if (jIn[i] >= 0) J[pos[i]][pBase + jIn[i]] = -1.0;
+            if (jOut[i] >= 0) J[pos[i]][pBase + jOut[i]] = 1.0;
         }
-        for (int k = 0; k < m; ++k)
-            if (br[k].free) J[nf][br[k].pos] = br[k].s * br[k].area;
-        std::vector<double> dx = r;
-        for (double& v : dx) v = -v;
-        detail::solveDenseLinear(J, dx);
-        for (int q = 0; q <= nf; ++q) x[q] += dx[q];
+        for (int j = 0; j < nj; ++j)
+            for (const EndRef& e : junctions_[j].ends)
+                if (freePipe[e.pipe])
+                    J[pBase + j][pos[e.pipe]]
+                        = (e.atOutlet ? 1.0 : -1.0)
+                        * pipes_[e.pipe]->area();
+        std::vector<double> dxv = r;
+        for (double& v : dxv) v = -v;
+        detail::solveDenseLinear(J, dxv);
+        for (int q = 0; q < nf + nj; ++q) x[q] += dxv[q];
     }
     if (!ok)
-        cfFatal("twoFluid: junction '" + jn.name
-                + "' Newton did not converge");
-    jn.p = x[nf];
-    for (int k = 0; k < m; ++k)
-        if (br[k].free) br[k].vM = x[br[k].pos];
+        cfFatal("twoFluid: network Newton did not converge");
+    for (int j = 0; j < nj; ++j) junctions_[j].p = x[pBase + j];
 
-    // every branch takes its velocity (free branches the converged one),
-    // then the inflow streams mix: holdup/water/hydrate volume-flow
+    // every pipe takes its velocity (free pipes the converged one), then
+    // per junction the inflow streams mix: holdup/water/hydrate volume-flow
     // weighted, temperature heat-capacity-flow weighted, gas density
     // gas-mass-flux weighted (with the EOS this closes the junction gas
     // mass balance exactly)
-    for (int k = 0; k < m; ++k)
-        pipes_[br[k].pipe]->setExternalMomentum(br[k].vM);
+    for (int i = 0; i < np; ++i)
+        pipes_[i]->setExternalMomentum(uOf(i, x));
 
     const TwoFluidFluid& f = cfg_.perPipe.fluid;
-    double qL = 0, qG = 0, wNum = 0, hNum = 0, eNum = 0, eDen = 0, gNum = 0;
-    for (int k = 0; k < m; ++k)
+    for (int j = 0; j < nj; ++j)
     {
-        if (br[k].s * br[k].vM <= 0) continue; // fed or static: no inflow
-        const TwoFluidPipe& p = *pipes_[br[k].pipe];
-        const bool atInlet = !jn.ends[k].atOutlet;
-        const double fl = p.endLiquidFlux(atInlet);
-        const double fg = p.endGasVolumeFlux(atInlet);
-        if (fl * br[k].s < 0 || fg * br[k].s < 0)
-            cfFatal("twoFluid: countercurrent phase flux at junction '"
-                    + jn.name + "' not supported");
-        const double aL = br[k].area * std::abs(fl);
-        const double aG = br[k].area * std::abs(fg);
-        const double rhoG = p.endGasDensity(atInlet);
-        qL += aL;
-        qG += aG;
-        wNum += aL * p.endWater(atInlet);
-        hNum += aL * p.endHydrate(atInlet);
-        eNum += (aL * f.rhoL * f.cL + aG * rhoG * f.cG)
-              * p.endTemperature(atInlet);
-        eDen += aL * f.rhoL * f.cL + aG * rhoG * f.cG;
-        gNum += aG * rhoG;
-    }
-    const double qM = qL + qG;
-    if (qM > 0)
-    {
-        jn.alphaJ = qL / qM;
-        if (qL > 0)
+        Junction& jn = junctions_[j];
+        double qL = 0, qG = 0, wNum = 0, hNum = 0, eNum = 0, eDen = 0,
+               gNum = 0;
+        for (const EndRef& e : jn.ends)
         {
-            jn.waterJ = wNum / qL;
-            jn.hydrateJ = hNum / qL;
+            const double s = e.atOutlet ? 1.0 : -1.0;
+            if (s * uOf(e.pipe, x) <= 0) continue; // fed or static: no inflow
+            const TwoFluidPipe& p = *pipes_[e.pipe];
+            const bool atInlet = !e.atOutlet;
+            const double fl = p.endLiquidFlux(atInlet);
+            const double fg = p.endGasVolumeFlux(atInlet);
+            if (fl * s < 0 || fg * s < 0)
+                cfFatal("twoFluid: countercurrent phase flux at junction '"
+                        + jn.name + "' not supported");
+            const double aL = p.area() * std::abs(fl);
+            const double aG = p.area() * std::abs(fg);
+            const double rhoG = p.endGasDensity(atInlet);
+            qL += aL;
+            qG += aG;
+            wNum += aL * p.endWater(atInlet);
+            hNum += aL * p.endHydrate(atInlet);
+            eNum += (aL * f.rhoL * f.cL + aG * rhoG * f.cG)
+                  * p.endTemperature(atInlet);
+            eDen += aL * f.rhoL * f.cL + aG * rhoG * f.cG;
+            gNum += aG * rhoG;
         }
-        if (eDen > 0) jn.tJ = eNum / eDen;
-        if (qG > 0) jn.rhoJ = gNum / qG;
-    }
+        const double qM = qL + qG;
+        if (qM > 0)
+        {
+            jn.alphaJ = qL / qM;
+            if (qL > 0)
+            {
+                jn.waterJ = wNum / qL;
+                jn.hydrateJ = hNum / qL;
+            }
+            if (eDen > 0) jn.tJ = eNum / eDen;
+            if (qG > 0) jn.rhoJ = gNum / qG;
+        }
 
-    // junction faces: feeding branches get a fixed-pressure ghost at the
-    // mixed state (their face flux upwinds from the boundary cell);
-    // supplied branches get the junction split imposed as phaseRates at
-    // the pipe's own flux functions at the mixed holdup (F + G = vM keeps
-    // the volume balance exact for every closure; the phase split is
-    // exact for the homogeneous closure, closure-approximate with slip)
-    for (int k = 0; k < m; ++k)
-    {
-        TwoFluidPipe& p = *pipes_[br[k].pipe];
-        TwoFluidBoundary b;
-        b.pressure = jn.p;
-        b.alpha = jn.alphaJ;
-        b.waterFraction = jn.waterJ;
-        b.hydrateFraction = jn.hydrateJ;
-        b.temperature = jn.tJ;
-        b.rhoGInjected = jn.rhoJ;
-        if (br[k].s * br[k].vM > 0)
+        // junction faces: feeding branches get a fixed-pressure ghost at
+        // the mixed state (their face flux upwinds from the boundary cell);
+        // supplied branches get the junction split imposed as phaseRates at
+        // the pipe's own flux functions at the mixed holdup (F + G = vM
+        // keeps the volume balance exact for every closure; the phase split
+        // is exact for the homogeneous closure, closure-approximate with
+        // slip). A span pipe can feed one junction and be supplied by the
+        // other - each junction mutates only its own end.
+        for (const EndRef& e : jn.ends)
         {
-            b.type = TwoFluidBoundary::Type::fixedPressure;
+            TwoFluidPipe& p = *pipes_[e.pipe];
+            const double s = e.atOutlet ? 1.0 : -1.0;
+            TwoFluidBoundary b;
+            b.pressure = jn.p;
+            b.alpha = jn.alphaJ;
+            b.waterFraction = jn.waterJ;
+            b.hydrateFraction = jn.hydrateJ;
+            b.temperature = jn.tJ;
+            b.rhoGInjected = jn.rhoJ;
+            if (s * uOf(e.pipe, x) > 0)
+            {
+                b.type = TwoFluidBoundary::Type::fixedPressure;
+            }
+            else
+            {
+                b.type = TwoFluidBoundary::Type::phaseRates;
+                b.vsl = p.liquidFluxAt(jn.alphaJ);
+                b.vsg = p.gasVolumeFluxAt(jn.alphaJ);
+            }
+            if (e.atOutlet) p.setOutletBoundary(b);
+            else p.setInletBoundary(b);
         }
-        else
-        {
-            b.type = TwoFluidBoundary::Type::phaseRates;
-            b.vsl = p.liquidFluxAt(jn.alphaJ);
-            b.vsg = p.gasVolumeFluxAt(jn.alphaJ);
-        }
-        if (jn.ends[k].atOutlet) p.setOutletBoundary(b);
-        else p.setInletBoundary(b);
     }
 }
 

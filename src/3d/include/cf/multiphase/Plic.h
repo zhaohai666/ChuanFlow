@@ -89,6 +89,11 @@ struct Reconstruction
     /// Cells the interface is in: the band, by construction the same set the
     /// fields above are non-zero on.
     label bandCells = 0;
+
+    /// The tolerance the band was taken at, so that what lies outside it - a cell
+    /// that is full or one that is empty - is known without a second threshold that
+    /// can drift from this one.
+    scalar bandTolerance = 1e-6;
 };
 
 /// Reconstruct the interface of `alpha`. A cell carries an interface when
@@ -105,6 +110,91 @@ Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
 /// The same, taking the starting normal from the field's own gradient operator.
 Reconstruction reconstruct(const volScalarField& alpha, const std::string& gradScheme,
                            NormalChoice choice, scalar bandTolerance = 1e-6);
+
+/// A convex region of space, carried as closed outward-oriented planar face
+/// loops. It starts as a cell, or as a cell cut by the reconstructed plane, and
+/// the point of the type is that it can be cut again - by a list of half-spaces,
+/// which is how much of a phase region lies inside a given box or swept prism is
+/// measured. Every cut keeps the surface closed, so the volume stays an integral
+/// over its own boundary rather than an assumption about the shape.
+struct ConvexRegion
+{
+    std::vector<std::vector<Vector>> loops;
+    bool empty = false; ///< the region is nothing: a cut removed all of it
+
+    scalar volume() const;
+    Vector centroid() const;
+};
+
+/// The whole of one cell as a region.
+ConvexRegion cellRegion(const polyMesh& mesh, label cell);
+
+/// The part of `region` on the `unitNormal . x >= offset` side of the plane.
+ConvexRegion clipRegion(const ConvexRegion& region, const Vector& unitNormal,
+                        scalar offset);
+
+/// One half-space: the side `unitNormal . x >= offset`.
+struct HalfSpace
+{
+    Vector unitNormal = Vector::zero();
+    scalar offset = 0;
+};
+
+/// The intersection with every half-space in the list, applied in order.
+ConvexRegion clipRegion(const ConvexRegion& region,
+                        const std::vector<HalfSpace>& halfSpaces);
+
+/// Piecewise-linear interface *advection*: alpha is carried by the planes, not by
+/// a flux of alpha. The phase leaving a cell through a face in a step is the
+/// volume that cell's reconstructed phase region shares with the prism the face
+/// sweeps through `dt`, so a cell-filled interface stays cell-filled - what the
+/// finite-volume transport of alpha cannot do, because a ramp of alpha moving
+/// through an upwind flux spreads at the truncation error of the scheme. Each
+/// face's flux is computed once, from the upwind cell's geometry, and is the same
+/// number subtracted there and added to the neighbour, so on a flux field that
+/// closes per cell the phase volume is conserved by construction rather than by
+/// the solver's tolerance. A cell whose several outflow faces together would take
+/// more than it holds gives them all the same fraction of what they asked for, and a
+/// cell that would receive more than its own void plus what it is passing on gives
+/// back the same fraction to every inflowing face - which is what lets a full cell in
+/// the middle of the phase keep trading, instead of being told it has no room and
+/// starving the step. The factor is a property of the face, so both cells see the same
+/// number and the limiter costs boundedness without costing conservation, except where
+/// two limiters meet along one face and leave a cell a hair outside [0,1]: that is
+/// clipped, and the clip is counted rather than hidden.
+///
+/// Needs convex cells, like the reconstruction. The boundary is a reservoir whose
+/// phase fraction is the patch's own alpha value: its interface is not
+/// reconstructed, so a case with geometric transport has to keep the interface
+/// off the patches that carry flux.
+struct GeometricStep
+{
+    /// faces that moved phase
+    label fluxFaces = 0;
+    /// faces whose geometric flux the limiter reduced
+    label limitedFaces = 0;
+    /// rounds of the two limits it took to reach a fixed point: 1 when one pass
+    /// already satisfies both bounds
+    label limiterRounds = 0;
+    /// the smallest factor the limiter applied; 1 when nothing was limited
+    scalar minFactor = 1;
+    /// largest |phi| dt / V over the faces that carried phase: the sweep as a
+    /// fraction of the donor cell, the same measure the finite-volume step reports
+    scalar maxCourant = 0;
+    /// phase volume the [0, 1] clip took back, as a fraction of the whole
+    scalar clampVolume = 0;
+    /// sum(alpha V) after the step
+    scalar phaseVolume = 0;
+    /// its change over the step, which is round-off and nothing else
+    scalar volumeError = 0;
+    scalar minAlpha = 0, maxAlpha = 0;
+};
+
+/// One step of geometric transport of `alpha` by the flux `phi` (owner to
+/// neighbour) over `dt`, using the planes of `r` as reconstructed from the field
+/// as it is now.
+GeometricStep advectGeometric(volScalarField& alpha, const Field<scalar>& phi,
+                              scalar dt, const Reconstruction& r);
 
 /// Alpha of a disk extruded along z - the phase region is
 /// `(x - c.x)^2 + (y - c.y)^2 <= R^2`, unconstrained in z - filled into every

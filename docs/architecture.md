@@ -760,12 +760,56 @@ initialAmplitude initialAxis }`（除 `volumetricSource` 之类缺省外，`from
 16.84°→16.49°（均值），因为 α 带的方向信息本来就只有一格；同一组法向改在**截面色心**上量是
 8.34° 均值/14.11° 最大（截面色心在界面上，单元中心不在），这是 case `vofPlic` 断言的口径。
 ② 带均值 κ = −3.696 对 −1/R = −5（−0.74），因为 κ 仍走 §5.10 的单元中心散度模板，一格带撑不起它。
-所以**本增量是测量，不是动力学**：CSF 仍读梯度路径的 κ；下一步是把法向换成 LIC/面积法（ELVIRA）、
-κ 直接由截面多边形给。
+所以**本增量是测量，不是动力学**：这一节的 α 仍由 §5.10 的迎风方程输运、CSF 仍读梯度路径的 κ；
+动力学在 5.13（α 交给平面带走），法向换成 LIC/面积法（ELVIRA）、κ 直接由截面多边形给是再下一步。
 `vofPlic` case（40×40、R/dx = 8、`fill exact` + `reconstruction{ normal mixed; }`、刚体旋转 0.1 rad）
 实测：α 带 = 平面数 = 报告值 = 60，|n|−1 ≤ 6.4e-13，截面色心躺在自己平面上 ≤ 9.2e-13，一格带跨的
 界面面积 0.111878 对圆周拉伸面积 2πR·dz = 0.125664（89%），相体积 π R² dz 守到 5.9e-15 且 40 步内漂移
 ≤ 6.7e-15；对流把锋摊厚后带 60→421 格、Σ截面 0.368——那是锋的厚度而不是圆的周长，checker 明说这点。
+
+### 5.13 几何输运 `src/multiphase/plicAdvect.cpp`（M4：α 由平面带走，而不是由 α 的通量带走）
+`vof::advectGeometric(alpha, phi, dt, reconstruction)`，声明在 `multiphase/Plic.h`。它换掉的正是 5.12
+结尾那条限制的另一半：α 方程的迎风输运是一阶格式，一个格厚的台阶过它必被摊平；把 α 交给平面，
+锋就只是平面在动，不会摊。
+
+**可再裁剪的凸区域** 是这一步的类型支点：`ConvexRegion`（若干闭合外法向面环）+ `cellRegion(mesh, c)`
++ `clipRegion(region, n̂, offset)` 与 `clipRegion(region, halfSpaces)`。`clipConvexCell` 与它共用同一套
+`clipLoops`（whole/void 早退、截帽从共面点回收、容差随**当前**区域尺度走，所以区域能被反复切）。
+体积仍由带符号四面体对自身边界积分——`clipRegion` 保持闭合，因此"区域有多少落在盒里/扫过的棱柱里"
+是一次积分而不是对形状的假设。单元测试里两刀切出的斜 slab 对上 `cubeCap` 之差（≤1e-12），
+box∩box 的棱柱体积恰为 面积×距离。
+
+**每面一个通量**：`sweptPrism(faceLoop, intoDonor, |φ|dt/|S|)` 是面的平移扫过的棱柱，写成半空间：
+面平面与到达平面之间的 slab，加上每条边一个侧面（法向 `cross(n̂, edge)`，朝向棱柱内部一点取向，
+而不是跟环的绕序——这让它对任意边数的多边形与任意存储方向都成立）。 donor 是 φ 的上游格，
+其相区域再被这个棱柱切一刀就是这一面交出的相体积；full 格直接给 `|φ|dt`，空格给 0。
+**同一个数在 donor 处减去、在 receiver 处加上**，所以在离散闭合的 φ 上守恒是构造性的，不靠求解器容差。
+
+**两道限、迭代到不动点**：一个格的多个出流棱柱在角上重叠，因此可能一起要超过它持有的相；接收侧
+同理受"空体积 + 自己正在交出的量"限制（否则相中间的满格会被判为无处接收而饿死整步）。比值沿面共享，
+所以限流不破坏守恒。两侧假设互相作废（缩小一个入流同时缩小它的 donor 出流、也就缩小了那个入流的
+额度），单趟过一遍会留下 α > 1 的格，因此两道限交替重算直到最大改动 ≤ 1e-13。
+
+**边界是水库**：patch 的 α 取 `alpha.faceValue(f)`（其界面不重构），所以走几何输运的算例必须让界面
+远离承载通量的 patch；`reconstruction{ transport alpha|geometric }`（缺省 `alpha`，其他值 `cfFatal`）
+选路径，几何路径下每步先重构再输运，报告行 `geo t <t> flux N limited N rounds N minFactor C
+maxCourant C clamp V volErr V min A max A`。
+
+**实测精度**：`plic.unit` 上，C=0.4 的台阶锋走 3 步后与"平移后的锋"逐格差 3.33e-16、带仍只有 1 格、
+进口交出的体积精确到 1e-12、clamp 恰为 0；40×40 圆盘绕中心旋转 40 步，逐步相体积漂移 ≤ 6.9e-16 相对、
+clamp ≤ 4.42e-17、α ∈ [0,1]、带 60→70 格、限流最多 336 面且最小因子 0.5、最多 35 轮。
+case `vofZalesak`（Zalesak 转盘：40×40、R/dx = 8、`fill exact`、刚体旋转一整圈 6.28 rad、dt 0.01、
+Courant 0.195）实测：每面通量之争 ≤ 3.3e-14 相对、整圈漂移 9.4e-15、clamp ≤ 3.1e-17、α 精确落在 [0,1]、
+限流最多 314/448 面（最小因子 0.5，正是同格两个出流棱柱在角上重合处）、最多 35 轮；平面读回自己那格的
+α ≤ 2.55e-15（14 次报告），带 60→76 格、Σ截面 0.13372 对 2πR·dz = 0.125664（+6.4%）——迎风的 α 方程
+在 40 步内就把同一道锋摊成 421 格、Σ截面 0.368。形状误差 checker 自己写闭式（圆盘与轴对齐单元的解析交面积，
+与求解器的初始化独立，二者在初始场互验到 5.0e-13/格）：一整圈后与解析圆盘差其面积的 **3.85%**，等价于边界
+法向位移 0.154 dx = 1.92% R，76 个界面格里 2 格的前后位置翻了一侧，质心偏 0.198 dx（2.5% R）。
+
+**限制照旧要说清**：① 法向**方向**与 κ 的精度不因输运改变——CSF 仍走 §5.10 的单元中心散度，LIC/面积法向
+与由截面直接给 κ 仍未做；② 3.85% 的形状误差是 PLIC 在粗网格刚体旋转上的典型残余变形，不是守恒破口；
+③ 守恒前提是 φ 逐格闭合：给定速度场上到 round-off（max |div φ| = 2.2e-19），若 φ 由压力修正解出则只到
+连续性残差；④ 只处理凸单元；⑤ 界面不能压在有通量的 patch 上（见上）。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
@@ -792,14 +836,14 @@ initialAmplitude initialAxis }`（除 `volumetricSource` 之类缺省外，`from
 | `kqRWallFunction`（壁面单元代数化） | `wallEquilibrium()` + `imposeWallEquilibrium()`（平衡壁面单元） |
 | `wallDist` / `nearWallDist` | `RansModel::cellWallDistance()`（单元图 Dijkstra） |
 | `fvOptions` / `turbulenceProperties` | case.dict 的 `turbulence{}`（`TurbulenceConfig::fromCase`） |
-| `interFoam` 的 `alphaEqn.H` | `vof::advectAlpha` + `chflow-vof`（速度给定；`surfaceTension{ advect true; }` 时用解出的通量输运 α 并每步重建力） |
-| `MULES::limit` / `limiter` / `localErosion` | 不需要：迎风 + 离散无散 phi 即 M-矩阵，α ∈ [0,1] 是构造性质 |
+| `interFoam` 的 `alphaEqn.H` | `vof::advectAlpha` + `chflow-vof`（速度给定；`surfaceTension{ advect true; }` 时用解出的通量输运 α 并每步重建力；`reconstruction{ transport geometric; }` 时 α 方程整个不再参与，改由平面输运） |
+| `MULES::limit` / `limiter` / `localErosion` | 不需要：迎风 + 离散无散 phi 即 M-矩阵，α ∈ [0,1] 是构造性质；几何平流路径上的对应物是 `advectGeometric` 的出/入流双限（比值沿面共享，因此不破坏守恒） |
 | `interfaceProperties::correctM()`（`fvc::grad(alpha)`） | `vof::interfaceNormal()`（相对阈值只让界面带持有法向，带外精确 0） |
 | `interfaceProperties::k()`（`fvc::div(M)`） | `vof::interfaceCurvature()`（只累加两侧都带界面的面，减去自身法向） |
 | `surfaceTensionForce`（CSF，`f = −σκ∇α` 的密度归一形式） | `vof::surfaceTensionForce`（`f = −(σ/ρ)κ∇α`，符号从 n̂ 朝内的约定推出；p_in − p_out = σ/(ρR) 内侧更高） |
-| `cutCell-stencil.C` / `PLICReconstruct.C`（`fvModels` 的几何截割） | `vof::cellBoundary` + `vof::clipConvexCell` + `vof::offsetForFraction`（凸单元解析截体积/截面面积/一阶矩 + 带括号 Newton 反解平面常数，见 5.12） |
+| `cutCell-stencil.C` / `PLICReconstruct.C`（`fvModels` 的几何截割） | `vof::cellBoundary` + `vof::clipConvexCell` + `vof::offsetForFraction` + `vof::ConvexRegion`/`clipRegion`（凸单元解析截体积/截面面积/一阶矩、可反复裁剪的凸区域、带括号 Newton 反解平面常数，见 5.12/5.13） |
 | `fvex8::interface_normal`（`limitedLevelFour` 重构后取法向） | 未做：`vof::reconstruct` 的 `youngs`/`centroid`/`mixed` 三种取法与一次精化；LIC/面积法向（ELVIRA）与由截面直接给 κ 是下一步 |
-| `interFoam` 每步用重构面输运 α（几何平流） | 未做：本增量 α 仍由 §5.10 的 M-矩阵迎风输运，重构只做几何测量与写出 |
+| `interFoam` 每步用重构面输运 α（几何平流） | `vof::advectGeometric`（面扫棱柱写成半空间列表，逐面一个通量在两侧共享记账；出/入流双限迭代到不动点；`reconstruction{ transport geometric; }`，见 5.13） |
 | `interFoam` 把 `f = F/rho` 挂到 `UEqn` 右端 | `PisoControls::cellForce`（每单元加速度进动量右端，由 HbyA/`explicitOperator` 携带，通量经与压力同一套配对看到它） |
 | `buoyantBoussinesqSimpleFoam` / `PisoFoam` 的 `TEqn` | `EnergyModel::correctEnergy`（`fvm::ddt + fvm::div(phi,T) + fvm::laplacian(alpha,T,-1)`，读求解器自己的连续性通量） |
 | `alphat = nut/Prt`（`turbulentTransport` 的热扩散） | `EnergyModel::alphaCell()` = `kappa/(rho cp) + nut/turbulentPrandtl`（梯度输运类比，前提是网格解析副层） |
@@ -868,7 +912,13 @@ initialAmplitude initialAxis }`（除 `volumetricSource` 之类缺省外，`from
   截面面积合计 0.109–0.119 对拉伸周长 2πR·dz = 0.1257、梯度阈值标 124 格而其中
   64 格无界面（PLIC 的带由 α 定，不多不少）、40→80 加密时法向误差与 κ 不收敛
   （16.84°→16.49°、−3.696→−3.4997 对 −5）因此断言的是**有界**而不是收敛；
-- `tests/cases/*`：二十八个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
+  几何输运三组：`ConvexRegion` 被两刀切出的斜 slab 对两个 cube cap 之差（≤1e-12）、
+  box∩box 的扫过棱柱体积恰为 面积×距离（0.4）、切空返回 `empty` 而不是失败；
+  C=0.4 的**台阶锋**走 3 步后逐格等于"平移后的锋"（最坏 3.33e-16）且带始终只有 1 格、
+  进口交出的体积精确、clamp 恰为 0——这是 α 方程的一阶迎风做不到的；40×40 圆盘自转
+  40 步逐步相体积漂移 ≤ 6.9e-16 相对、clamp ≤ 4.42e-17、α ∈ [0,1]、带 60→70 格、
+  限流最多 336 面且最小因子 0.5（同格两个出流棱柱在角上重合处）；
+- `tests/cases/*`：二十九个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
   `twoFluid*` 五个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
@@ -937,6 +987,15 @@ initialAmplitude initialAxis }`（除 `volumetricSource` 之类缺省外，`from
     `kappaPlic` 带均值 −3.696 对 −1/R = −5、梯度阈值标 124 格其中 64 格无界面、
     带由 60 拉宽到 421 而 Σarea 随之到 0.368——那是锋面厚度不是周长；断言的平面几何
     直接从 vtu 的 `nHatPlic/offsetPlic/areaPlic/centrePlic/kappaPlic` 复算；
+  - `vofZalesak`（§5.13：Zalesak 转盘——同一个 40×40 盒、同一枚 `fill exact` 圆盘，
+    但 `reconstruction{ transport geometric }` 让平面自己带 α，转完整一圈 6.28 rad、
+    628 步、Courant 0.195）：每步面通量之争 ≤ 3.3e-14 相对、整圈相体积漂移 9.4e-15、
+    clamp ≤ 3.1e-17 且 α **精确**落在 [0,1]、双限最多 35 轮、最多 314/448 面被限
+    （最小因子 0.5）、读回 α ≤ 2.55e-15（14 次报告）、带 60→76 格（迎风 40 步就到 421）、
+    Σ截面 0.13372 对拉伸周长 0.125664（+6.4%）；形状误差由 checker 自己写闭式
+    （圆盘×轴对齐单元的解析交面积；它与求解器的初始化在初始场上互验到 5.0e-13/格，
+    所以参照不是求解器算术的复本）：整圈后差圆盘面积的 **3.85%**＝边界法向位移 0.154 dx
+    ＝1.92% R，76 格里 2 格的前后翻了一侧，质心偏 0.198 dx（2.5% R）；
   - `energyConductionFixed` / `energyConductionFlux` / `energyConductionSource`
     （无流动的三道热传导题，逐点从 vtu 质心比对）：两端 fixedValue 的直线剖面误差
     **恰为 0.000e+00 K**、壁面速率 0.2 W 对 `kA dT/dx` = 0.2；`heatFlux` 的符号约定

@@ -146,6 +146,16 @@ add_test(
         $<TARGET_FILE:chflow-vof>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofPlic/case.dict)
 
+# the same droplet carried by its own planes instead of by a flux of alpha: the
+# phase volume is conserved by construction, the front stays one cell thick over a
+# full turn, and the field is compared cell by cell with the analytic rotated disk
+add_test(
+    NAME verify.vofZalesak
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_vof.py
+        $<TARGET_FILE:chflow-vof>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofZalesak/case.dict)
+
 # 3D energy equation. The three conduction cases have no flow at all, so they
 # isolate the diffusion operator, the temperature conditions (fixedValue,
 # heatFlux, adiabatic) and the heat-balance report; the decay case runs the same

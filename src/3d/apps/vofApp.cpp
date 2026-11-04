@@ -321,15 +321,18 @@ void interfaceStatistics(const volScalarField& alpha, const Schemes& schemes,
 /// is the plane's own geometry rather than the field's slope. Absent the block,
 /// the case reports the smeared-band geometry alone.
 ///
-/// It is measurement at this increment, not dynamics: the surface force still
-/// reads the gradient path's curvature, because the curvature of a one-cell band
-/// taken through the cell-centred divergence stencil is not yet better than the
-/// smoothed one the droplet cases are verified with.
+/// With `normal` the planes are measured and written but the transport stays the
+/// finite-volume one: the surface force still reads the gradient path's curvature,
+/// because the curvature of a one-cell band taken through the cell-centred divergence
+/// stencil is not yet better than the smoothed one the droplet cases are verified with.
+/// With `transport geometric` the alpha equation is dropped and the planes carry the
+/// phase - see vof::advectGeometric.
 struct ReconstructionControls
 {
     bool enabled = false;
     vof::NormalChoice choice = vof::NormalChoice::Mixed;
     scalar bandTolerance = 1e-6;
+    bool geometricAdvect = false;
 };
 
 ReconstructionControls loadReconstruction(const Dictionary& caseDict)
@@ -345,6 +348,10 @@ ReconstructionControls loadReconstruction(const Dictionary& caseDict)
     else cfFatal("vof: reconstruction normal must be youngs, centroid or mixed");
     rc.bandTolerance = rd.getScalarOr("bandTolerance", 1e-6);
     if (!(rc.bandTolerance >= 0.0)) cfFatal("vof: bandTolerance must not be negative");
+    const std::string tr = rd.getWordOr("transport", "alpha");
+    if (tr == "alpha") rc.geometricAdvect = false;
+    else if (tr == "geometric") rc.geometricAdvect = true;
+    else cfFatal("vof: reconstruction transport must be alpha or geometric");
     return rc;
 }
 
@@ -477,11 +484,16 @@ int main(int argc, char** argv)
         // geometry was taken.
         vof::Reconstruction plicNow;
         Field<scalar> kappaPlicNow(static_cast<std::size_t>(mesh.nCells()), 0.0);
-        const auto refreshPlic = [&](const std::string& stamp)
+        const auto rebuildPlic = [&]()
         {
             if (!plic.enabled) return;
             plicNow = vof::reconstruct(alpha, schemes.grad, plic.choice, plic.bandTolerance);
             kappaPlicNow = vof::interfaceCurvature(mesh, plicNow.normal);
+        };
+        const auto refreshPlic = [&](const std::string& stamp)
+        {
+            if (!plic.enabled) return;
+            rebuildPlic();
             logReconstruction(alpha, plicNow, kappaPlicNow, stamp);
         };
         refreshPlic("start");
@@ -540,21 +552,47 @@ int main(int argc, char** argv)
             SolverReport last;
             for (int step = 1; step <= nSteps; ++step)
             {
-                last = vof::advectAlpha(alpha, phi, dt, schemes, vc);
+                const scalar t = static_cast<scalar>(step) * dt;
+                vof::GeometricStep geo;
+                if (plic.geometricAdvect)
+                {
+                    // the planes are the ones the field was reconstructed into at the
+                    // end of the previous step, so what crosses a face is the interface
+                    // the case also reports and writes
+                    rebuildPlic();
+                    geo = vof::advectGeometric(alpha, phi, dt, plicNow);
+                }
+                else
+                {
+                    last = vof::advectAlpha(alpha, phi, dt, schemes, vc);
+                }
                 if (step % reportEvery != 0 && step != nSteps) continue;
                 const scalar mass = vof::phaseVolume(mesh, alpha.internalField());
                 const Vector c = vof::phaseCentroid(mesh, alpha.internalField());
                 scalar kappa = 0;
                 int nIface = 0;
                 interfaceStatistics(alpha, schemes, threshold, kappa, nIface);
-                refreshPlic("t " + num(static_cast<scalar>(step) * dt));
-                log::info("vof t ", num(static_cast<scalar>(step) * dt),
+                refreshPlic("t " + num(t));
+                if (plic.geometricAdvect)
+                {
+                    log::info("geo t ", num(t), " flux ", geo.fluxFaces,
+                              " limited ", geo.limitedFaces, " rounds ", geo.limiterRounds,
+                              " minFactor ", num(geo.minFactor),
+                              " maxCourant ", num(geo.maxCourant),
+                              " clamp ", num(geo.clampVolume),
+                              " volErr ", num(geo.volumeError / mass0),
+                              " min ", num(geo.minAlpha), " max ", num(geo.maxAlpha));
+                }
+                log::info("vof t ", num(t),
                           " mass ", num(mass), " massErr ", num(mass / mass0 - 1.0),
                           " min ", num(alpha.min()), " max ", num(alpha.max()),
                           " cx ", num(c.x), " cy ", num(c.y),
                           " x50 ", num(crossingX50(mesh, alpha.internalField(), c)),
                           " kappa ", num(kappa), " iface ", nIface,
-                          " solver ", last.iterations, " residual ", num(last.finalResidual));
+                          plic.geometricAdvect ? "" : " solver ",
+                          plic.geometricAdvect ? "" : num(last.iterations),
+                          plic.geometricAdvect ? "" : " residual ",
+                          plic.geometricAdvect ? "" : num(last.finalResidual));
                 if (!std::isfinite(mass) || !std::isfinite(alpha.min()) || !std::isfinite(alpha.max()))
                 {
                     log::error("vof: non-finite phase fraction at step ", step);
@@ -563,7 +601,7 @@ int main(int argc, char** argv)
                 }
             }
             // endTime 0 is a legal case: it writes the initial field and geometry
-            if (ok && nSteps > 0 && !last.converged)
+            if (ok && nSteps > 0 && !last.converged && !plic.geometricAdvect)
             {
                 log::error("vof: the transport did not converge");
                 ok = false;

@@ -50,6 +50,17 @@ The geometric case (chflow-vof with a reconstruction{} block):
       one-cell band is the circle's extruded perimeter, and the volume of phase 1
       is pi R^2 dz to start with and conserved throughout.
 
+  vofZalesak - the same droplet and the same reconstruction, but alpha is carried
+      by the planes instead of by a flux of alpha (`reconstruction{ transport
+      geometric }`), which is Zalesak's rigid-rotation test. The exact answer is
+      known cell by cell at every turn: a disk turned through omega t is still the
+      disk, moved, so the field the transport leaves can be compared with the
+      overlap area of that disk and each cell. What the geometric path owes and the
+      upwind path cannot: the phase volume to round-off, alpha inside [0,1] with
+      nothing clipped, the interface one cell thick after a full turn rather than
+      smeared over the front's own width, and the shape error of the disk reduced
+      to a fraction of R.
+
 usage: check_vof.py <chflow-vof> <case.dict>
 """
 import math
@@ -63,8 +74,9 @@ import tempfile
 
 def case_constants(path):
     """The numbers the checks are built from, read out of the case itself so it
-    cannot drift away from them."""
-    txt = open(path).read()
+    cannot drift away from them. The prose is stripped first: a case may describe
+    a key in its header without that being what it asks the solver to do."""
+    txt = "\n".join(re.sub(r'//.*', '', line) for line in open(path))
 
     def triple(key):
         return [float(v) for v in re.search(r'%s\s*\(([^)]*)\)' % key, txt).group(1).split()]
@@ -154,6 +166,17 @@ def case_constants(path):
         c['normal_choice'] = nm.group(1) if nm else 'mixed'
         bt = re.search(r'bandTolerance\s+([0-9.eE+-]+);', rc.group(1))
         c['band_tolerance'] = float(bt.group(1)) if bt else 1e-6
+        tp = re.search(r'transport\s+(\w+)\s*;', rc.group(1))
+        c['transport'] = tp.group(1) if tp else 'alpha'
+        if c['transport'] == 'geometric':
+            # the closed rotation is the case with an analytic answer at every
+            # turn; on a plane front the geometric path would only be re-testing
+            # what the reconstruction already proves
+            if c['kind'] != 'rotation':
+                raise SystemExit("transport geometric is verified on the rotation, "
+                                 "whose exact field the checker can write down")
+        elif c['transport'] != 'alpha':
+            raise SystemExit("reconstruction transport must be alpha or geometric")
         c['kind'] = 'plic'
     return c
 
@@ -220,6 +243,16 @@ def log_numbers(out):
                          out, re.M):
         plic.append(dict(stamp=m.group(1), band=int(m.group(2)), area=float(m.group(3)),
                          read_back=float(m.group(4)), kappa=float(m.group(5))))
+    geo = []
+    for m in re.finditer(r'^\[chflow\] geo t ([0-9.eE+-]+) flux (\d+) limited (\d+) '
+                         r'rounds (\d+) minFactor ([0-9.eE+-]+) maxCourant ([0-9.eE+-]+) '
+                         r'clamp ([0-9.eE+-]+) volErr ([0-9.eE+-]+) min ([0-9.eE+-]+) '
+                         r'max ([0-9.eE+-]+)', out, re.M):
+        geo.append(dict(t=float(m.group(1)), fluxes=int(m.group(2)),
+                        limited=int(m.group(3)), rounds=int(m.group(4)),
+                        min_factor=float(m.group(5)), courant=float(m.group(6)),
+                        clamp=float(m.group(7)), vol_err=float(m.group(8)),
+                        alpha_min=float(m.group(9)), alpha_max=float(m.group(10))))
     if not rows or start is None:
         raise SystemExit("the log does not hold a start line and the report lines "
                          "the checker needs")
@@ -228,7 +261,7 @@ def log_numbers(out):
                          "(transport) and the csf line (momentum)")
     return dict(rows=rows, mass0=float(start.group(1)), kappa0=float(start.group(4)),
                 iface0=int(start.group(5)), kind=div.group(1) if div else 'momentum',
-                plic=plic,
+                plic=plic, geo=geo,
                 max_div=float(div.group(2)) if div else None,
                 sigma_over_rho=float(csf.group(1)) if csf else None,
                 nu=float(csf.group(2)) if csf else None,
@@ -1014,18 +1047,26 @@ def check_plic(c, log, cent, f, init, failures, notes):
             failures.append("the closed rotation lost %.3g of the phase volume by t=%g"
                             % (abs(r['massErr']), r['t']))
     fb, fband = plic_band(f), alpha_band(f['alpha'])
-    notes.append("after %d steps the band is %d cells (was %d) and spans %.9g of "
-                 "interface: a band thicker than one cell counts the cut face of "
-                 "every cell in the smearing, so this is the front's thickness, "
-                 "not the circle's perimeter"
-                 % (c['steps'], len(fb), len(band0), sum(f['areaPlic'][i] for i in fb)))
+    area_sum = sum(f['areaPlic'][i] for i in fb)
+    if c['transport'] == 'geometric':
+        notes.append("after %d geometric steps the band is %d cells (was %d) and spans "
+                     "%.9g of interface for the perimeter %.9g: the front stayed one "
+                     "cell thick, so the area is the circle's own and not the width of "
+                     "a smeared band"
+                     % (c['steps'], len(fb), len(band0), area_sum, perimeter))
+    else:
+        notes.append("after %d steps the band is %d cells (was %d) and spans %.9g of "
+                     "interface: a band thicker than one cell counts the cut face of "
+                     "every cell in the smearing, so this is the front's thickness, "
+                     "not the circle's perimeter"
+                     % (c['steps'], len(fb), len(band0), area_sum))
     if set(fb) != set(fband):
         failures.append("the last reconstruction written is not the one for the last "
                         "field written: %d planes vs %d band cells" % (len(fb), len(fband)))
     if log['plic'][-1]['band'] != len(fb):
         failures.append("the last report says band %d, the file holds %d planes"
                         % (log['plic'][-1]['band'], len(fb)))
-    if abs(sum(f['areaPlic'][i] for i in fb) / log['plic'][-1]['area'] - 1.0) > 1e-10:
+    if abs(area_sum / log['plic'][-1]['area'] - 1.0) > 1e-10:
         failures.append("the last report's area and the last file's do not agree")
     if len(fb) < len(band0):
         failures.append("advecting a sharp front narrowed its band from %d cells to %d, "
@@ -1033,6 +1074,176 @@ def check_plic(c, log, cent, f, init, failures, notes):
     notes.append("read-back stayed under %.3g over %d reports, so every plane keeps "
                  "the fraction of the cell it was cut in"
                  % (max(l['read_back'] for l in log['plic']), len(log['plic'])))
+
+    if c['transport'] == 'geometric':
+        check_geometric(c, log, cent, f, init, v_cell, perimeter, len(band0),
+                        failures, notes)
+
+
+def disk_cell_alpha(cent, dx, dy, centre, radius):
+    """The exact alpha of a disk of `radius` centred at `centre`, cell by cell, as
+    the area it shares with each axis-aligned cell divided by that cell's area. A
+    disk turned through any angle is the same disk with its centre moved along its
+    radius, so this is what a rigid rotation leaves - and the checker writes it
+    from the chord's antiderivative rather than from what the solver filled with."""
+    out = []
+    for p in cent:
+        x1, x2 = p[0] - centre[0] - 0.5 * dx, p[0] - centre[0] + 0.5 * dx
+        y1, y2 = p[1] - centre[1] - 0.5 * dy, p[1] - centre[1] + 0.5 * dy
+        a = _disk_rectangle(x1, x2, y1, y2, radius) / (dx * dy)
+        out.append(min(1.0, max(0.0, a)))
+    return out
+
+
+def _circle_quadrant(x, y, radius):
+    """The signed area of the rectangle (0,0)-(x,y) inside the disk centred at the
+    origin: signed in each coordinate so that the four differences of it over a
+    rectangle's corners give that rectangle's own overlap with the disk."""
+    s = (1.0 if x >= 0.0 else -1.0) * (1.0 if y >= 0.0 else -1.0)
+    x, y = abs(x), abs(y)
+    r2 = radius * radius
+    if x * x + y * y <= r2:
+        return s * x * y
+
+    def anti(t):  # integral of sqrt(R^2 - x^2)
+        return 0.5 * (t * math.sqrt(max(0.0, r2 - t * t)) + r2 * math.asin(t / radius))
+
+    a = min(x, radius)
+    b = min(a, math.sqrt(max(0.0, r2 - y * y)))
+    return s * (b * y + anti(a) - anti(b))
+
+
+def _disk_rectangle(x1, x2, y1, y2, radius):
+    return (_circle_quadrant(x2, y2, radius) - _circle_quadrant(x1, y2, radius)
+            - _circle_quadrant(x2, y1, radius) + _circle_quadrant(x1, y1, radius))
+
+
+def rotated_centre(c, angle):
+    """Where the disk's centre sits after the case's own rotation carried it."""
+    ax = c['axis']
+    phi = math.atan2(c['center'][1] - ax[1], c['center'][0] - ax[0])
+    return (ax[0] + c['r0'] * math.cos(phi + angle), ax[1] + c['r0'] * math.sin(phi + angle))
+
+
+def check_geometric(c, log, cent, f, init, v_cell, perimeter, n_band0,
+                    failures, notes):
+    """What the planes, and not a flux of alpha, owe: the phase volume is the sum
+    of what each face carried across it, so it is conserved by construction; alpha
+    stays in [0,1] because the limiter is what keeps it there and nothing clips it
+    afterwards; and the field after a turn is the analytic disk moved, cell by
+    cell, which is the only shape a rigid rotation can leave."""
+    if not log['geo']:
+        failures.append("the case asks for geometric transport but the log holds no "
+                        "geo line, so the checker cannot follow the fluxes")
+        return
+
+    # ---- conservation, boundedness and the limiter over every report ----
+    worst_err = max(abs(g['vol_err']) for g in log['geo']) / log['mass0']
+    worst_clamp = max(g['clamp'] for g in log['geo'])
+    notes.append("%d reported geometric steps: the fluxes the faces of one cell "
+                 "disagree about are at most %.3g of the phase volume and what the "
+                 "bounds had to clip at most %.3g of it, so the phase moved face to "
+                 "face and was not reconciled afterwards"
+                 % (len(log['geo']), worst_err, worst_clamp))
+    if worst_err > 1e-13:
+        failures.append("a step's face fluxes disagree by %.3g of the phase volume"
+                        % worst_err)
+    if worst_clamp > 1e-15:
+        failures.append("a step had to clip %.3g of the phase back into its cells, "
+                        "so the limiter did not keep alpha in [0,1] on its own"
+                        % worst_clamp)
+    for g in log['geo']:
+        if g['alpha_min'] < -1e-15 or g['alpha_max'] > 1.0 + 1e-15:
+            failures.append("at t=%g the transported field left [0,1]: [%.6g, %.6g]"
+                            % (g['t'], g['alpha_min'], g['alpha_max']))
+    lo, hi = min(f['alpha']), max(f['alpha'])
+    if lo < -1e-15 or hi > 1.0 + 1e-15:
+        failures.append("the field written after %d steps is outside [0,1]: "
+                        "[%g, %g]" % (c['steps'], lo, hi))
+    rounds = max(g['rounds'] for g in log['geo'])
+    limited = max(g['limited'] for g in log['geo'])
+    smallest = min(g['min_factor'] for g in log['geo'])
+    courant = max(g['courant'] for g in log['geo'])
+    notes.append("the two-limit pass needed up to %d rounds to settle and restricted "
+                 "up to %d of the %d faces carrying flux; the smallest factor any "
+                 "cell gave was %.3g at a Courant number of %.3g, which is where two "
+                 "outflow prisms of one cell overlap at a corner"
+                 % (rounds, limited, max(g['fluxes'] for g in log['geo']),
+                    smallest, courant))
+    if rounds > 100:
+        failures.append("the two-limit pass had not settled after %d rounds" % rounds)
+    if smallest < 0.25:
+        failures.append("the limiter took a face flux down to %.3g of what the swept "
+                        "prism asked for, which is the geometry failing rather than "
+                        "the corner overlap it is there for" % smallest)
+
+    # ---- the closed form the checker writes for itself ----
+    exact0 = disk_cell_alpha(cent, c['dx'][0], c['dx'][1],
+                              (c['center'][0], c['center'][1]), c['radius'])
+    d0 = max(abs(e - a) for e, a in zip(exact0, init[1]['alpha']))
+    notes.append("the checker's own disk/rectangle integral reproduces the field the "
+                 "solver filled to %.3g per cell, so the reference below is the "
+                 "geometry and not a copy of the solver's arithmetic" % d0)
+    if d0 > 1e-10:
+        raise SystemExit("the checker's closed form and the solver's exact filling "
+                         "disagree by %.3g, so neither can be the reference" % d0)
+
+    turn = c['omega'] * log['rows'][-1]['t']
+    exact = disk_cell_alpha(cent, c['dx'][0], c['dx'][1], rotated_centre(c, turn),
+                            c['radius'])
+    err = [abs(a - e) for a, e in zip(f['alpha'], exact)]
+    sym_diff = sum(err) * v_cell
+    disk = math.pi * c['radius'] ** 2 * c['vol'][2]
+    max_err = max(err)
+    fb = [i for i, a in enumerate(f['alpha'])
+          if c['band_tolerance'] < a < 1.0 - c['band_tolerance']]
+    mass = sum(f['alpha'])
+    cx = sum(a * p[0] for a, p in zip(f['alpha'], cent)) / mass
+    cy = sum(a * p[1] for a, p in zip(f['alpha'], cent)) / mass
+    rc = rotated_centre(c, turn)
+    off = math.hypot(cx - rc[0], cy - rc[1])
+    dx = c['dx'][0]
+    # a cell off by a whole half is one the front is on the wrong side of, which on
+    # a one-cell interface is the only per-cell error with a meaning: a cell can sit
+    # at 0.9 against an analytic 0.3 because the front crossed it a third of a cell
+    # early, and that is the shape moving, not the field being wrong
+    half = sum(1 for e in err if e > 0.5)
+    notes.append("after t=%g the field is %.4f%% of the disk's area away from the disk "
+                 "turned through %.4f rad - the boundary displaced by %.3f dx, %.2f%% "
+                 "of R - with %d of the band's %d cells on the wrong side of their "
+                 "front (worst %.3f of alpha) and its centroid %.3f dx off the "
+                 "analytic centre"
+                 % (log['rows'][-1]['t'], 100.0 * sym_diff / disk, turn,
+                    sym_diff / perimeter / dx, 100.0 * (sym_diff / perimeter) / c['radius'],
+                    half, len(fb), max_err, off / dx))
+    if sym_diff / disk > 0.05:
+        failures.append("the rotated field differs from the analytic disk by %.2f%% of "
+                        "the disk's area: the planes deformed the interface more than "
+                        "a rigid turn can" % (100.0 * sym_diff / disk))
+    if half > 0.1 * len(fb):
+        failures.append("%d of the %d interface cells put the front on the wrong side "
+                        "of itself - %.0f%% of the band" % (half, len(fb),
+                                                            100.0 * half / len(fb)))
+    if off > 0.05 * c['radius']:
+        failures.append("the droplet's centroid is %.4g off the centre its rotation "
+                        "puts it at (%.2f%% of R)" % (off, 100.0 * off / c['radius']))
+
+    # ---- what the turn did to the band and the area it spans ----
+    area_sum = sum(f['areaPlic'][i] for i in fb)
+    notes.append("the band after the turn is %d cells against the %d it started with, "
+                 "and spans %.9g of interface for the %.9g the disk's edge extrudes: "
+                 "a front carried by its planes widens only where the disk's own "
+                 "curvature needs another cell to hold its fraction"
+                 % (len(fb), n_band0, area_sum, perimeter))
+    if len(fb) > 1.5 * n_band0:
+        failures.append("the band grew from %d cells to %d, which is the transport "
+                        "thickening the front instead of moving it" % (n_band0, len(fb)))
+    if abs(area_sum / perimeter - 1.0) > 0.15:
+        failures.append("after the turn the planes span %.9g of interface, %.1f%% off "
+                        "the perimeter %.9g" % (area_sum, 100.0 * (area_sum / perimeter - 1.0),
+                                                perimeter))
+
+
 
 
 def check_initial_geometry(c, init, failures, notes):

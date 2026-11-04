@@ -91,12 +91,12 @@ Solid solidOf(const std::vector<std::vector<Vector>>& loops, const Vector& origi
     return s;
 }
 
-Vector vertexMean(const std::vector<CellFace>& cell)
+Vector vertexMean(const std::vector<std::vector<Vector>>& loops)
 {
     Vector m = Vector::zero();
     label n = 0;
-    for (const CellFace& cf : cell)
-        for (const Vector& p : cf.loop) { m += p; ++n; }
+    for (const std::vector<Vector>& l : loops)
+        for (const Vector& p : l) { m += p; ++n; }
     return n > 0 ? m * (1.0 / static_cast<scalar>(n)) : Vector::zero();
 }
 
@@ -195,90 +195,163 @@ std::vector<CellFace> cellBoundary(const polyMesh& mesh, label cell)
 namespace
 {
 
-/// The cell's volume and centroid from its own boundary. This is also the check
-/// that the rewound loops close: with no cut at all the same signed-tetrahedra
-/// sum has to reproduce the mesh's cell volume.
-void fullSolid(const std::vector<CellFace>& cell, scalar& volume, Vector& centroid)
+/// The volume and centroid of the solid a closed surface encloses, taken from the
+/// surface itself. For a cell's own boundary this is also the check that the rewound
+/// loops close: the same signed-tetrahedra sum has to reproduce the mesh's volume.
+struct AbsoluteSolid
 {
-    const Vector origin = vertexMean(cell);
+    scalar volume = 0;
+    Vector centroid = Vector::zero();
+};
+
+AbsoluteSolid absoluteSolid(const std::vector<std::vector<Vector>>& loops)
+{
+    const Vector origin = vertexMean(loops);
+    const Solid s = solidOf(loops, origin);
+    return {s.volume, s.volume > 0 ? origin + s.centroid() : Vector::zero()};
+}
+
+std::vector<std::vector<Vector>> loopsOf(const std::vector<CellFace>& cell)
+{
     std::vector<std::vector<Vector>> loops;
     loops.reserve(cell.size());
     for (const CellFace& cf : cell) loops.push_back(cf.loop);
-    const Solid s = solidOf(loops, origin);
-    volume = s.volume;
-    centroid = s.volume > 0 ? origin + s.centroid() : Vector::zero();
+    return loops;
 }
 
-} // namespace
+/// Clip every loop of a closed surface by the plane `n . x = offset`, keeping the
+/// `>=` side, and close the result with the cap the plane cuts. The tolerances follow
+/// the surface's own extent along n, which is what lets a region that has already
+/// been cut once be cut again on the same terms as a whole cell. `whole` is the plane
+/// never reaching the solid, `void_` its taking all of it - which is also what a
+/// plane grazing through a corner or along a face gives, since nothing of finite
+/// volume is left.
+struct ClipResult
+{
+    std::vector<std::vector<Vector>> loops;
+    bool whole = false;
+    bool void_ = false;
+    /// index of the cap loop, -1 when the cut added none
+    label cap = -1;
+};
 
-Cut clipConvexCell(const std::vector<CellFace>& cell, const Vector& unitNormal,
-                   scalar offset)
+ClipResult clipLoops(const std::vector<std::vector<Vector>>& loops, const Vector& unitNormal,
+                     scalar offset)
 {
     if (mag2(unitNormal) <= 0) cfFatal("plic: the cut normal must be a unit vector");
-    Cut cut;
 
     scalar smin = kInfinity, smax = -kInfinity;
-    for (const CellFace& cf : cell)
-    {
-        for (const Vector& p : cf.loop)
+    for (const std::vector<Vector>& l : loops)
+        for (const Vector& p : l)
         {
             const scalar s = dot(unitNormal, p);
             smin = std::min(smin, s);
             smax = std::max(smax, s);
         }
-    }
-    if (smin > smax) cfFatal("plic: the cell has no boundary");
+    if (smin > smax) cfFatal("plic: the region has no boundary to cut");
+
     const scalar extent = smax - smin;
     const scalar eps = 1e-12 * (extent > 0 ? extent : 1.0);
-    cut.areaCentroid = Vector::zero();
+    ClipResult res;
+    if (offset <= smin - eps) { res.whole = true; res.loops = loops; return res; }
+    if (offset >= smax + eps) { res.void_ = true; return res; }
 
-    if (offset <= smin - eps) { cut.whole = true; return cut; }
-    if (offset >= smax + eps) { cut.void_ = true; return cut; }
-
-    const Vector origin = vertexMean(cell);
-    std::vector<std::vector<Vector>> loops;
-    for (const CellFace& cf : cell)
+    for (const std::vector<Vector>& l : loops)
     {
-        std::vector<Vector> clipped = clipLoop(cf.loop, unitNormal, offset, eps);
-        if (clipped.size() >= 3) loops.push_back(std::move(clipped));
+        std::vector<Vector> clipped = clipLoop(l, unitNormal, offset, eps);
+        if (clipped.size() >= 3) res.loops.push_back(std::move(clipped));
     }
 
-    // The cap's corners are the clipped loops' points that lie on the plane. That
-    // is the edge crossings, but reading them off the result rather than out of
-    // the clip is what also picks up the cell's own vertices when the plane runs
-    // exactly through them - a cut through a corner, whose section would
-    // otherwise be missed and the kept solid left open. It only applies when the
-    // plane is inside the cell: on the cell's own lowest plane the clipped loops
-    // already are its closed boundary, and a cap there would be that face twice.
+    // The cap's corners are the clipped loops' points that lie on the plane. That is
+    // the edge crossings, but reading them off the result rather than out of the clip
+    // is what also picks up the surface's own vertices when the plane runs exactly
+    // through them - a cut through a corner, whose section would otherwise be missed
+    // and the kept solid left open. It only applies when the plane is inside the
+    // region: on its own lowest plane the clipped loops already are the closed
+    // boundary, and a cap there would be that face twice.
     const scalar capTol = 1e-9 * (extent > 0 ? extent : 1.0);
     if (offset > smin + eps)
     {
         std::vector<Vector> crossings;
-        for (const std::vector<Vector>& l : loops)
-        {
+        for (const std::vector<Vector>& l : res.loops)
             for (const Vector& p : l)
                 if (std::abs(dot(unitNormal, p) - offset) <= capTol) crossings.push_back(p);
-        }
         const std::vector<Vector> cap = orderCapPolygon(std::move(crossings), unitNormal, capTol);
         if (cap.size() >= 3)
         {
-            loops.push_back(cap);
-            cut.area = mag(loopAreaVector(cap));
-            cut.areaCentroid = loopCentroid(cap);
+            res.cap = static_cast<label>(res.loops.size());
+            res.loops.push_back(cap);
         }
     }
 
-    const Solid s = solidOf(loops, origin);
-    if (s.volume <= 0)
+    if (absoluteSolid(res.loops).volume <= 0)
     {
-        // the plane only grazes the cell: nothing of finite volume is kept
-        cut.void_ = true;
-        cut.area = 0;
-        cut.areaCentroid = Vector::zero();
-        return cut;
+        res.void_ = true;
+        res.loops.clear();
+        res.cap = -1;
     }
+    return res;
+}
+
+} // namespace
+
+scalar ConvexRegion::volume() const
+{
+    if (empty || loops.empty()) return 0;
+    return absoluteSolid(loops).volume;
+}
+
+Vector ConvexRegion::centroid() const
+{
+    if (empty || loops.empty()) return Vector::zero();
+    return absoluteSolid(loops).centroid;
+}
+
+ConvexRegion cellRegion(const polyMesh& mesh, label cell)
+{
+    ConvexRegion r;
+    r.loops = loopsOf(cellBoundary(mesh, cell));
+    if (r.loops.empty()) cfFatal("plic: the cell has no boundary");
+    return r;
+}
+
+ConvexRegion clipRegion(const ConvexRegion& region, const Vector& unitNormal, scalar offset)
+{
+    if (region.empty) return ConvexRegion{{}, true};
+    const ClipResult res = clipLoops(region.loops, unitNormal, offset);
+    if (res.void_) return ConvexRegion{{}, true};
+    ConvexRegion out;
+    out.loops = std::move(res.loops);
+    return out;
+}
+
+ConvexRegion clipRegion(const ConvexRegion& region, const std::vector<HalfSpace>& halfSpaces)
+{
+    ConvexRegion out = region;
+    for (const HalfSpace& h : halfSpaces)
+    {
+        out = clipRegion(out, h.unitNormal, h.offset);
+        if (out.empty) return out;
+    }
+    return out;
+}
+
+Cut clipConvexCell(const std::vector<CellFace>& cell, const Vector& unitNormal,
+                   scalar offset)
+{
+    Cut cut;
+    const ClipResult res = clipLoops(loopsOf(cell), unitNormal, offset);
+    if (res.whole) { cut.whole = true; return cut; }
+    if (res.void_) { cut.void_ = true; return cut; }
+
+    const AbsoluteSolid s = absoluteSolid(res.loops);
     cut.volume = s.volume;
-    cut.centroid = origin + s.centroid();
+    cut.centroid = s.centroid;
+    if (res.cap >= 0)
+    {
+        cut.area = mag(loopAreaVector(res.loops[static_cast<std::size_t>(res.cap)]));
+        cut.areaCentroid = loopCentroid(res.loops[static_cast<std::size_t>(res.cap)]);
+    }
     return cut;
 }
 
@@ -300,9 +373,8 @@ scalar offsetForFraction(const std::vector<CellFace>& cell, const Vector& unitNo
     if (fraction <= 0) return smax;
     if (fraction >= 1) return smin;
 
-    scalar volume = 0;
-    Vector centroid = Vector::zero();
-    fullSolid(cell, volume, centroid);
+    const AbsoluteSolid solid = absoluteSolid(loopsOf(cell));
+    const scalar volume = solid.volume;
     if (!(volume > 0)) cfFatal("plic: a cell with no volume cannot be reconstructed");
     const scalar target = fraction * volume;
 
@@ -344,7 +416,8 @@ Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
                      Field<scalar>(n, 0.0),
                      Field<Vector>(n, Vector::zero()),
                      Field<scalar>(n, 0.0),
-                     0};
+                     0,
+                     bandTolerance};
 
     for (label c = 0; c < nC; ++c)
     {
@@ -357,9 +430,7 @@ Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
         const Vector n0 = g * (1.0 / mag(g));
 
         const std::vector<CellFace> cell = cellBoundary(mesh, c);
-        scalar volume = 0;
-        Vector centroid = Vector::zero();
-        fullSolid(cell, volume, centroid);
+        const scalar volume = absoluteSolid(loopsOf(cell)).volume;
         if (!(volume > 0)) cfFatal("plic: cell with no volume in the interface band");
 
         const scalar o0 = offsetForFraction(cell, n0, a);

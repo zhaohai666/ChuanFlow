@@ -2,8 +2,10 @@
 // here is exactness rather than convergence: the volume, centroid and cut area
 // of a plane through a cell against a closed form, the cell's own boundary loops
 // read back as the mesh's cell volume on hexes, tets and prisms, the fraction a
-// reconstruction reads back from the field it was given, and the normal and
-// curvature a cell-filled disk gives up.
+// reconstruction reads back from the field it was given, the normal and curvature
+// a cell-filled disk gives up, and what the geometric transport owes on its own:
+// a region cut a second time, a step front translated without spreading, and a
+// rotation that conserves the phase and bounds the fraction at the same time.
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -99,6 +101,16 @@ void normalExtent(const std::vector<vof::CellFace>& cell, const Vector& n,
             smax = std::max(smax, s);
         }
     }
+}
+
+/// The volume phase 1 occupies in the field: what a conservative transport keeps,
+/// and what the geometric step therefore has to hand back to round-off.
+double phaseVolume(const volScalarField& alpha)
+{
+    const Field<scalar>& v = alpha.mesh().cellVolumes();
+    double s = 0;
+    for (std::size_t u = 0; u < v.size(); ++u) s += alpha.internalField()[u] * v[u];
+    return s;
 }
 
 /// Angle in degrees between two unit directions.
@@ -550,6 +562,211 @@ int main()
         CHECK(std::abs(m40.kappaMean * R + 1.0) < 0.4
                   && std::abs(m80.kappaMean * R + 1.0) < 0.4,
               "and its mean curvature is -1/R to within what a one-cell stencil can resolve");
+    }
+
+    // ---- 8. a region cut again ----
+    // ConvexRegion is what the swept-prism flux needs: a cell's phase region has to
+    // survive a second clip, by planes that are not the cell's own faces. The closed
+    // form here is the slab between two diagonal planes through the unit cube, whose
+    // volume is the difference of two cube caps - so the second cut is checked
+    // against arithmetic the clip itself does not share.
+    {
+        const polyMesh mesh = boxXY(1, 1, 1.0);
+        const vof::ConvexRegion cube = vof::cellRegion(mesh, 0);
+        CHECK(relNear(cube.volume(), 1.0, 1e-13), "a cell region is the cell's own volume");
+        CHECK(relNear(cube.centroid().x, 0.5, 1e-13) && relNear(cube.centroid().y, 0.5, 1e-13)
+                  && relNear(cube.centroid().z, 0.5, 1e-13),
+              "and its centroid");
+
+        const scalar k = 1.0 / std::sqrt(3.0);
+        const Vector n{k, k, k};
+        const Vector back{-k, -k, -k};
+
+        bool slab = true, sameAsCell = true, list = true, closedForm = true;
+        double worstSlab = 0;
+        for (double o1 : {0.3, 0.6, 0.9})
+        {
+            for (double o2 : {1.1, 1.4, 1.6})
+            {
+                if (o2 <= o1) continue;
+                const vof::ConvexRegion twice
+                    = vof::clipRegion(vof::clipRegion(cube, n, o1), back, -o2);
+                // n . x with n a unit vector is s/sqrt(3) for the cubeCap parameter s
+                const double want = cubeCapVolume(o2 / k) - cubeCapVolume(o1 / k);
+                worstSlab = std::max(worstSlab, std::abs(twice.volume() - want) / want);
+                slab = slab && relNear(twice.volume(), want, 1e-12);
+
+                const std::vector<vof::HalfSpace> both = {{n, o1}, {back, -o2}};
+                list = list && relNear(vof::clipRegion(cube, both).volume(), twice.volume(), 1e-12);
+            }
+            // one cut, and the same cut through the cell-boundary path. The cap's
+            // closed form counts the part with n . x <= s, which is the side the
+            // plane throws away.
+            const vof::Cut byCell = vof::clipConvexCell(unitCell(mesh), n, o1);
+            const vof::ConvexRegion byRegion = vof::clipRegion(cube, n, o1);
+            sameAsCell = sameAsCell && relNear(byRegion.volume(), byCell.volume, 1e-12);
+            closedForm = closedForm && relNear(byRegion.volume(), 1.0 - cubeCapVolume(o1 / k), 1e-12);
+        }
+        CHECK(slab, "two chained cuts hold the slab between the planes to 1e-12");
+        CHECK(std::abs(worstSlab) < 1e-12, "and the slab's volume is the difference of two caps");
+        CHECK(list, "the half-space list gives the same region in one call");
+        CHECK(sameAsCell && closedForm,
+              "one cut agrees with the cell-boundary path and with the cube cap");
+
+        // a box clipped by a box: the prism a face sweeps is exactly this, and its
+        // volume is the area it carries times the distance, which is the flux. Each
+        // half-space keeps unitNormal . x >= offset, so the far sides are the negated
+        // normals at the negated coordinate.
+        const std::vector<vof::HalfSpace> box
+            = {{Vector{1, 0, 0}, 0.0}, {Vector{-1, 0, 0}, -0.4},
+               {Vector{0, 1, 0}, 0.0}, {Vector{0, -1, 0}, -1.0},
+               {Vector{0, 0, 1}, 0.0}, {Vector{0, 0, -1}, -1.0}};
+        CHECK(relNear(vof::clipRegion(cube, box).volume(), 0.4, 1e-13),
+              "a unit face swept 0.4 is the prism of volume 0.4");
+        CHECK(vof::clipRegion(cube, std::vector<vof::HalfSpace>{{n, 3.0}}).empty,
+              "a cut past the region empties it instead of failing");
+    }
+
+    // ---- 9. a plane front moved by its own plane: nothing spreads ----
+    // The claim the finite-volume transport of alpha cannot make. A step in alpha
+    // carried by an upwind flux spreads at the scheme's truncation error; carried by
+    // the plane, the front after any number of steps is the same front at x0 + u t,
+    // cell by cell, with one cell between 0 and 1 however far it has moved. The
+    // Courant number here is 0.4 and the front starts on a cell centre, so it is
+    // twice within a cell width of crossing a face - the case where diffusion shows
+    // up fastest.
+    {
+        const label nx = 12;
+        const polyMesh mesh = boxXY(nx, 1, 0.1);
+        const scalar dx = 1.0 / nx, dt = 0.01, courant = 0.4;
+        const scalar u = courant * dx / dt;
+        const scalar x0 = (6 + 0.5) * dx; // the front on the centre of cell 6
+
+        volScalarField alpha(mesh, "alpha", 0.0);
+        for (label c = 0; c < mesh.nCells(); ++c)
+        {
+            const scalar xc = (c + 0.5) * dx;
+            alpha.internalField()[static_cast<std::size_t>(c)]
+                = xc < x0 ? 1.0 : (xc > x0 ? 0.0 : 0.5);
+        }
+
+        Field<scalar> phi(static_cast<std::size_t>(mesh.nFaces()), 0.0);
+        for (label f = 0; f < mesh.nFaces(); ++f)
+        {
+            const std::size_t u2 = static_cast<std::size_t>(f);
+            phi[u2] = dot(Vector{u, 0.0, 0.0}, mesh.faceSf()[u2]);
+        }
+
+        double worst = 0;
+        label bandAfter = 0;
+        vof::GeometricStep step;
+        for (int s = 1; s <= 3; ++s)
+        {
+            const vof::Reconstruction r
+                = vof::reconstruct(alpha, "corrected", vof::NormalChoice::Mixed);
+            step = vof::advectGeometric(alpha, phi, dt, r);
+            const scalar front = x0 + s * courant * dx;
+            bandAfter = 0;
+            for (label c = 0; c < mesh.nCells(); ++c)
+            {
+                const std::size_t u2 = static_cast<std::size_t>(c);
+                const scalar want = std::min(1.0, std::max(0.0, (front - c * dx) / dx));
+                worst = std::max(worst, std::abs(alpha.internalField()[u2] - want));
+                if (alpha.internalField()[u2] > 1e-12 && alpha.internalField()[u2] < 1.0 - 1e-12)
+                    ++bandAfter;
+            }
+        }
+        // boxXY is the unit square extruded by dz, so the section the front sweeps is
+        // one by dz; every volume below is that section times a length in x.
+        const scalar section = 1.0 * 0.1;
+        const scalar swept = 3.0 * courant * dx * section; // the inlet's own volume
+        const scalar phaseNow = phaseVolume(alpha);
+        const scalar phaseWant = x0 * section + swept;
+        std::cout << "     front moved by its planes: worst |alpha - translated front| "
+                  << std::setprecision(3) << worst << ", band " << bandAfter
+                  << " cell, phase volume " << std::setprecision(9) << phaseNow
+                  << " vs " << phaseWant << ", limiter rounds " << step.limiterRounds
+                  << ", faces carrying flux " << step.fluxFaces << "\n";
+        CHECK(worst < 1e-13, "the field is the front translated, to round-off");
+        CHECK(bandAfter == 1, "and it is still one cell thick after three steps");
+        CHECK(relNear(phaseNow, phaseWant, 1e-12),
+              "the phase grew by exactly the volume the inlet swept");
+        CHECK(step.clampVolume == 0.0, "nothing had to be clipped back into its cell");
+    }
+
+    // ---- 10. the rotation carried by the planes ----
+    // The droplet of tests/cases/vofZalesak, at the same Courant number, for the
+    // part of its contract that is the transport's own: the phase volume cannot move
+    // because each face's flux is one number subtracted where it left and added where
+    // it arrived; alpha cannot leave [0,1] because the two-limit pass is what keeps it
+    // there; and the front cannot thicken, because a plane does not spread.
+    {
+        const label n = 40;
+        const polyMesh mesh = boxXY(n, n, kDiskDepth);
+        const scalar dx = 1.0 / n, dt = 0.01;
+        const Vector centre{0.7, 0.5, 0.0}, axis{0.5, 0.5, 0.0};
+        const scalar omega = 1.0;
+
+        const Field<scalar> initial = vof::exactDiskAlpha(mesh, centre, kDiskRadius);
+        volScalarField alpha(mesh, "alpha", 0.0);
+        for (std::size_t u = 0; u < alpha.internalField().size(); ++u)
+            alpha.internalField()[u] = initial[u];
+
+        Field<scalar> phi(static_cast<std::size_t>(mesh.nFaces()), 0.0);
+        for (label f = 0; f < mesh.nFaces(); ++f)
+        {
+            const std::size_t u = static_cast<std::size_t>(f);
+            const Vector r = mesh.faceCentres()[u] - axis;
+            phi[u] = dot(Vector{-omega * r.y, omega * r.x, 0.0}, mesh.faceSf()[u]);
+        }
+
+        const auto bandOf = [&]()
+        {
+            label b = 0;
+            for (const scalar a : alpha.internalField())
+                if (a > 1e-6 && a < 1.0 - 1e-6) ++b;
+            return b;
+        };
+        const label band0 = bandOf();
+        const scalar volume0 = phaseVolume(alpha);
+
+        double worstVol = 0, worstClamp = 0;
+        label rounds = 0, limited = 0;
+        scalar smallest = 1.0, lowest = 1.0, highest = 0.0;
+        for (int s = 0; s < 40; ++s)
+        {
+            const vof::Reconstruction r
+                = vof::reconstruct(alpha, "corrected", vof::NormalChoice::Mixed);
+            const vof::GeometricStep step = vof::advectGeometric(alpha, phi, dt, r);
+            worstVol = std::max(worstVol, std::abs(step.volumeError) / volume0);
+            worstClamp = std::max(worstClamp, step.clampVolume);
+            rounds = std::max(rounds, step.limiterRounds);
+            lowest = std::min(lowest, step.minAlpha);
+            highest = std::max(highest, step.maxAlpha);
+            if (step.limitedFaces > 0)
+            {
+                limited = std::max(limited, step.limitedFaces);
+                smallest = std::min(smallest, step.minFactor);
+            }
+        }
+        const scalar volumeNow = phaseVolume(alpha);
+        const label bandNow = bandOf();
+        std::cout << "     40 rotation steps: phase volume " << std::setprecision(9)
+                  << volumeNow << " for " << volume0 << " (worst step " << std::setprecision(3)
+                  << worstVol << "), clipped " << worstClamp << ", alpha in [" << lowest
+                  << ", " << highest << "], band " << band0 << " to "
+                  << bandNow << " cells, limiter on up to " << limited << " faces with factor "
+                  << std::setprecision(4) << smallest << " over up to " << rounds
+                  << " rounds\n";
+        CHECK(worstVol < 1e-13, "no step's faces disagree about the phase they traded");
+        CHECK(worstClamp < 1e-15, "and nothing was clipped into its cell afterwards");
+        CHECK(lowest >= 0.0 && highest <= 1.0,
+              "alpha stayed inside [0,1] with the limiter doing it");
+        CHECK(limited > 0 && smallest > 0.25,
+              "the limiter bound - outflow prisms of one cell overlap at a corner - "
+              "without starving the step");
+        CHECK(bandNow <= static_cast<label>(1.5 * band0),
+              "the front is still within half a cell of the thickness it started with");
     }
 
     return failures == 0 ? 0 : 1;

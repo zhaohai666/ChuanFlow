@@ -1,0 +1,115 @@
+// Zalesak's rigid-rotation test, run the way the planes rather than the field
+// wants it: alpha is carried by the reconstructed interface itself, so the phase
+// leaving a cell through a face is the volume that cell's phase region shares with
+// the prism the face sweeps in the step (`reconstruction{ transport geometric }`,
+// which drops the alpha equation).
+//
+// The point of doing it this way is what finite-volume transport of alpha cannot
+// do. A one-cell-thick interface is a step in alpha, and a step moving through an
+// upwind flux spreads at the truncation error of the scheme: vofPlic, driving the
+// same disk with the alpha equation, ends its 40 steps with the band 421 cells wide
+// instead of 60. A plane does not spread - it is a plane - so the front stays one
+// cell thick however long the droplet turns, and the interface area keeps meaning
+// the circle's perimeter instead of the width of the smearing.
+//
+// Conservation comes out of the same construction. Each face's flux is computed
+// once, from the donor's geometry, and is the same number subtracted there and
+// added to the neighbour, so on this discretely divergence-free rotation the phase
+// volume cannot drift except by round-off. Boundedness does not: several outflow
+// prisms of one cell overlap at a corner, and a cell can be asked for more than it
+// holds, so every outflow and inflow of a cell shares one factor, and because
+// scaling an influx also shrinks its donor's outflux - and so the room that influx
+// has - the two limits are iterated until they agree.
+//
+// The rotation is rigid, so the answer is known cell by cell at every turn: the
+// disk is still the disk, moved along its radius. The checker writes that closed
+// form itself and measures the field against it.
+//
+// Verified by tests/check_vof.py (ctest verify.vofZalesak), on what the solver wrote:
+//   max |div(phi)|                 2.17e-19 (round-off of the Gauss identity)
+//   exact filling                  pi R^2 dz = 0.0125663706144 to 5.9e-15 relative,
+//                                  60 band cells, nothing else within 3.3e-22 of half
+//   read-back                      <= 2.55e-15 over the 14 reports, so a plane keeps
+//                                  the fraction of the cell it was cut in however far
+//                                  the droplet has turned
+//   conservation                   the fluxes the faces of one cell disagree about sum
+//                                  to at most 3.3e-14 of the phase per step, and the
+//                                  whole turn to 9.4e-15 of it; nothing is reconciled
+//                                  afterwards
+//   boundedness                    alpha exactly in [0,1] with at most 3.1e-17 of the
+//                                  phase clipped, so the limiter is what keeps it there
+//   the limiter                    up to 35 rounds to settle, up to 314 of the 448 faces
+//                                  restricted, the smallest factor 0.5 at Courant 0.195
+//   band                           60 to 76 cells over the turn (the alpha equation
+//                                  reached 421 in 40 steps) and 0.13372 of interface for
+//                                  the perimeter 0.125664, so the front kept its shape
+//   the checker's own closed form  reproduces the filled field to 5.0e-13 per cell, so
+//                                  the reference below is geometry, not a copy of the
+//                                  solver's arithmetic
+//   shape after a full turn        3.85% of the disk's area away from the disk turned
+//                                  through omega t - the boundary displaced by 0.154 dx,
+//                                  1.92% of R - with 2 of the band's 76 cells on the
+//                                  wrong side of their front and the centroid 0.198 dx
+//                                  (2.5% of R) off the analytic centre
+block
+{
+    min   (-0.5 -0.5 0);
+    max   ( 0.5  0.5 0.1);
+    cells (40 40 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+velocity
+{
+    type   rotation;
+    omega  1.0;
+    center (0 0 0);
+}
+
+alpha
+{
+    // R/dx = 8, the droplet vofPlic reconstructs, filled by its exact overlap area
+    circle { center (0.2 0 0); radius 0.2; fill exact; }
+}
+
+reconstruction
+{
+    normal mixed; transport geometric;
+}
+
+patches
+{
+    left   { alphaType fixedValue; alpha 0; }
+    right  { alphaType fixedValue; alpha 0; }
+    bottom { alphaType fixedValue; alpha 0; }
+    top    { alphaType fixedValue; alpha 0; }
+}
+
+time
+{
+    dt                0.01;      // Courant 0.165 across the band, 0.2 at the walls
+    endTime           6.28;      // a full turn, back to where the disk started
+    reportEvery       50;
+    interfaceThreshold 0.1;      // what the gradient path marks, for the comparison
+}
+
+schemes
+{
+    ddt  Euler;
+    div  upwind;
+    grad corrected;
+}
+
+solverTol 1e-13;
+
+output
+{
+    vtk         out_vof_zalesak.vtu;
+    vtkInitial  initial_vof_zalesak.vtu;
+}

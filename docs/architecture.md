@@ -721,8 +721,17 @@ uMax 1.5e-4（压力锁住的模态）；换成 PISO 跑 1000 步后 u_x 6.9e-12
 worstContinuity 2.5e-10，但 max|U| 仍是 **2.706e-4**、`dp/dz` 0.099972 对 0.098100。
 关键是**对照实验**：把 `energy{}` 整块删掉、改由等价的均匀
 `force (0 0 0.0981)` 驱动同一个盒，读到同一个 2.706e-4 与同样的两端压力——
-这个地板属于闭合盒耦合本身，不属于能量方程。`p_rgh` formulation 仍待做，
-在那之前 `energyBuoyantRest` 的断言按"回答不了这个力的耦合会给出什么"来定标：
+这个地板属于闭合盒耦合本身，不属于能量方程。**给定均匀体力的那份已由 `p_rgh`
+表述解决**（`closedBoxGravity` 算例，PISO/SIMPLE 两 app 共用 `pRgh` 开关）：
+`p_rgh = p − force·x` 把均匀力精确吸收进变量本身——动量变成 `a = −∇p_rgh +
+（只含 Boussinesq 偏差）`，闭盒的逐 patch 常数 BC 对 p_rgh 恰好是正确 BC
+（真压在求解后按 `p = p_rgh + force·x` 重建）。实测同一只盒子：plain-p 蠕升
+到 uMax 1.82663170862 m/s 且持续增长；p_rgh 模式 `uMaxAll = 0`、
+`prghSpread = 0`、重建压程 9.56475 = 9.81·0.975（格心 y 跨度上的静水头），
+maxCorrectors 1、worstContinuity 0——第一遍 U = 0 就满足动量。注意这条不覆盖
+上面 Boussinesq 偏差驱动的盒子：偏差力就是物理本身，不能被吸收，压住它要
+buoyantFoam 式的浮力修正压力/通量处理，仍待做；`energyBuoyantRest` 的断言
+继续按"回答不了这个力的耦合会给出什么"来定标：
 Stokes 速度 `f H²/ν = 2.45 m/s`（比残差高四个量级）与压降的**符号**。
 
 **涡扩散用梯度输运类比 + Pr_t**，前提是网格解析副层（`y+ ≈ 1` 时 nut 在壁面 → 0，
@@ -966,7 +975,7 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
 | `buoyantBoussinesqSimpleFoam` / `PisoFoam` 的 `TEqn` | `EnergyModel::correctEnergy`（`fvm::ddt + fvm::div(phi,T) + fvm::laplacian(alpha,T,-1)`，读求解器自己的连续性通量） |
 | `alphat = nut/Prt`（`turbulentTransport` 的热扩散） | `EnergyModel::alphaCell()` = `kappa/(rho cp) + nut/turbulentPrandtl`（梯度输运类比，前提是网格解析副层） |
 | `fvOptions` 的 `wallHeatFlux` / `fixedGradient` T | `patches{ name{ heatFlux q; } }` → `fixedGradient = q/kappa`（正 = 进入流体）；无键的 patch 缺省 `zeroGradient` = 绝热 |
-| `T` 的 `buoyancyForce = beta*(T-Tn)*g`（`BoussinesqBaseForce`） | `EnergyModel::buoyancyForce()` = `−beta (T − tRef) gravity`（只含偏差项，参考静水由 `force` 自己带；参考静水随高度变化需要 `p_rgh`，未做） |
+| `T` 的 `buoyancyForce = beta*(T-Tn)*g`（`BoussinesqBaseForce`） | `EnergyModel::buoyancyForce()` = `−beta (T − tRef) gravity`（只含偏差项，参考静水由 `force` 自己带或被 `pRgh` 开关吸收进 `p_rgh = p − force·x`；偏差力本身不能被吸收，压住它要 buoyantFoam 式浮力修正通量，未做） |
 
 ## 7. 测试体系
 - `tests/unit/kernelTests.cpp`（CTest `kernel.unit`）：字典解析、网格几何

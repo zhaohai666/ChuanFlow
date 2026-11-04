@@ -168,8 +168,10 @@ print(result.pressure_profile)
   Boussinesq 浮力；三道无流动传导 + 余弦模态衰减 + 闭盒静止 + 双壁热流渠道
   六个回归，渠道算例 `Nu_Dh` 8.2505 对 140/17）+
   VOF 首增量（相分数守恒输运的 M-矩阵性质、界面法向与曲率，平移与刚体旋转
-  两个解析回归）已落地，热壁函数、闭盒均匀力残差的 `p_rgh` 表述、
-  MPI 并行与 Eigen/PETSc 后端待做）
+  两个解析回归）+ **`p_rgh` 表述**（均匀体力被 `p_rgh = p − force·x` 精确吸收，
+  PISO/SIMPLE 共用 `pRgh` 开关；闭盒重力从 plain-p 的蠕升 uMax 1.83 m/s
+  （持续增长）到精确静止 uMaxAll = 0，重建真压程 9.56475 = 9.81·0.975）
+  已落地，热壁函数、MPI 并行与 Eigen/PETSc 后端待做）
 - 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
   黑油物性相关式（Standing 泡点、Vazquez-Beggs Rs/Bo/co、Beggs-Robinson 与

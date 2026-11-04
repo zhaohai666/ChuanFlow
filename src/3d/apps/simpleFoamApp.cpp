@@ -1,5 +1,7 @@
 #include <cmath>
 #include <cstdlib>
+#include <iomanip>
+#include <sstream>
 #include <string>
 
 #include "cf/common/Dictionary.h"
@@ -13,6 +15,18 @@
 #include "caseEnergy.h"
 #include "caseInit.h"
 #include "caseTurbulence.h"
+
+namespace
+{
+// log::info() stringifies with ostringstream defaults (6 digits); the p_rgh
+// report is asserted against by the checker, so emit 12 significant digits.
+std::string num(double v)
+{
+    std::ostringstream os;
+    os << std::setprecision(12) << v;
+    return os.str();
+}
+} // namespace
 
 using namespace cf;
 
@@ -85,6 +99,10 @@ int main(int argc, char** argv)
             app::makeEnergy(caseDict, mesh, phi, nu, schemes, turb.get());
 
         SimpleControls ctl;
+        // p_rgh mode: the dict's uniform force is the hydrostatic gravity that
+        // p_rgh = p - force.x absorbs exactly; see pisoFoamApp.
+        Vector grav = Vector::zero();
+        bool pRgh = false;
         if (caseDict.has("simple"))
         {
             const Dictionary& sd = caseDict.getDict("simple");
@@ -96,11 +114,18 @@ int main(int argc, char** argv)
             ctl.pRelaxStart = sd.getScalarOr("pRelaxStart", ctl.pRelaxStart);
             ctl.nonOrthCorrectors = static_cast<int>(sd.getScalarOr("nonOrthCorrectors", ctl.nonOrthCorrectors));
             ctl.momentumTol = sd.getScalarOr("momentumTol", ctl.momentumTol);
+            pRgh = sd.getWordOr("pRgh", "false") == "true";
             if (sd.has("force"))
             {
                 const auto f = sd.getScalarList("force");
                 ctl.bodyForce = Vector{f[0], f[1], f[2]};
             }
+        }
+        if (pRgh)
+        {
+            grav = ctl.bodyForce;
+            ctl.bodyForce = Vector::zero();
+            log::info("p_rgh mode: absorbing force into p_rgh = p - force.x");
         }
 
         const SimpleResult res = solveIncompressibleSimple(mesh, U, p, phi, nu, schemes, ctl,
@@ -119,6 +144,29 @@ int main(int argc, char** argv)
         log::info("U max magnitude: ", uMax);
         log::info("p range: ", p.min(), " .. ", p.max());
 
+        Field<scalar> pTrue(static_cast<std::size_t>(mesh.nCells()), 0.0);
+        if (pRgh)
+        {
+            // see pisoFoamApp: rest, a structure-free p_rgh and a linear
+            // reconstructed p are the whole statement
+            const auto& centres = mesh.cellCentres();
+            scalar meanPrgh = 0;
+            for (const scalar& v : p.internalField()) meanPrgh += v;
+            meanPrgh /= static_cast<scalar>(mesh.nCells());
+            scalar prghSpread = 0, pTrueMin = 1e300, pTrueMax = -1e300;
+            for (label c = 0; c < mesh.nCells(); ++c)
+            {
+                const std::size_t u = static_cast<std::size_t>(c);
+                prghSpread = std::max(prghSpread, std::abs(p.internalField()[u] - meanPrgh));
+                pTrue[u] = p.internalField()[u] + dot(grav, centres[u]);
+                pTrueMin = std::min(pTrueMin, pTrue[u]);
+                pTrueMax = std::max(pTrueMax, pTrue[u]);
+            }
+            log::info("p_rgh: uMaxAll ", num(uMax),
+                      " prghSpread ", num(prghSpread),
+                      " pTrueRange ", num(pTrueMax - pTrueMin));
+        }
+
         if (caseDict.has("output"))
         {
             const Dictionary& od = caseDict.getDict("output");
@@ -127,7 +175,15 @@ int main(int argc, char** argv)
             {
                 VtkWriter w(mesh);
                 w.addCellVector("U", U.internalField());
-                w.addCellScalar("p", p.internalField());
+                if (pRgh)
+                {
+                    w.addCellScalar("p", pTrue);
+                    w.addCellScalar("p_rgh", p.internalField());
+                }
+                else
+                {
+                    w.addCellScalar("p", p.internalField());
+                }
                 if (turb) app::writeTurbulence(w, *turb);
                 if (energy.model) energy.write(w);
                 w.write(vtk);

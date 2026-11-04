@@ -240,6 +240,16 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/energyBuoyantRest/case.dict
         rest)
 
+# closed box + uniform gravity: the patch-uniform p BCs cannot hold the linear
+# hydrostatic field (the same box without pRgh creeps to uMax 1.83 m/s and
+# grows); p_rgh absorbs the force exactly and the box stays at rest
+add_test(
+    NAME verify.pRghClosedBox
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_prgh.py
+        $<TARGET_FILE:chflow-piso-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/closedBoxGravity/case.dict)
+
 add_test(
     NAME verify.energyChannelFlux
     COMMAND ${Python3_EXECUTABLE}

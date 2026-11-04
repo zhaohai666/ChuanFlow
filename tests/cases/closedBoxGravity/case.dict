@@ -1,0 +1,76 @@
+// A closed box under uniform gravity must stay at rest: with no inlet, no
+// outlet and no slip, the only force is a body force a uniform field can
+// balance exactly. This case is the audit of the failure mode that the patch-
+// uniform pressure boundary conditions cannot express that balance.
+//
+// The hydrostatic field is linear in y. A collocated FVM imposes the pressure
+// BC as a constant per patch, so no combination of patch constants can
+// reproduce p = rho g (H - y): the wall fluxes each face sees disagree with
+// what the interior gradient implies, and the solved pressure-velocity pair
+// answers a nonzero residual force. Run the same box *without* pRgh (drop the
+// pRgh line below) and it creeps: uMax 1.82663170862 m/s at t = 0.5 and still
+// growing, on a grid where the exact answer is zero.
+//
+// p_rgh = p - force.x absorbs the uniform force exactly: the momentum
+// equation becomes a = -grad(p_rgh) + (Boussinesq deviation only), and the
+// closed box's constant per patch IS the right BC for p_rgh, because the true
+// pressure is reconstructed after the solve as p = p_rgh + force.x. The
+// balance is then exact cell by cell and the box never moves.
+//
+// Measured on this grid (40 x 40 over H = 1, cell-centre y from 0.0125 to
+// 0.9875):
+//   uMaxAll     0                    -- rest, exactly
+//   prghSpread  0                    -- p_rgh constant, as the BCs demand
+//   pTrueRange  9.56475 = 9.81 * 0.975  -- the linear hydrostatic head over the
+//                                       cell-centre extent
+//   maxCorrectors 1, worstContinuity 0 -- the momentum equation is satisfied
+//                                       by U = 0 on the first pass
+//
+// Verified by tests/check_prgh.py (ctest verify.pRghClosedBox).
+block
+{
+    min   (0 0 0);
+    max   (1 1 0.1);
+    cells (40 40 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+patches
+{
+    left   { U (0 0 0); p 0; }
+    right  { U (0 0 0); pType zeroGradient; }
+    bottom { U (0 0 0); pType zeroGradient; }
+    top    { U (0 0 0); pType zeroGradient; }
+}
+
+nu 0.01;
+
+piso
+{
+    dt        0.01;
+    endTime   0.5;
+    correctors 2;
+    force     (0 -9.81 0);
+    pRgh      true;
+    continuityTol 1e-13;
+    reportEvery   10;
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+output
+{
+    vtk out_box_prgh.vtu;
+}

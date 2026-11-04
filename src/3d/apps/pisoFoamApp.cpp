@@ -85,6 +85,13 @@ int main(int argc, char** argv)
         PisoControls ctl;
         scalar endTime = 1.0;
         int reportEvery = 10;
+        // p_rgh mode: the dict's uniform force is the hydrostatic gravity that
+        // p_rgh = p - force.x absorbs exactly. The momentum then never sees it
+        // and the solved pressure carries no ramp, which is the only field the
+        // patch-uniform BCs of a closed box can represent; the written p
+        // restores force.x.
+        Vector grav = Vector::zero();
+        bool pRgh = false;
         if (caseDict.has("piso"))
         {
             const Dictionary& sd = caseDict.getDict("piso");
@@ -97,6 +104,7 @@ int main(int argc, char** argv)
             ctl.nonOrthCorrectors =
                 static_cast<int>(sd.getScalarOr("nonOrthCorrectors", ctl.nonOrthCorrectors));
             reportEvery = static_cast<int>(sd.getScalarOr("reportEvery", reportEvery));
+            pRgh = sd.getWordOr("pRgh", "false") == "true";
             if (sd.has("force"))
             {
                 const auto f = sd.getScalarList("force");
@@ -106,6 +114,14 @@ int main(int argc, char** argv)
         else
         {
             cfFatal("piso: case needs a piso { dt; endTime; ... } block");
+        }
+        if (pRgh)
+        {
+            grav = ctl.bodyForce;
+            ctl.bodyForce = Vector::zero();
+            log::info("p_rgh mode: absorbing force (", num(grav.x), " ",
+                      num(grav.y), " ", num(grav.z),
+                      ") into p_rgh = p - force.x");
         }
 
         phi.correctBoundaryFlux(U);
@@ -183,6 +199,32 @@ int main(int argc, char** argv)
                   " maxCorrectors ", maxCorrectors,
                   " worstContinuity ", num(worstContinuity));
 
+        Field<scalar> pTrue(static_cast<std::size_t>(mesh.nCells()), 0.0);
+        if (pRgh)
+        {
+            // the solved field is p_rgh; the written p restores force.x. The
+            // report is the whole p_rgh statement in three numbers: the box
+            // stays at rest, p_rgh carries no structure, and the reconstructed
+            // p is exactly the linear potential over the cell centres.
+            const auto& centres = mesh.cellCentres();
+            scalar meanPrgh = 0;
+            for (const scalar& v : p.internalField()) meanPrgh += v;
+            meanPrgh /= static_cast<scalar>(mesh.nCells());
+            scalar uMaxAll = 0, prghSpread = 0, pTrueMin = 1e300, pTrueMax = -1e300;
+            for (label c = 0; c < mesh.nCells(); ++c)
+            {
+                const std::size_t u = static_cast<std::size_t>(c);
+                uMaxAll = std::max(uMaxAll, mag(U.internalField()[u]));
+                prghSpread = std::max(prghSpread, std::abs(p.internalField()[u] - meanPrgh));
+                pTrue[u] = p.internalField()[u] + dot(grav, centres[u]);
+                pTrueMin = std::min(pTrueMin, pTrue[u]);
+                pTrueMax = std::max(pTrueMax, pTrue[u]);
+            }
+            log::info("p_rgh: uMaxAll ", num(uMaxAll),
+                      " prghSpread ", num(prghSpread),
+                      " pTrueRange ", num(pTrueMax - pTrueMin));
+        }
+
         if (caseDict.has("output"))
         {
             const Dictionary& od = caseDict.getDict("output");
@@ -191,7 +233,15 @@ int main(int argc, char** argv)
             {
                 VtkWriter w(mesh);
                 w.addCellVector("U", U.internalField());
-                w.addCellScalar("p", p.internalField());
+                if (pRgh)
+                {
+                    w.addCellScalar("p", pTrue);
+                    w.addCellScalar("p_rgh", p.internalField());
+                }
+                else
+                {
+                    w.addCellScalar("p", p.internalField());
+                }
                 if (turb) app::writeTurbulence(w, *turb);
                 if (energy.model) energy.write(w);
                 w.write(vtk);

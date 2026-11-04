@@ -181,6 +181,20 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             pnode march from the outlet anchor, and the uniform steady state
             (alpha*, s*, rhoG* = rhoG).
 
+  mode = pressurefull   : pressure-driven model-full steady BVP - fixed
+            pressures on BOTH ends of a vertical incompressible riser, no
+            rate prescribed. The mixture-row Newton (implicit Euler, holdup
+            frozen, lagged slip inertia) finds vm from the drive; the slip
+            ODE settles on s* = sqrt(alpha_g alpha (rhoL-rhoG) g sinT / C);
+            the ghost composition is the steady holdup, so the phase rates
+            EMERGE at the boundaries (vL = F(alpha*, s*),
+            vG = G(alpha*, s*)) and vm* > s* excludes the alternative flux
+            root. The checker replicates the coupled momentum-Newton +
+            slip + Godunov-water recursion step by step (1e-9), then the
+            steady anchors: the steady-row root, the emergent rates, the
+            loss march from the inlet anchor landing exactly on the outlet
+            pressure (the BVP closure), and the exact discrete fixed point.
+
   mode = slugpulse      : coalescing packets under a piecewise-constant
             inlet rate schedule (horizontal incompressible pipe, Wallis
             closure). Fronts ride Rankine-Hugoniot shock speeds and fan
@@ -2273,6 +2287,227 @@ elif mode == "fullmomentum":
                      f"{drift[:4]}")
     else:
         print("ok:   steady state held over the final 20 s")
+
+elif mode == "pressurefull":
+    # pressure-driven model-full steady BVP: fixed-pressure boundaries on
+    # both ends of a vertical incompressible riser running the full gas
+    # momentum closure. No rate is prescribed - the drive accelerates the
+    # column through the mixture-row Newton (implicit Euler, holdup frozen,
+    # lagged slip inertia) and the phase rates EMERGE at the boundaries.
+    # The slip ODE settles on the buoyancy/drag terminal
+    #   s* = sqrt(alpha_g alpha (rhoL-rhoG) g sinT / C)
+    # (aM and the gas convection vanish at the uniform fixed point); the
+    # ghost composition is the steady holdup, so the pipe relaxes to
+    # alpha* = alpha_ghost and the alternative flux root (needs vm < s) is
+    # excluded by vm* > s*. At the settled state the loss march from the
+    # inlet anchor lands exactly on the outlet pressure.
+    N, L, DI, DT = 20, 20.0, 0.05, 0.05
+    C_DRAG = 800.0
+    RHO_L, RHO_G, MU_L, MU_G = 1000.0, 300.0, 0.01, 1e-5
+    SIN_T, PHI_IN, PHI0, A0, A_IN = 1.0, 0.25, 0.5, 0.8, 0.5
+    P_IN, P_OUT = 3.0e5, 1.0e5
+    DP_DRIVE = P_IN - P_OUT
+    DX = L / N
+
+    def rho_m_of(a):
+        return a * RHO_L + (1.0 - a) * RHO_G
+
+    def mu_m_of(a):
+        return a * MU_L + (1.0 - a) * MU_G
+
+    def momentum_residual(u, alpha, vm_old, sdot):
+        # kernel momentumResidual: implicit Euler on the mixture row with
+        # the holdup frozen, the lagged slip inertia alpha alpha_g
+        # (rhoG - rhoL) ds/dt of the two phase momenta, homogeneous
+        # Churchill wall friction (odd in u) and the gravity head
+        rho_bar = sum(rho_m_of(a) for a in alpha) / N
+        inertia = rho_bar * L
+        grav = sum(rho_m_of(a) * G * SIN_T * DX for a in alpha)
+        slip_in = sum(alpha[i] * (1.0 - alpha[i]) * (RHO_G - RHO_L)
+                      * sdot[i] * DX for i in range(N))
+        fr = 0.0
+        for i in range(N):
+            re = rho_m_of(alpha[i]) * abs(u) * DI / mu_m_of(alpha[i])
+            fc = (churchill(re, 0.0) * (DX / DI) * 0.5
+                  * rho_m_of(alpha[i]) * u * u)
+            fr += fc if u >= 0 else -fc
+        return (inertia * (u - vm_old) / DT - slip_in + fr + grav
+                - DP_DRIVE)
+
+    def momentum_solve(alpha, vm_old, sdot):
+        # kernel Newton: init at vm_old, central-difference slope, stop at
+        # 1e-12 * (momentumScale + |dpDrive|)
+        rho_bar = sum(rho_m_of(a) for a in alpha) / N
+        grav = sum(rho_m_of(a) * G * SIN_T * DX for a in alpha)
+        scale = (rho_bar * L * (abs(vm_old) + 1.0) / DT + abs(grav) + 1.0
+                 + abs(DP_DRIVE))
+        u = vm_old
+        for _ in range(60):
+            r = momentum_residual(u, alpha, vm_old, sdot)
+            if abs(r) <= 1e-12 * scale:
+                break
+            h = max(1e-6 * max(abs(u), 1e-3), 1e-12)
+            slope = ((momentum_residual(u + h, alpha, vm_old, sdot)
+                      - momentum_residual(u - h, alpha, vm_old, sdot))
+                     / (2.0 * h))
+            u -= r / slope
+        return u
+
+    def slip_step(alpha, slip, vm, a_m):
+        # kernel slipStep model full with the convective gas term (forward
+        # difference along the flow, zero gradient at the outlet face) and
+        # the origin-secant semi-implicit drag
+        out, sdot = [], []
+        for i in range(N):
+            a = alpha[i]
+            ag = 1.0 - a
+            if a <= 1e-12 or ag <= 1e-12:
+                out.append(0.0)
+                sdot.append(-slip[i] / DT)
+                continue
+            conv = 0.0
+            if i + 1 < N:
+                v_gi = vm + a * slip[i]
+                v_gj = vm + alpha[i + 1] * slip[i + 1]
+                conv = v_gi * (v_gj - v_gi) / DX
+            drive = ((rho_m_of(a) - RHO_G) * (G * SIN_T + a_m)
+                     - RHO_G * conv)
+            rate = C_DRAG * abs(slip[i]) / (ag * a * RHO_G)
+            s = ((slip[i] / DT + drive / (a * RHO_G))
+                 / (1.0 / DT + rate))
+            out.append(s)
+            sdot.append((s - slip[i]) / DT)
+        return out, sdot
+
+    def face_fluxes(alpha, slip, vm):
+        # fixedPressure inlet ghost flux + interior godunov on the averaged
+        # slip + zero-gradient outlet flux (the last cell's liquid flux)
+        flux = [godunov(slip[0], vm - slip[0], 0.0, A_IN, alpha[0])]
+        for j in range(1, N):
+            s = 0.5 * (slip[j - 1] + slip[j])
+            flux.append(godunov(s, vm - s, 0.0, alpha[j - 1], alpha[j]))
+        sl, a_end = slip[N - 1], alpha[N - 1]
+        flux.append(sl * a_end * a_end + (vm - sl) * a_end)
+        return flux
+
+    alpha = [A0] * N
+    slip = [0.0] * N
+    water = [PHI0] * N
+    sdot = [0.0] * N
+    vm, vm_old = 0.0, 0.0
+    steps_done = 0
+    max_conv = 0.0
+    for k, fr in enumerate(frames):
+        want_steps = 0 if k == 0 else k * 20
+        while steps_done < want_steps:
+            vm = momentum_solve(alpha, vm_old, sdot)
+            a_m = (vm - vm_old) / DT
+            slip, sdot = slip_step(alpha, slip, vm, a_m)
+            max_conv = max(max_conv, max(
+                (abs((vm + alpha[i] * slip[i])
+                     * ((vm + alpha[i + 1] * slip[i + 1])
+                        - (vm + alpha[i] * slip[i])) / DX)
+                 if i + 1 < N else 0.0) for i in range(N)))
+            flux = face_fluxes(alpha, slip, vm)
+            wf = [(PHI_IN if flux[0] >= 0 else water[0]) * flux[0]]
+            for j in range(1, N):
+                wf.append((water[j - 1] if flux[j] >= 0 else water[j])
+                          * flux[j])
+            wf.append(water[N - 1] * flux[N])
+            new_a, new_w = [], []
+            for i in range(N):
+                na = min(max(alpha[i] + DT / DX * (flux[i] - flux[i + 1]),
+                             0.0), 1.0)
+                cap = max(na, 0.0)
+                af = min(max(alpha[i] * water[i]
+                             + DT / DX * (wf[i] - wf[i + 1]), 0.0), cap)
+                new_a.append(na)
+                new_w.append(af / cap if cap > 1e-9 else 0.0)
+            alpha, water = new_a, new_w
+            vm_old = vm
+            steps_done += 1
+        t = fr["t"]
+        check(f"vm replicated (t={t})", fr["vm"], vm, 1e-9)
+        ok_frame = True
+        for i in range(N):
+            got = fr["cells"][i]
+            want_vsl = (slip[i] * alpha[i] * alpha[i]
+                        + (vm - slip[i]) * alpha[i])
+            want_vsg = (vm + (slip[i] - vm) * alpha[i]
+                        - slip[i] * alpha[i] * alpha[i])
+            if (abs(got["alpha"] - alpha[i]) > 1e-9 + 1e-9 * abs(alpha[i])
+                    or abs(got.get("s", 0.0) - slip[i])
+                    > 1e-9 + 1e-9 * abs(slip[i])
+                    or abs(got.get("water", 0.0) - water[i])
+                    > 1e-9 + 1e-9 * abs(water[i])
+                    or abs(got["vsl"] - want_vsl)
+                    > 1e-9 + 1e-9 * abs(want_vsl)
+                    or abs(got["vsg"] - want_vsg)
+                    > 1e-9 + 1e-9 * abs(want_vsg)):
+                fails.append(f"cell {i} (t={t}): got={got} want alpha="
+                             f"{alpha[i]} s={slip[i]} water={water[i]} "
+                             f"vsl={want_vsl} vsg={want_vsg}")
+                ok_frame = False
+                break
+        if ok_frame:
+            print(f"ok:   alpha/slip/water/vsl/vsg fields replicated at "
+                  f"t={t} (1e-9)")
+    print(f"ok:   gas convective acceleration vG dvG/dx exercised in the"
+          f" transient (peak {max_conv:.6e} m/s2) and gone at the fixed"
+          " point")
+
+    # steady BVP anchors: the steady row root vM*, the closed-form terminal
+    # slip, the emergent inlet rates, and the loss march landing on the
+    # outlet anchor (dp = sum loss = dpDrive closes the BVP)
+    A_STAR = A_IN
+    rho_m = rho_m_of(A_STAR)
+    mu_m = mu_m_of(A_STAR)
+
+    def steady_row(v):
+        re = rho_m * v * DI / mu_m
+        fr = churchill(re, 0.0) * (DX / DI) * 0.5 * rho_m * v * v
+        return N * (fr + rho_m * G * SIN_T * DX)
+
+    lo, hi = 0.0, 20.0
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if steady_row(mid) > DP_DRIVE:
+            hi = mid
+        else:
+            lo = mid
+    vm_star = 0.5 * (lo + hi)
+    s_star = math.sqrt((1.0 - A_STAR) * A_STAR * (RHO_L - RHO_G) * G
+                       * SIN_T / C_DRAG)
+    vsl_star = s_star * A_STAR ** 2 + (vm_star - s_star) * A_STAR
+    vsg_star = (vm_star + (s_star - vm_star) * A_STAR
+                - s_star * A_STAR ** 2)
+    check("steady vm = steady-row root", frames[-1]["vm"], vm_star, 1e-9)
+    check("emergent inlet vsl = F(alpha*, s*)", frames[-1]["cells"][0]["vsl"],
+          vsl_star, 1e-9)
+    check("emergent inlet vsg = G(alpha*, s*)", frames[-1]["cells"][0]["vsg"],
+          vsg_star, 1e-9)
+    check("pressure drop closes the BVP", frames[-1]["dp"], DP_DRIVE, 1e-9)
+    cell_loss = steady_row(vm_star) / N
+    node_bad = [j for j in range(N + 1)
+                if abs(frames[-1]["nodes"][j]
+                       - (P_IN - j * cell_loss)) > 1e-9 * P_IN]
+    if node_bad:
+        fails.append(f"pnode march off at nodes {node_bad[:4]}")
+    else:
+        print(f"ok:   pnode marches from the inlet anchor {P_IN:.6e} by the"
+              f" per-cell loss {cell_loss:.6e} onto the outlet anchor"
+              f" {frames[-1]['nodes'][-1]:.6e} = {P_OUT:.6e} (1e-9)")
+    drift = []
+    for key, tol in (("alpha", 1e-12), ("water", 1e-12), ("s", 1e-12)):
+        for i in range(N):
+            if (abs(frames[-1]["cells"][i][key]
+                    - frames[-2]["cells"][i][key]) > tol):
+                drift.append(f"{key}[{i}]")
+    if drift or abs(frames[-1]["vm"] - frames[-2]["vm"]) > 1e-12:
+        fails.append(f"state still drifting between the last two frames: "
+                     f"{drift[:4]}")
+    else:
+        print("ok:   exact discrete fixed point held over the final 1 s")
 
 elif mode == "slugpulse":
     # slug first increment: coalescing packets under a piecewise-constant

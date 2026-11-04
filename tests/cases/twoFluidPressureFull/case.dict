@@ -1,0 +1,72 @@
+// Pressure-driven model-full steady BVP: fixed-pressure boundaries on both
+// ends of a vertical incompressible riser running the full gas momentum
+// closure (distributed pressure momentum). Neither phase rate is prescribed
+// - the drive 2e5 Pa accelerates the column through the mixture-row Newton
+// (implicit Euler, holdup frozen) and the rates EMERGE at the boundaries.
+//
+// The slip ODE (mixture pressure gradient substituted, convective gas term
+// active in the transient) settles on the buoyancy/drag terminal
+//   s* = sqrt(alpha_g alpha (rhoL - rhoG) g sinT / C)  (C = 800, sinT = 1)
+// which is rhoG-independent. The semi-implicit origin-secant drag needs
+// |s_old| > 0 to engage, so the first step overshoots to
+// s1 = (rhoL - rhoG) g dt / rhoG; rhoG = 300 and dt = 0.05 keep that
+// overshoot below s*(0.8) = 1.31 for a smooth start-up (the fullmomentum
+// case made the ODE genuinely inertial the same way).
+//
+// The ghost composition IS the steady holdup: at the uniform fixed point
+// the face-0 flux upwinds from the ghost, so the pipe relaxes to
+// alpha* = alpha_ghost = 0.5 (the alternative flux root a' = 1 - vm/s -
+// alpha needs vm < s; here vm* ~ 4.9 > s* ~ 1.46, so the root is unique).
+// vM* solves the steady row  dpDrive = sum(churchill fr + gravity head)
+// with the homogeneous mixture properties at alpha* = 0.5
+// (rho_m = 650, mu_m = 0.005005), giving vM* ~ 4.92 m/s, s* = 1.464652,
+// and the emergent inlet rates vL = F(0.5, s*) ~ 2.09, vG = G(0.5, s*) ~ 2.83.
+// At the settled state the loss march from the inlet anchor lands exactly
+// on the outlet pressure: p[node N] = p_in - sum loss = p_out.
+//
+// tests/check_two_fluid.py mode pressurefull replicates the coupled
+// momentum-Newton + slip + Godunov-water recursion step by step (1e-9),
+// then checks the steady anchors above and the transient convective
+// diagnostic. Initial alpha 0.8 / water 0.5 deliberately differ from the
+// fixed point so the flush to (0.5, 0.25) is a real transient.
+fluid
+{
+    rhoL 1000;
+    rhoG 300;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.05;
+    roughness 0;
+    angleDeg 90;
+    sections 20;
+}
+
+closure
+{
+    model full;
+    interfacialDrag 800;
+}
+
+initial
+{
+    alpha 0.8;
+    water 0.5;
+}
+
+boundaries
+{
+    inlet  { type fixedPressure; p 3.0e5; alpha 0.5; waterFraction 0.25; }
+    outlet { type fixedPressure; p 1.0e5; }
+}
+
+time
+{
+    dt 0.05;
+    endTime 30;
+    reportEvery 20;
+}

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -59,8 +60,10 @@ namespace cf
 /// phases stay in thermal equilibrium): implicit Euler on
 ///   C_i dT_i/dt = H_in,i - H_out,i + k' dx (T_wall,i - T_i),
 /// C_i the section's phase-weighted rho*c capacity and the enthalpy flux
-/// riding the mixture velocity with the upwind cell's composition (the same
-/// homogeneous closure as the friction law). Implicit in T, so no CFL on top
+/// riding the phase volume fluxes of the step's transport, each phase
+/// upwinded on its own flux direction (with slip the liquid no longer moves
+/// at the mixture velocity; the slip-0 limit reproduces the homogeneous
+/// mixture-weighted form). Implicit in T, so no CFL on top
 /// of the transport one.
 /// A case may chain several pipe segments (pipes{} block of named
 /// sub-blocks in flow order - e.g. a vertical riser followed by a horizontal
@@ -73,6 +76,22 @@ namespace cf
 /// roughness drive the friction, gravity head, thermal capacity and CFL per
 /// cell; the fills' from/to coordinates measure the arc position from the
 /// chain inlet.
+/// With a hydrate{} block the sections also carry a hydrate volume fraction
+/// h of the liquid+hydrate slurry (riding the liquid like the water cut).
+/// Growth is driven by the subcooling dT = T_eq(p) - T with the equilibrium
+/// curve ln(p[Pa]) = curveA + curveB / T_eq (curveB < 0), first order in
+/// the free-water fraction and implicit in h:
+///   dh/dt =  growthRate * dT * (water + h)   (dT > 0, growth)
+///   dh/dt = -dissociationRate * |dT| * h     (dT < 0, dissociation)
+/// (the implicit growth law converges to the full conversion h = water + h,
+/// no separate nucleation threshold in this form). Formation consumes
+/// gasContent kg of gas per m3 of hydrate - a real gas mass sink on the EOS
+/// inventory, capped by the available gas - and moves the free-water volume
+/// into hydrate 1:1 (the volume-preserving convention of the transient
+/// network kernel). Formation releases latentHeat J/m3 (dissociation
+/// absorbs it) as a source in the temperature equation. Requires the gas
+/// EOS (fluid gasR > 0) and a thermal{} block: both p_i and T_i drive the
+/// kinetics.
 
 struct TwoFluidFluid
 {
@@ -120,6 +139,7 @@ struct TwoFluidBoundary
     double alpha = 0;        // fixedPressure inlet: composition of the
                              // inflow ghost cell
     double waterFraction = 0;// water cut of the inflow liquid
+    double hydrateFraction = 0; // hydrate fraction of the inflow liquid
     double temperature = 0;  // K, temperature of the inflow ghost cell
                              // (required on both ends when thermal is on,
                              // the unused one for potential backflow)
@@ -149,6 +169,23 @@ struct TwoFluidFill
     double alpha = 0;
 };
 
+/// Gas-hydrate kinetics (see the class documentation above). The equilibrium
+/// curve ln(p[Pa]) = curveA + curveB / T_eq is the first-order Clausius
+/// form of the dissociation line; the defaults anchor roughly on methane
+/// hydrate (T_eq ~ 295 K at 3 MPa). gasContent is the stoichiometric gas
+/// mass per m3 of hydrate (CH4 x 5.75 H2O ~ 122 kg/m3) and latentHeat the
+/// formation heat release per m3 (~ 4.2e8 J/m3).
+struct TwoFluidHydrate
+{
+    double curveA = 35.2;            // ln(p[Pa]) = curveA + curveB / T_eq
+    double curveB = -5684.0;         // K (negative: p up -> T_eq up)
+    double growthRate = 0.01;        // 1/(s K), first order in free water
+    double dissociationRate = 0.01;  // 1/(s K), first order in h
+    double gasContent = 122.0;       // kg gas consumed per m3 hydrate
+    double latentHeat = 4.2e8;       // J released per m3 hydrate formed
+    double initial = 0;              // initial hydrate fraction of the slurry
+};
+
 struct TwoFluidCase
 {
     TwoFluidFluid fluid;
@@ -162,6 +199,8 @@ struct TwoFluidCase
     bool thermalOn = false;      // energy equation solved (thermal{} present)
     double temperature0 = 300;   // K, uniform initial temperature
     TwoFluidThermal thermal;
+    bool hydrateOn = false;      // hydrate kinetics solved (hydrate{} present)
+    TwoFluidHydrate hydrate;
 };
 
 class TwoFluidPipe
@@ -199,6 +238,9 @@ public:
     /// pressure, not the hydraulic loss profile (see nodePressure()).
     std::vector<double> cellPressure() const;
     std::vector<double> cellTemperature() const { return T_; }
+    /// Hydrate volume fraction of the liquid+hydrate slurry per section;
+    /// zeros unless the hydrate{} block is present.
+    std::vector<double> cellHydrate() const { return hydrate_; }
     /// Wall heat the sections absorb this step, W (positive = into the fluid);
     /// zero unless thermal is on.
     double wallHeatRate() const { return wallHeatRate_; }
@@ -209,8 +251,14 @@ private:
     void momentumSolve(double dt);
     void slipStep(double dt);
     void transportStep(double dt);
+    void hydrateStep(double dt);
     void thermalStep(double dt);
     double wallTemperature(int i) const;
+    // hydrate equilibrium temperature T_eq(p) from ln(p) = A + B / T_eq
+    double equilibriumTemperature(double p) const
+    {
+        return cfg_.hydrate.curveB / (std::log(p) - cfg_.hydrate.curveA);
+    }
     // liquid-flux function coefficients F(a) = qa a^2 + qb a + qc at the
     // current mixture velocity (algebraic closures; the dynamic closure
     // builds face-local coefficients from the slip state)
@@ -249,6 +297,15 @@ private:
     std::vector<double> gasMass_; // gas inventory per unit area kg/m2 =
                                   // rhoG (1 - alpha) dx; the transported
                                   // state when the EOS is on
+    std::vector<double> liquidFaceFlux_; // this step's face liquid volume
+                                         // flux (superficial, m/s); the
+                                         // enthalpy carrier of the thermal
+                                         // step
+    std::vector<double> gasFaceFlux_;    // this step's face gas volume flux
+    std::vector<double> hydrate_; // hydrate volume fraction of the slurry
+    std::vector<double> hydrateDelta_; // this step's hydrate volume change
+                                       // per bulk m3 (the latent-heat source
+                                       // the thermal step consumes)
     double wallHeatRate_ = 0;
     double inletHeatRate_ = 0;
     double vM_ = 0;   // current mixture velocity
@@ -285,6 +342,17 @@ private:
 ///       surfaceTemperature 288;  // geothermal: T(d) = surf + gradient*d
 ///       gradient 0.03;           // K/m of true vertical depth
 ///       inletDepth 2000;         // m below surface at s = 0
+///   }
+///   hydrate      // optional: presence switches the hydrate kinetics on;
+///                // requires the gas EOS (gasR > 0) and a thermal{} block
+///   {
+///       curveA 35.2;             // ln(p[Pa]) = curveA + curveB / T_eq
+///       curveB -5684;            // K
+///       growthRate 0.01;         // 1/(s K), first order in free water
+///       dissociationRate 0.01;   // 1/(s K), first order in h
+///       gasContent 122;          // kg gas consumed per m3 hydrate
+///       latentHeat 4.2e8;        // J released per m3 hydrate formed
+///       initial 0;               // initial hydrate fraction of the slurry
 ///   }
 ///   time { dt 0.25; endTime 30; reportEvery 4; }
 TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict);

@@ -62,6 +62,8 @@ int main(int argc, char** argv)
             const std::vector<double> T = s.cellTemperature();
             const std::vector<double> ep
                 = c.fluid.gasR > 0 ? s.cellPressure() : std::vector<double>();
+            const std::vector<double> hy
+                = c.hydrateOn ? s.cellHydrate() : std::vector<double>();
             for (int i = 0; i < s.sections(); ++i)
             {
                 log::info("cell ", i, " alpha ", num(a[i]), " water ",
@@ -69,7 +71,8 @@ int main(int argc, char** argv)
                           num(vsg[i]),
                           T.empty() ? "" : (" T " + num(T[i])),
                           sl.empty() ? "" : (" s " + num(sl[i])),
-                          ep.empty() ? "" : (" p " + num(ep[i])));
+                          ep.empty() ? "" : (" p " + num(ep[i])),
+                          hy.empty() ? "" : (" h " + num(hy[i])));
             }
             if (!T.empty())
                 log::info("thermal: qWall ", num(s.wallHeatRate()),

@@ -182,6 +182,29 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
             cfFatal("twoFluid: thermal on needs an outlet boundary temperature");
         T_.assign(n_, cfg_.temperature0);
     }
+
+    if (cfg_.hydrateOn)
+    {
+        if (!eosOn())
+            cfFatal("twoFluid: hydrate kinetics needs the gas EOS"
+                    " (fluid gasR > 0)");
+        if (!cfg_.thermalOn)
+            cfFatal("twoFluid: hydrate kinetics needs a thermal{} block");
+        const TwoFluidHydrate& hy = cfg_.hydrate;
+        if (!(hy.growthRate >= 0) || !(hy.dissociationRate >= 0))
+            cfFatal("twoFluid: negative hydrate rate");
+        if (!(hy.gasContent > 0))
+            cfFatal("twoFluid: hydrate needs a positive gasContent");
+        if (!(hy.latentHeat > 0))
+            cfFatal("twoFluid: hydrate needs a positive latentHeat");
+        if (hy.initial < 0 || hy.initial > 1)
+            cfFatal("twoFluid: initial hydrate fraction outside [0,1]");
+        if (cfg_.water0 + hy.initial > 1.0)
+            cfFatal("twoFluid: water cut plus initial hydrate fraction"
+                    " exceeds 1");
+        hydrate_.assign(n_, hy.initial);
+        hydrateDelta_.assign(n_, 0.0);
+    }
 }
 
 void TwoFluidPipe::fluxCoeffs(double& qa, double& qb, double& qc) const
@@ -464,6 +487,7 @@ void TwoFluidPipe::transportStep(double dt)
     const TwoFluidBoundary& in = cfg_.inlet;
     const TwoFluidBoundary& out = cfg_.outlet;
     std::vector<double> flux(n_ + 1), wflux(n_ + 1);
+    std::vector<double> hflux(n_ + 1, 0.0);
     std::vector<double> gvol(n_ + 1, 0.0), gmflux(n_ + 1, 0.0);
 
     for (int j = 0; j <= n_; ++j)
@@ -516,59 +540,83 @@ void TwoFluidPipe::transportStep(double dt)
         {
             wflux[j] = (flux[j] >= 0 ? water_[j - 1] : water_[j]) * flux[j];
         }
+
+        // hydrate fraction rides the liquid flux beside the water cut,
+        // same upwind rule (the inflow composition carries hydrateFraction)
+        if (!cfg_.hydrateOn) continue;
+        if (flux[j] == 0) hflux[j] = 0;
+        else if (j == 0)
+        {
+            if (in.type == TwoFluidBoundary::Type::phaseRates)
+                hflux[0] = in.hydrateFraction * flux[0];
+            else
+                hflux[0] = (flux[0] >= 0 ? in.hydrateFraction : hydrate_[0])
+                         * flux[0];
+        }
+        else if (j == n_)
+        {
+            hflux[n_] = hydrate_[n_ - 1] * flux[n_];
+        }
+        else
+        {
+            hflux[j] = (flux[j] >= 0 ? hydrate_[j - 1] : hydrate_[j])
+                     * flux[j];
+        }
     }
 
-    // gas volume flux per face (EOS on): the gas counterpart of the liquid
-    // flux, quadratic/linear in alpha for every closure with G(1) = 0, so
-    // the same Godunov machinery and the same CFL bound apply. The mass
-    // flux upwinds the density from the side the volume flux comes from:
-    // the injected reference density at a rate boundary, the ghost density
-    // at a pressure boundary, the cell density inside.
-    if (eosOn())
+    // gas volume flux per face: the gas counterpart of the liquid flux,
+    // quadratic/linear in alpha for every closure with G(1) = 0, so the
+    // same Godunov machinery and the same CFL bound apply. The volume flux
+    // exists regardless of the EOS (the thermal step advects gas enthalpy
+    // with it); with the EOS on the mass flux upwinds the density from the
+    // side the volume flux comes from: the injected reference density at a
+    // rate boundary, the ghost density at a pressure boundary, the cell
+    // density inside.
+    for (int j = 0; j <= n_; ++j)
     {
-        for (int j = 0; j <= n_; ++j)
+        if (j == 0)
         {
-            if (j == 0)
+            if (in.type == TwoFluidBoundary::Type::phaseRates)
+                gvol[0] = in.vsg;
+            else if (in.type == TwoFluidBoundary::Type::fixedPressure)
             {
-                if (in.type == TwoFluidBoundary::Type::phaseRates)
-                    gvol[0] = in.vsg;
-                else if (in.type == TwoFluidBoundary::Type::fixedPressure)
+                if (cfg_.closure.model == 2)
                 {
-                    if (cfg_.closure.model == 2)
-                    {
-                        const double s = faceSlip(0);
-                        gvol[0] = godunovQuadratic(-s, s - vM_, vM_, in.alpha,
-                                                   alpha_[0]);
-                    }
-                    else
-                    {
-                        double gqa, gqb, gqc;
-                        gasFluxCoeffs(gqa, gqb, gqc);
-                        gvol[0] = godunovQuadratic(gqa, gqb, gqc, in.alpha,
-                                                   alpha_[0]);
-                    }
+                    const double s = faceSlip(0);
+                    gvol[0] = godunovQuadratic(-s, s - vM_, vM_, in.alpha,
+                                               alpha_[0]);
                 }
-                // sealed inlet: gvol[0] stays 0
+                else
+                {
+                    double gqa, gqb, gqc;
+                    gasFluxCoeffs(gqa, gqb, gqc);
+                    gvol[0] = godunovQuadratic(gqa, gqb, gqc, in.alpha,
+                                               alpha_[0]);
+                }
             }
-            else if (j == n_)
-            {
-                if (out.type != TwoFluidBoundary::Type::sealed)
-                    gvol[n_] = gasVolumeFlux(alpha_[n_ - 1], faceSlip(n_));
-            }
-            else if (cfg_.closure.model == 2)
-            {
-                const double s = faceSlip(j);
-                gvol[j] = godunovQuadratic(-s, s - vM_, vM_, alpha_[j - 1],
-                                           alpha_[j]);
-            }
-            else
-            {
-                double gqa, gqb, gqc;
-                gasFluxCoeffs(gqa, gqb, gqc);
-                gvol[j] = godunovQuadratic(gqa, gqb, gqc, alpha_[j - 1],
-                                           alpha_[j]);
-            }
+            // sealed inlet: gvol[0] stays 0
+        }
+        else if (j == n_)
+        {
+            if (out.type != TwoFluidBoundary::Type::sealed)
+                gvol[n_] = gasVolumeFlux(alpha_[n_ - 1], faceSlip(n_));
+        }
+        else if (cfg_.closure.model == 2)
+        {
+            const double s = faceSlip(j);
+            gvol[j] = godunovQuadratic(-s, s - vM_, vM_, alpha_[j - 1],
+                                       alpha_[j]);
+        }
+        else
+        {
+            double gqa, gqb, gqc;
+            gasFluxCoeffs(gqa, gqb, gqc);
+            gvol[j] = godunovQuadratic(gqa, gqb, gqc, alpha_[j - 1],
+                                       alpha_[j]);
+        }
 
+        if (eosOn())
+        {
             const double rhoUp =
                 gvol[j] >= 0
                     ? (j == 0
@@ -581,6 +629,8 @@ void TwoFluidPipe::transportStep(double dt)
             gmflux[j] = rhoUp * gvol[j];
         }
     }
+    liquidFaceFlux_ = flux;
+    gasFaceFlux_ = gvol;
 
     static constexpr double kTol = 1e-9;
     for (int i = 0; i < n_; ++i)
@@ -589,6 +639,7 @@ void TwoFluidPipe::transportStep(double dt)
         if (aNew < -kTol || aNew > 1.0 + kTol)
             cfFatal("twoFluid: holdup left [0,1] - reduce dt");
         const double afOld = alpha_[i] * water_[i];
+        const double ahOld = cfg_.hydrateOn ? alpha_[i] * hydrate_[i] : 0.0;
         double afNew = afOld + dt / dxs_[i] * (wflux[i] - wflux[i + 1]);
         const double aCap = std::max(aNew, 0.0);
         if (afNew < -kTol || afNew > aCap + kTol)
@@ -596,6 +647,16 @@ void TwoFluidPipe::transportStep(double dt)
         alpha_[i] = std::min(std::max(aNew, 0.0), 1.0);
         afNew = std::min(std::max(afNew, 0.0), aCap);
         water_[i] = aCap > kTol ? afNew / aCap : 0.0;
+        if (cfg_.hydrateOn)
+        {
+            // hydrate rides the liquid with the same upwind rule and the
+            // same clamp semantics as the water cut (ahOld was taken
+            // against the pre-transport holdup, beside afOld)
+            double ahNew = ahOld
+                         + dt / dxs_[i] * (hflux[i] - hflux[i + 1]);
+            ahNew = std::min(std::max(ahNew, 0.0), aCap);
+            hydrate_[i] = aCap > kTol ? ahNew / aCap : 0.0;
+        }
         if (eosOn())
         {
             // gas mass continuity on the per-unit-area inventory
@@ -614,12 +675,65 @@ void TwoFluidPipe::transportStep(double dt)
     }
 }
 
+void TwoFluidPipe::hydrateStep(double dt)
+{
+    if (!cfg_.hydrateOn) return;
+    static constexpr double kTol = 1e-9;
+    const TwoFluidHydrate& hy = cfg_.hydrate;
+    // the subcooling uses the just-transported state: the EOS pressure of
+    // the transported gas inventory and the current section temperature
+    const std::vector<double> p = cellPressure();
+    for (int i = 0; i < n_; ++i)
+    {
+        const double ag = 1.0 - alpha_[i];
+        if (ag <= 1e-12)
+            cfFatal("twoFluid: hydrate kinetics needs gas volume in every"
+                    " cell - keep a gas-bearing holdup");
+        const double dT = equilibriumTemperature(p[i]) - sectionTemperature(i);
+        const double hOld = hydrate_[i];
+        // hydrate-able slurry material: free water plus existing hydrate
+        // (oil is inert); the growth law converges to the full conversion
+        const double total = water_[i] + hOld;
+        double hNew;
+        if (dT >= 0)
+        {
+            // implicit Euler on dh/dt = kg dT (total - h)
+            hNew = (hOld / dt + hy.growthRate * dT * total)
+                 / (1.0 / dt + hy.growthRate * dT);
+            // gas availability: gasContent kg per m3 of hydrate off the EOS
+            // inventory, capped so the mass stays non-negative
+            const double trace = kTol * cfg_.fluid.rhoG * dxs_[i];
+            const double dhMax = (gasMass_[i] - trace)
+                               / (hy.gasContent * alpha_[i] * dxs_[i]);
+            hNew = std::min(hNew, hOld + std::max(dhMax, 0.0));
+        }
+        else
+        {
+            // implicit Euler on dh/dt = -kd |dT| h
+            hNew = hOld / (1.0 + dt * hy.dissociationRate * (-dT));
+        }
+        hNew = std::min(std::max(hNew, 0.0), total);
+        const double dh = hNew - hOld;
+        // 1:1 volume move between free water and hydrate (the
+        // volume-preserving convention of the network kernel)
+        water_[i] = std::min(std::max(total - hNew, 0.0), 1.0);
+        hydrate_[i] = hNew;
+        // stoichiometric gas mass sink on the per-area EOS inventory
+        // (reappears on dissociation)
+        gasMass_[i] -= hy.gasContent * alpha_[i] * dh * dxs_[i];
+        // hydrate volume change per bulk m3: the latent-heat source the
+        // thermal step consumes (positive = release)
+        hydrateDelta_[i] = alpha_[i] * dh;
+    }
+}
+
 void TwoFluidPipe::step(double dt)
 {
     if (!(dt > 0)) cfFatal("twoFluid: dt must be positive");
     momentumSolve(dt);
     slipStep(dt);
     transportStep(dt);
+    hydrateStep(dt);
     thermalStep(dt);
     vMOld_ = vM_;
     t_ += dt;
@@ -639,60 +753,94 @@ void TwoFluidPipe::thermalStep(double dt)
     const TwoFluidFluid& f = cfg_.fluid;
     const TwoFluidThermal& th = cfg_.thermal;
     const double area = M_PI * diameter_ * diameter_ / 4.0;
-    auto rhoc = [&](double a, double rhoG)
-    {
-        return a * f.rhoL * f.cL + (1.0 - a) * rhoG * f.cG;
-    };
 
-    // |K| per face: enthalpy conductance W/K of the mixture stream, with the
-    // upwind composition of each face (ghost cells at the open boundaries)
-    std::vector<double> kFace(n_ + 1, 0.0);
-    if (vM_ > 0)
-    {
-        double rhocUp;
-        if (cfg_.inlet.type == TwoFluidBoundary::Type::phaseRates)
-            rhocUp = (cfg_.inlet.vsl * f.rhoL * f.cL
-                      + cfg_.inlet.vsg * f.rhoG * f.cG) / vM_;
-        else
-            rhocUp = rhoc(cfg_.inlet.alpha, ghostGasDensity(cfg_.inlet));
-        kFace[0] = area * vM_ * rhocUp;
-        for (int j = 1; j <= n_; ++j)
-            kFace[j] = area * vM_ * rhoc(alpha_[j - 1], cellGasDensity(j - 1));
-    }
-    else if (vM_ < 0)
-    {
-        for (int j = 0; j < n_; ++j)
-            kFace[j] = area * (-vM_) * rhoc(alpha_[j], cellGasDensity(j));
-        kFace[n_] = area * (-vM_)
-                  * rhoc(cfg_.outlet.alpha, ghostGasDensity(cfg_.outlet));
-    }
-
-    // implicit Euler: diagonal = capacity + outflow + wall; the inflow face
-    // couples the upwind neighbour (or the ghost temperature at the boundary)
+    // implicit Euler on the section temperatures. The phase enthalpies ride
+    // the phase volume fluxes of this step's transport - with slip the
+    // liquid no longer moves at the mixture velocity, so a mixture-rhoc * vM
+    // weighting would over-drag the liquid capacity against the slip - and
+    // each phase upwinds its temperature on its own flux direction. The gas
+    // density upwinds like the mass flux does (injected reference density at
+    // a rate boundary, ghost density at a pressure boundary, cell density
+    // inside).
     std::vector<std::vector<double>> mat(n_, std::vector<double>(n_, 0.0));
     std::vector<double> rhs(n_, 0.0);
     for (int i = 0; i < n_; ++i)
     {
-        const double cap = area * dxs_[i] * rhoc(alpha_[i], cellGasDensity(i));
+        const double cap = area * dxs_[i]
+                         * (alpha_[i] * f.rhoL * f.cL
+                            + (1.0 - alpha_[i]) * cellGasDensity(i) * f.cG);
         const double kw = th.wallHeatTransfer * dxs_[i];
-        mat[i][i] = cap / dt + kFace[vM_ >= 0 ? i + 1 : i] + kw;
+        mat[i][i] = cap / dt + kw;
         rhs[i] = cap / dt * T_[i] + kw * wallTemperature(i);
-        if (vM_ > 0)
+        if (cfg_.hydrateOn)
         {
-            if (i > 0) mat[i][i - 1] = -kFace[i];
-            else rhs[i] += kFace[0] * cfg_.inlet.temperature;
+            // hydrate formation releases its latent heat into the section
+            // (dissociation absorbs it), J/s over the cell bulk volume
+            rhs[i] += cfg_.hydrate.latentHeat * hydrateDelta_[i] * area
+                    * dxs_[i] / dt;
         }
-        else if (vM_ < 0)
+    }
+
+    auto gasRho = [&](int j) -> double
+    {
+        if (!eosOn()) return f.rhoG;
+        const double q = gasFaceFlux_[j];
+        if (q > 0)
+            return j == 0
+                ? (cfg_.inlet.type == TwoFluidBoundary::Type::phaseRates
+                       ? f.rhoG
+                       : ghostGasDensity(cfg_.inlet))
+                : j == n_ ? cellGasDensity(n_ - 1) : cellGasDensity(j - 1);
+        if (q < 0)
+            return j == n_ ? ghostGasDensity(cfg_.outlet) : cellGasDensity(j);
+        return 0.0;
+    };
+    // one face-phase contribution: the upstream side drains at its own
+    // temperature (diagonal), the downstream side receives the upwind
+    // temperature - an implicit coupling to the upstream cell, or the
+    // boundary temperature of the ghost reservoir
+    auto faceTerm = [&](int j, double q, double k)
+    {
+        if (q == 0) return;
+        const int up = q > 0 ? j - 1 : j;
+        const int dn = q > 0 ? j : j - 1;
+        if (up >= 0 && up < n_) mat[up][up] += k;
+        if (dn >= 0 && dn < n_)
         {
-            if (i < n_ - 1) mat[i][i + 1] = -kFace[i + 1];
-            else rhs[i] += kFace[n_] * cfg_.outlet.temperature;
+            if (up >= 0 && up < n_)
+                mat[dn][up] -= k;
+            else
+                rhs[dn] += k * (j == 0 ? cfg_.inlet.temperature
+                                       : cfg_.outlet.temperature);
+        }
+    };
+
+    inletHeatRate_ = 0;
+    for (int j = 0; j <= n_; ++j)
+    {
+        const double kl = area * f.rhoL * f.cL
+                        * std::abs(liquidFaceFlux_[j]);
+        const double kg = area * gasRho(j) * f.cG
+                        * std::abs(gasFaceFlux_[j]);
+        faceTerm(j, liquidFaceFlux_[j], kl);
+        faceTerm(j, gasFaceFlux_[j], kg);
+        if (j == 0)
+        {
+            if (liquidFaceFlux_[j] > 0)
+                inletHeatRate_ += kl * cfg_.inlet.temperature;
+            if (gasFaceFlux_[j] > 0)
+                inletHeatRate_ += kg * cfg_.inlet.temperature;
+        }
+        else if (j == n_)
+        {
+            if (liquidFaceFlux_[j] < 0)
+                inletHeatRate_ += kl * cfg_.outlet.temperature;
+            if (gasFaceFlux_[j] < 0)
+                inletHeatRate_ += kg * cfg_.outlet.temperature;
         }
     }
     detail::solveDenseLinear(mat, rhs);
 
-    inletHeatRate_ = 0;
-    if (vM_ > 0) inletHeatRate_ = kFace[0] * cfg_.inlet.temperature;
-    else if (vM_ < 0) inletHeatRate_ = kFace[n_] * cfg_.outlet.temperature;
     wallHeatRate_ = 0;
     for (int i = 0; i < n_; ++i)
     {
@@ -846,6 +994,7 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
         b.pressure = d.getScalarOr("p", 0.0);
         b.alpha = d.getScalarOr("alpha", 0.0);
         b.waterFraction = d.getScalarOr("waterFraction", 0.0);
+        b.hydrateFraction = d.getScalarOr("hydrateFraction", 0.0);
         b.temperature = d.getScalarOr("temperature", 0.0);
         return b;
     };
@@ -871,6 +1020,19 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
         c.thermal.inletDepth = th.getScalarOr("inletDepth", 0.0);
         if (c.thermal.wallHeatTransfer < 0)
             cfFatal("twoFluid: negative wallHeatTransfer");
+    }
+
+    if (caseDict.has("hydrate"))
+    {
+        c.hydrateOn = true;
+        const Dictionary& hd = caseDict.getDict("hydrate");
+        c.hydrate.curveA = hd.getScalar("curveA");
+        c.hydrate.curveB = hd.getScalar("curveB");
+        c.hydrate.growthRate = hd.getScalar("growthRate");
+        c.hydrate.dissociationRate = hd.getScalar("dissociationRate");
+        c.hydrate.gasContent = hd.getScalar("gasContent");
+        c.hydrate.latentHeat = hd.getScalar("latentHeat");
+        c.hydrate.initial = hd.getScalarOr("initial", 0.0);
     }
 
     return c;

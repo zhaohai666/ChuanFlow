@@ -66,6 +66,40 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             (alpha*, s*) independently for the bulk fields, recomputes the
             pressure drop term by term from the replicated profile, and
             requires flatness of the final frames.
+  mode = hydratesealed   : sealed line, wallis slip 0 - every transport
+            flux vanishes identically and each cell runs the pure per-cell
+            hydrate recursion. Subcooling dT = T_eq(p_i) - T_i with
+            T_eq = curveB / (ln p - curveA) and p_i = mg_i gasR T_i
+            / ((1-a) dx); growth implicit in the free-water sink
+            dh/dt = kg dT (w + h - h) -> h_new = (h/dt + kg dT (w+h))
+            / (1/dt + kg dT) capped by the gas availability
+            dhMax = (mg - trace)/(gasContent a dx); dissociation
+            h_new = h / (1 + kd |dT| dt); water = (w+h) - h_new (the 1:1
+            volume-preserving move) and the stoichiometric sink
+            mg -= gasContent a dh dx; then the diagonal thermal step and
+            the EOS pressure report. The checker replicates the recursion
+            cell by cell (1e-9) and asserts the closed-form end state:
+            full conversion h* = w0 with the gas inventory
+            mg* = mg0 - gasContent a h* dx = 200 - 61 = 139 kg/m2, T* = wall
+            and p* = 139 * 287 * 280 = 11,170,040 Pa exactly.
+  mode = hydrateflow     : rate-driven flowing line (wallis slip 0.3, EOS,
+            thermal, hydrate kinetics all on). The checker replicates the
+            full coupled step cell by cell (1e-9): Godunov transport of
+            alpha on F(a) = us a^2 + (vm - us) a with the water cut and the
+            hydrate fraction riding the same liquid flux under the same
+            clamp semantics, upwind gas-mass continuity on
+            G(a) = -us a^2 + (us - vm) a + vm, the implicit hydrate
+            recursion with the stoichiometric gas sink, and the implicit
+            temperature solve whose enthalpy conductances are the per-face
+            phase volume fluxes (rhoL cL vsl_face + rhoG cG vsg_face), each
+            phase upwinded on its own flux direction. Global identities
+            from emitted fields only: the hydrate-able composition
+            w + h = waterFraction everywhere (the 1:1 conversion), the
+            phase split vsl + vsg = vM, the gas inventory
+            sum mg = m0 + net in - gasContent sum a h dx, the Churchill
+            pressure drop term by term, the wall-heat sum, and the steady
+            energy balance qInlet + qWall + latent release = outflow
+            enthalpy.
 """
 import math
 import subprocess
@@ -83,15 +117,19 @@ if proc.returncode != 0:
 # ---- parse the time series ----
 times, frames = [], []
 cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = None, None, None, [], []
+cur_qwall, cur_qinlet = 0.0, 0.0
 
 
 def flush():
     global cur_t, cur_vm, cur_dp, cur_nodes, cur_cells
+    global cur_qwall, cur_qinlet
     if cur_t is not None:
         times.append(cur_t)
         frames.append({"t": cur_t, "vm": cur_vm, "dp": cur_dp,
-                       "nodes": cur_nodes, "cells": cur_cells})
+                       "nodes": cur_nodes, "cells": cur_cells,
+                       "qwall": cur_qwall, "qinlet": cur_qinlet})
         cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = None, None, None, [], []
+        cur_qwall, cur_qinlet = 0.0, 0.0
 
 
 for line in proc.stdout.splitlines():
@@ -103,6 +141,8 @@ for line in proc.stdout.splitlines():
         cur_t, cur_vm, cur_dp = float(tok[1]), float(tok[3]), float(tok[5])
     elif tok[0] == "node":
         cur_nodes.append(float(tok[3]))
+    elif tok[0] == "thermal:":
+        cur_qwall, cur_qinlet = float(tok[2]), float(tok[4])
     elif tok[0] == "cell":
         c = {"alpha": float(tok[3]), "water": float(tok[5]),
              "vsl": float(tok[7]), "vsg": float(tok[9])}
@@ -851,6 +891,353 @@ elif mode == "wellchain":
         fails.append("state still drifting between the last two frames")
     else:
         print("ok:   steady state held over the final 80 s")
+
+elif mode == "hydratesealed":
+    # sealed line, wallis slip 0: every transport flux is identically zero,
+    # so each cell runs the pure per-cell hydrate recursion (growth implicit
+    # in the free-water sink, gas-availability cap, 1:1 water <-> hydrate
+    # volume move, stoichiometric gas sink on the EOS inventory) followed by
+    # the diagonal thermal step and the EOS pressure report
+    RHO_G = 200.0  # case fluid rhoG (the shared default above is another case)
+    N, DT = 10, 0.5
+    DX, DI = 2.0, 0.02
+    AREA = math.pi * DI * DI / 4.0
+    GAS_R, T0 = 287.0, 300.0
+    CL, CG = 4180.0, 2150.0
+    A0, W0 = 0.5, 0.5
+    KW, T_WALL = 50.0, 280.0
+    CURVE_A, CURVE_B = 35.2, -5684.0
+    K_G, K_D = 0.01, 0.01
+    GAS_CONTENT, LATENT = 122.0, 4.2e8
+    STEPS_PER_FRAME = 160
+
+    def rho_g_cell_sealed(m, ag):
+        return m / (ag * DX)
+
+    alpha = [A0] * N
+    water = [W0] * N
+    hyd = [0.0] * N
+    temp = [T0] * N
+    mg = [RHO_G * (1.0 - A0) * DX] * N
+    steps_done = 0
+    for k, fr in enumerate(frames):
+        want_steps = 0 if k == 0 else k * STEPS_PER_FRAME
+        while steps_done < want_steps:
+            for i in range(N):
+                ag = 1.0 - alpha[i]
+                p_i = mg[i] * GAS_R * temp[i] / (ag * DX)
+                dT = CURVE_B / (math.log(p_i) - CURVE_A) - temp[i]
+                total = water[i] + hyd[i]
+                if dT >= 0:
+                    r = K_G * dT
+                    h_new = (hyd[i] / DT + r * total) / (1.0 / DT + r)
+                    trace = 1e-9 * RHO_G * DX
+                    dh_max = (mg[i] - trace) / (GAS_CONTENT * alpha[i] * DX)
+                    h_new = min(h_new, hyd[i] + max(dh_max, 0.0))
+                else:
+                    h_new = hyd[i] / (1.0 + DT * K_D * (-dT))
+                h_new = min(max(h_new, 0.0), total)
+                dh = h_new - hyd[i]
+                water[i] = min(max(total - h_new, 0.0), 1.0)
+                hyd[i] = h_new
+                mg[i] -= GAS_CONTENT * alpha[i] * dh * DX
+                cap = AREA * DX * (alpha[i] * RHO_L * CL
+                                   + ag * rho_g_cell_sealed(mg[i], ag) * CG)
+                kw = KW * DX
+                temp[i] = (cap / DT * temp[i] + kw * T_WALL
+                           + LATENT * alpha[i] * dh * AREA * DX / DT) \
+                          / (cap / DT + kw)
+            steps_done += 1
+        t = fr["t"]
+        ok_frame = True
+        for i in range(N):
+            got = fr["cells"][i]
+            want_p = rho_g_cell_sealed(mg[i], 1.0 - alpha[i]) * GAS_R * temp[i]
+            if (abs(got["alpha"] - alpha[i]) > 1e-9
+                    or abs(got["water"] - water[i]) > 1e-9 + 1e-9 * water[i]
+                    or abs(got.get("h", 0.0) - hyd[i]) > 1e-9 + 1e-9 * hyd[i]
+                    or abs(got.get("T", 0.0) - temp[i])
+                    > 1e-9 + 1e-9 * temp[i]
+                    or abs(got.get("p", 0.0) - want_p) > 1e-9 * want_p):
+                fails.append(f"cell {i} (t={t}): got={got} want w={water[i]} "
+                             f"h={hyd[i]} T={temp[i]} p={want_p}")
+                ok_frame = False
+                break
+        if ok_frame:
+            print(f"ok:   water/hydrate/T/p fields replicated at t={t} (1e-9)")
+    # closed-form end state: full 1:1 conversion exhausts the water, the
+    # stoichiometric sink leaves mg* = mg0 - gasContent a h* dx, the wall
+    # pins T and the EOS pins p
+    mg_end = RHO_G * (1.0 - A0) * DX - GAS_CONTENT * A0 * W0 * DX
+    p_end = mg_end / ((1.0 - A0) * DX) * GAS_R * T_WALL
+    c0 = frames[-1]["cells"][0]
+    check("end hydrate fraction (full 1:1 conversion)", c0.get("h", 0.0),
+          W0, 1e-9)
+    check("end water cut (exhausted)", c0["water"], 0.0, 0.0, 1e-9)
+    check("end temperature (pinned at wall)", c0.get("T", 0.0), T_WALL, 1e-9)
+    check("end EOS pressure (mg* = 139 kg/m2)", c0.get("p", 0.0), p_end, 1e-9)
+    if frames[-1]["cells"] != frames[-2]["cells"]:
+        fails.append("state still drifting between the last two frames")
+    else:
+        print("ok:   steady state held over the final 80 s")
+
+elif mode == "hydrateflow":
+    # rate-driven flowing line with the EOS, the thermal block and the
+    # hydrate kinetics all active: the checker replicates the full coupled
+    # step cell by cell - Godunov transport of alpha (wallis F convex,
+    # upwind from the left) with water and hydrate riding the same liquid
+    # flux under the same clamp semantics, upwind gas-mass continuity on
+    # the wallis gas flux G, the implicit hydrate recursion with the
+    # stoichiometric gas sink, and the implicit temperature solve with the
+    # per-face phase-volume-flux enthalpy conductances
+    RHO_G = 200.0  # case fluid rhoG (the shared default above is another case)
+    N, DI, DT = 20, 0.02, 0.2
+    L = 10.0
+    DX = L / N
+    AREA = math.pi * DI * DI / 4.0
+    VM, US, VSL, VSG, WF_IN = 1.0, 0.3, 0.4, 0.6, 0.25
+    GAS_R, P_OUT, T_OUT = 287.0, 1.0e6, 280.0
+    CL, CG = 4180.0, 2150.0
+    T0, T_IN = 290.0, 290.0
+    KW, T_WALL = 50.0, 280.0
+    A0, W0 = 0.5, 0.25
+    CURVE_A, CURVE_B = 35.2, -5684.0
+    K_G, K_D = 0.01, 0.01
+    GAS_CONTENT, LATENT = 122.0, 4.2e8
+    STEPS_PER_FRAME = 100
+
+    def solve_dense(mat, rhs):
+        # port of src/1d/src/DenseSolve.h (Gauss elimination with partial
+        # pivoting + back substitution)
+        n = len(rhs)
+        for k in range(n):
+            piv, best = k, abs(mat[k][k])
+            for i in range(k + 1, n):
+                if abs(mat[i][k]) > best:
+                    best, piv = abs(mat[i][k]), i
+            if piv != k:
+                mat[k], mat[piv] = mat[piv], mat[k]
+                rhs[k], rhs[piv] = rhs[piv], rhs[k]
+            for i in range(k + 1, n):
+                m = mat[i][k] / mat[k][k]
+                if m == 0:
+                    continue
+                for j in range(k, n):
+                    mat[i][j] -= m * mat[k][j]
+                rhs[i] -= m * rhs[k]
+        x = [0.0] * n
+        for i in range(n - 1, -1, -1):
+            s = rhs[i] - sum(mat[i][j] * x[j] for j in range(i + 1, n))
+            x[i] = s / mat[i][i]
+        return x
+
+    def rho_g_of(m, a):
+        ag = 1.0 - a
+        return m / (ag * DX) if ag > 1e-12 else RHO_G
+
+    alpha = [A0] * N
+    water = [W0] * N
+    hyd = [0.0] * N
+    temp = [T0] * N
+    mg = [RHO_G * (1.0 - A0) * DX] * N
+    steps_done = 0
+    for k, fr in enumerate(frames):
+        want_steps = 0 if k == 0 else k * STEPS_PER_FRAME
+        while steps_done < want_steps:
+            # ---- transport ----
+            flux = [VSL]
+            for j in range(1, N):
+                flux.append(godunov(US, VM - US, 0.0, alpha[j - 1], alpha[j]))
+            a_end = alpha[N - 1]
+            flux.append(US * a_end * a_end + (VM - US) * a_end)
+            gvol = [VSG]
+            for j in range(1, N):
+                gvol.append(godunov(-US, US - VM, VM, alpha[j - 1], alpha[j]))
+            gvol.append(VM + (US - VM) * a_end - US * a_end * a_end)
+            wflux, hflux = [0.0] * (N + 1), [0.0] * (N + 1)
+            for j in range(N + 1):
+                if flux[j] == 0:
+                    continue
+                if j == 0:
+                    wflux[j] = WF_IN * flux[j]      # injected composition
+                    hflux[j] = 0.0 * flux[j]
+                elif j == N:
+                    wflux[j] = water[N - 1] * flux[j]
+                    hflux[j] = hyd[N - 1] * flux[j]
+                else:
+                    wu = water[j - 1] if flux[j] >= 0 else water[j]
+                    hu = hyd[j - 1] if flux[j] >= 0 else hyd[j]
+                    wflux[j] = wu * flux[j]
+                    hflux[j] = hu * flux[j]
+            gmflux = []
+            for j in range(N + 1):
+                q = gvol[j]
+                if q > 0:
+                    rho_up = RHO_G if j == 0 else \
+                        rho_g_of(mg[N - 1], alpha[N - 1]) if j == N else \
+                        rho_g_of(mg[j - 1], alpha[j - 1])
+                elif q < 0:
+                    rho_up = P_OUT / (GAS_R * T_OUT) if j == N else \
+                        rho_g_of(mg[j], alpha[j])
+                else:
+                    rho_up = 0.0
+                gmflux.append(rho_up * q)
+            for i in range(N):
+                a_new = alpha[i] + DT / DX * (flux[i] - flux[i + 1])
+                a_cap = max(a_new, 0.0)
+                af = alpha[i] * water[i] + DT / DX * (wflux[i] - wflux[i + 1])
+                ah = alpha[i] * hyd[i] + DT / DX * (hflux[i] - hflux[i + 1])
+                alpha[i] = min(max(a_new, 0.0), 1.0)
+                af = min(max(af, 0.0), a_cap)
+                water[i] = af / a_cap if a_cap > 1e-9 else 0.0
+                ah = min(max(ah, 0.0), a_cap)
+                hyd[i] = ah / a_cap if a_cap > 1e-9 else 0.0
+                mg[i] = max(mg[i] - DT * (gmflux[i + 1] - gmflux[i]), 0.0)
+            # ---- hydrate kinetics ----
+            h_delta = [0.0] * N
+            for i in range(N):
+                p_i = (mg[i] * GAS_R * temp[i] / ((1.0 - alpha[i]) * DX)
+                       if 1.0 - alpha[i] > 1e-12 else 0.0)
+                dT = CURVE_B / (math.log(p_i) - CURVE_A) - temp[i]
+                total = water[i] + hyd[i]
+                if dT >= 0:
+                    r = K_G * dT
+                    h_new = (hyd[i] / DT + r * total) / (1.0 / DT + r)
+                    trace = 1e-9 * RHO_G * DX
+                    dh_max = (mg[i] - trace) / (GAS_CONTENT * alpha[i] * DX)
+                    h_new = min(h_new, hyd[i] + max(dh_max, 0.0))
+                else:
+                    h_new = hyd[i] / (1.0 + DT * K_D * (-dT))
+                h_new = min(max(h_new, 0.0), total)
+                dh = h_new - hyd[i]
+                water[i] = min(max(total - h_new, 0.0), 1.0)
+                hyd[i] = h_new
+                mg[i] -= GAS_CONTENT * alpha[i] * dh * DX
+                h_delta[i] = alpha[i] * dh
+            # ---- thermal: implicit solve on phase-flux conductances ----
+            mat = [[0.0] * N for _ in range(N)]
+            rhs = [0.0] * N
+            for i in range(N):
+                cap = AREA * DX * (alpha[i] * RHO_L * CL
+                                   + (1.0 - alpha[i])
+                                   * rho_g_of(mg[i], alpha[i]) * CG)
+                kw = KW * DX
+                mat[i][i] += cap / DT + kw
+                rhs[i] += cap / DT * temp[i] + kw * T_WALL
+                rhs[i] += LATENT * h_delta[i] * AREA * DX / DT
+            for j in range(N + 1):
+                kl = AREA * RHO_L * CL * abs(flux[j])
+                q = gvol[j]
+                if q > 0:
+                    rho_up = RHO_G if j == 0 else \
+                        rho_g_of(mg[N - 1], alpha[N - 1]) if j == N else \
+                        rho_g_of(mg[j - 1], alpha[j - 1])
+                elif q < 0:
+                    rho_up = P_OUT / (GAS_R * T_OUT) if j == N else \
+                        rho_g_of(mg[j], alpha[j])
+                else:
+                    rho_up = 0.0
+                kg = AREA * rho_up * CG * abs(q)
+                for q_f, k_f in ((flux[j], kl), (q, kg)):
+                    if q_f == 0:
+                        continue
+                    up = j - 1 if q_f > 0 else j
+                    dn = j if q_f > 0 else j - 1
+                    if 0 <= up < N:
+                        mat[up][up] += k_f
+                    if 0 <= dn < N:
+                        if 0 <= up < N:
+                            mat[dn][up] -= k_f
+                        else:
+                            rhs[dn] += k_f * (T_IN if j == 0 else T_OUT)
+            temp = solve_dense(mat, rhs)
+            steps_done += 1
+        t = fr["t"]
+        check(f"vm imposed (t={t})", fr["vm"], VM, 1e-12)
+        ok_frame = True
+        for i in range(N):
+            got = fr["cells"][i]
+            ag_i = 1.0 - alpha[i]
+            want_p = (mg[i] * GAS_R * temp[i] / (ag_i * DX)
+                      if ag_i > 1e-12 else 0.0)
+            if (abs(got["alpha"] - alpha[i]) > 1e-9 + 1e-9 * alpha[i]
+                    or abs(got["water"] - water[i]) > 1e-9 + 1e-9 * water[i]
+                    or abs(got.get("h", 0.0) - hyd[i]) > 1e-9 + 1e-9 * hyd[i]
+                    or abs(got.get("T", 0.0) - temp[i])
+                    > 1e-9 + 1e-9 * temp[i]
+                    or abs(got.get("p", 0.0) - want_p) > 1e-9 * want_p):
+                fails.append(f"cell {i} (t={t}): got={got} want a={alpha[i]} "
+                             f"w={water[i]} h={hyd[i]} T={temp[i]} "
+                             f"p={want_p}")
+                ok_frame = False
+                break
+        if ok_frame:
+            print(f"ok:   alpha/water/hydrate/T/p replicated at t={t} (1e-9)")
+    # identities from emitted fields only
+    for i, c in enumerate(frames[-1]["cells"]):
+        if abs(c["water"] + c.get("h", 0.0) - WF_IN) > 1e-12:
+            fails.append(f"hydrate-able composition cell {i}: "
+                         f"w+h={c['water'] + c.get('h', 0.0)} != {WF_IN}")
+            break
+    else:
+        print(f"ok:   per-cell composition w + h = {WF_IN} everywhere "
+              f"(1:1 conversion) (1e-12)")
+    for i, c in enumerate(frames[-1]["cells"]):
+        if abs(c["vsl"] + c["vsg"] - VM) > 1e-12:
+            fails.append(f"phase-split identity cell {i}: vsl={c['vsl']} "
+                         f"vsg={c['vsg']} sum={c['vsl'] + c['vsg']}")
+            break
+    else:
+        print(f"ok:   per-cell phase split vsl + vsg = vM = {VM} (1e-12)")
+    m_emit = sum(c["p"] * (1.0 - c["alpha"]) * DX / (GAS_R * c["T"])
+                 for c in frames[-1]["cells"])
+    c_out = frames[-1]["cells"][-1]
+    rho_g_out = c_out["p"] / (GAS_R * c_out["T"])
+    # emitted EOS inventory vs the replicated per-cell gas masses
+    check("gas inventory (emitted EOS vs replicated mg)",
+          m_emit, sum(mg), 1e-9)
+    # steady rate balance from emitted fields only: the net gas inflow
+    # (injected rhoG * vsg minus the outlet EOS density * vsg) is the gas
+    # the kinetics consumes making hydrate, which then rides the liquid out
+    # (formation rate = vsl_out * h_out - vsl_in * h_in, h_in = 0)
+    check("steady gas balance (net inflow = hydrate consumption)",
+          RHO_G * VSG - rho_g_out * c_out["vsg"],
+          GAS_CONTENT * c_out["vsl"] * c_out["h"], 1e-9)
+    dp_want = 0.0
+    for c in frames[-1]["cells"]:
+        rho_g = c["p"] / (GAS_R * c["T"])
+        rho_m = c["alpha"] * RHO_L + (1.0 - c["alpha"]) * rho_g
+        mu_m = c["alpha"] * MU_L + (1.0 - c["alpha"]) * MU_G
+        re = rho_m * VM * DI / mu_m
+        dp_want += churchill(re, 0.0) * (DX / DI) * 0.5 * rho_m * VM * VM
+    check("pressure drop (Churchill friction, term by term)",
+          frames[-1]["dp"], dp_want, 1e-9)
+    qwall_want = sum(KW * DX * (T_WALL - c["T"])
+                     for c in frames[-1]["cells"])
+    check("wall heat sum", frames[-1].get("qwall", 0.0), qwall_want, 1e-9)
+    # steady energy balance: inflow enthalpy + wall + latent release equals
+    # the outflow enthalpy carried by the outlet-face phase fluxes; the
+    # latent source is the volumetric formation rate (vsl_out * h_out per
+    # unit area) times the pipe area times the latent heat
+    kl_out = AREA * RHO_L * CL * c_out["vsl"]
+    kg_out = AREA * rho_g_out * CG * c_out["vsg"]
+    h_out = (kl_out + kg_out) * c_out["T"]
+    latent = LATENT * AREA * c_out["vsl"] * c_out["h"]
+    check("steady energy balance (inlet + wall + latent = outflow)",
+          h_out, frames[-1].get("qinlet", 0.0) + frames[-1].get("qwall", 0.0)
+          + latent, 1e-9)
+    # physics shape: water depletes and hydrate accumulates along x
+    ws = [c["water"] for c in frames[-1]["cells"]]
+    hs = [c.get("h", 0.0) for c in frames[-1]["cells"]]
+    if any(ws[i] <= ws[i + 1] for i in range(N - 1)) or \
+            any(hs[i] >= hs[i + 1] for i in range(N - 1)):
+        fails.append("conversion profile not monotone along x")
+    else:
+        print("ok:   water depletes / hydrate accumulates monotonically")
+    if frames[-1]["cells"] != frames[-2]["cells"]:
+        fails.append("state still drifting between the last two frames")
+    else:
+        print("ok:   steady state held over the final 20 s")
 
 else:
     raise SystemExit(f"unknown mode {mode}")

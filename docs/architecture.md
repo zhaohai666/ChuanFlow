@@ -302,8 +302,9 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 | `transientSlug` | 段塞推进：串联管层流流量（1e-3）+ CSTR 级联递推（1e-9）|
 | `transientValve` | 关阀/开阀时间表：代入节点柔度后每步只剩单个单调标量方程，二分到机器精度精确复现 (Q, p, α)（1e-9，时间表按 `t += dt` 与内核锁步累计——打印时刻仅 12 位有效数字，斜坡上会引入 dK~1e2 的舍入误差）+ 关阀泄漏 6.2e-8 m³/s、罐压冻结（漂移 ~1.0 Pa）、重开恢复排液 q(20)=3.385e-3、全程层流 Re=1229 |
 
-尚未实现（M2 后续增量）：非等温与
-成核/生长动力学、液膜夹带与段塞合并破碎。
+尚未实现（M2 后续增量）：液膜夹带与段塞合并破碎
+（非等温与成核/生长动力学已由 §4.2 热力耦合与 §4.3
+水合物动力学落地）。
 
 ### 4.3 分布式两流体瞬态内核（M2 第二增量，OLGA 主干）
 
@@ -346,13 +347,30 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 - **水相分数**：`∂(αϕ)/∂t + ∂(ϕ·F)/∂x = 0`，按通量方向迎风，ϕ ∈ [0, α]；
 - **温度方程（thermal{} 块出现时）**：各段混合温度（两相热平衡），
   `C_i dT_i/dt = H_in,i − H_out,i + k'·Δx·(T_wall,i − T_i)`，`C_i` 是相加权
-  `ρc` 容量（`α ρ_L c_L + (1−α) ρ_G c_G`），焓通量骑混合速度、取迎风元
-  的相加权组成（与摩阻同一均匀流闭合；`phaseRates` 入口的组成按
+  `ρc` 容量（`α ρ_L c_L + (1−α) ρ_G c_G`，气密度取本步输运后 EOS 值）；
+  焓通量**骑各相自己的体积通量**（与本步输运共用的面液/气通量，滑移下
+  液相不再以混合速度运动——混合 `ρc·v_m` 加权会对液相容量过度拖曳，
+  滑移为零时两种形式逐位相同），各相按**自己的通量方向**迎风；气密度
+  迎风与质量通量同侧（rate 边界取注入参考密度、定压边界取 ghost
+  `p/(gasR·T)`、管内取迎风元密度）；`phaseRates` 入口的组成按
   `vsl/vsg` 构造，开放边界的 ghost 温度两侧都必须给——出口那侧只在
-  回流时被用到，而回流是定压端的正常结果）。壁温 constant 或 geothermal
+  回流时被用到，而回流是定压端的正常结果。壁温 constant 或 geothermal
   （`T = 地表温 + 梯度·垂深`，垂深 = inletDepth − s·sinθ，出地即 fatal）。
   温度隐式，不加新的 CFL；每步与输运共用 DenseSolve 稠密求解（段数
-  ≤ 数百）；
+  ≤ 数百）。每帧报告 `thermal: qWall … qInlet …`（壁面换热与入口焓流
+  之和，稳态能量衡算用）；
+- **水合物动力学（hydrate{} 块，需 EOS 与 thermal 同时开启）**：逐段输运
+  水合物体积分数 `h = V_h/(V_L + V_h)`（油为 1 − 水 − h 的惰性余量），
+  与水相分数同一迎风规则、同一 clamp 语义骑液相输运。每步输运后按元
+  求过冷度 `ΔT = T_eq(p_i) − T_i`，平衡曲线 `ln p = curveA + curveB/T_eq`
+  （p 取本步输运后 EOS 压力、T 取当前段温）；生长（ΔT ≥ 0）对
+  `dh/dt = k_g·ΔT·(ϕ_w + h)` 做**隐式 Euler（对自由水一阶、对水汇隐式）**
+  `h⁺ = (h/dt + k_g·ΔT·(ϕ_w + h))/(1/dt + k_g·ΔT)`，并以气源封顶
+  `h⁺ ≤ h + max((m_G − trace)/(gasContent·α·Δx), 0)`；分解（ΔT < 0）为
+  `h⁺ = h/(1 + dt·k_d·|ΔT|)`；随后 1:1 体积移动 `ϕ_w⁺ = ϕ_w + h − h⁺`
+  （保体积约定）、按化学计量从 EOS 气量扣气 `m_G −= gasContent·α·Δh·Δx`
+  （分解放回）。潜热反馈进温度方程：`rhs += latentHeat·α·Δh·A·Δx/dt`
+  （生长放热、分解吸热）。应用输出逐元追加 `h …`；
 - **气相 EOS 压缩性（fluid gasR > 0 开启）**：气相密度成为逐段输运状态
   ——气相质量连续 `d(ρ_G α_g)/dt + d(ρ_G α_g v_G)/dx = 0` 以单位面积气量
   `m_G = ρ_G(1−α)Δx`（kg/m²）为状态变量，气相体积通量
@@ -379,10 +397,10 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
   交界通量恰为 vsl，晕圈只有几个元；
 - **应用** `chflow-1d-twofluid <case.dict>`：输出 `t … vm … dp …` /
   `node <j> p …` / `cell <i> alpha … water … vsl … vsg …`（thermal 时
-  追加 `T …`，动态闭合时追加 `s …`，EOS 开启时追加 `p …`）+
-  `thermal: qWall … qInlet …`。
+  追加 `T …`，动态闭合时追加 `s …`，EOS 开启时追加 `p …`，水合物开启时
+  追加 `h …`）+ `thermal: qWall … qInlet …`。
 
-九个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
+十一个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
 
 | 算例 | 校验内容 |
 |---|---|
@@ -395,6 +413,8 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 | `twoFluidDynamicSlipHoldup` | 动态闭合稳态持液：耦合根 `(α*, s*)` 独立求出（F(α, s*(α)) = vsl + Churchill 摩阻驱动，实测 0.5529126041 / 0.6185778539），终场逐元对齐 1e-9、相分配 vsl = 0.4 / vsg = 0.6、压降 4437.1846 Pa 重算、末两帧全等（真稳态）|
 | `twoFluidCompressibleHoldup` | 气相 EOS 压缩性：`twoFluidDynamicSlipHoldup` 同管线 + gasR 287。滑移 + 持液 + 逐段气量 `m_G = ρ_G(1−α)Δx` 三态全耦合逐元复现（1e-9）、逐段 `p = ρ_G·gasR·T_0` 恒等式、全局气量衡算 `Σm_G(t) = Σm_G(0) + ∫(入−出)`（实测终值 89.417 kg/m²）、稳态气量平衡钉住 ρ_G* = 20 精确（EOS 压力 1.722e6 Pa）且 `(α*, s*)` 与不可压回归同根 0.5529126/0.6185779、压降 4437.1846 Pa 不变 |
 | `twoFluidWellChain` | 串接管链：竖直 riser（20 m/10 元，sinθ=1）+ 水平 flowline（20 m/10 元）动态闭合，交界共享 Godunov 面。全耦合逐元复现（1e-9）；两段独立稳态根——riser (α*, s*) = (0.7580622562, 1.9523156870)、flowline (0.5529126041, 0.6185778539)——bulk 元分别 1e-3 / 1e-9 对齐（交界晕圈 riser 第 7–9 元为驻激波边界层，豁免）；逐元相分配恒等式 `vsl + vsg = v_m`（1e-12）；压降按复现稳态像逐项重算（Churchill 摩阻 + 重位，实测 169374.682443 Pa）；末两帧全等（真稳态）|
+| `twoFluidHydrateSealed` | 封闭静置水合物：wallis 滑移 0 使一切输运通量恒为零，各元跑纯逐元递推（生长对自由水隐式 + 气源封顶 + 1:1 体积移动 + 化学计量气汇 + 带潜热的对角热步）逐帧复现（1e-9）；闭式终态 `h* = water0 = 0.5`、`water* → 0`（实测 2.2e-16）、`T* = 壁温 280`、`p* = m_G*·gasR·T_wall`，`m_G* = 200 − 122·0.5·0.5·2 = 139 kg/m²` ⇒ `p* = 1.117004e7 Pa` 精确；末两帧全等（转换壁面受限，尾部指数衰减后弛豫到壁温）|
+| `twoFluidHydrateFlow` | 流动水合物（rate 驱动 + EOS + thermal + 动力学全开）：整步全耦合逐元复现（1e-9）——Godunov 输运 α（wallis F 凸迎风取左）、水/水合物骑同一液相通量同 clamp 语义、气量按 wallis G 迎风 + 化学计量气汇、相通量导热的隐式温度解；恒等式：逐元组成 `w + h = 0.25`（1e-12）、相分配 `vsl + vsg = v_m`（1e-12）、发射 EOS 气量对复现 m_G（1e-9）、稳态气衡算 `ρ_G 注入·vsg − ρ_G,out·vsg,out = gasContent·vsl_out·h_out`（实测 8.4795689623 对 8.4795689622 kg/m²/s）、Churchill 压降逐项重算（4774.6772 Pa）、壁面换热求和、稳态能量衡算 `入口焓 + 壁面 + 潜热 = 出口焓`（1.7736709e5 W，潜热 = gasContent 消耗率×面积×latent）；水沿程单调耗尽/水合物单调累积；末两帧全等 |
 
 三个温度回归（`tests/check_two_fluid_thermal.py`，断言离散闭式而非
 连续指数）：
@@ -1204,8 +1224,8 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
   进口交出的体积精确、clamp 恰为 0——这是 α 方程的一阶迎风做不到的；40×40 圆盘自转
   40 步逐步相体积漂移 ≤ 6.9e-16 相对、clamp ≤ 4.42e-17、α ∈ [0,1]、带 60→70 格、
   限流最多 336 面且最小因子 0.5（同格两个出流棱柱在角上重合处）；
-- `tests/cases/*`：三十三个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
-  `twoFluid*` 九个见 §4.3 的表）：
+- `tests/cases/*`：三十五个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
+  `twoFluid*` 十一个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug` / `transientValve`（见 4.2）

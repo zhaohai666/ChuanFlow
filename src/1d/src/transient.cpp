@@ -43,6 +43,23 @@ double frictionSlope(const NetworkPipe& geo, const FluidProperties& fl, double q
     return (std::isfinite(d) && d > 0) ? std::max(d, 0.2 * lam) : lam;
 }
 
+/// Valve loss coefficient at time t: linear ramp from the open K to kClosed
+/// over [closeStart, closeEnd], hold closed, then linear ramp back over
+/// [openStart, openEnd]. closeStart < 0 disables the schedule (K stays at
+/// the open value); openStart < 0 keeps the valve closed after the close
+/// ramp. The schedule is continuous in t, so samples that straddle a ramp
+/// boundary never see a K jump.
+double valveKAt(double kOpen, double kClosed,
+                double cs, double ce, double os, double oe, double t)
+{
+    if (cs < 0) return kOpen;
+    if (t < cs) return kOpen;
+    if (t < ce) return kOpen + (t - cs) / (ce - cs) * (kClosed - kOpen);
+    if (os < 0 || t < os) return kClosed;
+    if (t < oe) return kClosed + (t - os) / (oe - os) * (kOpen - kClosed);
+    return kOpen;
+}
+
 } // namespace
 
 void hydrateKineticsStep(double& liquidVolume, double& hydrateVolume,
@@ -103,11 +120,17 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         geo.diameter = pc.diameter;
         geo.roughness = pc.roughness;
         geo.elevation = pc.elevation;
+        geo.valveK = pc.valveK;
         net_.addPipe(geo);
         PipeDyn d;
         d.geo = net_.pipes.back();
         d.qPrev = pc.initialFlow;
         d.inertia = fluid_.rho * d.geo.length / pipeArea(d.geo.diameter);
+        d.closeStart = pc.valveCloseStart;
+        d.closeEnd = pc.valveCloseEnd;
+        d.kClosed = pc.valveKClosed;
+        d.openStart = pc.valveOpenStart;
+        d.openEnd = pc.valveOpenEnd;
         pipes_.push_back(d);
         pipeNames_.push_back(pc.name);
     }
@@ -155,6 +178,15 @@ double TransientNetwork::step(double dt)
     std::vector<double> r(nEq);
     std::vector<std::vector<double>> J(nEq, std::vector<double>(nEq, 0.0));
 
+    // valve K is evaluated at the implicit new time level t + dt and held
+    // constant during the Newton solve
+    const double tNew = t_ + dt;
+    std::vector<double> kv(nP);
+    for (std::size_t k = 0; k < nP; ++k)
+        kv[k] = valveKAt(pipes_[k].geo.valveK, pipes_[k].kClosed,
+                         pipes_[k].closeStart, pipes_[k].closeEnd,
+                         pipes_[k].openStart, pipes_[k].openEnd, tNew);
+
     double maxRel = 0;
     for (int newton = 0; newton < 60; ++newton)
     {
@@ -171,14 +203,18 @@ double TransientNetwork::step(double dt)
             const double grav = fluid_.rho * kGravity * pd.geo.elevation;
             const double fr = frictionDp(pd.geo, fluid_, x[k]);
             const double slope = frictionSlope(pd.geo, fluid_, x[k]);
-            r[k] = pd.inertia / dt * (x[k] - pd.qPrev) - dp + grav + fr;
-            J[k][k] = pd.inertia / dt + slope;
+            const double ar = pipeArea(pd.geo.diameter);
+            const double vd = kv[k] * fluid_.rho * std::abs(x[k]) * x[k]
+                            / (2.0 * ar * ar);
+            r[k] = pd.inertia / dt * (x[k] - pd.qPrev) - dp + grav + fr + vd;
+            J[k][k] = pd.inertia / dt + slope
+                    + kv[k] * fluid_.rho * std::abs(x[k]) / (ar * ar);
             const NodeDyn& nf = nodes_[static_cast<std::size_t>(pd.geo.from)];
             const NodeDyn& nb = nodes_[static_cast<std::size_t>(pd.geo.to)];
             if (!nf.fixed) J[k][nP + static_cast<std::size_t>(nf.unk)] -= 1.0;
             if (!nb.fixed) J[k][nP + static_cast<std::size_t>(nb.unk)] += 1.0;
             const double scale = pd.inertia / dt * std::max(std::abs(x[k]), std::abs(pd.qPrev))
-                               + std::abs(dp) + std::abs(fr) + 1.0;
+                               + std::abs(dp) + std::abs(fr) + std::abs(vd) + 1.0;
             maxRel = std::max(maxRel, std::abs(r[k]) / scale);
         }
 
@@ -379,6 +415,37 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
         p.roughness = pd.getScalarOr("roughness", 0.0);
         p.elevation = pd.getScalarOr("elevation", 0.0);
         p.initialFlow = pd.getScalarOr("initialFlow", 0.0);
+        p.valveK = pd.getScalarOr("valve", 0.0);
+        if (pd.has("valveClose"))
+        {
+            const Dictionary& vc = pd.getDict("valveClose");
+            p.valveCloseStart = vc.getScalar("start");
+            p.valveCloseEnd = vc.getScalar("end");
+            p.valveKClosed = vc.getScalar("closedK");
+        }
+        if (pd.has("valveOpen"))
+        {
+            const Dictionary& vo = pd.getDict("valveOpen");
+            p.valveOpenStart = vo.getScalar("start");
+            p.valveOpenEnd = vo.getScalar("end");
+        }
+        if (p.valveK < 0 || p.valveKClosed < 0)
+            cfFatal("transient: pipe '" + p.name + "' valve K must be >= 0");
+        if (p.valveCloseStart > p.valveCloseEnd)
+            cfFatal("transient: pipe '" + p.name
+                    + "' valveClose start must be <= end");
+        if (p.valveOpenStart >= 0)
+        {
+            if (p.valveCloseStart < 0)
+                cfFatal("transient: pipe '" + p.name
+                        + "' valveOpen needs a valveClose block");
+            if (p.valveOpenStart < p.valveCloseEnd)
+                cfFatal("transient: pipe '" + p.name
+                        + "' valveOpen must not start before valveClose ends");
+            if (p.valveOpenStart > p.valveOpenEnd)
+                cfFatal("transient: pipe '" + p.name
+                        + "' valveOpen start must be <= end");
+        }
         c.pipes.push_back(p);
     }
 

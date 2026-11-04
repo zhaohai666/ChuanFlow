@@ -1,0 +1,36 @@
+# transientValve: tank blowdown through a line whose valve closes and
+# reopens on a schedule. The valve adds dp = K rho |v| v / 2 (the same K
+# convention as the steady kernel); K(t) is piecewise linear - 20 while
+# open, ramped to 1e12 over [2, 6] s, held closed, ramped back over
+# [10, 14] s - and is evaluated at the implicit new time t + dt.
+#
+# The checker replicates the discrete (Q, p, alpha) series exactly and adds
+# physical anchors (measured on this case):
+#   * laminar throughout - peak Re = 1229, inside Churchill's exact-64/Re
+#     branch, which the exact replication relies on
+#   * closed window [8, 10] s: K = 1e12 chokes the flow to a 6.2e-8 m3/s
+#     leak through the closed valve; the tank pressure drifts only ~1.0 Pa
+#   * reopen resumes the discharge: q(20) = 3.385e-3 m3/s back at the
+#     quasi-steady p/R level and the tank pressure down 1.97e5 Pa from the
+#     reopened start
+fluid { rho 850; mu 0.1; }
+
+nodes
+{
+    TANK { volume 5; bulkModulus 4.0e7; pressure 5.0e5; liquidFraction 1; }
+    OUT  { fixedPressure 0; }
+}
+
+pipes
+{
+    LINE
+    {
+        from TANK; to OUT;
+        length 100; diameter 0.05;
+        valve 20;
+        valveClose { start 2; end 6; closedK 1.0e12; }
+        valveOpen  { start 10; end 14; }
+    }
+}
+
+time { dt 0.02; endTime 20; reportEvery 1; }

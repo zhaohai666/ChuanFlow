@@ -310,7 +310,7 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyPvtColumn/case.dict)
 
-foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug")
+foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug" "valve;Valve")
     list(GET tmode 0 mode)
     list(GET tmode 1 Mode)
     add_test(

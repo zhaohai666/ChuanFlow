@@ -270,6 +270,12 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 - **节点压缩性**：`(p − p_n)·V/(K·dt) = Σ q_in + q_src`，`K` 为混合物体积
   模量；`K = 0` 退化为不可压端口，该行改为代数约束 `Σ q = 0`。定压节点是
   无穷 Dirichlet 水库，不参与体积累积；
+- **管件/阀门**：每管可带局部损耗 `dp = K·ρ|v|v/2`（与稳态内核同一 K 约定），
+  并支持线性关阀/开阀时间表——`valveClose{ start; end; closedK; }` 把 K 从
+  开启值线性升到 closedK，`valveOpen{ start; end; }` 再线性降回。时间表在
+  **隐式新时刻 t+dt** 取值、牛顿步内保持常数；残差与雅可比分别加
+  `K·ρ|Q|Q/(2A²)` 与 `K·ρ|Q|/A²`，残差缩放分母计入 `|dp_valve|`。时间表对
+  t 连续，界点两侧 K 相等不跳变；
 - **收敛**：≤60 次 Newton，逐行按自身量级缩放残差（分母 +1 防零），
   `maxRel < 1e-11`；
 - **持液率（drift-flux 段塞）输运**：对旧 α 做快照的显式上游差分
@@ -284,18 +290,20 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 
 字典语法见 `Transient.h` 末尾注释（`nodes{}` 增
 `volume/bulkModulus/fixedPressure/liquidFraction/hydrateFraction/hydrateRate`，
-`pipes{}` 增 `initialFlow`，新增 `time{ dt; endTime; reportEvery; }`）。
+`pipes{}` 增 `initialFlow/valve/valveClose/valveOpen`，
+新增 `time{ dt; endTime; reportEvery; }`）。
 
-三个已验证的物理回归（`tests/check_transient.py`）：
+四个已验证的物理回归（`tests/check_transient.py`）：
 
 | 算例 | 校验内容 |
 |---|---|
 | `transientBlowdown` | 罐排气：同时刻隐式 Euler 2×2 闭式递推（1e-9）+ 连续包络 `exp(−t/RC)`（2%）|
 | `transientRlc` | 两柔性节点 + 惯性管 = RLC 欠阻尼振荡：首个流量峰的时间与幅值（3%）、≥4 次符号翻转、封闭系统液量守恒 |
 | `transientSlug` | 段塞推进：串联管层流流量（1e-3）+ CSTR 级联递推（1e-9）|
+| `transientValve` | 关阀/开阀时间表：代入节点柔度后每步只剩单个单调标量方程，二分到机器精度精确复现 (Q, p, α)（1e-9，时间表按 `t += dt` 与内核锁步累计——打印时刻仅 12 位有效数字，斜坡上会引入 dK~1e2 的舍入误差）+ 关阀泄漏 6.2e-8 m³/s、罐压冻结（漂移 ~1.0 Pa）、重开恢复排液 q(20)=3.385e-3、全程层流 Re=1229 |
 
-尚未实现（M2 后续增量）：真两相动量交换（气/液各自动量方程）、非等温与
-成核/生长动力学、液膜夹带与段塞合并破碎、管件/阀门模型。
+尚未实现（M2 后续增量）：非等温与
+成核/生长动力学、液膜夹带与段塞合并破碎。
 
 ### 4.3 分布式两流体瞬态内核（M2 第二增量，OLGA 主干）
 
@@ -1168,11 +1176,11 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
   进口交出的体积精确、clamp 恰为 0——这是 α 方程的一阶迎风做不到的；40×40 圆盘自转
   40 步逐步相体积漂移 ≤ 6.9e-16 相对、clamp ≤ 4.42e-17、α ∈ [0,1]、带 60→70 格、
   限流最多 336 面且最小因子 0.5（同格两个出流棱柱在角上重合处）；
-- `tests/cases/*`：三十个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
+- `tests/cases/*`：三十一个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
   `twoFluid*` 七个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
-  - `transientBlowdown` / `transientRlc` / `transientSlug`（见 4.2）
+  - `transientBlowdown` / `transientRlc` / `transientSlug` / `transientValve`（见 4.2）
   - `pvtFlash`（四组分天然气 320 K 压力扫描：闪蒸恒等式——相分和、
     `β·y + (1−β)·x = z`、ρ_L > ρ_V、泡点两侧相态塌陷、表节点 = 直接求值）
   - `advectionDiffusion`（Pe=10 一维对流扩散，解析解对比）

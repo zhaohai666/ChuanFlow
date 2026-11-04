@@ -1,0 +1,107 @@
+// Heated turbulent channel: the case that closes the thermal wall function.
+//
+// The flow is the force-driven column of the turbulent channel case (force
+// 19.5 m/s2, H = 0.04 m, nu = 1.5e-5 -> u_tau = 0.6245 m/s exactly, Re_tau
+// 833, first cell y+ ~ 104), with an energy block riding on it. The column is
+// streamwise-uniform, so the flux that closes continuity is zero everywhere
+// and the steady temperature equation is pure conduction across the gap:
+//
+//   bottom wall 310 K, top wall 300 K, air rho 1.2 / cp 1005 / kappa 0.0257
+//   -> Pr = nu rho cp / kappa = 0.704, Prt = 0.9, Jayatilleke P = -2.029,
+//      thermal sublayer y+_T = 12.44
+//
+// The first cell centre sits at y+ ~ 52, four sublayers above the wall, so the
+// wall resistance is the log branch: T+(52) = 11.8956 and the wall flux is
+//   q = rho cp u_tau (Tw - Tp) / T+
+// with the interior resistance set by the eddy diffusivity nut/Prt. Molecular
+// conduction through the first cell would carry 3.1x less heat, so this case
+// is the regression that the wall function is actually in play.
+//
+// Measured (Q from the heatPatch report; the same identities hold for both
+// models because the checker reads the interior diffusivity from the vtu nut):
+//   kEpsilon   Q = 0.0862036 W (215.5 W/m2), 27 iterations
+//   kOmegaSST  Q = 0.0707123 W (176.8 W/m2), 39 iterations
+// The checker's restated discrete system reproduces the vtu field to 4e-5 K
+// on a 10 K span, and the wall report's T+ to 1e-8.
+//
+// Everything the checker asserts is a discrete identity it recomputes from the
+// vtu and the log, with the thermal law reimplemented in Python: the same heat
+// flux through every internal face, the wall-law flux at both walls, and the
+// per-cell conservation with the harmonic diffusivity the equation is
+// assembled with.
+//
+// tests/check_thermal_wall.py runs this case for both turbulence models.
+block
+{
+    min   (0 0 0);
+    max   (0.02 0.04 0.02);
+    cells (1 16 1);
+
+    xmin  { name left;   type symmetry; }
+    xmax  { name right;  type symmetry; }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+nu 1.5e-5;
+
+// A started velocity: the law-of-the-wall closure only has something to say
+// once the near-wall cells carry a log-layer speed.
+initial
+{
+    U (8 0 0);
+}
+
+patches
+{
+    // x-invariant flow: zero normal gradient on both ends, one pressure anchor
+    left  { UType zeroGradient; p 0; pType fixedValue; }
+    right { UType zeroGradient; pType zeroGradient; }
+    bottom{ U (0 0 0); UType fixedValue; pType zeroGradient; T 310; }
+    top   { U (0 0 0); UType fixedValue; pType zeroGradient; T 300; }
+}
+
+turbulence
+{
+    model       kEpsilon;   // the checker rewrites this for kOmegaSST
+    intensity   0.05;
+    lengthScale 0.0056;     // 7% of D_h
+    relaxation  0.7;
+}
+
+energy
+{
+    rho 1.2;
+    cp 1005;
+    kappa 0.0257;
+    turbulentPrandtl 0.9;
+    initialT 305;
+    relaxation 0.8;
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+simple
+{
+    // The column is streamwise-uniform, so continuity is satisfied at machine
+    // precision from the first iteration and momentumTol decides the run.
+    maxIterations 200;
+    continuityTol 1e-8;
+    momentumTol   1e-5;
+    relaxU        0.9;
+    relaxP        0.8;
+    force         (19.5 0 0);
+}
+
+output
+{
+    vtk out_thermal_wall_channel.vtu;
+}

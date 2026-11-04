@@ -173,6 +173,9 @@ print(result.pressure_profile)
   **能量方程**（对流扩散耦合连续性通量、`heatFlux` 壁面边界与离散焓平衡恒等式、
   Boussinesq 浮力；三道无流动传导 + 余弦模态衰减 + 闭盒静止 + 双壁热流渠道
   六个回归，渠道算例 `Nu_Dh` 8.2505 对 140/17）+
+  **热壁面函数**（两支 Jayatilleke 温度律 `α_face = u_tau·y/T+` 接入 fixedValue
+  壁面，副层极限退回分子导热；受热湍流渠道回归：报告 T+ 对 Python 重写律全同、
+  场对重述离散解偏差 4e-5 K、壁函数通量为分子首格通量的 3.08 倍，双模型共用断言）+
   VOF 首增量（相分数守恒输运的 M-矩阵性质、界面法向与曲率，平移与刚体旋转
   两个解析回归）+ **`p_rgh` 表述**（均匀体力被 `p_rgh = p − force·x` 精确吸收，
   PISO/SIMPLE 共用 `pRgh` 开关；闭盒重力从 plain-p 的蠕升 uMax 1.83 m/s

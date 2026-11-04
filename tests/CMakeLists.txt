@@ -119,6 +119,17 @@ add_test(
         $<TARGET_FILE:chflow-simple-foam>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/turbulentChannel/case.dict)
 
+# the thermal wall function, on the same force-driven column with 310 K / 300 K
+# walls: the checker restates the discrete conduction problem (harmonic
+# diffusivity inside, the two-branch T+ law at the walls) in Python and compares
+# the field and the reported fluxes against it, for both turbulence models
+add_test(
+    NAME verify.thermalWallChannel
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_thermal_wall.py
+        $<TARGET_FILE:chflow-simple-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/thermalWallChannel/case.dict)
+
 add_test(
     NAME verify.vofTranslation
     COMMAND ${Python3_EXECUTABLE}

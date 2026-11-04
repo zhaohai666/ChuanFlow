@@ -777,12 +777,25 @@ buoyantFoam 式的浮力修正压力/通量处理，仍待做；`energyBuoyantRe
 继续按"回答不了这个力的耦合会给出什么"来定标：
 Stokes 速度 `f H²/ν = 2.45 m/s`（比残差高四个量级）与压降的**符号**。
 
-**涡扩散用梯度输运类比 + Pr_t**，前提是网格解析副层（`y+ ≈ 1` 时 nut 在壁面 → 0，
-壁面热流保持分子级）；壁函数网格会高估换热，热壁函数是下一个增量（未做）。黏性
-耗散只算分子应力（`ν|S_ij|²/cp`，`strainRate` 由湍流层给），湍流动能的释热要等
-k 方程本身（未做）。
+**涡扩散用梯度输运类比 + Pr_t**（`alphaCell = kappa/(rho cp) + nut/Prt`）。壁面
+处理照搬动量壁函数的结构：`faceGamma()` 在调和平均上**只覆盖** type 为
+fixedValue 的 wall 面（heatFlux/绝热墙保留自己的通量定义），给出温度壁面律
 
-**六个回归算例**（`tests/check_energy.py`，每个模式都拿内核**没被给的**数对表；
+```
+T+ = Pr·y+                       (y+ ≤ y+_T，导热副层)
+T+ = Prt/κ·ln(E·y+) + Prt·P      (Jayatilleke P = 9.24[(Pr/Prt)^0.75−1][1+0.28e^(−0.007Pr/Prt)])
+α_face = u_tau·y / T+(y+)   ⇒   q_w = ρcp·u_tau·(T_p − T_w)/T+
+```
+
+y+_T 是两支的交点（从最小值点 `Prt/(κPr)` 向上括根二分）。副层极限 `T+ = Pr·y+`
+恰好回到 `α_face = ν/Pr` = 分子扩散率——解析副层的网格自动退化为纯导热，所以
+同一个代码路径对两类网格都成立。分子 Pr < 0.5（液态金属，两支律失效）直接
+`cfFatal`。`patchHeatRate` 与装配矩阵共用同一个 `faceGamma()`，报告的墙速率和
+方程实际用的通量恒等；`thermalWall` 逐 patch 报 12 位的 u_tau/y+/T+/q。
+黏性耗散只算分子应力（`ν|S_ij|²/cp`，`strainRate` 由湍流层给），湍流动能的释热
+要等 k 方程本身（未做）。
+
+**七个回归算例**（`tests/check_energy.py` + `tests/check_thermal_wall.py`，每个模式都拿内核**没被给的**数对表；
 实测值即 ctest 打印的 notes）：
 
 | 算例 | 核对什么 | 实测 |
@@ -793,6 +806,7 @@ k 方程本身（未做）。
 | `energyDecay` | 隐式 Euler + 绝热均值守恒 + **扩散算子自己的离散误差** | 200 步；离散特征值 9.864532 对连续 k² 9.869604；离散衰减因子 0.373802218 对连续 0.372707839（比真 PDE 慢 0.294%）；幅值历史离离散本征模 4.640e-13 相对；离散均值 0.000e+00；balance 0 |
 | `energyBuoyantRest` | 浮力进入**压力能回答**的地方（含上面那条地板） | max\|U\| 2.706e-04 对无平衡时的 Stokes 尺度 2.453e+00；`dp/dz` 0.099972 对 `f_z` 0.098100，直线残差 3.475e-04 比 `f·H` = 0.04905；T 不漂移；balance 2.254e-11 |
 | `energyChannelFlux` | 对流↔连续性通量的耦合 + `Nu_Dh = 140/17` + 剖面形状不变量 | 23 次扫描收敛；`Umax` 0.100000000833 对 `aH²/8ν`；流量 0.00134 m³/s（沿程散布 9.915e-09）；混杯升温 **0.0189393944 W** 对面供给 **0.0189393945 W**；`Tw−Tb` 2.42409318 K 对 `17qh/35k` = 2.42857143（`Nu_Dh` 8.2505 对 8.2353）；两壁不对称 0.000e+00 K；形状比 `(Tb−T_centre)/(Tw−Tb)` = 0.285116 对 `39/136` = 0.286765；balance −9.898e-15 |
+| `thermalWallChannel` | 温度壁面律接入能量方程（湍流传热的墙面闭合） | 力驱动湍流渠道列（u_tau 0.6245 是输入，首格 y+ 52.04 = 4.2 个热副层），底/顶壁 310/300 K：两模型报告的 T+ 对 Python 重写律 **11.8956036 全同**（1e-8）；墙速率 = ρcp·u_tau·A·ΔT/T+（1e-8）；vtu 场对 checker 重述的离散问题（内部调和 γ + 墙面 u_tau·y/T+）最大偏差 **3.5e-5 K**（kEpsilon）/ **1.7e-5 K**（SST），重述系统通量恒定 1.5e-12 相对；壁函数通量是分子首格通量的 **3.08 倍**（闭合确实在起作用）；镜像对称 0.0；balance ~1e-11 相对 |
 
 `energyChannelFlux` 的两条设计值得记：几何是 y ∈ [0, 0.2] 的平行板渠道，所以
 `H = 0.2`、半通道高 `h = 0.1`、`Dh = 4h = 0.4`——`Umax = a H²/(8ν)` 用**全通道高**，
@@ -1017,6 +1031,7 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
 | `interFoam` 把 `f = F/rho` 挂到 `UEqn` 右端 | `PisoControls::cellForce`（每单元加速度进动量右端，由 HbyA/`explicitOperator` 携带，通量经与压力同一套配对看到它） |
 | `buoyantBoussinesqSimpleFoam` / `PisoFoam` 的 `TEqn` | `EnergyModel::correctEnergy`（`fvm::ddt + fvm::div(phi,T) + fvm::laplacian(alpha,T,-1)`，读求解器自己的连续性通量） |
 | `alphat = nut/Prt`（`turbulentTransport` 的热扩散） | `EnergyModel::alphaCell()` = `kappa/(rho cp) + nut/turbulentPrandtl`（梯度输运类比，前提是网格解析副层） |
+| `alphatWallFunction`（温度壁面律，`u_tau y/T+` 面扩散率） | `EnergyModel::faceGamma()` 对 fixedValue wall 面的覆盖：两支 Jayatilleke 律 `T+`（`turbulence/WallFunction.h` 的 `thermalTPlus`），副层极限退回分子导热；Pr < 0.5 拒绝 |
 | `fvOptions` 的 `wallHeatFlux` / `fixedGradient` T | `patches{ name{ heatFlux q; } }` → `fixedGradient = q/kappa`（正 = 进入流体）；无键的 patch 缺省 `zeroGradient` = 绝热 |
 | `T` 的 `buoyancyForce = beta*(T-Tn)*g`（`BoussinesqBaseForce`） | `EnergyModel::buoyancyForce()` = `−beta (T − tRef) gravity`（只含偏差项，参考静水由 `force` 自己带或被 `pRgh` 开关吸收进 `p_rgh = p − force·x`；偏差力本身不能被吸收，压住它要 buoyantFoam 式浮力修正通量，未做） |
 
@@ -1209,6 +1224,12 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
     0.0189393945 W（1e-6 相对，不需要任何解析输入）、`Tw−Tb` 2.42409 K 对
     `17qh/35k` = 2.42857（`Nu_Dh` 8.2505 对 140/17 = 8.2353）、两壁偏移差恰为 0、
     形状比 `(Tb−T_centre)/(Tw−Tb)` = 0.285116 对与 q/κ/流量都无关的 39/136——见 5.11；
+  - `thermalWallChannel`（SIMPLE，热壁函数渠道，kEpsilon 与 kOmegaSST 各跑一遍）：
+    checker 用 Python 重写两支温度律与离散传导问题——报告的 T+ 11.8956036 全同
+    （1e-8）、墙速率对 `ρcp·u_tau·A·ΔT/T+`（1e-8）、vtu 场对重述三对角解最大偏差
+    3.5e-5 K（kEpsilon）/ 1.7e-5 K（SST，即外迭代的残余而非公式差）、重述系统通量
+    恒定 1.5e-12 相对、壁通量是分子首格通量的 3.08 倍、镜像对称 0.0、balance
+    ~1e-11 相对——见 5.11；
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

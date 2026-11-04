@@ -163,6 +163,64 @@ int main()
         CHECK(z2.uTau == 0 && z3.uTau == 0, "zero distance or viscosity gives no shear");
     }
 
+    // ---------------- thermal law of the wall ----------------
+    {
+        // Jayatilleke's P shifts the log-law intercept so the turbulent
+        // branch matches measured heat transfer at high Pr; it has the sign
+        // of Pr - Prt and vanishes when the two agree.
+        CHECK(thermalTPlus(0.0, 0.7, 0.9, 12.0) == 0.0, "T+ is zero at the wall");
+        CHECK(near(jayatillekeP(0.9, 0.9), 0.0, 1e-15), "P vanishes when Pr = Prt");
+        CHECK(jayatillekeP(0.7, 0.9) < 0, "a gas (Pr < Prt) shifts the intercept down");
+        CHECK(jayatillekeP(7.0, 0.9) > 0, "water (Pr > Prt) shifts the intercept up");
+
+        const struct { scalar Pr, Prt; } fluids[] = {
+            {0.7, 0.9},    // air
+            {5.0, 0.9},    // water
+            {0.71, 0.85},  // a gas with a tighter turbulent Prandtl
+        };
+        for (const auto& fl : fluids)
+        {
+            const scalar Pr = fl.Pr, Prt = fl.Prt;
+            const scalar P = jayatillekeP(Pr, Prt);
+            const scalar yT = thermalSublayerYPlus(Pr, Prt);
+
+            // the sublayer thickness is the root where the two branches cross
+            const scalar logBranch = Prt / turb::kappa * std::log(turb::logE * yT) + Prt * P;
+            CHECK(relNear(Pr * yT, logBranch, 1e-9),
+                  "the sublayer thickness is where both thermal branches agree");
+            CHECK(relNear(thermalTPlus(yT, Pr, Prt, yT), Pr * yT, 1e-12),
+                  "T+ is continuous at the sublayer edge");
+            CHECK(relNear(thermalTPlus(0.5 * yT, Pr, Prt, yT), 0.5 * Pr * yT, 1e-15),
+                  "the sublayer branch is the conduction line T+ = Pr y+");
+            CHECK(relNear(thermalTPlus(100.0 * yT, Pr, Prt, yT),
+                          Prt / turb::kappa * std::log(turb::logE * 100.0 * yT) + Prt * P, 1e-15),
+                  "the outer branch is the shifted log law");
+
+            bool up = true;
+            scalar prev = -1;
+            for (scalar yp = 1e-3; yp < 1e5; yp *= 1.7)
+            {
+                const scalar tp = thermalTPlus(yp, Pr, Prt, yT);
+                up = up && tp > prev;
+                prev = tp;
+            }
+            CHECK(up, "T+(y+) is strictly increasing");
+            std::cout << "info: Pr=" << Pr << " Prt=" << Prt << " P=" << P
+                      << " y+_T=" << yT << " T+(50)=" << thermalTPlus(50.0, Pr, Prt, yT) << "\n";
+        }
+
+        // air of the channel case: the thermal sublayer sits at a dozen y+,
+        // so a wall-function mesh (first cell y+ ~ 100) is entirely in the
+        // log branch and its wall resistance is T+/(u_tau)
+        const scalar PrAir = 1.5e-5 * 1.2 * 1005.0 / 0.0257;
+        const scalar yTAir = thermalSublayerYPlus(PrAir, 0.9);
+        CHECK(yTAir > 8 && yTAir < 20, "air's thermal sublayer is a dozen y+ thick");
+        CHECK(relNear(thermalTPlus(104.0, PrAir, 0.9, yTAir),
+                      0.9 / turb::kappa * std::log(turb::logE * 104.0)
+                          + 0.9 * jayatillekeP(PrAir, 0.9), 1e-15),
+              "a y+ 104 first cell reads the log branch for air");
+    }
+
     // ---------------- SST blend functions ----------------
     {
         const scalar nu = NU_AIR, cell = 0.01;

@@ -58,8 +58,16 @@ struct CaseEnergy
         scalar in = 0;
         for (const std::string& name : thermalPatches)
         {
-            const scalar q = model->patchHeatRate(mesh.patchIdByName(name));
+            const label pid = mesh.patchIdByName(name);
+            const scalar q = model->patchHeatRate(pid);
             log::info("heatPatch ", name, " Q ", energy_detail::num(q));
+            const auto wr = model->wallLayerReport(pid);
+            if (wr.active)
+            {
+                log::info("thermalWall ", name, " uTau ", energy_detail::num(wr.uTau),
+                          " yPlus ", energy_detail::num(wr.yPlus), " tPlus ",
+                          energy_detail::num(wr.tPlus), " q ", energy_detail::num(wr.heatRate));
+            }
             in += q;
         }
         const scalar src = model->volumetricHeatRate();
@@ -98,9 +106,17 @@ inline CaseEnergy makeEnergy(const Dictionary& caseDict, const polyMesh& mesh,
     if (!caseDict.has("energy")) return CaseEnergy{mesh, nullptr, std::move(names)};
 
     const EnergyProps props = EnergyProps::fromCase(caseDict);
+    EnergyWallLayer wl;
+    if (turb)
+    {
+        wl.faces = &turb->wallFaces();
+        wl.uTau = &turb->wallUTau();
+        wl.yPlus = &turb->wallYPlus();
+        wl.wallDist = &turb->wallDistance();
+    }
     std::unique_ptr<EnergyModel> model = std::make_unique<EnergyModel>(
         mesh, phi, schemes, props, nu, turb ? &turb->nut() : nullptr,
-        turb ? &turb->strainRate() : nullptr);
+        turb ? &turb->strainRate() : nullptr, turb ? &wl : nullptr);
 
     if (caseDict.has("patches"))
     {

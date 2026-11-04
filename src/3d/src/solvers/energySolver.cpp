@@ -5,6 +5,7 @@
 
 #include "cf/common/Error.h"
 #include "cf/common/Log.h"
+#include "cf/turbulence/WallFunction.h"
 
 namespace cf
 {
@@ -73,7 +74,8 @@ void EnergyProps::validate() const
 
 EnergyModel::EnergyModel(const polyMesh& mesh, const surfaceScalarField& phi,
                          const Schemes& schemes, const EnergyProps& props, scalar nu,
-                         const Field<scalar>* nut, const Field<scalar>* strainRate)
+                         const Field<scalar>* nut, const Field<scalar>* strainRate,
+                         const EnergyWallLayer* wallLayer)
     : mesh_(mesh), phi_(phi), schemes_(schemes), props_(props), nu_(nu), nut_(nut),
       strainRate_(strainRate), t_(mesh, "T", props.initialT),
       buoyancy_(static_cast<std::size_t>(mesh.nCells()), Vector::zero())
@@ -87,6 +89,7 @@ EnergyModel::EnergyModel(const polyMesh& mesh, const surfaceScalarField& phi,
     if (props_.viscousDissipation && !strainRate_)
         cfFatal("energy: viscousDissipation needs the strain rate the turbulence "
                 "layer evaluates; add turbulence { model laminar; }");
+    if (wallLayer) wallLayer_ = *wallLayer;
 
     hasBuoyancy_ = props_.beta != 0 && mag2(props_.gravity) > 0;
     refreshBuoyancy();
@@ -146,6 +149,43 @@ Field<scalar> EnergyModel::sourceRate() const
     return s;
 }
 
+Field<scalar> EnergyModel::faceGamma() const
+{
+    Field<scalar> g = harmonicFaceGamma(mesh_, alphaCell());
+    if (!wallLayer_.faces) return g;
+
+    // the wall function only owns faces whose patch prescribes the wall
+    // temperature; a heatFlux or adiabatic wall keeps its own flux definition
+    bool anyFixedValue = false;
+    for (label f : *wallLayer_.faces)
+    {
+        if (t_.patchBcType(t_.patchIdOfFace(f)) == "fixedValue")
+        {
+            anyFixedValue = true;
+            break;
+        }
+    }
+    if (!anyFixedValue) return g;
+
+    const scalar Pr = nu_ / props_.alphaMolecular();
+    if (Pr < 0.5)
+        cfFatal("energy: the thermal wall function needs a molecular Prandtl of "
+                "at least 0.5 (got " + std::to_string(Pr) +
+                "); a liquid-metal temperature law is a separate increment");
+    const scalar yT = thermalSublayerYPlus(Pr, props_.turbulentPrandtl);
+
+    for (std::size_t i = 0; i < wallLayer_.faces->size(); ++i)
+    {
+        const label f = (*wallLayer_.faces)[i];
+        if (t_.patchBcType(t_.patchIdOfFace(f)) != "fixedValue") continue;
+        const scalar tPlus = thermalTPlus((*wallLayer_.yPlus)[i], Pr,
+                                          props_.turbulentPrandtl, yT);
+        g[static_cast<std::size_t>(f)] = (*wallLayer_.uTau)[i]
+                                       * (*wallLayer_.wallDist)[i] / tPlus;
+    }
+    return g;
+}
+
 void EnergyModel::correctEnergy(scalar dt)
 {
     const label nC = mesh_.nCells();
@@ -160,7 +200,7 @@ void EnergyModel::correctEnergy(scalar dt)
     eqn.schemes().relaxation = 1.0;
     if (dt > 0) fvm::ddt(eqn, oldT, dt);
     fvm::div(eqn, phi_.values(), schemes_.div);
-    fvm::laplacian(eqn, alphaCell(), schemes_.laplacian, -1);
+    fvm::laplacianFace(eqn, faceGamma(), schemes_.laplacian, -1);
     for (label c = 0; c < nC; ++c)
     {
         eqn.addRhs(c, 0, vol[static_cast<std::size_t>(c)] * src[static_cast<std::size_t>(c)]);
@@ -208,7 +248,7 @@ scalar EnergyModel::patchHeatRate(label patch) const
     const std::size_t np = static_cast<std::size_t>(patch);
     if (patch < 0 || patch >= mesh_.nPatches())
         cfFatal("energy: no such patch for the heat rate");
-    const Field<scalar> gamma = harmonicFaceGamma(mesh_, alphaCell());
+    const Field<scalar> gamma = faceGamma();
     const auto& sf = mesh_.faceSf();
     const auto& d = mesh_.deltaCoeffVec();
     const auto& patches = mesh_.patches();
@@ -245,6 +285,51 @@ scalar EnergyModel::netEnthalpyRate() const
         out += ph[static_cast<std::size_t>(f)] * t_.faceValue(f);
     }
     return out * props_.rho * props_.cp;
+}
+
+EnergyModel::ThermalWallReport EnergyModel::wallLayerReport(label patch) const
+{
+    ThermalWallReport rep;
+    if (patch < 0 || patch >= mesh_.nPatches() || !wallLayer_.faces) return rep;
+
+    const auto& sf = mesh_.faceSf();
+    const auto& patches = mesh_.patches();
+    const auto& t = t_.internalField();
+    const scalar Pr = nu_ / props_.alphaMolecular();
+    const scalar yT = thermalSublayerYPlus(Pr, props_.turbulentPrandtl);
+
+    scalar area = 0;
+    for (std::size_t i = 0; i < wallLayer_.faces->size(); ++i)
+    {
+        const label f = (*wallLayer_.faces)[i];
+        const std::size_t u = static_cast<std::size_t>(f);
+        if (f < patches[static_cast<std::size_t>(patch)].start
+            || f >= patches[static_cast<std::size_t>(patch)].start
+                       + patches[static_cast<std::size_t>(patch)].size)
+            continue;
+        if (t_.patchBcType(patch) != "fixedValue") continue;
+        const scalar a = mag(sf[u]);
+        const scalar tPlus = thermalTPlus((*wallLayer_.yPlus)[i], Pr,
+                                          props_.turbulentPrandtl, yT);
+        rep.uTau += a * (*wallLayer_.uTau)[i];
+        rep.yPlus += a * (*wallLayer_.yPlus)[i];
+        rep.tPlus += a * tPlus;
+        const scalar tw = t_.patchValue(patch);
+        const scalar tp = t[static_cast<std::size_t>(mesh_.owner()[u])];
+        // q = rho cp u_tau (T_w - T_p)/T+ into the fluid, per the same law the
+        // face diffusivity came from
+        rep.heatRate += props_.rho * props_.cp * (*wallLayer_.uTau)[i] / tPlus
+                      * (tw - tp) * a;
+        area += a;
+    }
+    if (area > 0)
+    {
+        rep.uTau /= area;
+        rep.yPlus /= area;
+        rep.tPlus /= area;
+        rep.active = true;
+    }
+    return rep;
 }
 
 } // namespace cf

@@ -49,4 +49,26 @@ struct WallState
 /// state (no shear to report).
 WallState wallState(scalar uParallel, scalar y, scalar nu);
 
+/// Jayatilleke's thermal log-layer resistance P (dimensionless): the additive
+/// intercept the temperature log law carries when the molecular Prandtl number
+/// differs from the turbulent one. Zero at Pr = Prt (the Reynolds analogy
+/// holds exactly), positive for Pr > Prt (the thermal sublayer is thinner than
+/// the momentum one - more resistance), negative below.
+scalar jayatillekeP(scalar Pr, scalar Prt);
+
+/// Thickness y+_T of the thermal sublayer: the root of
+///   Pr y+ = Prt/kappa ln(E y+) + Prt P
+/// on the branch where the linear term overtakes the log (the residual
+/// decreases to a minimum at y+ = Prt/(kappa Pr) and rises from there, so the
+/// root is bracketed upward from that minimum and bisected).
+scalar thermalSublayerYPlus(scalar Pr, scalar Prt);
+
+/// T+ at the given y+ on the two-branch thermal law of the wall:
+///   T+ = Pr y+                        y+ <= y+_T  (conductive sublayer)
+///   T+ = Prt/kappa ln(E y+) + Prt P   y+ >  y+_T  (turbulent log region)
+/// continuous at the switch by construction of y+_T. In the sublayer limit the
+/// wall diffusivity u_tau y/T+ = nu/Pr is exactly the molecular one, so the
+/// law degenerates to plain conduction on a sublayer-resolving mesh.
+scalar thermalTPlus(scalar yPlus, scalar Pr, scalar Prt, scalar yPlusSublayer);
+
 } // namespace cf

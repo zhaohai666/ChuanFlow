@@ -53,6 +53,19 @@ struct EnergyProps
     scalar alphaMolecular() const { return kappa / (rho * cp); }
 };
 
+/// Wall-layer data the thermal wall function reads, in the turbulence model's
+/// own face order (every boundary face of a "wall" patch). Null `faces` keeps
+/// the wall flux molecular - the plain conduction through the wall-adjacent
+/// cell, exact on a sublayer-resolving mesh, wrong by the log-law factor on a
+/// wall-function mesh.
+struct EnergyWallLayer
+{
+    const std::vector<label>* faces = nullptr;
+    const Field<scalar>* uTau = nullptr;
+    const Field<scalar>* yPlus = nullptr;
+    const Field<scalar>* wallDist = nullptr;
+};
+
 /// Transport of temperature through the incompressible solvers' own flux, and
 /// the Boussinesq acceleration the momentum equation is forced with.
 ///
@@ -84,22 +97,32 @@ struct EnergyProps
 /// formulation (pending) before it can hold a conduction state without a
 /// spurious circulation.
 ///
-/// The eddy diffusivity is the plain gradient-transport analogy with Pr_t. On a
-/// mesh that resolves the sublayer (y+ ~ 1) nut -> 0 at the wall and the wall
-/// heat flux stays molecular, which is what this model assumes; on a
-/// wall-function mesh it over-predicts the transfer, and a thermal wall function
-/// is the next increment.
+/// The eddy diffusivity is the plain gradient-transport analogy with Pr_t. At
+/// a wall face whose patch prescribes a fixed temperature and whose mesh does
+/// not resolve the sublayer, the face diffusivity comes from the thermal wall
+/// function instead: with u_tau from the momentum wall layer, the two-branch
+/// thermal law of the wall (conductive T+ = Pr y+, log T+ = Prt/k ln(E y+) +
+/// Prt P, Jayatilleke P) gives
+///   alpha_face = u_tau y / T+(y+)
+/// so the wall flux is rho cp u_tau (T_p - T_w) / T+(y+) - the standard
+/// temperature wall treatment. In the sublayer limit T+ = Pr y+ makes
+/// alpha_face = nu/Pr exactly the molecular diffusivity, so a resolved mesh
+/// keeps plain conduction; a molecular Prandtl below 0.5 (liquid metals, where
+/// the two-branch law breaks down) is refused.
 class EnergyModel : public IEnergyCoupling
 {
 public:
     /// `phi` is the solver's continuity flux and is read on every correct().
     /// `nut` and `strainRate` are optional turbulence state, read as it stands
-    /// when the equation is assembled (null for laminar). The solver owns the
-    /// mesh, flux and turbulence model, so this object must not outlive them.
+    /// when the equation is assembled (null for laminar). `wallLayer` is the
+    /// turbulence model's wall faces (null keeps the wall flux molecular). The
+    /// solver owns the mesh, flux and turbulence model, so this object must not
+    /// outlive them.
     EnergyModel(const polyMesh& mesh, const surfaceScalarField& phi,
                 const Schemes& schemes, const EnergyProps& props, scalar nu,
                 const Field<scalar>* nut = nullptr,
-                const Field<scalar>* strainRate = nullptr);
+                const Field<scalar>* strainRate = nullptr,
+                const EnergyWallLayer* wallLayer = nullptr);
 
     const EnergyProps& props() const { return props_; }
 
@@ -131,11 +154,30 @@ public:
     /// carries out. With the patch heat rates it closes the discrete balance.
     scalar netEnthalpyRate() const;
 
+    /// State of the thermal wall function on a patch's fixed-value wall faces:
+    /// area-weighted u_tau, y+, T+ and the wall heat rate (W). `active` is
+    /// false when the patch carries no such face or no wall layer was handed
+    /// in; the heat rate then simply equals patchHeatRate.
+    struct ThermalWallReport
+    {
+        scalar uTau = 0;
+        scalar yPlus = 0;
+        scalar tPlus = 0;
+        scalar heatRate = 0;
+        bool active = false;
+    };
+    ThermalWallReport wallLayerReport(label patch) const;
+
   private:
     /// Sources [K/s] per cell: volumetric generation and viscous dissipation.
     Field<scalar> sourceRate() const;
     /// f = -beta (T - tRef) gravity over the current temperature.
     void refreshBuoyancy();
+    /// Diffusivity [m2/s] per face: the harmonic mean of alphaCell(), with the
+    /// thermal wall function's u_tau y/T+ at fixed-value wall faces. Shared by
+    /// the assembled equation and the reported heat rates, so the two always
+    /// agree.
+    Field<scalar> faceGamma() const;
 
     const polyMesh& mesh_;
     const surfaceScalarField& phi_;
@@ -144,6 +186,7 @@ public:
     scalar nu_;
     const Field<scalar>* nut_;
     const Field<scalar>* strainRate_;
+    EnergyWallLayer wallLayer_;
     volScalarField t_;
     Field<Vector> buoyancy_;
     bool hasBuoyancy_ = false;

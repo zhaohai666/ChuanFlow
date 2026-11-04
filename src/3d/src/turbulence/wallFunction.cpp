@@ -48,6 +48,48 @@ scalar lawOfWall(scalar yPlus)
     return bisect(spaldingYPlus, yPlus);
 }
 
+scalar jayatillekeP(scalar Pr, scalar Prt)
+{
+    const scalar r = Pr / Prt;
+    return 9.24 * (std::pow(r, 0.75) - 1.0)
+         * (1.0 + 0.28 * std::exp(-0.007 * r));
+}
+
+scalar thermalSublayerYPlus(scalar Pr, scalar Prt)
+{
+    const scalar P = jayatillekeP(Pr, Prt);
+    // f(y) = Pr y - Prt/k ln(E y) - Prt P: falls to its minimum at
+    // y = Prt/(k Pr) (where the log still wins) and rises from there, so any
+    // crossing below the minimum is spurious and the physical sublayer
+    // thickness is bracketed upward from the minimum
+    auto f = [&](scalar y)
+    {
+        return Pr * y - Prt / turb::kappa * std::log(turb::logE * y) - Prt * P;
+    };
+    scalar lo = Prt / (turb::kappa * Pr);
+    scalar hi = 2.0 * lo;
+    while (f(hi) < 0.0)
+    {
+        lo = hi;
+        hi *= 2.0;
+        if (hi > 1e9) break; // the linear term wins long before this
+    }
+    for (int i = 0; i < 100 && hi - lo > 1e-13 * hi; ++i)
+    {
+        const scalar mid = 0.5 * (lo + hi);
+        if (f(mid) < 0.0) lo = mid;
+        else hi = mid;
+    }
+    return 0.5 * (lo + hi);
+}
+
+scalar thermalTPlus(scalar yPlus, scalar Pr, scalar Prt, scalar yPlusSublayer)
+{
+    if (yPlus <= yPlusSublayer) return Pr * yPlus;
+    return Prt / turb::kappa * std::log(turb::logE * yPlus)
+         + Prt * jayatillekeP(Pr, Prt);
+}
+
 WallState wallState(scalar uParallel, scalar y, scalar nu)
 {
     WallState s;

@@ -40,6 +40,15 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             independently, then verifies the uniform final holdup/slip
             fields, the phase-flux split vsl/vsg and the Churchill pressure
             drop.
+  mode = compressibleholdup  : the dynamicslipholdup line with the
+            ideal-gas EOS on (gasR, rhoG the injected reference density).
+            The per-section gas inventory mG = rhoG (1 - alpha) dx evolves
+            by upwind gas-mass continuity on the Godunov gas volume flux
+            G(a) = vm + (s - vm) a - s a^2; the checker replicates the
+            coupled slip + holdup + gas-mass recursion cell by cell and
+            p = rhoG gasR T0 per section, the global gas inventory balance,
+            and the steady state rhoG* = rhoG (injection-pinned) with the
+            incompressible (alpha*, s*) pair.
 """
 import math
 import subprocess
@@ -523,6 +532,157 @@ elif mode == "dynamicslipholdup":
     else:
         print(f"ok:   uniform steady (alpha*, s*) = ({a_star:.10f},"
               f" {s_star_v:.10f}) with the imposed phase split (1e-9)")
+    check("pressure drop (Churchill friction)", frames[-1]["dp"], dp_want,
+          1e-9)
+    if frames[-1]["cells"] != frames[-2]["cells"]:
+        fails.append("state still drifting between the last two frames")
+    else:
+        print("ok:   steady state held over the final 20 s")
+
+elif mode == "compressibleholdup":
+    N, L, DI, DT = 40, 10.0, 0.02, 0.05
+    C_DRAG, VSL, VSG, VM = 500.0, 0.4, 0.6, 1.0
+    GAS_R, T0 = 287.0, 300.0
+    DX = L / N
+
+    def rho_g_cell(mg, a):
+        ag = 1.0 - a
+        return mg / (ag * DX) if ag > 1e-12 else RHO_G
+
+    def slip_map(a, s_old, mg, dt):
+        # kernel slipStep with the per-section gas density of the EOS
+        ag = 1.0 - a
+        if a <= 1e-12 or ag <= 1e-12:
+            return 0.0
+        rho_g = rho_g_cell(mg, a)
+        rho_m = a * RHO_L + ag * rho_g
+        mu_m = a * MU_L + ag * MU_G
+        re = rho_m * VM * DI / mu_m
+        fr = churchill(re, 0.0) * (DX / DI) * 0.5 * rho_m * VM * VM
+        inv = 1.0 / rho_g - 1.0 / RHO_L
+        ks = 1.0 + a * ag * (rho_g - RHO_L) ** 2 / (RHO_L * rho_g)
+        drive = inv * fr / DX  # rate-driven: du/dt = 0; horizontal
+        d = 1.0 / (RHO_L * a) + 1.0 / (rho_g * ag)
+        rate = C_DRAG * abs(s_old) * d / ks
+        return (s_old / dt + drive / ks) / (1.0 / dt + rate)
+
+    def face_fluxes(alpha, slip):
+        # liquid and gas volume fluxes of the dynamic closure: F convex,
+        # G = vm - F concave, so the Godunov selections differ
+        flux, gvol = [VSL], [VSG]
+        for j in range(1, N):
+            s = 0.5 * (slip[j - 1] + slip[j])
+            flux.append(godunov(s, VM - s, 0.0, alpha[j - 1], alpha[j]))
+            gvol.append(godunov(-s, s - VM, VM, alpha[j - 1], alpha[j]))
+        sl = slip[N - 1]
+        a_end = alpha[N - 1]
+        flux.append(sl * a_end * a_end + (VM - sl) * a_end)
+        gvol.append(VM + (sl - VM) * a_end - sl * a_end * a_end)
+        return flux, gvol
+
+    # independent steady state: gas mass in = out at the injected reference
+    # density pins rhoG* = RHO_G, so the (alpha*, s*) pair is the
+    # incompressible dynamicslipholdup one; root-find F(a, s*(a)) = vsl
+    def drive_steady(a):
+        rho_m = a * RHO_L + (1.0 - a) * RHO_G
+        mu_m = a * MU_L + (1.0 - a) * MU_G
+        re = rho_m * VM * DI / mu_m
+        fr = churchill(re, 0.0) * (DX / DI) * 0.5 * rho_m * VM * VM
+        return (1.0 / RHO_G - 1.0 / RHO_L) * fr / DX
+
+    def s_star_steady(a):
+        d = 1.0 / (RHO_L * a) + 1.0 / (RHO_G * (1.0 - a))
+        return math.copysign(math.sqrt(abs(drive_steady(a))
+                                       / (C_DRAG * d)), drive_steady(a))
+
+    lo, hi = 1e-9, 1.0 - 1e-9
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        s = s_star_steady(mid)
+        if s * mid * mid + (VM - s) * mid > VSL:
+            hi = mid
+        else:
+            lo = mid
+    a_star = 0.5 * (lo + hi)
+    s_star_v = s_star_steady(a_star)
+
+    # coupled transient replication with the gas-mass state (kg/m2)
+    alpha = [0.9] * N
+    slip = [0.0] * N
+    mg = [RHO_G * 0.1 * DX] * N
+    steps_done = 0
+    net_in = 0.0
+    for k, fr in enumerate(frames):
+        want_steps = 0 if k == 0 else k * 400
+        while steps_done < want_steps:
+            slip = [slip_map(alpha[i], slip[i], mg[i], DT) for i in range(N)]
+            flux, gvol = face_fluxes(alpha, slip)
+            gm = []
+            for j in range(N + 1):
+                if j == 0:
+                    rho_up = RHO_G  # injected reference density
+                elif j == N:
+                    rho_up = (rho_g_cell(mg[N - 1], alpha[N - 1])
+                              if gvol[j] >= 0 else 1.0e6 / (GAS_R * T0))
+                elif gvol[j] >= 0:
+                    rho_up = rho_g_cell(mg[j - 1], alpha[j - 1])
+                else:
+                    rho_up = rho_g_cell(mg[j], alpha[j])
+                gm.append(rho_up * gvol[j])
+            alpha = [min(max(alpha[i] + DT / DX * (flux[i] - flux[i + 1]),
+                             0.0), 1.0) for i in range(N)]
+            mg = [mg[i] - DT * (gm[i + 1] - gm[i]) for i in range(N)]
+            net_in += DT * (gm[0] - gm[N])
+            steps_done += 1
+        t = fr["t"]
+        check(f"vm imposed (t={t})", fr["vm"], VM, 1e-12)
+        ok_frame = True
+        for i in range(N):
+            got = fr["cells"][i]
+            want_p = rho_g_cell(mg[i], alpha[i]) * GAS_R * T0
+            if (abs(got["alpha"] - alpha[i]) > 1e-9 + 1e-9 * abs(alpha[i])
+                    or abs(got.get("s", 0.0) - slip[i])
+                    > 1e-9 + 1e-9 * abs(slip[i])
+                    or abs(got.get("p", 0.0) - want_p) > 1e-9 * want_p):
+                fails.append(f"cell {i} (t={t}): got={got} want alpha="
+                             f"{alpha[i]} s={slip[i]} p={want_p}")
+                ok_frame = False
+                break
+        if ok_frame:
+            print(f"ok:   alpha/slip/p fields replicated at t={t} (1e-9)")
+    # global gas inventory: emitted p/alpha reconstruct the solver's
+    # inventory, which must equal the replicated boundary-flux balance
+    m0 = sum(RHO_G * 0.1 * DX for _ in range(N))
+    m_end = sum(c["p"] * (1.0 - c["alpha"]) * DX / (GAS_R * T0)
+                for c in frames[-1]["cells"])
+    check("gas inventory balance", m_end, m0 + net_in, 1e-9)
+    # steady state: the incompressible (alpha*, s*) pair with rhoG* = RHO_G
+    rho_m = a_star * RHO_L + (1.0 - a_star) * RHO_G
+    mu_m = a_star * MU_L + (1.0 - a_star) * MU_G
+    re = rho_m * VM * DI / mu_m
+    f = churchill(re, 0.0)
+    dp_want = N * f * (DX / DI) * 0.5 * rho_m * VM * VM
+    p_star = RHO_G * GAS_R * T0
+    for c in frames[-1]["cells"]:
+        if abs(c["alpha"] - a_star) > 1e-9:
+            fails.append(f"steady holdup {c['alpha']} != {a_star}")
+            break
+        if abs(c["s"] - s_star_v) > 1e-9 + 1e-9 * abs(s_star_v):
+            fails.append(f"steady slip {c['s']} != {s_star_v}")
+            break
+        if abs(c["vsl"] - VSL) > 1e-9:
+            fails.append(f"steady vsl {c['vsl']} != {VSL}")
+            break
+        if abs(c["vsg"] - VSG) > 1e-9:
+            fails.append(f"steady vsg {c['vsg']} != {VSG}")
+            break
+        if abs(c["p"] - p_star) > 1e-9 * p_star:
+            fails.append(f"steady p {c['p']} != {p_star} (rhoG* != rhoG)")
+            break
+    else:
+        print(f"ok:   uniform steady (alpha*, s*) = ({a_star:.10f},"
+              f" {s_star_v:.10f}) with rhoG* = rhoG and the EOS pressure"
+              f" {p_star:.6e} (1e-9)")
     check("pressure drop (Churchill friction)", frames[-1]["dp"], dp_want,
           1e-9)
     if frames[-1]["cells"] != frames[-2]["cells"]:

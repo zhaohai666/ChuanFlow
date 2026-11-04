@@ -17,11 +17,6 @@ namespace
 
 constexpr double kGravity = 9.80665;
 
-double mixtureRho(const TwoFluidFluid& f, double a)
-{
-    return a * f.rhoL + (1.0 - a) * f.rhoG;
-}
-
 double mixtureMu(const TwoFluidFluid& f, double a)
 {
     return a * f.muL + (1.0 - a) * f.muG;
@@ -58,6 +53,8 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
     const TwoFluidFluid& f = cfg_.fluid;
     if (!(f.rhoL > 0) || !(f.rhoG > 0) || !(f.muL > 0) || !(f.muG > 0))
         cfFatal("twoFluid: fluid needs positive densities and viscosities");
+    if (f.gasR < 0)
+        cfFatal("twoFluid: negative gasR");
     const TwoFluidGeo& g = cfg_.geo;
     if (!(g.length > 0) || !(g.diameter > 0) || g.sections < 1)
         cfFatal("twoFluid: pipe needs positive length/diameter and >= 1"
@@ -105,6 +102,13 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
     // from t = 0; pressure-driven and sealed pipes start from rest
     if (cfg_.inlet.type == TwoFluidBoundary::Type::phaseRates)
         vM_ = vMOld_ = cfg_.inlet.vsl + cfg_.inlet.vsg;
+
+    // gas inventory per unit area: rhoG (1 - alpha) dx; with the EOS on it
+    // is the transported state, otherwise it stays at its initial value
+    // and every density lookup falls back to the constant fluid rhoG
+    gasMass_.resize(n_);
+    for (int i = 0; i < n_; ++i)
+        gasMass_[i] = f.rhoG * (1.0 - alpha_[i]) * dx_;
 
     if (cfg_.thermalOn)
     {
@@ -173,12 +177,80 @@ double TwoFluidPipe::gasVelocity(double alpha, double s) const
     return cfg_.closure.c0 * vM_ + cfg_.closure.driftVelocity;
 }
 
+void TwoFluidPipe::gasFluxCoeffs(double& qa, double& qb, double& qc) const
+{
+    // G(a) = alpha_g * vG(a): gas volume flux per unit area (algebraic
+    // closures; the dynamic closure builds face-local coefficients from
+    // the slip state)
+    if (cfg_.closure.model == 0) // wallis: vG = vM + alpha*us
+    {
+        qa = -cfg_.closure.slipVelocity;
+        qb = cfg_.closure.slipVelocity - vM_;
+        qc = vM_;
+    }
+    else // zuber: vG = C0 vM + vD (constant)
+    {
+        qa = 0.0;
+        qb = -(cfg_.closure.c0 * vM_ + cfg_.closure.driftVelocity);
+        qc = cfg_.closure.c0 * vM_ + cfg_.closure.driftVelocity;
+    }
+}
+
+double TwoFluidPipe::gasVolumeFlux(double alpha, double s) const
+{
+    if (cfg_.closure.model == 2) // dynamic: G = (1 - alpha)(vM + alpha s)
+        return vM_ + (s - vM_) * alpha - s * alpha * alpha;
+    double qa, qb, qc;
+    gasFluxCoeffs(qa, qb, qc);
+    return qc + alpha * (qb + qa * alpha);
+}
+
+double TwoFluidPipe::mixtureRhoCell(int i) const
+{
+    double rhoG = cfg_.fluid.rhoG;
+    if (eosOn())
+    {
+        const double ag = 1.0 - alpha_[i];
+        rhoG = ag > 1e-12 ? gasMass_[i] / (ag * dx_) : cfg_.fluid.rhoG;
+    }
+    return alpha_[i] * cfg_.fluid.rhoL + (1.0 - alpha_[i]) * rhoG;
+}
+
+std::vector<double> TwoFluidPipe::cellPressure() const
+{
+    std::vector<double> p(n_, 0.0);
+    if (!eosOn()) return p;
+    for (int i = 0; i < n_; ++i)
+    {
+        const double ag = 1.0 - alpha_[i];
+        // a section with no gas volume has no meaningful pressure
+        p[i] = ag > 1e-12 ? gasMass_[i] * cfg_.fluid.gasR
+                            * sectionTemperature(i) / (ag * dx_)
+                          : 0.0;
+    }
+    return p;
+}
+
+double TwoFluidPipe::cellGasDensity(int i) const
+{
+    const double ag = 1.0 - alpha_[i];
+    return eosOn() && ag > 1e-12 ? gasMass_[i] / (ag * dx_)
+                                 : cfg_.fluid.rhoG;
+}
+
+double TwoFluidPipe::ghostGasDensity(const TwoFluidBoundary& b) const
+{
+    if (!eosOn()) return cfg_.fluid.rhoG;
+    return gasDensityOf(b.pressure,
+                        b.temperature > 0 ? b.temperature : cfg_.temperature0);
+}
+
 double TwoFluidPipe::cellFriction(int i, double vM) const
 {
     // homogeneous Churchill law on mixture properties; |dp| per cell
     const TwoFluidFluid& f = cfg_.fluid;
     const double a = alpha_[i];
-    const double rho = mixtureRho(f, a);
+    const double rho = mixtureRhoCell(i);
     const double mu = mixtureMu(f, a);
     const double v = std::abs(vM);
     if (v == 0) return 0.0;
@@ -195,8 +267,7 @@ std::vector<double> TwoFluidPipe::cellPressureLosses(double vM) const
     std::vector<double> loss(n_);
     for (int i = 0; i < n_; ++i)
     {
-        const double grav = mixtureRho(cfg_.fluid, alpha_[i]) * kGravity
-                          * sinTheta_ * dx_;
+        const double grav = mixtureRhoCell(i) * kGravity * sinTheta_ * dx_;
         loss[i] = (vM >= 0 ? cellFriction(i, vM) : -cellFriction(i, vM)) + grav;
     }
     return loss;
@@ -224,8 +295,7 @@ void TwoFluidPipe::momentumSolve(double dt)
     // lagged slip inertia alpha alpha_g (rhoG - rhoL) ds/dt of the two
     // phase momenta (it vanishes at steady state)
     double rhoBar = 0;
-    for (int i = 0; i < n_; ++i)
-        rhoBar += mixtureRho(cfg_.fluid, alpha_[i]);
+    for (int i = 0; i < n_; ++i) rhoBar += mixtureRhoCell(i);
     rhoBar /= n_;
     // vM is a velocity, so the inertia of the column is its mass per unit
     // area rho_m L (not divided by the area - that would be the
@@ -235,11 +305,10 @@ void TwoFluidPipe::momentumSolve(double dt)
     double slipInertia = 0;
     for (int i = 0; i < n_; ++i)
     {
-        gravSum += mixtureRho(cfg_.fluid, alpha_[i]) * kGravity * sinTheta_
-                 * dx_;
+        gravSum += mixtureRhoCell(i) * kGravity * sinTheta_ * dx_;
         slipInertia += alpha_[i] * (1.0 - alpha_[i])
-                     * (cfg_.fluid.rhoG - cfg_.fluid.rhoL)
-                     * sDotOld_[i] * dx_;
+                     * (cellGasDensity(i) - cfg_.fluid.rhoL) * sDotOld_[i]
+                     * dx_;
     }
     const double dpDrive = in.pressure - out.pressure;
 
@@ -280,8 +349,6 @@ void TwoFluidPipe::slipStep(double dt)
     // lands exactly on the terminal slip s* = sign(R) sqrt(|R|/(C D)).
     const TwoFluidFluid& f = cfg_.fluid;
     const double aM = (vM_ - vMOld_) / dt;
-    const double invRhoDiff = 1.0 / f.rhoG - 1.0 / f.rhoL;
-    const double drho = f.rhoG - f.rhoL;
     std::vector<double> old = slip_;
     for (int i = 0; i < n_; ++i)
     {
@@ -294,13 +361,18 @@ void TwoFluidPipe::slipStep(double dt)
             sDotOld_[i] = -old[i] / dt;
             continue;
         }
-        const double ks = 1.0 + a * ag * drho * drho / (f.rhoL * f.rhoG);
+        // per-section gas density: with the EOS the slip inertia factor,
+        // drive and drag denominator are section-local
+        const double rhoG = cellGasDensity(i);
+        const double invRhoDiff = 1.0 / rhoG - 1.0 / f.rhoL;
+        const double drho = rhoG - f.rhoL;
+        const double ks = 1.0 + a * ag * drho * drho / (f.rhoL * rhoG);
         const double loss = (vM_ >= 0 ? cellFriction(i, vM_)
                                       : -cellFriction(i, vM_))
-                          + mixtureRho(f, a) * kGravity * sinTheta_ * dx_;
+                          + mixtureRhoCell(i) * kGravity * sinTheta_ * dx_;
         const double drive = invRhoDiff
-                           * (mixtureRho(f, a) * aM + loss / dx_);
-        const double d = 1.0 / (f.rhoL * a) + 1.0 / (f.rhoG * ag);
+                           * (mixtureRhoCell(i) * aM + loss / dx_);
+        const double d = 1.0 / (f.rhoL * a) + 1.0 / (rhoG * ag);
         const double rate = cfg_.closure.interfacialDrag
                           * std::abs(old[i]) * d / ks;
         slip_[i] = (old[i] / dt + drive / ks) / (1.0 / dt + rate);
@@ -348,6 +420,7 @@ void TwoFluidPipe::transportStep(double dt)
     const TwoFluidBoundary& in = cfg_.inlet;
     const TwoFluidBoundary& out = cfg_.outlet;
     std::vector<double> flux(n_ + 1), wflux(n_ + 1);
+    std::vector<double> gvol(n_ + 1, 0.0), gmflux(n_ + 1, 0.0);
 
     for (int j = 0; j <= n_; ++j)
     {
@@ -401,6 +474,70 @@ void TwoFluidPipe::transportStep(double dt)
         }
     }
 
+    // gas volume flux per face (EOS on): the gas counterpart of the liquid
+    // flux, quadratic/linear in alpha for every closure with G(1) = 0, so
+    // the same Godunov machinery and the same CFL bound apply. The mass
+    // flux upwinds the density from the side the volume flux comes from:
+    // the injected reference density at a rate boundary, the ghost density
+    // at a pressure boundary, the cell density inside.
+    if (eosOn())
+    {
+        for (int j = 0; j <= n_; ++j)
+        {
+            if (j == 0)
+            {
+                if (in.type == TwoFluidBoundary::Type::phaseRates)
+                    gvol[0] = in.vsg;
+                else if (in.type == TwoFluidBoundary::Type::fixedPressure)
+                {
+                    if (cfg_.closure.model == 2)
+                    {
+                        const double s = faceSlip(0);
+                        gvol[0] = godunovQuadratic(-s, s - vM_, vM_, in.alpha,
+                                                   alpha_[0]);
+                    }
+                    else
+                    {
+                        double gqa, gqb, gqc;
+                        gasFluxCoeffs(gqa, gqb, gqc);
+                        gvol[0] = godunovQuadratic(gqa, gqb, gqc, in.alpha,
+                                                   alpha_[0]);
+                    }
+                }
+                // sealed inlet: gvol[0] stays 0
+            }
+            else if (j == n_)
+            {
+                if (out.type != TwoFluidBoundary::Type::sealed)
+                    gvol[n_] = gasVolumeFlux(alpha_[n_ - 1], faceSlip(n_));
+            }
+            else if (cfg_.closure.model == 2)
+            {
+                const double s = faceSlip(j);
+                gvol[j] = godunovQuadratic(-s, s - vM_, vM_, alpha_[j - 1],
+                                           alpha_[j]);
+            }
+            else
+            {
+                double gqa, gqb, gqc;
+                gasFluxCoeffs(gqa, gqb, gqc);
+                gvol[j] = godunovQuadratic(gqa, gqb, gqc, alpha_[j - 1],
+                                           alpha_[j]);
+            }
+
+            const double rhoUp =
+                gvol[j] >= 0
+                    ? (j == 0
+                           ? (in.type == TwoFluidBoundary::Type::phaseRates
+                                  ? cfg_.fluid.rhoG
+                                  : ghostGasDensity(in))
+                           : j == n_ ? cellGasDensity(n_ - 1)
+                                     : cellGasDensity(j - 1))
+                    : (j == n_ ? ghostGasDensity(out) : cellGasDensity(j));
+            gmflux[j] = rhoUp * gvol[j];
+        }
+    }
+
     static constexpr double kTol = 1e-9;
     for (int i = 0; i < n_; ++i)
     {
@@ -415,6 +552,21 @@ void TwoFluidPipe::transportStep(double dt)
         alpha_[i] = std::min(std::max(aNew, 0.0), 1.0);
         afNew = std::min(std::max(afNew, 0.0), aCap);
         water_[i] = aCap > kTol ? afNew / aCap : 0.0;
+        if (eosOn())
+        {
+            // gas mass continuity on the per-unit-area inventory
+            // rhoG (1 - alpha) dx: the mass-flux divergence changes it
+            // directly (no dx factor); upwinding keeps it non-negative
+            const double agNew = 1.0 - alpha_[i];
+            const double numer
+                = gasMass_[i] - dt * (gmflux[i + 1] - gmflux[i]);
+            const double trace = kTol * cfg_.fluid.rhoG * dx_;
+            if (agNew <= 1e-12 && numer > trace)
+                cfFatal("twoFluid: gas sealed in a closing cell - reduce dt");
+            if (numer < -trace)
+                cfFatal("twoFluid: gas mass went negative - reduce dt");
+            gasMass_[i] = std::max(numer, 0.0);
+        }
     }
 }
 
@@ -443,9 +595,9 @@ void TwoFluidPipe::thermalStep(double dt)
     const TwoFluidFluid& f = cfg_.fluid;
     const TwoFluidThermal& th = cfg_.thermal;
     const double area = M_PI * cfg_.geo.diameter * cfg_.geo.diameter / 4.0;
-    auto rhoc = [&](double a)
+    auto rhoc = [&](double a, double rhoG)
     {
-        return a * f.rhoL * f.cL + (1.0 - a) * f.rhoG * f.cG;
+        return a * f.rhoL * f.cL + (1.0 - a) * rhoG * f.cG;
     };
 
     // |K| per face: enthalpy conductance W/K of the mixture stream, with the
@@ -458,16 +610,17 @@ void TwoFluidPipe::thermalStep(double dt)
             rhocUp = (cfg_.inlet.vsl * f.rhoL * f.cL
                       + cfg_.inlet.vsg * f.rhoG * f.cG) / vM_;
         else
-            rhocUp = rhoc(cfg_.inlet.alpha);
+            rhocUp = rhoc(cfg_.inlet.alpha, ghostGasDensity(cfg_.inlet));
         kFace[0] = area * vM_ * rhocUp;
         for (int j = 1; j <= n_; ++j)
-            kFace[j] = area * vM_ * rhoc(alpha_[j - 1]);
+            kFace[j] = area * vM_ * rhoc(alpha_[j - 1], cellGasDensity(j - 1));
     }
     else if (vM_ < 0)
     {
         for (int j = 0; j < n_; ++j)
-            kFace[j] = area * (-vM_) * rhoc(alpha_[j]);
-        kFace[n_] = area * (-vM_) * rhoc(cfg_.outlet.alpha);
+            kFace[j] = area * (-vM_) * rhoc(alpha_[j], cellGasDensity(j));
+        kFace[n_] = area * (-vM_)
+                  * rhoc(cfg_.outlet.alpha, ghostGasDensity(cfg_.outlet));
     }
 
     // implicit Euler: diagonal = capacity + outflow + wall; the inflow face
@@ -476,7 +629,7 @@ void TwoFluidPipe::thermalStep(double dt)
     std::vector<double> rhs(n_, 0.0);
     for (int i = 0; i < n_; ++i)
     {
-        const double cap = area * dx_ * rhoc(alpha_[i]);
+        const double cap = area * dx_ * rhoc(alpha_[i], cellGasDensity(i));
         const double kw = th.wallHeatTransfer * dx_;
         mat[i][i] = cap / dt + kFace[vM_ >= 0 ? i + 1 : i] + kw;
         rhs[i] = cap / dt * T_[i] + kw * wallTemperature(i);
@@ -561,6 +714,7 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
     c.fluid.muG = fd.getScalar("muG");
     c.fluid.cL = fd.getScalarOr("cL", 0.0);
     c.fluid.cG = fd.getScalarOr("cG", 0.0);
+    c.fluid.gasR = fd.getScalarOr("gasR", 0.0);
 
     if (!caseDict.has("pipe")) cfFatal("twoFluid: case has no pipe{} block");
     const Dictionary& pd = caseDict.getDict("pipe");

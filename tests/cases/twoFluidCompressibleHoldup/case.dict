@@ -1,0 +1,68 @@
+// Gas-EOS compressibility verification: the same rate-driven line as
+// twoFluidDynamicSlipHoldup with the ideal-gas EOS on (fluid gasR 287,
+// rhoG 20 = the reference density the injected rates and the initial state
+// refer to). The gas density becomes a per-section transported state: gas
+// mass continuity with the Godunov gas volume flux G(a) = vm + (s - vm) a
+// - s a^2 and upwind mass fluxes, thermodynamic pressure p = rhoG gasR T
+// (T = temperature0 = 300 K, thermal off). Gas accumulates early (holdup
+// 0.9 passes only alpha_g vm = 0.1 of gas volume while the inlet injects
+// vsg = 0.6), then the state relaxes onto the incompressible steady state:
+// gas mass in = out at the injected density pins rhoG* = rhoG = 20 exactly,
+// so alpha*/s* match twoFluidDynamicSlipHoldup (root-found here
+// independently). The emitted per-cell p is the EOS pressure of the
+// transported gas (a rate-driven line's thermodynamic pressure is set by
+// the injected mass, not the pressure BCs - the lumped momentum carries no
+// local pressure gradient). tests/check_two_fluid.py mode
+// compressibleholdup replicates the coupled slip + Godunov holdup + gas
+// mass recursion cell by cell (1e-9), checks p = rhoG gasR T0 per section,
+// the global gas inventory balance, and the uniform steady state
+// (alpha*, s*, rhoG*, imposed phase split, Churchill drop).
+//
+// Measured anchors (dt 0.05, endTime 80): the replicated inventory lands
+// at 89.417 kg/m2 of pipe cross-section; the steady state is uniform
+// alpha* = 0.5529126, s* = 0.6185779 with rhoG* = 20.000000 exactly (EOS
+// pressure 1.722000e6 Pa) and the Churchill friction drop 4.437184e3 Pa.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+    gasR 287;
+}
+
+pipe
+{
+    length 10;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 40;
+}
+
+closure
+{
+    model dynamic;
+    interfacialDrag 500;
+}
+
+initial
+{
+    alpha 0.9;
+    water 0;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.4; vsg 0.6; }
+    outlet { type fixedPressure; p 1.0e6; }  // absolute with the EOS on;
+                                             // only the backflow ghost uses it
+}
+
+time
+{
+    dt 0.05;
+    endTime 80;
+    reportEvery 400;
+}

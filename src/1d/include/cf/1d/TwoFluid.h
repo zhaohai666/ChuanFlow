@@ -35,9 +35,21 @@ namespace cf
 /// alpha alpha_g (rhoG - rhoL) ds/dt lagged one step; it vanishes at steady
 /// state, so the steady holdups of the algebraic closures are reproduced.
 /// Phases are incompressible and the area is constant, so the mixture
-/// velocity is uniform along the pipe; per-section gas compressibility
-/// (which makes the momentum equation itself distributed) is the next
-/// increment. Holdup transport advances with the exact Godunov flux of the
+/// velocity is uniform along the pipe. With the gas EOS on (fluid gasR > 0)
+/// the gas density becomes a per-section state evolved by gas mass
+/// continuity on the fixed gas volume (1 - alpha, the sections stay full):
+///   d(rhoG (1 - alpha))/dt + d(rhoG alpha_g vG)/dx = 0   [gas mass]
+///   p_i = rhoG_i gasR T_i                                [ideal-gas EOS]
+/// The gas volume flux alpha_g vG is a quadratic in alpha for all three
+/// closures, so the same Godunov machinery transports gas mass; the
+/// thermodynamic pressure p_i follows from the transported density and
+/// feeds back (lagged one step) into every mixture density: the momentum
+/// inertia/gravity/friction weights, the slip drive and the heat capacity.
+/// The mixture momentum itself stays lumped (one velocity per pipe) - the
+/// thermodynamic p_i is not a local momentum driver, so acoustic dynamics
+/// and the friction pressure profile inside the pipe are beyond this
+/// reduced form (distributed pressure momentum is the follow-up).
+/// Holdup transport advances with the exact Godunov flux of the
 /// quadratic liquid-flux function F(alpha) = alpha vL(alpha), so shocks
 /// propagate at the Rankine-Hugoniot speed and the CFL-limited scheme is
 /// monotone (alpha stays in [0, 1]).
@@ -54,11 +66,15 @@ namespace cf
 struct TwoFluidFluid
 {
     double rhoL = 1000; // kg/m3
-    double rhoG = 20;   // kg/m3
+    double rhoG = 20;   // kg/m3 (with the EOS on: the gas density the
+                        // injected rates and the initial state refer to)
     double muL = 0.01;  // Pa s
     double muG = 1e-5;  // Pa s
     double cL = 0;      // J/(kg K), needed when the thermal block is present
     double cG = 0;      // J/(kg K)
+    double gasR = 0;    // J/(kg K) specific gas constant; > 0 switches the
+                        // ideal-gas EOS on and rhoG becomes the per-section
+                        // state evolved by gas mass continuity
 };
 
 struct TwoFluidGeo
@@ -166,6 +182,10 @@ public:
     /// Slip velocity vG - vL per section, m/s; zeros unless the dynamic
     /// closure is on (the algebraic closures carry no slip state).
     std::vector<double> cellSlip() const { return slip_; }
+    /// Thermodynamic section pressure from the gas EOS (p = rhoG gasR T),
+    /// Pa; zeros unless the EOS is on. This is the transported density's
+    /// pressure, not the hydraulic loss profile (see nodePressure()).
+    std::vector<double> cellPressure() const;
     std::vector<double> cellTemperature() const { return T_; }
     /// Wall heat the sections absorb this step, W (positive = into the fluid);
     /// zero unless thermal is on.
@@ -183,10 +203,24 @@ private:
     // current mixture velocity (algebraic closures; the dynamic closure
     // builds face-local coefficients from the slip state)
     void fluxCoeffs(double& qa, double& qb, double& qc) const;
+    void gasFluxCoeffs(double& qa, double& qb, double& qc) const;
     double liquidFlux(double alpha, double s) const;
+    double gasVolumeFlux(double alpha, double s) const;
     double gasVelocity(double alpha, double s) const;
+    bool eosOn() const { return cfg_.fluid.gasR > 0; }
+    double gasDensityOf(double p, double temperature) const
+    {
+        return p / (cfg_.fluid.gasR * temperature);
+    }
+    double sectionTemperature(int i) const
+    {
+        return cfg_.thermalOn ? T_[i] : cfg_.temperature0;
+    }
     double cellFriction(int i, double vM) const; // sgn-agnostic |dp/dx| fric
     std::vector<double> cellPressureLosses(double vM) const; // fr + grav, Pa
+    double mixtureRhoCell(int i) const; // with the per-section gas density
+    double cellGasDensity(int i) const; // guarded: constant rhoG when sealed
+    double ghostGasDensity(const TwoFluidBoundary& b) const;
 
     TwoFluidCase cfg_;
     int n_ = 0;
@@ -195,6 +229,9 @@ private:
     std::vector<double> slip_;    // dynamic closure: vG - vL per section
     std::vector<double> sDotOld_; // last step's ds/dt, the lagged slip
                                   // inertia the mixture momentum feels
+    std::vector<double> gasMass_; // gas inventory per unit area kg/m2 =
+                                  // rhoG (1 - alpha) dx; the transported
+                                  // state when the EOS is on
     double wallHeatRate_ = 0;
     double inletHeatRate_ = 0;
     double vM_ = 0;   // current mixture velocity
@@ -203,7 +240,9 @@ private:
 };
 
 /// Case grammar (see tests/cases/twoFluidFront/case.dict):
-///   fluid { rhoL 1000; rhoG 20; muL 0.01; muG 1e-5; cL 4180; cG 2150; }
+///   fluid { rhoL 1000; rhoG 20; muL 0.01; muG 1e-5; cL 4180; cG 2150;
+///           gasR 287; }   // gasR > 0: ideal-gas EOS on, rhoG is the
+///                         // gas density the injected rates refer to
 ///   pipe { length 100; diameter 0.1; roughness 0; angleDeg 0; sections 200; }
 ///   closure { model wallis; slipVelocity 0.3; }   // or model zuber;
 ///                                                 //      C0 1.2; driftVelocity 0.15;

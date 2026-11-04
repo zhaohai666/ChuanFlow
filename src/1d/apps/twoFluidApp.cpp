@@ -58,13 +58,16 @@ int main(int argc, char** argv)
                 = c.closure.model == 2 ? s.cellSlip()
                                        : std::vector<double>();
             const std::vector<double> T = s.cellTemperature();
+            const std::vector<double> ep
+                = c.fluid.gasR > 0 ? s.cellPressure() : std::vector<double>();
             for (int i = 0; i < s.sections(); ++i)
             {
                 log::info("cell ", i, " alpha ", num(a[i]), " water ",
                           num(w[i]), " vsl ", num(vsl[i]), " vsg ",
                           num(vsg[i]),
                           T.empty() ? "" : (" T " + num(T[i])),
-                          sl.empty() ? "" : (" s " + num(sl[i])));
+                          sl.empty() ? "" : (" s " + num(sl[i])),
+                          ep.empty() ? "" : (" p " + num(ep[i])));
             }
             if (!T.empty())
                 log::info("thermal: qWall ", num(s.wallHeatRate()),

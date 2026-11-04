@@ -352,11 +352,27 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
   （`T = 地表温 + 梯度·垂深`，垂深 = inletDepth − s·sinθ，出地即 fatal）。
   温度隐式，不加新的 CFL；每步与输运共用 DenseSolve 稠密求解（段数
   ≤ 数百）；
+- **气相 EOS 压缩性（fluid gasR > 0 开启）**：气相密度成为逐段输运状态
+  ——气相质量连续 `d(ρ_G α_g)/dt + d(ρ_G α_g v_G)/dx = 0` 以单位面积气量
+  `m_G = ρ_G(1−α)Δx`（kg/m²）为状态变量，气相体积通量
+  `G(α) = v_m + (s̄ − v_m)α − s̄α²` 对三种闭合都是 α 的二次/线性函数且
+  `G(1) = 0`，复用同一 Godunov 精确黎曼解与同一 CFL 界（凸凹与液相互为
+  镜像，激波/稀疏波选择相反）；质量通量按体积通量方向迎风——
+  `phaseRates` 注入字典参考密度 ρ_G，`fixedPressure` 边界的 ghost 密度由
+  **绝对**压力 `p/(gasR·T)` 构造（EOS 关闭时既有 gauge 语义不变），管内取
+  迎风元密度。状态方程 `p_i = ρ_G,i·gasR·T_i` 逐段报告（rate 驱动管线的
+  热力学压力由注入质量决定，与水力压降剖面无关——集总动量不携带局部
+  压力梯度，分布式压力动量是后续增量）。逐段密度反馈进混合 ρ̄（摩阻/
+  重位/柱惯性/滑移驱动的 inv(Δρ)、K_s、D 全部逐元化，滞后一步）；
+  EOS 关闭（gasR = 0）时所有路径逐位回到常数 ρ_G，既有 7 个回归不动。
+  封闭元保护：α→1 时气量呈指数泄空而气相体积线性关闭，数值保护为
+  残气冻结密度、非残气 fatal；
 - **应用** `chflow-1d-twofluid <case.dict>`：输出 `t … vm … dp …` /
   `node <j> p …` / `cell <i> alpha … water … vsl … vsg …`（thermal 时
-  追加 `T …`，动态闭合时追加 `s …`）+ `thermal: qWall … qInlet …`。
+  追加 `T …`，动态闭合时追加 `s …`，EOS 开启时追加 `p …`）+
+  `thermal: qWall … qInlet …`。
 
-七个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
+八个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
 
 | 算例 | 校验内容 |
 |---|---|
@@ -367,6 +383,7 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 | `twoFluidPressureLaminar` | 定压启动：独立二分解隐式 Euler 动量 ODE（1e-8）+ 指数包络 `u* = ΔpD²/32μL`、时间常数 `ρD²/32μ` = 0.125 s（3%）|
 | `twoFluidDynamicSlipSettling` | 动态闭合重力分异（封闭竖管）：滑移映射 + 输运全耦合逐元复现（1e-9）、液量与重位压降精确守恒（`dp = ρ_m(ᾱ)gL`，实测每帧 100027.83 Pa）、终态下半 α > 0.99 / 上半 α < 0.01、界面钉在中点、终端滑移 `s* = √(drive/(C·D))`（实测滞后 2.0e-4 相对，容差 2e-3）|
 | `twoFluidDynamicSlipHoldup` | 动态闭合稳态持液：耦合根 `(α*, s*)` 独立求出（F(α, s*(α)) = vsl + Churchill 摩阻驱动，实测 0.5529126041 / 0.6185778539），终场逐元对齐 1e-9、相分配 vsl = 0.4 / vsg = 0.6、压降 4437.1846 Pa 重算、末两帧全等（真稳态）|
+| `twoFluidCompressibleHoldup` | 气相 EOS 压缩性：`twoFluidDynamicSlipHoldup` 同管线 + gasR 287。滑移 + 持液 + 逐段气量 `m_G = ρ_G(1−α)Δx` 三态全耦合逐元复现（1e-9）、逐段 `p = ρ_G·gasR·T_0` 恒等式、全局气量衡算 `Σm_G(t) = Σm_G(0) + ∫(入−出)`（实测终值 89.417 kg/m²）、稳态气量平衡钉住 ρ_G* = 20 精确（EOS 压力 1.722e6 Pa）且 `(α*, s*)` 与不可压回归同根 0.5529126/0.6185779、压降 4437.1846 Pa 不变 |
 
 三个温度回归（`tests/check_two_fluid_thermal.py`，断言离散闭式而非
 连续指数）：
@@ -1176,8 +1193,8 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
   进口交出的体积精确、clamp 恰为 0——这是 α 方程的一阶迎风做不到的；40×40 圆盘自转
   40 步逐步相体积漂移 ≤ 6.9e-16 相对、clamp ≤ 4.42e-17、α ∈ [0,1]、带 60→70 格、
   限流最多 336 面且最小因子 0.5（同格两个出流棱柱在角上重合处）；
-- `tests/cases/*`：三十一个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
-  `twoFluid*` 七个见 §4.3 的表）：
+- `tests/cases/*`：三十二个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
+  `twoFluid*` 八个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug` / `transientValve`（见 4.2）

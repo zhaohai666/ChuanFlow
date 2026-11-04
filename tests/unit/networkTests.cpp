@@ -548,6 +548,62 @@ int main()
               "PVT pipe reports single-phase");
     }
 
+    // ---- closed ring: the Newton node-pressure formulation handles loops
+    //      directly (no Hardy-Cross) — laminar 2x2 closed form ----
+    {
+        OneDNetwork net;
+        net.fluid = fluid;
+        net.addNode("A");
+        net.addNode("B");
+        net.addNode("C");
+        net.setNodePressure("A", 5.0e5);
+        net.setNodeRate("B", 0.001);
+        const double R1 = resistance(500.0), R2 = resistance(700.0),
+                     R3 = resistance(600.0);
+        const char* names[3] = {"AB", "BC", "CA"};
+        const char* from[3] = {"A", "B", "C"};
+        const char* to[3] = {"B", "C", "A"};
+        const double lens[3] = {500.0, 700.0, 600.0};
+        for (int k = 0; k < 3; ++k)
+        {
+            NetworkPipe p;
+            p.name = names[k]; p.fromName = from[k]; p.toName = to[k];
+            p.length = lens[k]; p.diameter = D; p.roughness = 0;
+            p.elevation = 0;
+            net.addPipe(p);
+        }
+        SteadyControls ctl;
+        // the residual floor for this ring sits near 2e-10 relative (dense
+        // linear-solve noise), so 1e-11 would never clear — 1e-9 converges
+        ctl.tol = 1e-9;
+        const SteadyNetworkResult res = solveSteadyNetwork(net, ctl);
+        CHECK(res.converged, "closed ring converged");
+        // laminar ring: node equations are linear, solved by Cramer
+        const double pA = 5.0e5, S = 0.001;
+        const double a11 = 1.0 / R1 + 1.0 / R2, a12 = -1.0 / R2;
+        const double a21 = -1.0 / R2, a22 = 1.0 / R2 + 1.0 / R3;
+        const double b1 = S + pA / R1, b2 = pA / R3;
+        const double det = a11 * a22 - a12 * a21;
+        const double pB = (b1 * a22 - a12 * b2) / det;
+        const double pC = (a11 * b2 - b1 * a21) / det;
+        CHECK(relNear(res.nodePressure[net.nodeIndex("B")], pB, 1e-8),
+              "ring node pressure B (closed form, measured 6.5e-11)");
+        CHECK(relNear(res.nodePressure[net.nodeIndex("C")], pC, 1e-8),
+              "ring node pressure C (closed form, measured 3.6e-11)");
+        // injection splits around the loop: G1(G2+G3)/sum back through the
+        // short leg (reversed), G2*G3/sum forward through BC-CA
+        const double G1 = 1.0 / R1, G2 = 1.0 / R2, G3 = 1.0 / R3;
+        const double denom = G1 * G2 + G1 * G3 + G2 * G3;
+        CHECK(relNear(-res.pipeFlows[0].flowRate / S, G1 * (G2 + G3) / denom,
+                      1e-8),
+              "ring split: 72.2% circulates back through the short leg");
+        CHECK(relNear(res.pipeFlows[1].flowRate / S, G2 * G3 / denom, 1e-8),
+              "ring split: 27.8% goes forward through the far arc");
+        CHECK(relNear(res.pipeFlows[1].flowRate, res.pipeFlows[2].flowRate,
+                      1e-12),
+              "far arc carries the same flow (serial)");
+    }
+
     if (failures)
     {
         std::cout << failures << " network test(s) FAILED\n";

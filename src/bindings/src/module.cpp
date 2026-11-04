@@ -5,6 +5,7 @@
 #include <pybind11/stl.h>
 
 #include "cf/1d/Network.h"
+#include "cf/1d/Nodal.h"
 #include "cf/1d/Transient.h"
 #include "cf/pvt/Flash.h"
 #include "cf/pvt/PvtCase.h"
@@ -84,6 +85,80 @@ PYBIND11_MODULE(chflow_core, m)
           py::arg("case_dict_path"));
     m.def("load_steady_controls", [](const std::string& caseDictPath)
           { return cf::loadSteadyControls(cf::Dictionary::parseFile(caseDictPath)); },
+          py::arg("case_dict_path"));
+
+    // ---- nodal analysis (IPR-VLP) ----
+    py::class_<cf::pvt::BlackOilFluid>(m, "BlackOilFluid")
+        .def(py::init<>())
+        .def_readwrite("gas_gravity", &cf::pvt::BlackOilFluid::gasGravity)
+        .def_readwrite("oil_density_std", &cf::pvt::BlackOilFluid::oilDensityStd)
+        .def_readwrite("gor_std", &cf::pvt::BlackOilFluid::gorStd)
+        .def_readwrite("water_cut", &cf::pvt::BlackOilFluid::waterCut)
+        .def_readwrite("water_density", &cf::pvt::BlackOilFluid::waterDensity)
+        .def_readwrite("water_viscosity", &cf::pvt::BlackOilFluid::waterViscosity)
+        .def_readwrite("temperature", &cf::pvt::BlackOilFluid::temperature)
+        .def_readwrite("surface_tension", &cf::pvt::BlackOilFluid::surfaceTension);
+
+    py::enum_<cf::IpR::Form>(m, "IpRForm")
+        .value("linear", cf::IpR::Form::linear)
+        .value("vogel", cf::IpR::Form::vogel)
+        .value("jones", cf::IpR::Form::jones);
+
+    py::class_<cf::IpR>(m, "IpR")
+        .def(py::init<>())
+        .def_readwrite("form", &cf::IpR::form)
+        .def_readwrite("reservoir_pressure", &cf::IpR::reservoirPressure)
+        .def_readwrite("productivity_index", &cf::IpR::productivityIndex)
+        .def_readwrite("max_rate", &cf::IpR::maxRate)
+        .def_readwrite("deliverability", &cf::IpR::deliverability)
+        .def_readwrite("exponent", &cf::IpR::exponent)
+        .def("rate_max", &cf::IpR::rateMax)
+        .def("p_wf", &cf::IpR::pWf, py::arg("rate"))
+        .def("rate", &cf::IpR::rate, py::arg("p_wf"));
+
+    py::class_<cf::WellLift>(m, "WellLift")
+        .def(py::init<>())
+        .def_readwrite("length", &cf::WellLift::length)
+        .def_readwrite("diameter", &cf::WellLift::diameter)
+        .def_readwrite("roughness", &cf::WellLift::roughness)
+        .def_readwrite("elevation", &cf::WellLift::elevation);
+
+    py::class_<cf::NodalControls>(m, "NodalControls")
+        .def(py::init<>())
+        .def_readwrite("max_iter", &cf::NodalControls::maxIter)
+        .def_readwrite("tol", &cf::NodalControls::tol);
+
+    py::class_<cf::NodalResult>(m, "NodalResult")
+        .def_readonly("rate", &cf::NodalResult::rate)
+        .def_readonly("bottom_hole_pressure", &cf::NodalResult::bottomHolePressure)
+        .def_readonly("static_bottom_pressure", &cf::NodalResult::staticBottomPressure)
+        .def_readonly("holdup", &cf::NodalResult::holdup)
+        .def_readonly("regime", &cf::NodalResult::regime)
+        .def_readonly("iterations", &cf::NodalResult::iterations)
+        .def_readonly("flows", &cf::NodalResult::flows)
+        .def_readonly("converged", &cf::NodalResult::converged);
+
+    py::class_<cf::NodalCase>(m, "NodalCase")
+        .def(py::init<>())
+        .def_readwrite("fluid", &cf::NodalCase::fluid)
+        .def_readwrite("ipr", &cf::NodalCase::ipr)
+        .def_readwrite("well", &cf::NodalCase::well)
+        .def_readwrite("wellhead_pressure", &cf::NodalCase::wellheadPressure)
+        .def_readwrite("controls", &cf::NodalCase::controls);
+
+    m.def("solve_nodal_analysis", &cf::solveNodalAnalysis,
+          py::call_guard<py::gil_scoped_release>(),
+          py::arg("ipr"), py::arg("fluid"), py::arg("well"),
+          py::arg("wellhead_pressure"),
+          py::arg("controls") = cf::NodalControls{});
+
+    m.def("vlp_bottom_hole_pressure", &cf::vlpBottomHolePressure,
+          py::call_guard<py::gil_scoped_release>(),
+          py::arg("fluid"), py::arg("well"), py::arg("rate"),
+          py::arg("wellhead_pressure"));
+
+    m.def("load_nodal_case", [](const std::string& caseDictPath)
+          { return cf::loadNodalCaseFromDict(cf::Dictionary::parseFile(caseDictPath)); },
           py::arg("case_dict_path"));
 
     // ---- transient kernel ----

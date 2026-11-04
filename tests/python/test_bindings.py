@@ -198,5 +198,39 @@ class TestPvtBindings(unittest.TestCase):
         self.assertEqual(table.size(), 9)
 
 
+class TestNodalBindings(unittest.TestCase):
+    """The IPR-VLP nodal kernel exported to Python: closed-form curve access,
+    a case-dict round trip and parity with the app's golden anchor."""
+
+    CASE = os.path.join(CASE_DIR, "nodalVogel", "case.dict")
+    GOLDEN_Q = 0.00290785579167
+
+    def test_ipr_curve_is_the_published_closed_form(self):
+        ipr = chflow.IpR()
+        ipr.form = chflow.IpRForm.vogel
+        ipr.reservoir_pressure, ipr.max_rate = 2.2e7, 0.006
+        self.assertAlmostEqual(ipr.rate(0.5 * 2.2e7), 0.7 * 0.006, delta=1e-12)
+        self.assertAlmostEqual(ipr.p_wf(0.7 * 0.006), 1.1e7, delta=1e-3)
+        self.assertAlmostEqual(ipr.rate_max(), 0.006, delta=1e-15)
+
+    def test_case_round_trip_matches_the_app_golden_anchor(self):
+        case = chflow.load_nodal_case(self.CASE)
+        self.assertEqual(case.ipr.form, chflow.IpRForm.vogel)
+        self.assertAlmostEqual(case.wellhead_pressure, 2.5e6, delta=1e-3)
+        r = chflow.solve_nodal_analysis(case.ipr, case.fluid, case.well,
+                                        case.wellhead_pressure)
+        self.assertTrue(r.flows and r.converged)
+        self.assertLess(abs(r.rate - self.GOLDEN_Q) / self.GOLDEN_Q, 1e-9)
+        self.assertLess(r.bottom_hole_pressure, r.static_bottom_pressure)
+        self.assertGreater(r.holdup, 0.0)
+        self.assertLess(r.holdup, 1.0)
+
+    def test_vlp_inversion_lands_on_the_wellhead(self):
+        case = chflow.load_nodal_case(self.CASE)
+        pwf = chflow.vlp_bottom_hole_pressure(case.fluid, case.well, 0.0,
+                                              case.wellhead_pressure)
+        self.assertGreater(pwf, 0.8 * 850.0 * 9.80665 * 2200.0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

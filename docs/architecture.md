@@ -183,7 +183,35 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
   纯气退化（精确 Darcy-Weisbach + 重位）、`solvePipeFlowTwoPhase` 闭合差
   与两端管网一致（<5 Pa）。
 
-M1 剩余的井筒/热力耦合与环路迭代（对标完整 Pipesim）尚未实现；单相模式的
+- **节点分析：IPR–VLP 交汇（对标 Pipesim nodal analysis）**。`src/1d/
+  Nodal.h` 的 `solveNodalAnalysis` 把流入动态曲线与井筒垂直管流曲线交叉，
+  工作点是 `f(q) = p_vlp(q) − p_ipr(q)` 的最大根；`chflow-1d-nodal` 从
+  case.dict 读 `ipr{form; reservoirPressure; …}` + `well{length; diameter;
+  roughness; elevation;}` + `wellheadPressure`：
+
+  - **IPR 三种闭式**（SI，Pa、sm³/s 地面油）：linear 达西生产指数
+    `q = J(p_r − p_wf)`、Vogel 溶解气驱 `q/qmax = 1 − 0.2x − 0.8x²`（x =
+    p_wf/p_r）、Jones 产能方程 `q = C(p_r² − p_wf²)^n`；各带自己的闭式
+    反函数 `pWf(q)`/`rate(p_wf)` 并按定义域 [0, rateMax] 钳位成全函数；
+  - **VLP 内层反解**：producer 流向上行，march 必须自底向上——
+    `wellboreInletForRate` 括号扩张 + Illinois secant 反解"哪个井底流压
+    march 后正好落在井口回压"（pOutlet 随 pIn 次线性增长——压力越高
+    自由气体积越小、摩阻越省，残差单调可括根）；内层闸门 1e-12·p_wh
+    远紧于外层 1e-7·p_r，嵌套不漏水；下坡增压剖面直接报错；
+  - **最大根原则**：VLP 对 q 是 U 形（持液率释压先降、摩阻后升）而 IPR
+    单调下降，f 可多次过零——仍从高流量端（IPR 容量上界）向下括住最大
+    根（稳定支），与管网管 law 同一原则；油藏顶不起静液柱时如实报
+    flows=false、q=0，井底取静液柱本身；
+  - **回归**：三算例（`nodalVogel` 活井 gor=90：q=0.00290785579167、
+    pwf=15120468.4282、静液柱 18642604.4027、HL=0.40 distributed；
+    `nodalDeadOil` 孪生 q 降约 5 倍、pwf=20796742.5522——气体举升；
+    `nodalDeadWell` p_r=5 MPa 顶不起静液柱）+ `tests/check_nodal.py`
+    23 条断言（Vogel 恒等式在 Python 端由 pwf 重算、流动井底低于静液柱、
+    golden 锚点 1e-9）+ 单元测试（闭式曲线往返 1e-12、无摩阻极限
+    q* = J(p_r − p_static) 到 1e-6、过号稳定性 f(0.9q)<0<f(1.1q)、静液柱
+    march 回落井口 <1e-4 Pa、死井井底=静液柱）。
+
+M1 剩余的井筒热力耦合与环路迭代（对标完整 Pipesim）尚未实现；单相模式的
 `rho/mu` 仍由 case.dict 直接给定，黑油模式下物性由 §3.6 按 (p) 实时求取。
 
 ### 4.2 瞬态水力 + 持液率输运 + 水合物动力学（M2 首增量）
@@ -276,7 +304,10 @@ load_transient_case / load_transient_controls`；物性侧导出
 `Component / Mixture / RootPreference / EosState / FlashControls / FlashResult /
 BilinearTable / FlashCase` 与 `component / wilson_k / pure_vapor_pressure /
 peng_robinson_state / tp_flash / bubble_pressure / liquid_density_table /
-vapour_density_table / vapour_fraction_table / load_flash_case`。C++ 侧的
+vapour_density_table / vapour_fraction_table / load_flash_case`；节点分析侧
+导出 `BlackOilFluid / IpRForm / IpR / WellLift / NodalControls / NodalResult /
+NodalCase` 与 `solve_nodal_analysis / vlp_bottom_hole_pressure /
+load_nodal_case`。C++ 侧的
 `cf::Error` 自动转成 Python `RuntimeError`。Python 包 `chflow` 只是
 再导出层。求解与闪蒸调用释放 GIL。
 

@@ -1,0 +1,40 @@
+// The dead-oil twin of nodalVogel: the same well, the same Vogel inflow, the
+// same wellhead pressure - but GOR 0. With no gas to lighten the column the
+// flowing gradient is the full liquid head, so the operating rate falls and
+// the bottom-hole pressure rises. The pair gives check_nodal.py its
+// directional statement: gas lifts the well.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.65;
+        oilDensity     850;
+        gor            0;
+        waterCut       0;
+        temperature    340;
+        surfaceTension 0.03;
+    }
+}
+
+ipr
+{
+    form              vogel;
+    reservoirPressure 2.2e7;
+    maxRate           0.006;
+}
+
+well
+{
+    length    2400;
+    diameter  0.062;
+    roughness 4.6e-5;
+    elevation 2200;
+}
+
+wellheadPressure 2.5e6;
+
+solve
+{
+    maxIter 100;
+    tol     1e-9;
+}

@@ -1,0 +1,40 @@
+// The dead well: the same tubing as nodalVogel but the reservoir pressure
+// sits below the static column the wellbore demands at zero rate, so no rate
+// in the IPR's capacity can make the lift curve and the inflow curve cross.
+// The kernel has to say so honestly: rate 0, flows=false, and the reported
+// bottom-hole pressure is the static column itself.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.65;
+        oilDensity     850;
+        gor            90;
+        waterCut       0;
+        temperature    340;
+        surfaceTension 0.03;
+    }
+}
+
+ipr
+{
+    form              vogel;
+    reservoirPressure 5.0e6;  // Pa, below the static column
+    maxRate           0.006;
+}
+
+well
+{
+    length    2400;
+    diameter  0.062;
+    roughness 4.6e-5;
+    elevation 2200;
+}
+
+wellheadPressure 2.5e6;
+
+solve
+{
+    maxIter 100;
+    tol     1e-9;
+}

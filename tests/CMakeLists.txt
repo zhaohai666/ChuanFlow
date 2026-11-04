@@ -17,6 +17,23 @@ target_compile_definitions(transient_tests PRIVATE
     CF_CASE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases")
 add_test(NAME transient.unit COMMAND transient_tests)
 
+add_executable(nodal_tests unit/nodalTests.cpp)
+target_link_libraries(nodal_tests PRIVATE cf1d)
+target_compile_definitions(nodal_tests PRIVATE
+    CF_CASE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases")
+add_test(NAME nodal.unit COMMAND nodal_tests)
+
+# nodal analysis: a Vogel inflow curve crossed with the Beggs-Brill lift curve;
+# the living gas well, its dead-oil twin (gas lifts the well) and the dead well
+add_test(
+    NAME verify.nodalAnalysis
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_nodal.py
+        $<TARGET_FILE:chflow-1d-nodal>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/nodalVogel/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/nodalDeadOil/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/nodalDeadWell/case.dict)
+
 add_executable(pvt_tests unit/pvtTests.cpp)
 target_link_libraries(pvt_tests PRIVATE cf_pvt)
 target_compile_definitions(pvt_tests PRIVATE

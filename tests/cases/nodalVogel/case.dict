@@ -1,0 +1,42 @@
+// Nodal analysis of a producing gas well (the Pipesim well planner): a
+// Vogel inflow curve crossed with the Beggs-Brill vertical-lift curve of the
+// wellbore, the operating point being the largest root of
+// p_vlp(q) - p_ipr(q). The stream carries free gas (GOR 90), so the flowing
+// column is lighter than the static one and the well lifts harder than its
+// dead-oil twin. Physics checks live in tests/check_nodal.py; the IPR closed
+// forms and the VLP inversion are anchored by tests/unit/nodalTests.cpp.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.65;
+        oilDensity     850;
+        gor            90;    // sm3/sm3
+        waterCut       0;
+        temperature    340;   // K, isothermal
+        surfaceTension 0.03;  // N/m
+    }
+}
+
+ipr
+{
+    form              vogel;
+    reservoirPressure 2.2e7;  // Pa
+    maxRate           0.006;  // sm3/s, absolute open flow at p_wf = 0
+}
+
+well
+{
+    length    2400;    // m, measured depth
+    diameter  0.062;   // m
+    roughness 4.6e-5;  // m
+    elevation 2200;    // m, wellhead above the pay
+}
+
+wellheadPressure 2.5e6;  // Pa, the separator holds the tubing head
+
+solve
+{
+    maxIter 100;
+    tol     1e-9;
+}

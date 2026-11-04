@@ -3,6 +3,7 @@ add_library(cf1d STATIC
     src/transient.cpp
     src/beggsBrill.cpp
     src/twoFluid.cpp
+    src/nodal.cpp
 )
 
 target_include_directories(cf1d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

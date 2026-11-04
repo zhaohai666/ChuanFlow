@@ -151,7 +151,9 @@ print(result.pressure_profile)
 ## 🚀 开发路线（Milestone）
 - M1：一维稳态管网求解器 + Python绑定 + CLI，对标基础Pipesim算例，完成基准校验 ✅
   （黑油 PVT 相关式 + Beggs-Brill 两相管流已接入稳态管网：井筒/集输两相压力分布、
-  流型与持液率，两相算例与干气对照回归全绿）
+  流型与持液率，两相算例与干气对照回归全绿；**IPR–VLP 节点分析**已落地——
+  linear/Vogel/Jones 闭式流入曲线 × Beggs-Brill 井筒 VLP，工作点取 f(q)=
+  p_vlp(q)−p_ipr(q) 的最大根，活井/干油孪生/死井三算例回归）
 - M2：一维瞬态多相求解，实现段塞基础模型、水合物计算，对标OLGA简单工况 🚧
   （集总瞬态水力 + 段塞持液率输运 + 水合物等温动力学，以及**分布式两流体
   内核**——逐管段 α 输运的 Godunov 漂移流模型（Wallis/Zuber 闭合）+ 混合

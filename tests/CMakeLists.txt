@@ -324,10 +324,12 @@ endforeach()
 
 # distributed two-fluid kernel: Godunov shock/fan kinematics, steady
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
-# segregation, laminar pressure-driven start-up
+# segregation, laminar pressure-driven start-up, dynamic-slip segregation
+# and holdup (transported slip state + interfacial drag)
 foreach(tcase twoFluidFront twoFluidSteadyHoldupWallis
               twoFluidSteadyHoldupZuber twoFluidSettling
-              twoFluidPressureLaminar)
+              twoFluidPressureLaminar twoFluidDynamicSlipSettling
+              twoFluidDynamicSlipHoldup)
     string(REGEX REPLACE "^twoFluid" "" mode ${tcase})
     string(TOLOWER ${mode} mode)
     add_test(

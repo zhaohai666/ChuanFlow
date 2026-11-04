@@ -1,0 +1,54 @@
+// Dynamic-slip verification A: sealed vertical pipe, uniform holdup 0.5,
+// counter-current slip segregation under gravity. With the mixture velocity
+// identically zero the reduced two-momentum slip ODE reduces to
+//   K_s ds/dt = (1/rhoG - 1/rhoL) rho_m g sin(theta) - D C s|s|,
+// so each cell relaxes to the terminal slip s* = sqrt(drive/(C D))
+// (drive = (1/rhoG - 1/rhoL) rho_m g at alpha = 0.5: K_s = 13.0049,
+// D = 0.102, drive = 245.07 m/s2, s* = 1.5500 m/s). The liquid drains down
+// as a pair of Godunov shocks (the flux F(a) = s a^2 - s a with vM = 0 is
+// convex); liquid pools to alpha = 1 over the lower half and gas gathers at
+// alpha = 0 over the upper half, with the interface staying at mid-pipe.
+// tests/check_two_fluid.py mode dynamicslipsettling replicates the coupled
+// slip map + transport cell by cell and checks inventory, monotonicity and
+// the settled column against the exact terminal slip.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.05;
+    roughness 0;
+    angleDeg 90;
+    sections 40;
+}
+
+closure
+{
+    model dynamic;
+    interfacialDrag 1000;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type sealed; }
+    outlet { type sealed; }
+}
+
+time
+{
+    dt 0.01;
+    endTime 60;
+    reportEvery 1500;
+}

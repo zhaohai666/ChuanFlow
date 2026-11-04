@@ -1,0 +1,53 @@
+// Dynamic-slip verification B: horizontal pipe with imposed phase rates
+// (vM = vsl + vsg = 1 m/s). At steady state each cell reaches the terminal
+// slip s*(alpha) = sqrt(drive/(C D)) with drive = (1/rhoG - 1/rhoL)
+// sgn(vM) fr(alpha)/dx (friction only, sin(theta) = 0) and the holdup
+// solves F(alpha*, s*(alpha*)) = vsl with F(a) = s a^2 + (vM - s) a
+// (alpha* ~= 0.552, s* ~= 0.618 for these parameters). The lagged slip
+// inertia vanishes (rate-driven momentum imposes vM directly) and the
+// pressure drop is the homogeneous Churchill sum. Starting from a
+// liquid-heavy holdup 0.9, the excess drains through a rarefaction towards
+// the coupled steady state; tests/check_two_fluid.py mode
+// dynamicslipholdup root-finds (alpha*, s*) independently and checks the
+// uniform final field, the phase-flux split and the pressure drop.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 10;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 40;
+}
+
+closure
+{
+    model dynamic;
+    interfacialDrag 500;
+}
+
+initial
+{
+    alpha 0.9;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.4; vsg 0.6; }
+    outlet { type fixedPressure; p 0; }
+}
+
+time
+{
+    dt 0.05;
+    endTime 80;
+    reportEvery 400;
+}

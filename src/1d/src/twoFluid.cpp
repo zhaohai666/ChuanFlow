@@ -79,12 +79,17 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         && in.vsl + in.vsg < 0)
         cfFatal("twoFluid: phaseRates injection with negative total rate is"
                 " not supported");
+    if (cfg_.closure.model == 2 && !(cfg_.closure.interfacialDrag > 0))
+        cfFatal("twoFluid: the dynamic closure needs a positive"
+                " interfacialDrag");
 
     n_ = g.sections;
     dx_ = g.length / n_;
     sinTheta_ = std::sin(g.angleDeg * M_PI / 180.0);
     alpha_.assign(n_, cfg_.alpha0);
     water_.assign(n_, cfg_.water0);
+    slip_.assign(n_, 0.0);
+    sDotOld_.assign(n_, 0.0);
     for (const TwoFluidFill& fill : cfg_.fills)
     {
         if (fill.from > fill.to || fill.alpha < 0 || fill.alpha > 1)
@@ -133,7 +138,9 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
 
 void TwoFluidPipe::fluxCoeffs(double& qa, double& qb, double& qc) const
 {
-    // F(a) = a_l * vL(a): liquid volume flux per unit area
+    // F(a) = a_l * vL(a): liquid volume flux per unit area (algebraic
+    // closures; the dynamic closure builds face-local coefficients from
+    // the slip state)
     if (cfg_.closure.model == 0) // wallis: vG = vM + alpha*us
     {
         qa = cfg_.closure.slipVelocity;
@@ -148,17 +155,21 @@ void TwoFluidPipe::fluxCoeffs(double& qa, double& qb, double& qc) const
     }
 }
 
-double TwoFluidPipe::liquidFlux(double alpha) const
+double TwoFluidPipe::liquidFlux(double alpha, double s) const
 {
+    if (cfg_.closure.model == 2) // dynamic: vL = vM - alpha_g s
+        return s * alpha * alpha + (vM_ - s) * alpha;
     double qa, qb, qc;
     fluxCoeffs(qa, qb, qc);
     return qc + alpha * (qb + qa * alpha);
 }
 
-double TwoFluidPipe::gasVelocity(double alpha) const
+double TwoFluidPipe::gasVelocity(double alpha, double s) const
 {
     if (cfg_.closure.model == 0)
         return vM_ + alpha * cfg_.closure.slipVelocity;
+    if (cfg_.closure.model == 2) // dynamic: vG = vM + alpha s
+        return vM_ + alpha * s;
     return cfg_.closure.c0 * vM_ + cfg_.closure.driftVelocity;
 }
 
@@ -209,17 +220,27 @@ void TwoFluidPipe::momentumSolve(double dt)
     }
 
     // fixed-pressure inlet: implicit Euler on the mixture momentum with the
-    // holdup frozen at the old time level
+    // holdup frozen at the old time level; the dynamic closure adds the
+    // lagged slip inertia alpha alpha_g (rhoG - rhoL) ds/dt of the two
+    // phase momenta (it vanishes at steady state)
     double rhoBar = 0;
     for (int i = 0; i < n_; ++i)
         rhoBar += mixtureRho(cfg_.fluid, alpha_[i]);
     rhoBar /= n_;
-    const double area = M_PI * cfg_.geo.diameter * cfg_.geo.diameter / 4.0;
-    const double inertia = rhoBar * cfg_.geo.length / area;
+    // vM is a velocity, so the inertia of the column is its mass per unit
+    // area rho_m L (not divided by the area - that would be the
+    // volumetric-flow-rate form)
+    const double inertia = rhoBar * cfg_.geo.length;
     double gravSum = 0;
+    double slipInertia = 0;
     for (int i = 0; i < n_; ++i)
+    {
         gravSum += mixtureRho(cfg_.fluid, alpha_[i]) * kGravity * sinTheta_
                  * dx_;
+        slipInertia += alpha_[i] * (1.0 - alpha_[i])
+                     * (cfg_.fluid.rhoG - cfg_.fluid.rhoL)
+                     * sDotOld_[i] * dx_;
+    }
     const double dpDrive = in.pressure - out.pressure;
 
     auto residual = [&](double u)
@@ -227,7 +248,8 @@ void TwoFluidPipe::momentumSolve(double dt)
         double fr = 0;
         for (int i = 0; i < n_; ++i)
             fr += (u >= 0 ? cellFriction(i, u) : -cellFriction(i, u));
-        return inertia * (u - vMOld_) / dt + fr + gravSum - dpDrive;
+        return inertia * (u - vMOld_) / dt - slipInertia + fr + gravSum
+             - dpDrive;
     };
 
     double u = vMOld_;
@@ -247,14 +269,77 @@ void TwoFluidPipe::momentumSolve(double dt)
     vM_ = u;
 }
 
+void TwoFluidPipe::slipStep(double dt)
+{
+    if (cfg_.closure.model != 2) return;
+
+    // reduced two-momentum slip ODE per section (holdup frozen):
+    //   K_s ds/dt = (1/rhoG - 1/rhoL)(rho_m du/dt + loss/dx) - D sigma,
+    // sigma = C s |s| the interfacial drag. The drag is semi-implicit as
+    // the secant through the origin, which is unconditionally stable and
+    // lands exactly on the terminal slip s* = sign(R) sqrt(|R|/(C D)).
+    const TwoFluidFluid& f = cfg_.fluid;
+    const double aM = (vM_ - vMOld_) / dt;
+    const double invRhoDiff = 1.0 / f.rhoG - 1.0 / f.rhoL;
+    const double drho = f.rhoG - f.rhoL;
+    std::vector<double> old = slip_;
+    for (int i = 0; i < n_; ++i)
+    {
+        const double a = alpha_[i];
+        const double ag = 1.0 - a;
+        if (a <= 1e-12 || ag <= 1e-12)
+        {
+            // single-phase cell: no interface, no drag, no slip
+            slip_[i] = 0.0;
+            sDotOld_[i] = -old[i] / dt;
+            continue;
+        }
+        const double ks = 1.0 + a * ag * drho * drho / (f.rhoL * f.rhoG);
+        const double loss = (vM_ >= 0 ? cellFriction(i, vM_)
+                                      : -cellFriction(i, vM_))
+                          + mixtureRho(f, a) * kGravity * sinTheta_ * dx_;
+        const double drive = invRhoDiff
+                           * (mixtureRho(f, a) * aM + loss / dx_);
+        const double d = 1.0 / (f.rhoL * a) + 1.0 / (f.rhoG * ag);
+        const double rate = cfg_.closure.interfacialDrag
+                          * std::abs(old[i]) * d / ks;
+        slip_[i] = (old[i] / dt + drive / ks) / (1.0 / dt + rate);
+        sDotOld_[i] = (slip_[i] - old[i]) / dt;
+    }
+}
+
 void TwoFluidPipe::transportStep(double dt)
 {
-    double qa, qb, qc;
-    fluxCoeffs(qa, qb, qc);
+    double qa = 0, qb = 0, qc = 0;
+    if (cfg_.closure.model != 2) fluxCoeffs(qa, qb, qc);
+
+    // per-face slip of the dynamic closure (ghost slip at the open
+    // boundaries, cell pair average inside); unused by the algebraic
+    // closures
+    auto faceSlip = [&](int j)
+    {
+        return j == 0 ? slip_[0]
+             : (j == n_ ? slip_[n_ - 1]
+                        : 0.5 * (slip_[j - 1] + slip_[j]));
+    };
 
     // CFL guard for the explicit Godunov transport (monotone under
-    // dt * max|F'| / dx <= 1; F' is monotone so the extremes sit at 0 and 1)
-    const double cmax = std::max(std::abs(qb), std::abs(2.0 * qa + qb));
+    // dt * max|F'| / dx <= 1; F' is monotone so the extremes sit at 0 and 1;
+    // the dynamic closure has a face-local flux, so take the max over faces)
+    double cmax = 0;
+    if (cfg_.closure.model == 2)
+    {
+        for (int j = 0; j <= n_; ++j)
+        {
+            const double s = faceSlip(j);
+            cmax = std::max(cmax, std::max(std::abs(vM_ - s),
+                                           std::abs(vM_ + s)));
+        }
+    }
+    else
+    {
+        cmax = std::max(std::abs(qb), std::abs(2.0 * qa + qb));
+    }
     if (dt * cmax / dx_ > 1.0 + 1e-12)
         cfFatal("twoFluid: CFL violated (dt * |dF/dalpha| / dx = "
                 + std::to_string(dt * cmax / dx_)
@@ -271,13 +356,25 @@ void TwoFluidPipe::transportStep(double dt)
             if (in.type == TwoFluidBoundary::Type::sealed) flux[0] = 0;
             else if (in.type == TwoFluidBoundary::Type::phaseRates)
                 flux[0] = in.vsl; // injected liquid superficial velocity
+            else if (cfg_.closure.model == 2)
+            {
+                const double s = faceSlip(0);
+                flux[0] = godunovQuadratic(s, vM_ - s, 0.0, in.alpha,
+                                           alpha_[0]);
+            }
             else
                 flux[0] = godunovQuadratic(qa, qb, qc, in.alpha, alpha_[0]);
         }
         else if (j == n_)
         {
             if (out.type == TwoFluidBoundary::Type::sealed) flux[n_] = 0;
-            else flux[n_] = liquidFlux(alpha_[n_ - 1]); // zero gradient
+            else flux[n_] = liquidFlux(alpha_[n_ - 1], faceSlip(n_));
+        }
+        else if (cfg_.closure.model == 2)
+        {
+            const double s = faceSlip(j);
+            flux[j] = godunovQuadratic(s, vM_ - s, 0.0, alpha_[j - 1],
+                                       alpha_[j]);
         }
         else
         {
@@ -325,6 +422,7 @@ void TwoFluidPipe::step(double dt)
 {
     if (!(dt > 0)) cfFatal("twoFluid: dt must be positive");
     momentumSolve(dt);
+    slipStep(dt);
     transportStep(dt);
     thermalStep(dt);
     vMOld_ = vM_;
@@ -439,7 +537,8 @@ std::vector<double> TwoFluidPipe::cellVsl() const
 {
     // superficial liquid velocity = liquid volume flux per unit area
     std::vector<double> v(n_);
-    for (int i = 0; i < n_; ++i) v[i] = liquidFlux(alpha_[i]);
+    for (int i = 0; i < n_; ++i)
+        v[i] = liquidFlux(alpha_[i], slip_[i]);
     return v;
 }
 
@@ -447,7 +546,7 @@ std::vector<double> TwoFluidPipe::cellVsg() const
 {
     std::vector<double> v(n_);
     for (int i = 0; i < n_; ++i)
-        v[i] = (1.0 - alpha_[i]) * gasVelocity(alpha_[i]);
+        v[i] = (1.0 - alpha_[i]) * gasVelocity(alpha_[i], slip_[i]);
     return v;
 }
 
@@ -478,10 +577,12 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
     const std::string model = cd.getWordOr("model", "wallis");
     if (model == "wallis") c.closure.model = 0;
     else if (model == "zuber") c.closure.model = 1;
+    else if (model == "dynamic") c.closure.model = 2;
     else cfFatal("twoFluid: unknown closure model '" + model + "'");
     c.closure.slipVelocity = cd.getScalarOr("slipVelocity", 0.0);
     c.closure.c0 = cd.getScalarOr("C0", 1.0);
     c.closure.driftVelocity = cd.getScalarOr("driftVelocity", 0.0);
+    c.closure.interfacialDrag = cd.getScalarOr("interfacialDrag", 0.0);
 
     if (!caseDict.has("initial"))
         cfFatal("twoFluid: case has no initial{} block");

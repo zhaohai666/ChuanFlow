@@ -21,7 +21,25 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
   mode = pressurelaminar : fixed-pressure start-up of a pure-liquid line;
             the implicit-Euler momentum ODE is solved independently and the
             physical exponential envelope towards u* = dp D^2 / (32 mu L)
-            is checked against tau = rho / (8 pi mu).
+            is checked against tau = rho D^2 / (32 mu).
+  mode = dynamicslipsettling : sealed vertical pipe, gravity segregation
+            under the dynamic closure. Each cell's slip state s = vG - vL
+            relaxes to the terminal slip s* = sqrt(drive/(C D)) of the
+            reduced two-momentum ODE
+            K_s ds/dt = (1/rhoG - 1/rhoL)(rho_m du/dt + loss/dx) - D C s|s|
+            (with vm = 0: drive = (1/rhoG - 1/rhoL) rho_m g sin(theta)).
+            The coupled slip map + Godunov transport is replicated cell by
+            cell; the liquid pools over the lower half and gas gathers over
+            the upper half with the interface pinned at mid-pipe, the
+            inventory and the gravity pressure drop are conserved exactly,
+            and the final slip matches the closed-form terminal value.
+  mode = dynamicslipholdup   : imposed phase rates settle to the coupled
+            steady state (alpha*, s*) solving F(alpha*, s*) = vsl with
+            F(a) = s a^2 + (vM - s) a and s = s*(alpha) the terminal slip
+            of the friction-driven ODE; the checker root-finds the pair
+            independently, then verifies the uniform final holdup/slip
+            fields, the phase-flux split vsl/vsg and the Churchill pressure
+            drop.
 """
 import math
 import subprocess
@@ -60,8 +78,11 @@ for line in proc.stdout.splitlines():
     elif tok[0] == "node":
         cur_nodes.append(float(tok[3]))
     elif tok[0] == "cell":
-        cur_cells.append({"alpha": float(tok[3]), "water": float(tok[5]),
-                          "vsl": float(tok[7]), "vsg": float(tok[9])})
+        c = {"alpha": float(tok[3]), "water": float(tok[5]),
+             "vsl": float(tok[7]), "vsg": float(tok[9])}
+        for k in range(10, len(tok), 2):
+            c[tok[k]] = float(tok[k + 1])
+        cur_cells.append(c)
 flush()
 if not times:
     raise SystemExit("no time series parsed")
@@ -270,10 +291,11 @@ elif mode == "settling":
         print(f"ok:   gas pocket at the outlet wall (alpha={alpha[-1]:.4f})")
 
 elif mode == "pressurelaminar":
-    N, L, DI, DT = 4, 2.0, 0.02, 2.0
+    N, L, DI, DT = 4, 2.0, 0.02, 0.005
     RHO, MU, DP = 1000.0, 0.1, 2000.0
-    area = math.pi * DI * DI / 4.0
-    inertia = RHO * L / area
+    # the column inertia is its mass per unit area rho L (the unknown is a
+    # velocity, not a volumetric rate)
+    inertia = RHO * L
     DX = L / N
 
     def fr_total(u):
@@ -290,7 +312,7 @@ elif mode == "pressurelaminar":
 
     u, u_old, steps_done = 0.0, 0.0, 0
     for k, fr in enumerate(frames):
-        want_steps = 0 if k == 0 else k * 25
+        want_steps = 0 if k == 0 else k * 20
         while steps_done < want_steps:
             # independent solve of the implicit-Euler momentum equation
             lo, hi = -2.0, 2.0
@@ -310,9 +332,203 @@ elif mode == "pressurelaminar":
                 fails.append("pure-liquid holdup drifted")
                 break
     u_star = DP * DI ** 2 / (32.0 * MU * L)
-    tau = RHO / (8.0 * math.pi * MU)
+    tau = RHO * DI * DI / (32.0 * MU)
     check("start-up envelope u(end)", frames[-1]["vm"],
           u_star * (1.0 - math.exp(-frames[-1]["t"] / tau)), 0.03)
+
+elif mode == "dynamicslipsettling":
+    N, L, DI, DT = 40, 20.0, 0.05, 0.01
+    C_DRAG, ANGLE = 1000.0, 90.0
+    DX = L / N
+    sin_th = math.sin(ANGLE * math.pi / 180.0)
+    inv_dr = 1.0 / RHO_G - 1.0 / RHO_L
+    DRHO = RHO_G - RHO_L
+
+    def slip_map(a, s_old, dt):
+        # one step of the reduced two-momentum slip ODE with vm = 0
+        # (sealed pipe): K_s ds/dt = inv_dr rho_m g sin(theta) - D C s|s|,
+        # drag semi-implicit as the secant through the origin
+        ag = 1.0 - a
+        if a <= 1e-12 or ag <= 1e-12:
+            return 0.0
+        rho_m = a * RHO_L + ag * RHO_G
+        ks = 1.0 + a * ag * DRHO * DRHO / (RHO_L * RHO_G)
+        drive = inv_dr * rho_m * G * sin_th
+        d = 1.0 / (RHO_L * a) + 1.0 / (RHO_G * ag)
+        rate = C_DRAG * abs(s_old) * d / ks
+        return (s_old / dt + drive / ks) / (1.0 / dt + rate)
+
+    def slip_fixed_point(a):
+        ag = 1.0 - a
+        if a <= 1e-12 or ag <= 1e-12:
+            return 0.0
+        rho_m = a * RHO_L + ag * RHO_G
+        drive = inv_dr * rho_m * G * sin_th
+        d = 1.0 / (RHO_L * a) + 1.0 / (RHO_G * ag)
+        return math.copysign(math.sqrt(abs(drive) / (C_DRAG * d)), drive)
+
+    # replicate the coupled slip map + Godunov transport cell by cell
+    alpha = [0.5] * N
+    slip = [0.0] * N
+    steps_done = 0
+    for k, fr in enumerate(frames):
+        want_steps = 0 if k == 0 else k * 1500
+        while steps_done < want_steps:
+            slip = [slip_map(alpha[i], slip[i], DT) for i in range(N)]
+            flux = [0.0] + [godunov(0.5 * (slip[j - 1] + slip[j]),
+                                    -0.5 * (slip[j - 1] + slip[j]),
+                                    0.0, alpha[j - 1], alpha[j])
+                            for j in range(1, N)] + [0.0]
+            alpha = [alpha[i] + DT / DX * (flux[i] - flux[i + 1])
+                     for i in range(N)]
+            steps_done += 1
+        t = fr["t"]
+        check(f"vm identically zero (t={t})", fr["vm"], 0.0, 0.0, 1e-12)
+        inv = sum(alpha) * DX
+        check(f"liquid inventory (t={t})", inv, 10.0, 1e-9, 1e-9)
+        dp0 = 0.5 * RHO_L * G * sin_th * L + 0.5 * RHO_G * G * sin_th * L
+        check(f"gravity head conserved (t={t})", fr["dp"], dp0, 1e-9, 1e-9)
+        for i in range(N):
+            got, want = fr["cells"][i]["alpha"], alpha[i]
+            if abs(got - want) > 1e-9 + 1e-9 * abs(want):
+                fails.append(f"alpha[{i}](t={t}): got={got} want={want}")
+                break
+            gots = fr["cells"][i].get("s")
+            if gots is None or abs(gots - slip[i]) > 1e-9 + 1e-9 * abs(slip[i]):
+                fails.append(f"slip[{i}](t={t}): got={gots} want={slip[i]}")
+                break
+        else:
+            print(f"ok:   alpha/slip fields replicated at t={t} (1e-9)")
+        if t > 0:
+            mono = all(alpha[i] >= alpha[i + 1] - 1e-12 for i in range(N - 1))
+            if not mono:
+                fails.append(f"profile not monotone at t={t}")
+            else:
+                print(f"ok:   profile monotone (TVD) at t={t}")
+    # settled state: liquid pools over the lower half, gas over the upper
+    # half, the 0.5-crossing pinned at mid-pipe; terminal slip matches the
+    # closed form (measured lag ~4e-4 relative: alpha still creeps, so the
+    # slip sits one relaxation step behind its fixed point)
+    check("settled pool bottom half", min(alpha[:N // 2]), 1.0, 0.0, 0.01)
+    check("gas pocket top half", max(alpha[N // 2:]), 0.0, 0.0, 0.01)
+    cross = min(i for i in range(N) if alpha[i] < 0.5)
+    if cross != N // 2:
+        fails.append(f"interface not at mid-pipe (crossing cell {cross})")
+    else:
+        print("ok:   interface pinned at mid-pipe (cell 20)")
+    worst = max(abs(fr_last_s - slip_fixed_point(fr_last_a))
+                / max(slip_fixed_point(fr_last_a), 1e-12)
+                for fr_last_a, fr_last_s in zip(alpha, slip))
+    check("terminal slip s* = sqrt(drive/(C D)) at end", worst, 0.0, 0.0,
+          2e-3)
+
+elif mode == "dynamicslipholdup":
+    N, L, DI, DT = 40, 10.0, 0.02, 0.05
+    C_DRAG, VSL, VSG, VM = 500.0, 0.4, 0.6, 1.0
+    DX = L / N
+    inv_dr = 1.0 / RHO_G - 1.0 / RHO_L
+    DRHO = RHO_G - RHO_L
+
+    def drive_friction(a):
+        # steady drive: du/dt = 0, horizontal -> friction loss only
+        rho_m = a * RHO_L + (1.0 - a) * RHO_G
+        mu_m = a * MU_L + (1.0 - a) * MU_G
+        re = rho_m * VM * DI / mu_m
+        f = churchill(re, 0.0)
+        fr = f * (DX / DI) * 0.5 * rho_m * VM * VM
+        return inv_dr * fr / DX
+
+    def s_star(a):
+        d = 1.0 / (RHO_L * a) + 1.0 / (RHO_G * (1.0 - a))
+        return math.copysign(math.sqrt(abs(drive_friction(a))
+                                       / (C_DRAG * d)), drive_friction(a))
+
+    # coupled steady state: F(alpha*, s*(alpha*)) = vsl (F monotone rising)
+    lo, hi = 1e-9, 1.0 - 1e-9
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        s = s_star(mid)
+        f_mid = s * mid * mid + (VM - s) * mid
+        if f_mid > VSL:
+            hi = mid
+        else:
+            lo = mid
+    a_star = 0.5 * (lo + hi)
+    s_star_v = s_star(a_star)
+
+    def slip_map(a, s_old, dt):
+        ag = 1.0 - a
+        if a <= 1e-12 or ag <= 1e-12:
+            return 0.0
+        rho_m = a * RHO_L + ag * RHO_G
+        ks = 1.0 + a * ag * DRHO * DRHO / (RHO_L * RHO_G)
+        # rate-driven: vm imposed constant -> du/dt = 0; friction only
+        drive = drive_friction(a)
+        d = 1.0 / (RHO_L * a) + 1.0 / (RHO_G * ag)
+        rate = C_DRAG * abs(s_old) * d / ks
+        return (s_old / dt + drive / ks) / (1.0 / dt + rate)
+
+    # replicate the coupled transient (rate-driven, water cut zero)
+    alpha = [0.9] * N
+    slip = [0.0] * N
+    steps_done = 0
+    for k, fr in enumerate(frames):
+        want_steps = 0 if k == 0 else k * 400
+        while steps_done < want_steps:
+            slip = [slip_map(alpha[i], slip[i], DT) for i in range(N)]
+            flux = [VSL]
+            for j in range(1, N):
+                s = 0.5 * (slip[j - 1] + slip[j])
+                flux.append(godunov(s, VM - s, 0.0, alpha[j - 1], alpha[j]))
+            sl = slip[N - 1]
+            a_end = alpha[N - 1]
+            flux.append(sl * a_end * a_end + (VM - sl) * a_end)
+            alpha = [min(max(alpha[i] + DT / DX * (flux[i] - flux[i + 1]),
+                             0.0), 1.0)
+                     for i in range(N)]
+            steps_done += 1
+        t = fr["t"]
+        check(f"vm imposed (t={t})", fr["vm"], VM, 1e-12)
+        for i in range(N):
+            got, want = fr["cells"][i]["alpha"], alpha[i]
+            if abs(got - want) > 1e-9 + 1e-9 * abs(want):
+                fails.append(f"alpha[{i}](t={t}): got={got} want={want}")
+                break
+            gots = fr["cells"][i].get("s")
+            if gots is None or abs(gots - slip[i]) > 1e-9 + 1e-9 * abs(slip[i]):
+                fails.append(f"slip[{i}](t={t}): got={gots} want={slip[i]}")
+                break
+        else:
+            print(f"ok:   alpha/slip fields replicated at t={t} (1e-9)")
+    # steady state: uniform holdup/slip matching the independent root-find,
+    # the imposed phase split, and the Churchill friction drop
+    rho_m = a_star * RHO_L + (1.0 - a_star) * RHO_G
+    mu_m = a_star * MU_L + (1.0 - a_star) * MU_G
+    re = rho_m * VM * DI / mu_m
+    f = churchill(re, 0.0)
+    dp_want = N * f * (DX / DI) * 0.5 * rho_m * VM * VM
+    for c in frames[-1]["cells"]:
+        if abs(c["alpha"] - a_star) > 1e-9:
+            fails.append(f"steady holdup {c['alpha']} != {a_star}")
+            break
+        if abs(c["s"] - s_star_v) > 1e-9 + 1e-9 * abs(s_star_v):
+            fails.append(f"steady slip {c['s']} != {s_star_v}")
+            break
+        if abs(c["vsl"] - VSL) > 1e-9:
+            fails.append(f"steady vsl {c['vsl']} != {VSL}")
+            break
+        if abs(c["vsg"] - VSG) > 1e-9:
+            fails.append(f"steady vsg {c['vsg']} != {VSG}")
+            break
+    else:
+        print(f"ok:   uniform steady (alpha*, s*) = ({a_star:.10f},"
+              f" {s_star_v:.10f}) with the imposed phase split (1e-9)")
+    check("pressure drop (Churchill friction)", frames[-1]["dp"], dp_want,
+          1e-9)
+    if frames[-1]["cells"] != frames[-2]["cells"]:
+        fails.append("state still drifting between the last two frames")
+    else:
+        print("ok:   steady state held over the final 20 s")
 
 else:
     raise SystemExit(f"unknown mode {mode}")

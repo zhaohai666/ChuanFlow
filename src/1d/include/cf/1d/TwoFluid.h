@@ -15,16 +15,32 @@ namespace cf
 /// liquid:
 ///   d(alpha)/dt + d(alpha vL)/dx = 0                 [liquid mass]
 ///   alpha_g = 1 - alpha (volume conservation)        [gas mass]
-///   rho L/A du/dt = dp - sum(friction) - sum(rho_m g sin(theta) dx)
+///   rho_m L du/dt = dp - sum(friction) - sum(rho_m g sin(theta) dx)
 ///                                                    [mixture momentum]
-/// with the drift-flux slip closure vG = C0 vM + vD (Zuber-Findlay) or the
-/// constant-slip form vG = vM + alpha us (Wallis). Phases are incompressible
-/// and the area is constant, so the mixture velocity is uniform along the
-/// pipe; per-section gas compressibility (which makes the momentum equation
-/// itself distributed) is the next increment. Holdup transport advances with
-/// the exact Godunov flux of the quadratic liquid-flux function
-/// F(alpha) = alpha vL(alpha), so shocks propagate at the Rankine-Hugoniot
-/// speed and the CFL-limited scheme is monotone (alpha stays in [0, 1]).
+/// with a slip closure turning alpha into phase velocities. The algebraic
+/// closures are the drift-flux form vG = C0 vM + vD (Zuber-Findlay) and the
+/// constant-slip form vG = vM + alpha us (Wallis). The dynamic closure
+/// carries a per-section slip state s = vG - vL derived from the two phase
+/// momenta with the shared dp/dx eliminated (the reduced single-pressure
+/// form of the two-momentum model):
+///   K_s ds/dt = (1/rhoG - 1/rhoL)(rho_m du/dt + loss/dx) - D sigma,
+/// K_s = 1 + alpha alpha_g (rhoG - rhoL)^2/(rhoL rhoG) the slip-inertia
+/// factor, D = 1/(rhoL alpha) + 1/(rhoG alpha_g), sigma = C s |s| the
+/// interfacial drag per unit volume (C = interfacialDrag, kg/m4) and loss
+/// the per-cell friction + gravity pressure loss. The drag is treated
+/// semi-implicitly (secant at the old slip), which is unconditionally
+/// stable and relaxes s towards the terminal slip s* =
+/// sign(drive) sqrt(|drive|/(C D)) with the geometric ratio
+/// 1/(1 + dt C |s*| D / K_s). The mixture momentum feels the slip inertia
+/// alpha alpha_g (rhoG - rhoL) ds/dt lagged one step; it vanishes at steady
+/// state, so the steady holdups of the algebraic closures are reproduced.
+/// Phases are incompressible and the area is constant, so the mixture
+/// velocity is uniform along the pipe; per-section gas compressibility
+/// (which makes the momentum equation itself distributed) is the next
+/// increment. Holdup transport advances with the exact Godunov flux of the
+/// quadratic liquid-flux function F(alpha) = alpha vL(alpha), so shocks
+/// propagate at the Rankine-Hugoniot speed and the CFL-limited scheme is
+/// monotone (alpha stays in [0, 1]).
 /// Wall friction is the homogeneous Churchill law on mixture properties;
 /// gravity uses the local mixture density.
 /// With a thermal{} block the sections also carry a mixture temperature (the
@@ -58,10 +74,13 @@ struct TwoFluidGeo
 struct TwoFluidClosure
 {
     int model = 0;             // 0 = wallis (constant slip velocity),
-                               // 1 = zuber (vG = C0 vM + vD)
+                               // 1 = zuber (vG = C0 vM + vD),
+                               // 2 = dynamic (transported slip state)
     double slipVelocity = 0;   // wallis us, m/s (positive = gas runs ahead)
     double c0 = 1.0;           // zuber profile parameter
     double driftVelocity = 0;  // zuber vD, m/s
+    double interfacialDrag = 0;// dynamic: kg/m4, drag law sigma = C s |s|
+                               // per unit volume; required > 0 for model 2
 };
 
 struct TwoFluidBoundary
@@ -124,8 +143,8 @@ public:
     explicit TwoFluidPipe(const TwoFluidCase& c);
 
     /// One time step: implicit-Euler momentum for the mixture velocity
-    /// (frozen holdup), then explicit Godunov transport of alpha and the
-    /// water cut. Fatals when dt violates the CFL condition.
+    /// (frozen holdup), the slip update, then explicit Godunov transport of
+    /// alpha and the water cut. Fatals when dt violates the CFL condition.
     void step(double dt);
 
     double time() const { return t_; }
@@ -144,6 +163,9 @@ public:
     std::vector<double> cellWater() const;  // water cut of the liquid
     std::vector<double> cellVsl() const;    // superficial liquid velocity
     std::vector<double> cellVsg() const;    // superficial gas velocity
+    /// Slip velocity vG - vL per section, m/s; zeros unless the dynamic
+    /// closure is on (the algebraic closures carry no slip state).
+    std::vector<double> cellSlip() const { return slip_; }
     std::vector<double> cellTemperature() const { return T_; }
     /// Wall heat the sections absorb this step, W (positive = into the fluid);
     /// zero unless thermal is on.
@@ -153,14 +175,16 @@ public:
 
 private:
     void momentumSolve(double dt);
+    void slipStep(double dt);
     void transportStep(double dt);
     void thermalStep(double dt);
     double wallTemperature(int i) const;
     // liquid-flux function coefficients F(a) = qa a^2 + qb a + qc at the
-    // current mixture velocity
+    // current mixture velocity (algebraic closures; the dynamic closure
+    // builds face-local coefficients from the slip state)
     void fluxCoeffs(double& qa, double& qb, double& qc) const;
-    double liquidFlux(double alpha) const;
-    double gasVelocity(double alpha) const;
+    double liquidFlux(double alpha, double s) const;
+    double gasVelocity(double alpha, double s) const;
     double cellFriction(int i, double vM) const; // sgn-agnostic |dp/dx| fric
     std::vector<double> cellPressureLosses(double vM) const; // fr + grav, Pa
 
@@ -168,6 +192,9 @@ private:
     int n_ = 0;
     double dx_ = 0, sinTheta_ = 0;
     std::vector<double> alpha_, water_, T_;
+    std::vector<double> slip_;    // dynamic closure: vG - vL per section
+    std::vector<double> sDotOld_; // last step's ds/dt, the lagged slip
+                                  // inertia the mixture momentum feels
     double wallHeatRate_ = 0;
     double inletHeatRate_ = 0;
     double vM_ = 0;   // current mixture velocity
@@ -180,6 +207,8 @@ private:
 ///   pipe { length 100; diameter 0.1; roughness 0; angleDeg 0; sections 200; }
 ///   closure { model wallis; slipVelocity 0.3; }   // or model zuber;
 ///                                                 //      C0 1.2; driftVelocity 0.15;
+///                                                 // or model dynamic;
+///                                                 //      interfacialDrag 500;
 ///   initial { alpha 0; water 0; temperature 300; fills { ... } }
 ///   boundaries
 ///   {

@@ -309,17 +309,31 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
   （气相 EOS 压缩性是下一个增量，届时动量才真正逐段分布）；
 - **漂移流闭合**：Wallis 常滑移 `v_G = v_m + α·u_s` ⇒ 液相通量
   `F(α) = u_s·α² + (v_m − u_s)·α`（凸二次）；或 Zuber-Findlay
-  `v_G = C0·v_m + v_d` ⇒ `F(α)` 退化为线性。相内速度由
+  `v_G = C0·v_m + v_d` ⇒ `F(α)` 退化为线性；或**动态滑移**（第三种，
+  携带真两相动量交换的状态变量）——见下一条。相内速度由
   `v_m = α·v_L + (1−α)·v_G` 反解；
+- **动态滑移闭合（model dynamic）**：逐段输运滑移态 `s = v_G − v_L`，
+  由双相动量方程消去共享 `dp/dx` 后的降阶单压力形式驱动：
+  `K_s ds/dt = (1/ρ_G − 1/ρ_L)(ρ_m·dv_m/dt + loss/Δx) − D·σ`，其中
+  `K_s = 1 + α·α_g·Δρ²/(ρ_L ρ_G)` 是滑移惯性因子、
+  `D = 1/(ρ_L α) + 1/(ρ_G α_g)`、`σ = C·s|s|` 是界面阻力（C =
+  interfacialDrag，kg/m⁴），`loss` 为该元摩阻 + 重位压降。阻力项半隐式
+  （过原点割线），无条件稳定且不动点恰为终端滑移
+  `s* = sign·√(|drive|/(C·D))`；混合动量感受滞后一步的滑移惯性
+  `α·α_g·Δρ·ds/dt`（稳态时消失，故代数闭合的稳态持液率被精确复现）；
+  输运的通量函数变为逐面 `F(α) = s̄·α² + (v_m − s̄)·α`（s̄ 取相邻元平均，
+  开边界取 ghost 滑移），CFL 逐面取 max；
 - **Godunov 通量**：对二次通量函数取精确黎曼解——凸 F 落差为激波
   （Rankine-Hugoniot 速度 `s = ΔF/Δα`）、上升为稀疏波（声速点
   `−q_b/2q_a` 处取值），线性时按符号迎风。CFL 条件
   `dt·max|F'|/Δx ≤ 1` 违反即 fatal，格式单调 ⇒ α 严格保持在 [0,1]；
-- **混合动量**：隐式 Euler `ρ̄L/A·(v_m − v_m^n)/dt = Δp − Σ fr_i −
-  Σ ρ_m(α_i)g·sinθ·Δx`，摩阻用同一条 Churchill 曲线的均匀流模型
+- **混合动量**：隐式 Euler `ρ̄L·(v_m − v_m^n)/dt = Δp − Σ fr_i −
+  Σ ρ_m(α_i)g·sinθ·Δx`（柱惯性是单位面积质量 `ρ̄L`——未知量是速度而非
+  体积流量，不除以截面积），摩阻用同一条 Churchill 曲线的均匀流模型
   （混合物 `ρ_m/μ_m` 体积加权，Re 逐元），固定压差端用标量 Newton
   （残差对 v_m 单调），速率边界直接施加 `v_m = vsl + vsg`，双封闭端
-  强制 `v_m ≡ 0`（不可压约束）+ 静水压报告；
+  强制 `v_m ≡ 0`（不可压约束）+ 静水压报告；动态闭合时上式左侧另加
+  `−Σ α·α_g·Δρ·(ds/dt)·Δx`（滞后一步）；
 - **水相分数**：`∂(αϕ)/∂t + ∂(ϕ·F)/∂x = 0`，按通量方向迎风，ϕ ∈ [0, α]；
 - **温度方程（thermal{} 块出现时）**：各段混合温度（两相热平衡），
   `C_i dT_i/dt = H_in,i − H_out,i + k'·Δx·(T_wall,i − T_i)`，`C_i` 是相加权
@@ -332,9 +346,9 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
   ≤ 数百）；
 - **应用** `chflow-1d-twofluid <case.dict>`：输出 `t … vm … dp …` /
   `node <j> p …` / `cell <i> alpha … water … vsl … vsg …`（thermal 时
-  追加 `T …`）+ `thermal: qWall … qInlet …`。
+  追加 `T …`，动态闭合时追加 `s …`）+ `thermal: qWall … qInlet …`。
 
-五个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
+七个解析回归（`tests/check_two_fluid.py`，均把 Godunov 递推按 1e-9 复现）：
 
 | 算例 | 校验内容 |
 |---|---|
@@ -342,7 +356,9 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 | `twoFluidSteadyHoldupWallis` | 稳态分层持液率 = 二次方程 `F(α*) = vsl` 的物理根（1e-9）+ 压降逐项重算（Churchill 摩阻 + 30° 重位）|
 | `twoFluidSteadyHoldupZuber` | 线性闭合的稳态根 `α* = (vsl − v_m(1−C0) + v_d)/(C0·v_m + v_d)` + 水平摩阻压降 |
 | `twoFluidSettling` | 封闭水平管重力分异：双激波各以 `u_s·α0` 精确推进（±2.5Δx）、液量守恒 1e-9、壁面平台 α→1/气袋 α→0 |
-| `twoFluidPressureLaminar` | 定压启动：独立二分解隐式 Euler 动量 ODE（1e-8）+ 指数包络 `u* = ΔpD²/32μL`、时间常数 `ρ/8πμ`（3%）|
+| `twoFluidPressureLaminar` | 定压启动：独立二分解隐式 Euler 动量 ODE（1e-8）+ 指数包络 `u* = ΔpD²/32μL`、时间常数 `ρD²/32μ` = 0.125 s（3%）|
+| `twoFluidDynamicSlipSettling` | 动态闭合重力分异（封闭竖管）：滑移映射 + 输运全耦合逐元复现（1e-9）、液量与重位压降精确守恒（`dp = ρ_m(ᾱ)gL`，实测每帧 100027.83 Pa）、终态下半 α > 0.99 / 上半 α < 0.01、界面钉在中点、终端滑移 `s* = √(drive/(C·D))`（实测滞后 2.0e-4 相对，容差 2e-3）|
+| `twoFluidDynamicSlipHoldup` | 动态闭合稳态持液：耦合根 `(α*, s*)` 独立求出（F(α, s*(α)) = vsl + Churchill 摩阻驱动，实测 0.5529126041 / 0.6185778539），终场逐元对齐 1e-9、相分配 vsl = 0.4 / vsg = 0.6、压降 4437.1846 Pa 重算、末两帧全等（真稳态）|
 
 三个温度回归（`tests/check_two_fluid_thermal.py`，断言离散闭式而非
 连续指数）：
@@ -1153,7 +1169,7 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
   40 步逐步相体积漂移 ≤ 6.9e-16 相对、clamp ≤ 4.42e-17、α ∈ [0,1]、带 60→70 格、
   限流最多 336 面且最小因子 0.5（同格两个出流棱柱在角上重合处）；
 - `tests/cases/*`：三十个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
-  `twoFluid*` 五个见 §4.3 的表）：
+  `twoFluid*` 七个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug`（见 4.2）

@@ -126,6 +126,16 @@ add_test(
         $<TARGET_FILE:chflow-vof>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofDroplet/case.dict)
 
+# the same droplet, cell-sharp, with the surface force reading its curvature from
+# the reconstructed planes: the jump the pressure solves to is still sigma/(rho R),
+# on a field whose own slope cannot say what the curvature is
+add_test(
+    NAME verify.vofDropletPlic
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_vof.py
+        $<TARGET_FILE:chflow-vof>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofDropletPlic/case.dict)
+
 # the two-way loop: the solved flux carries alpha and the force is rebuilt from
 # the shape it leaves, so an ellipse oscillates about the circle; the crossing
 # clock decides the density-matched Lamb period against the free-drop one

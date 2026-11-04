@@ -163,6 +163,9 @@ struct Measured
     double worstAngle = 0;
     double meanScatter = 0;  ///< band-mean of the residual disagreement of the fitted planes
     double kappaMean = 0;    ///< band-mean of div(normal)
+    double kappaPlicMean = 0; ///< band-mean of the curvature the cut geometry reports
+    double kappaPlicWorst = 0; ///< largest |curvature| the cut geometry reports
+    label kappaPlicReports = 0; ///< band cells the cut geometry reported a curvature for
 };
 
 Measured measure(const polyMesh& mesh, const volScalarField& alpha,
@@ -171,8 +174,9 @@ Measured measure(const polyMesh& mesh, const volScalarField& alpha,
     Measured m;
     const Vector c = diskCentre();
     const Field<scalar> k = vof::interfaceCurvature(mesh, r.normal);
-    label kappaN = 0;
-    double angle = 0, kappa = 0, scatter = 0;
+    const Field<scalar> kp = vof::interfaceCurvaturePlic(mesh, r);
+    label kappaN = 0, kappaPlicN = 0;
+    double angle = 0, kappa = 0, kappaPlic = 0, scatter = 0;
 
     for (label cell = 0; cell < mesh.nCells(); ++cell)
     {
@@ -201,11 +205,19 @@ Measured measure(const polyMesh& mesh, const volScalarField& alpha,
         angle += deg;
         m.worstAngle = std::max(m.worstAngle, deg);
         kappa += k[u]; ++kappaN;
+        if (kp[u] != 0)
+        {
+            kappaPlic += kp[u];
+            m.kappaPlicWorst = std::max(m.kappaPlicWorst, std::abs(kp[u]));
+            ++kappaPlicN;
+        }
         scatter += r.fitScatter[u];
     }
     m.meanAngle = m.reconstructed > 0 ? angle / m.reconstructed : 0;
     m.meanScatter = m.reconstructed > 0 ? scatter / m.reconstructed : 0;
     m.kappaMean = kappaN > 0 ? kappa / kappaN : 0;
+    m.kappaPlicMean = kappaPlicN > 0 ? kappaPlic / kappaPlicN : 0;
+    m.kappaPlicReports = kappaPlicN;
 
     // the band the smeared-interface path keeps: the same field, but selected by
     // a threshold on |grad alpha| rather than on alpha itself. The threshold also
@@ -506,7 +518,10 @@ int main()
                       << "interface area " << std::setprecision(6) << m.area
                       << " vs the extruded perimeter 2 pi R dz = "
                       << 2 * M_PI * R * kDiskDepth << ", mean kappa " << std::setprecision(5)
-                      << m.kappaMean << " vs -1/R = " << -1.0 / R << "\n";
+                      << m.kappaMean << " vs -1/R = " << -1.0 / R
+                      << ", plic kappa " << m.kappaPlicMean << " over " << m.kappaPlicReports
+                      << " of " << m.reconstructed
+                      << " (worst |k| " << m.kappaPlicWorst << ")\n";
             CHECK(m.worstRead < 1e-10,
                   (entry.first + ": the reconstructed plane cuts the fraction it was given")
                       .c_str());
@@ -564,7 +579,10 @@ int main()
                           << std::setw(6) << ""
                           << "interface area " << std::setprecision(6) << m.area
                           << " vs " << perimeter << ", kappa " << std::setprecision(5)
-                          << m.kappaMean << " vs " << -1.0 / R << "\n";
+                          << m.kappaMean << " vs " << -1.0 / R
+                          << ", plic kappa " << m.kappaPlicMean << " over " << m.kappaPlicReports
+                          << " of " << m.reconstructed
+                          << " (worst |k| " << m.kappaPlicWorst << ")\n";
                 seen[ki][ni] = m;
                 CHECK(m.reconstructed == m.band,
                       (kinds[ki].first + ": the reconstruction covers the whole band on a "
@@ -626,6 +644,44 @@ int main()
                   && std::abs(seen[1][2].kappaMean * R + 1.0) < 0.4,
               "and the band-mean curvature is -1/R to within what the cell-centred divergence "
               "stencil of a one-cell band resolves - which is what limits it, not the normal");
+
+        // The same disk, the curvature read off the reconstruction's own cut faces:
+        // a quadric through the two-ring corner neighbourhood's interface points,
+        // which puts the band mean within two per cent of -1/R everywhere the
+        // neighbourhood holds together (measured 5.02-5.12 against -5, where the
+        // stencil above is 3.25-3.90), and the worst cell within a quarter of it.
+        // On the finest mesh a tenth of the fit's cells report nothing: the fitted
+        // normal's degenerate out-of-plane tilt on an extruded field leaves a few
+        // neighbourhoods holding points the quadric cannot determine, and those
+        // cells say so with 0 rather than a made-up curvature.
+        CHECK(std::abs(seen[0][0].kappaPlicMean * R + 1.0) < 0.05
+                  && std::abs(seen[0][1].kappaPlicMean * R + 1.0) < 0.01
+                  && std::abs(seen[0][2].kappaPlicMean * R + 1.0) < 0.01
+                  && std::abs(seen[1][0].kappaPlicMean * R + 1.0) < 0.05
+                  && std::abs(seen[1][1].kappaPlicMean * R + 1.0) < 0.01
+                  && std::abs(seen[1][2].kappaPlicMean * R + 1.0) < 0.2,
+              "and the curvature from the cut geometry is within a few per cent of -1/R "
+              "on every mesh, one to two per cent where the neighbourhoods all hold");
+        CHECK(seen[0][0].kappaPlicReports * 10 >= 8 * seen[0][0].reconstructed
+                  && seen[0][1].kappaPlicReports * 10 >= 8 * seen[0][1].reconstructed
+                  && seen[0][2].kappaPlicReports * 10 >= 8 * seen[0][2].reconstructed
+                  && seen[1][0].kappaPlicReports * 10 >= 8 * seen[1][0].reconstructed
+                  && seen[1][1].kappaPlicReports * 10 >= 8 * seen[1][1].reconstructed
+                  && seen[1][2].kappaPlicReports * 10 >= 8 * seen[1][2].reconstructed,
+              "and it reports for all but a tenth of the band at worst");
+        CHECK(seen[0][0].kappaPlicWorst * R < 1.25 && seen[0][1].kappaPlicWorst * R < 1.25
+                  && seen[0][2].kappaPlicWorst * R < 1.25
+                  && seen[1][0].kappaPlicWorst * R < 1.25
+                  && seen[1][1].kappaPlicWorst * R < 1.25
+                  && seen[1][2].kappaPlicWorst * R < 1.25,
+              "and its worst cell stays within a quarter of -1/R");
+        CHECK(std::abs(seen[0][0].kappaPlicMean * R + 1.0) < std::abs(seen[0][0].kappaMean * R + 1.0)
+                  && std::abs(seen[0][1].kappaPlicMean * R + 1.0) < std::abs(seen[0][1].kappaMean * R + 1.0)
+                  && std::abs(seen[0][2].kappaPlicMean * R + 1.0) < std::abs(seen[0][2].kappaMean * R + 1.0)
+                  && std::abs(seen[1][0].kappaPlicMean * R + 1.0) < std::abs(seen[1][0].kappaMean * R + 1.0)
+                  && std::abs(seen[1][1].kappaPlicMean * R + 1.0) < std::abs(seen[1][1].kappaMean * R + 1.0)
+                  && std::abs(seen[1][2].kappaPlicMean * R + 1.0) < std::abs(seen[1][2].kappaMean * R + 1.0),
+              "and at every mesh and for both normals it beats the cell-centred stencil");
     }
 
     // ---- 7b. the fit on the field it is exact for: one plane ----
@@ -665,9 +721,11 @@ int main()
             = vof::reconstruct(alpha, "corrected", vof::NormalChoice::Fit);
         const vof::Reconstruction local
             = vof::reconstruct(alpha, "corrected", vof::NormalChoice::Mixed);
+        const Field<scalar> kp = vof::interfaceCurvaturePlic(mesh, r);
 
-        double worstAngle = 0, worstScatter = 0, worstOffset = 0, localAngle = 0, worstRead = 0;
-        label counted = 0;
+        double worstAngle = 0, worstScatter = 0, worstOffset = 0, localAngle = 0, worstRead = 0,
+               worstKappa = 0;
+        label counted = 0, kappaCells = 0;
         for (std::size_t u = 0; u < exact.size(); ++u)
         {
             if (mag2(r.normal[u]) == 0) continue;
@@ -680,13 +738,20 @@ int main()
             // place, because the cell's own fraction has to sit on it
             worstOffset = std::max(worstOffset, std::abs(r.offset[u] - analyticOffset));
             worstRead = std::max(worstRead, std::abs(r.fraction[u] - exact[u]));
+            if (kp[u] != 0)
+            {
+                ++kappaCells;
+                worstKappa = std::max(worstKappa, std::abs(kp[u]));
+            }
         }
         std::cout << "     plane front on " << n << "x" << n
                   << ": band " << r.bandCells << " of " << band << " cells, fitted normal off "
                   << std::setprecision(6) << worstAngle << " deg worst (cell-local mean "
                   << localAngle / counted << " deg), offset off " << std::setprecision(2)
                   << worstOffset << ", planes disagree by " << worstScatter / dx
-                  << " cells worst, read-back " << std::setprecision(3) << worstRead << "\n";
+                  << " cells worst, read-back " << std::setprecision(3) << worstRead
+                  << ", kappa " << std::setprecision(3) << worstKappa << " worst over "
+                  << kappaCells << " of " << counted << "\n";
         CHECK(r.bandCells == band, "the fit reconstructs the whole band");
         CHECK(worstRead < 1e-10, "and still cuts each cell's own fraction exactly");
         // What is left over is the arithmetic, not the search: four rounds settle a
@@ -698,6 +763,10 @@ int main()
               "the plane it reports is the analytic plane, to a millionth of a cell");
         CHECK(worstScatter < 1e-7 * dx, "and the neighbourhood agrees with nothing left over");
         CHECK(localAngle / counted > 1.0, "the cell-local normal of the same plane front is not");
+        // every interface point sits in the one analytic plane, so the quadric through
+        // them is flat: the curvature it reports is round-off and nothing else
+        CHECK(kappaCells == counted, "every band cell of a plane front reports a curvature");
+        CHECK(worstKappa < 1e-12, "and the curvature of a plane front is zero, to round-off");
     }
 
 

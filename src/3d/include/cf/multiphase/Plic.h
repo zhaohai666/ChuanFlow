@@ -165,6 +165,39 @@ Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
 Reconstruction reconstruct(const volScalarField& alpha, const std::string& gradScheme,
                            NormalChoice choice, scalar bandTolerance = 1e-6);
 
+/// Curvature of the reconstructed interface, read from the reconstruction's own
+/// geometry rather than from a divergence of the cell-centred normals. Around
+/// every band cell, the interface points of its two-ring corner neighbourhood -
+/// the cells sharing a vertex with any cell that shares a vertex with this one -
+/// are fitted with a quadric in the cell's own frame, each point weighted by the
+/// interface area its cell holds; the divergence of the quadric's unit normal at
+/// the cell's own point is returned. On the cylinder a band of such cells wraps,
+/// that is -1/R; on a plane front, 0. Sign and units are the cell-centred
+/// stencil's (`interfaceCurvature` in vof.cpp), so the two can be compared cell
+/// for cell.
+///
+/// The point of reading positions instead of differencing normals is what the
+/// data is worth: the stencil divides a normal rotation by one cell width, which
+/// on a one-cell band is the whole of its lever and leaves the band mean at
+/// -3.5 against -1/R = -5, while the cut-face centroids sit on the interface to
+/// a small fraction of the arc's sagitta over the neighbourhood. Measured on the
+/// exact disk, the band mean is -5.02 to -5.12 where the stencil is -3.25 to
+/// -3.90, and the worst cell of the band stays within a fifth of -1/R where the
+/// stencil has no such bound.
+///
+/// Two directions can carry no readable curvature and are dropped rather than
+/// fitted: one the data does not reach at all (the extrusion direction of a
+/// single-layer mesh leaves every interface point at one height, so the basis
+/// columns along it are round-off), and one the neighbourhood cannot determine -
+/// fewer points than surviving coefficients, no span, or a solve that finds the
+/// model not positive definite. The cell then gets 0: no curvature measured
+/// here, rather than a number with nothing behind it. A reconstruction whose
+/// planes disagree in the extrusion direction (the fitted normal's degenerate
+/// tilt on an extruded field) puts a few of its cells in that state - on the
+/// coarse disk none, on the finest a tenth of the band - which is one more
+/// reason the momentum path may prefer `mixed` normals on such fields.
+Field<scalar> interfaceCurvaturePlic(const polyMesh& mesh, const Reconstruction& r);
+
 /// A convex region of space, carried as closed outward-oriented planar face
 /// loops. It starts as a cell, or as a cell cut by the reconstructed plane, and
 /// the point of the type is that it can be cut again - by a list of half-spaces,

@@ -537,6 +537,92 @@ PlaneTilt fitTilt(const std::vector<PlaneSample>& samples, const Vector& n)
 /// which is the thing the fit is here not to look at.
 constexpr int kFitRounds = 4;
 
+/// For every cell flagged in `member`, the member cells that share any of its
+/// vertices. Along the interface the band cells of a cell-filled front touch at
+/// corners rather than faces - the front is one cell thick, so the cells ahead
+/// and behind along it meet it only at their corners - so face adjacency would
+/// leave a cell with nothing but its own cut to agree with. A cell is its own
+/// neighbour: it sits at its own vertices.
+std::vector<std::vector<label>> cornerNeighbourhoods(const polyMesh& mesh,
+                                                     const std::vector<char>& member)
+{
+    const label nC = mesh.nCells();
+    std::vector<std::vector<label>> vertexCells(static_cast<std::size_t>(mesh.nPoints()));
+    std::vector<label> vs;
+    for (label c = 0; c < nC; ++c)
+    {
+        if (!member[static_cast<std::size_t>(c)]) continue;
+        vs.clear();
+        for (label f : mesh.cells()[static_cast<std::size_t>(c)])
+            for (label v : mesh.faces()[static_cast<std::size_t>(f)]) vs.push_back(v);
+        std::sort(vs.begin(), vs.end());
+        vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+        for (label v : vs) vertexCells[static_cast<std::size_t>(v)].push_back(c);
+    }
+
+    std::vector<std::vector<label>> out(static_cast<std::size_t>(nC));
+    std::vector<char> mark(static_cast<std::size_t>(nC), 0);
+    std::vector<label> touched;
+    for (label c = 0; c < nC; ++c)
+    {
+        if (!member[static_cast<std::size_t>(c)]) continue;
+        vs.clear();
+        touched.clear();
+        for (label f : mesh.cells()[static_cast<std::size_t>(c)])
+            for (label v : mesh.faces()[static_cast<std::size_t>(f)]) vs.push_back(v);
+        std::sort(vs.begin(), vs.end());
+        vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
+        for (label v : vs)
+            for (label nb : vertexCells[static_cast<std::size_t>(v)])
+            {
+                if (mark[static_cast<std::size_t>(nb)]) continue;
+                mark[static_cast<std::size_t>(nb)] = 1;
+                touched.push_back(nb);
+                out[static_cast<std::size_t>(c)].push_back(nb);
+            }
+        for (label nb : touched) mark[static_cast<std::size_t>(nb)] = 0;
+    }
+    return out;
+}
+
+/// Cholesky of a symmetric `k`-by-`k` (k <= 6) system expected positive
+/// definite, destroying `a`, which is filled row by row up to k. False when a
+/// pivot comes out non-positive: the model is not determined by the data and the
+/// caller is to report no answer rather than a made-up one.
+bool solveSpd6(scalar a[6][6], const scalar b[6], scalar x[6], int k)
+{
+    for (int i = 0; i < k; ++i)
+    {
+        for (int j = 0; j <= i; ++j)
+        {
+            scalar s = a[i][j];
+            for (int q = 0; q < j; ++q) s -= a[i][q] * a[j][q];
+            if (i == j)
+            {
+                if (!(s > 0)) return false;
+                a[i][j] = std::sqrt(s);
+            }
+            else
+            {
+                a[i][j] = s / a[j][j];
+            }
+        }
+    }
+    for (int i = 0; i < k; ++i)
+    {
+        scalar s = b[i];
+        for (int q = 0; q < i; ++q) s -= a[i][q] * x[q];
+        x[i] = s / a[i][i];
+    }
+    for (int i = k - 1; i >= 0; --i)
+    {
+        scalar s = x[i];
+        for (int q = i + 1; q < k; ++q) s -= a[q][i] * x[q];
+        x[i] = s / a[i][i];
+    }
+    return true;
+}
+
 } // namespace
 
 Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
@@ -613,48 +699,21 @@ Reconstruction reconstruct(const polyMesh& mesh, const Field<scalar>& alpha,
     }
 
     // ---- the band cells that meet at each vertex ----
-    // The neighbourhood the offset fit reads. Along the interface the band cells of a
-    // cell-filled front touch at corners rather than faces, so face adjacency would
-    // leave a cell with nothing but its own cut to agree with.
+    // The neighbourhood the offset fit reads, from the shared corner-adjacency
+    // builder below.
     std::vector<std::vector<label>> neighbourhood;
     if (choice == NormalChoice::Fit)
     {
-        std::vector<std::vector<label>> vertexCells(
-            static_cast<std::size_t>(mesh.nPoints()));
-        std::vector<label> vs;
-        for (label c = 0; c < nC; ++c)
-        {
-            vs.clear();
-            for (label f : mesh.cells()[static_cast<std::size_t>(c)])
-                for (label v : mesh.faces()[static_cast<std::size_t>(f)]) vs.push_back(v);
-            std::sort(vs.begin(), vs.end());
-            vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
-            for (label v : vs) vertexCells[static_cast<std::size_t>(v)].push_back(c);
-        }
-
+        std::vector<char> member(n, 0);
+        for (const Seed& s : seeds) member[static_cast<std::size_t>(s.cell)] = 1;
+        const std::vector<std::vector<label>> byCell = cornerNeighbourhoods(mesh, member);
         neighbourhood.resize(seeds.size());
-        std::vector<char> mark(n, 0);
-        std::vector<label> touched;
         for (std::size_t k = 0; k < seeds.size(); ++k)
-        {
-            vs.clear();
-            touched.clear();
-            for (label f : mesh.cells()[static_cast<std::size_t>(seeds[k].cell)])
-                for (label v : mesh.faces()[static_cast<std::size_t>(f)]) vs.push_back(v);
-            std::sort(vs.begin(), vs.end());
-            vs.erase(std::unique(vs.begin(), vs.end()), vs.end());
-
-            for (label v : vs)
-                for (label nb : vertexCells[static_cast<std::size_t>(v)])
-                {
-                    if (mark[static_cast<std::size_t>(nb)]) continue;
-                    mark[static_cast<std::size_t>(nb)] = 1;
-                    touched.push_back(nb);
-                    const label s = seedOf[static_cast<std::size_t>(nb)];
-                    if (s >= 0) neighbourhood[k].push_back(s);
-                }
-            for (label nb : touched) mark[static_cast<std::size_t>(nb)] = 0;
-        }
+            for (label nb : byCell[static_cast<std::size_t>(seeds[k].cell)])
+            {
+                const label s = seedOf[static_cast<std::size_t>(nb)];
+                if (s >= 0) neighbourhood[k].push_back(s);
+            }
     }
 
     std::vector<PlaneSample> samples;
@@ -755,6 +814,164 @@ Reconstruction reconstruct(const volScalarField& alpha, const std::string& gradS
 {
     const Field<Vector> g = fvc::grad(alpha, gradScheme);
     return reconstruct(alpha.mesh(), alpha.internalField(), g, choice, bandTolerance);
+}
+
+Field<scalar> interfaceCurvaturePlic(const polyMesh& mesh, const Reconstruction& r)
+{
+    const label nC = mesh.nCells();
+    const std::size_t n = static_cast<std::size_t>(nC);
+    Field<scalar> kappa(n, 0.0);
+
+    std::vector<char> member(n, 0);
+    for (label c = 0; c < nC; ++c)
+        member[static_cast<std::size_t>(c)] = mag2(r.normal[static_cast<std::size_t>(c)]) > 0;
+
+    // two rings of corner adjacency: the cells sharing a vertex with any cell that
+    // shares a vertex with this one. One ring is the cells the interface passes
+    // through a single shared corner with, whose points sit within a fraction of a
+    // cell of each other; the arc a curvature is worth reading needs the couple of
+    // cells on either side along the front, which is where the second ring takes it.
+    const std::vector<std::vector<label>> ring1 = cornerNeighbourhoods(mesh, member);
+    std::vector<std::vector<label>> byCell(n);
+    std::vector<char> seen(n, 0);
+    for (label c = 0; c < nC; ++c)
+    {
+        const std::size_t u = static_cast<std::size_t>(c);
+        if (!member[u]) continue;
+        std::vector<label>& two = byCell[u];
+        for (label v1 : ring1[u])
+        {
+            if (!seen[static_cast<std::size_t>(v1)])
+            {
+                seen[static_cast<std::size_t>(v1)] = 1;
+                two.push_back(v1);
+            }
+            for (label v2 : ring1[static_cast<std::size_t>(v1)])
+                if (!seen[static_cast<std::size_t>(v2)])
+                {
+                    seen[static_cast<std::size_t>(v2)] = 1;
+                    two.push_back(v2);
+                }
+        }
+        for (label v : two) seen[static_cast<std::size_t>(v)] = 0;
+    }
+
+    // the powers of (x, y) each column of the quadric basis carries: x^2, x y,
+    // y^2, x, y, 1
+    constexpr int px[6] = {2, 1, 0, 1, 0, 0};
+    constexpr int py[6] = {0, 1, 2, 0, 1, 0};
+
+    for (label c = 0; c < nC; ++c)
+    {
+        const std::size_t u = static_cast<std::size_t>(c);
+        if (!member[u]) continue;
+        const Vector zAxis = r.normal[u];
+        const Vector origin = r.areaCentroid[u];
+        Vector e1, e2;
+        tangentBasis(zAxis, e1, e2);
+
+        // the neighbourhood's interface points in the cell's own frame, the cell's
+        // own point at the origin among them. A point says as much as the interface
+        // area its cell holds, so a plane the reconstruction could only graze
+        // cannot outvote one that crosses the cell.
+        std::vector<scalar> sx, sy, sz, sw;
+        scalar span = 0;
+        const auto add = [&](const Vector& p, scalar w)
+        {
+            if (!(w > 0)) return;
+            const Vector d = p - origin;
+            const scalar t1 = dot(d, e1), t2 = dot(d, e2);
+            sx.push_back(t1);
+            sy.push_back(t2);
+            sz.push_back(dot(d, zAxis));
+            sw.push_back(w);
+            span = std::max(span, std::sqrt(t1 * t1 + t2 * t2));
+        };
+        add(origin, r.area[u]);
+        for (label nb : byCell[u])
+        {
+            if (static_cast<std::size_t>(nb) == u) continue;
+            const std::size_t v = static_cast<std::size_t>(nb);
+            add(r.areaCentroid[v], r.area[v]);
+        }
+        if (sx.size() < 3 || !(span > 0)) continue;
+
+        // coordinates scaled to the neighbourhood's own size, so every basis
+        // column is O(1) and no direction is quiet just because the arc it reads
+        // is a few cells of a neighbourhood a column tall
+        const scalar invL = 1.0 / span;
+        scalar g[6][6] = {}, rhs[6] = {}, col[6] = {};
+        for (std::size_t i = 0; i < sx.size(); ++i)
+        {
+            const scalar x = sx[i] * invL, y = sy[i] * invL;
+            const scalar z = sz[i] * invL, w = sw[i];
+            scalar basis[6];
+            for (int k = 0; k < 6; ++k)
+            {
+                scalar bk = 1;
+                if (px[k] >= 1) bk *= x;
+                if (px[k] == 2) bk *= x;
+                if (py[k] >= 1) bk *= y;
+                if (py[k] == 2) bk *= y;
+                basis[k] = bk;
+            }
+            for (int j = 0; j < 6; ++j)
+            {
+                rhs[j] += w * z * basis[j];
+                col[j] += w * basis[j] * basis[j];
+                for (int k = 0; k < 6; ++k) g[j][k] += w * basis[j] * basis[k];
+            }
+        }
+
+        // A direction the data does not reach - the extrusion direction of a
+        // single-layer mesh leaves every point at one height, so x, x^2 and x y
+        // carry nothing - is dropped rather than fitted: its coefficient is 0, the
+        // honest answer "no curvature readable this way", where fitting it would
+        // mean dividing a round-off column norm into the ridge and calling what
+        // comes back a curvature. The surviving columns are equilibrated to unit
+        // norm before the ridge, so the damping is the same statement about every
+        // direction that is actually there.
+        const scalar colMax = *std::max_element(col, col + 6);
+        if (!(colMax > 0)) continue;
+        int active[6], nActive = 0;
+        for (int k = 0; k < 6; ++k)
+            if (col[k] > 1e-6 * colMax) active[nActive++] = k;
+        if (static_cast<std::size_t>(nActive) > sx.size()) continue;
+
+        scalar gr[6][6] = {}, br[6] = {}, sr[6] = {};
+        for (int j = 0; j < nActive; ++j)
+        {
+            sr[j] = std::sqrt(col[active[j]]);
+            br[j] = rhs[active[j]] / sr[j];
+            for (int k = 0; k < nActive; ++k)
+                gr[j][k] = g[active[j]][active[k]] / (sr[j] * sr[k]);
+            gr[j][j] += 1e-8;
+        }
+        scalar cr[6] = {0, 0, 0, 0, 0, 0};
+        if (!solveSpd6(gr, br, cr, nActive)) continue;
+
+        // z = L (c0 x^2 + c1 x y + c2 y^2 + c3 x + c4 y + c5) with x, y the
+        // scaled coordinates, so at the origin z_xx = 2 c0 / L, z_xy = c1 / L,
+        // z_yy = 2 c2 / L and the slopes are c3 and c4 outright; a dropped
+        // direction keeps coefficient 0
+        scalar cf[6] = {0, 0, 0, 0, 0, 0};
+        for (int j = 0; j < nActive; ++j) cf[active[j]] = cr[j] / sr[j];
+        const scalar zxx = 2 * cf[0] / span;
+        const scalar zxy = cf[1] / span;
+        const scalar zyy = 2 * cf[2] / span;
+        const scalar zx = cf[3], zy = cf[4];
+        const scalar w2 = 1 + zx * zx + zy * zy;
+        // the divergence of the graph's unit normal, which for the cylinder the
+        // band wraps is -1/R and for a plane front is 0 - the sign and units of
+        // the cell-centred stencil in vof.cpp
+        const scalar k = -(zxx * (1 + zy * zy) + zyy * (1 + zx * zx) - 2 * zx * zy * zxy)
+                         / (w2 * std::sqrt(w2));
+        if (std::isfinite(k))
+        {
+            kappa[u] = k;
+        }
+    }
+    return kappa;
 }
 
 namespace

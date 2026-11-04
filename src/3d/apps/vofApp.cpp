@@ -91,6 +91,7 @@ struct SurfaceTension
 {
     bool enabled = false;
     bool advect = false;   // two-way: alpha is carried by the solved flux
+    bool plicKappa = false; // the force reads the reconstruction's curvature
     scalar sigma = 0;      // N/m
     scalar rho = 1;        // kg/m3
     scalar nu = 0;         // m2/s
@@ -105,6 +106,7 @@ SurfaceTension loadSurfaceTension(const Dictionary& caseDict)
     const Dictionary& sd = caseDict.getDict("surfaceTension");
     st.enabled = true;
     st.advect = sd.getWordOr("advect", "false") == "true";
+    st.plicKappa = sd.getWordOr("kappaPlic", "false") == "true";
     st.sigma = sd.getScalar("sigma");
     st.rho = sd.getScalarOr("rho", 1.0);
     st.nu = sd.getScalar("nu");
@@ -466,6 +468,9 @@ int main(int argc, char** argv)
         const int reportEvery = std::max(1, static_cast<int>(td.getScalarOr("reportEvery", 1.0)));
         const scalar threshold = td.getScalarOr("interfaceThreshold", 0.1);
         const ReconstructionControls plic = loadReconstruction(caseDict);
+        if (st.plicKappa && !plic.enabled)
+            cfFatal("vof: surfaceTension kappaPlic needs a reconstruction{} block "
+                    "to take its curvature from");
         if (plic.enabled)
             log::info("vof reconstruction: planes in every band cell, normal from ",
                       plic.choice == vof::NormalChoice::Youngs ? "youngs"
@@ -496,7 +501,7 @@ int main(int argc, char** argv)
         {
             if (!plic.enabled) return;
             plicNow = vof::reconstruct(alpha, schemes.grad, plic.choice, plic.bandTolerance);
-            kappaPlicNow = vof::interfaceCurvature(mesh, plicNow.normal);
+            kappaPlicNow = vof::interfaceCurvaturePlic(mesh, plicNow);
         };
         const auto refreshPlic = [&](const std::string& stamp)
         {
@@ -631,15 +636,31 @@ int main(int argc, char** argv)
             // linear-solver tolerance rather than to round-off, so the two-way
             // mass statement is the boundary exchange (zero on a closed box
             // whose walls carry alpha = 0), not a closed form.
+            // The slope's own read of the interface is what the written vtu
+            // reports; the force reads the reconstruction's quadric when the
+            // case says kappaPlic, whose curvature is what the Laplace jump
+            // below is measured against.
             Field<Vector> normal = vof::interfaceNormal(alpha, schemes.grad, threshold);
             Field<scalar> kappa = vof::interfaceCurvature(mesh, normal);
+            if (st.plicKappa) kappa = kappaPlicNow;
             Field<Vector> force =
                 vof::surfaceTensionForce(st.sigma / st.rho, alpha, kappa, schemes.grad);
             scalar fMax = 0;
             for (const Vector& f : force) fMax = std::max(fMax, mag(f));
+            // the band mean of the curvature the force actually reads, which is
+            // the report the Laplace jump is measured against
+            scalar kBand = 0;
+            label kCells = 0;
+            for (scalar k : kappa)
+                if (k != 0)
+                {
+                    kBand += k;
+                    ++kCells;
+                }
+            if (kCells) kBand /= static_cast<scalar>(kCells);
             log::info("vof csf: sigma/rho ", num(st.sigma / st.rho), " nu ", num(st.nu),
                       " advect ", st.advect ? "true" : "false",
-                      " kappa ", num(kappa0), " max |f| ", num(fMax));
+                      " kappa ", num(kBand), " max |f| ", num(fMax));
 
             PisoControls ctl;
             ctl.dt = dt;
@@ -660,6 +681,11 @@ int main(int argc, char** argv)
                     // the next step is driven by the interface as it now is
                     normal = vof::interfaceNormal(alpha, schemes.grad, threshold);
                     kappa = vof::interfaceCurvature(mesh, normal);
+                    if (st.plicKappa)
+                    {
+                        rebuildPlic();
+                        kappa = kappaPlicNow;
+                    }
                     force = vof::surfaceTensionForce(st.sigma / st.rho, alpha,
                                                      kappa, schemes.grad);
                 }

@@ -35,9 +35,11 @@
 //   normal vs radial, at the cut faces: 8.34 deg mean / 14.11 deg max -- sharper
 //                                  than the same normals read at cell centres,
 //                                  because a cut face is on the interface
-//   kappaPlic over the band        -3.696 for -1/R = -5, which is as much of the
-//                                  circle as a cell-centred stencil across a
-//                                  one-cell band resolves
+//   kappaPlic over the band        -5.1036 for -1/R = -5 (1.021 of it): the
+//                                  quadric through each neighbourhood's cut
+//                                  faces, not the field's slope -- where the
+//                                  cell-centred stencil across the one-cell band
+//                                  reads only -3.696
 //   the gradient path at t=0       marks 124 cells, 64 of which hold no interface
 //                                  at all, and misses none of the band's 60
 //   phase volume                   conserved to 6.7e-15 relative over 40 steps

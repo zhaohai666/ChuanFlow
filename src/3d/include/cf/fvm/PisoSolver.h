@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cf/fvm/EddyViscosity.h"
+#include "cf/fvm/EnergyCoupling.h"
 #include "cf/fvm/FvMatrix.h"
 
 namespace cf
@@ -68,6 +69,11 @@ struct PisoStepResult
 /// momentum diffusion then uses its face-wise nu + nut, so the wall shear of a
 /// wall-function mesh comes from the law of the wall rather than from the
 /// viscosity of the first cell.
+/// `energy` (null when the case has no thermal field) is advanced after the
+/// correctors, with the flux the step closed on, and its Boussinesq
+/// acceleration forces the momentum equation of the next step. `cellForce`
+/// stays the hook for forces the caller supplies itself - the VOF surface
+/// tension - and both add.
 PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
                                                 volVectorField& U,
                                                 volScalarField& p,
@@ -75,6 +81,7 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
                                                 scalar nu,
                                                 const Schemes& schemes,
                                                 const PisoControls& ctl,
-                                                IEddyViscosity* turb = nullptr);
+                                                IEddyViscosity* turb = nullptr,
+                                                IEnergyCoupling* energy = nullptr);
 
 } // namespace cf

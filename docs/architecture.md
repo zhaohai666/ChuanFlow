@@ -443,12 +443,14 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
   pRelaxStart force}`，
   逐次外迭代打印 `continuity / corrected / |p'| / dU`，收尾 `SIMPLE done:
   iterations ... continuity ... momentum ... (converged|NOT converged)`；
-  退出码即收敛标志；
+  退出码即收敛标志；case 带 `energy{}` 时每扫描多解一个温度场、vtu 多写单元量
+  `T`、收尾多报一次热平衡（见 5.11）；
 - `chflow-piso-foam <case.dict>`：不可压瞬态 PISO，`piso{dt endTime
   correctors continuityTol linearTol linearMaxIter nonOrthCorrectors
   reportEvery force}`，步进循环 `dt = min(dt, endTime − t)`，逐步打印
   `t / uMax / cont / correctors` 与结束时第一条 x 截面的 `profile y u`
-  供解析核对，`piso done: steps ... worstContinuity ...` 收尾；
+  供解析核对，`piso done: steps ... worstContinuity ...` 收尾；带 `energy{}`
+  时报告行追加 `energy t .. Tmin .. Tmax ..`，收尾报热平衡（见 5.11）；
 - `chflow-vof <case.dict>`：两模式——相分数输运与界面几何（速度由 case 给定
   而不是求解），或 CSF 动量模式（`surfaceTension{}` 冻结界面、驱动 PISO）
   （见 5.10），vtu 写 `alpha`/`nHat`/`kappa`，可选 `vtkInitial` 写同一组量的
@@ -634,6 +636,87 @@ t~0.2 内 ring down、不触及形状（aspect 从首个报告起就光滑）—
 `aspect`（α 二阶矩轴比 √(Ixx/Iyy)，振荡的形状信号；checker 从 vtu 独立复算互校）；
 vtu 额外写 `U`、`p`、`csf`。
 
+### 5.11 能量方程 `fvm/EnergyCoupling.h` + `fvm/EnergySolver.h` / `solvers/energySolver.cpp`（M3：对流扩散 + 壁面热流 + Boussinesq 浮力）
+case 带 `energy{}` 块时，SIMPLE 与 PISO 各自多解一个温度场；不带则这两个求解器
+与 §5.5–5.7 完全一致（`IEnergyCoupling*` 是新的可选形参，缺省 nullptr）。
+
+**方程与单位**：`dT/dt + div(u,T) − div(α∇T) = S`，
+`α = κ/(ρcp) + nut/Pr_t` [m²/s]，`S = volumetricSource/(ρcp) + ν|S_ij|²/cp` [K/s]。
+求解器本身保持**运动学**（压力方程里 ρ=1、`force` 是加速度），所以 `rho`、`cp`
+只用来把 κ 与 W/m³ 的源折算成扩散系数和升温速率，浮力也以加速度进入动量。
+
+**装配只复用已有 fvm 项**：`fvm::ddt`（隐式 Euler）、`fvm::div(eqn, phi.values(), div)`
+——这里的 `phi` 就是求解器**闭合连续性那一个**通量，以及
+`fvm::laplacian(eqn, alphaCell(), scheme, −1)`（取负号让 LHS 正定）+ `addRhs(V·S)`。
+正因为 T 看到的是同一个 φ，离散焓平衡才不是近似而是恒等式：
+`Σ Q_patches + ∫q dV − ρcp·Σ_{边界面} φ_f T_f = 0`，定常 case 实测残差
+4.0e-12 / 2.3e-10 / 1.1e-10 / 9.9e-15 W（对 280–301 W 的量级）。面扩散系数用
+`harmonicFaceGamma`，边界面取 owner 单元的 γ——这样 `patchHeatRate()` 报的就是
+算子自己装配的那套系数，不是另一套。
+
+**热边界来自同一个 `patches{}` 块**：`T 320` → fixedValue；`heatFlux q` →
+**符号约定：正 = W/m² 进入流体**，app 按 Fourier 定律换成 `fixedGradient = q/κ`
+（沿外法向）；`TType ...` 直接给类型；三样都不写的 patch 保持标量缺省
+`zeroGradient`，即绝热——所以 case 只列出真正带热的面。
+`output` 的 vtu 多写一个单元量 `T`，日志多报
+`energy: Tmin .. Tmax ..`、逐面 `heatPatch <name> Q <v>`、以及
+`energy: in .. source .. enthalpyOut .. balance ..`（这些数用 12 位精度打印，
+`log::info` 缺省的 6 位会把平衡残差截成 0）。
+
+**耦合次序**（这一条决定浮力能不能被压力回答）：SIMPLE 在 p/U 松弛**之后**跑
+`correctEnergy(0)`，让它搭本次扫描 Rhie-Chow 一致的 φ，而浮力在扫描**顶部**读取，
+于是力与温度属于同一次扫描；PISO 把 `buoyancyForce()` 并进 `force`，因此它随
+HbyA 一起到达通量（与 §5.10 的表面力同一条通路），`correctEnergy(ctl.dt)` 放在
+corrector 循环**之后**。定常欠松弛是手动的——先解（`eqn.schemes().relaxation = 1.0`
+避免矩阵把自己混到零初值上）、再对着求解前的快照混合；瞬态直接取解（隐式 Euler
+的步长就是解），所以 tight 的定常回归一律写 `relaxation 1`。
+
+**两条实测出来的坑**（都写在算例头注释里）：
+① **全壁绝热 + 无体源的定常热矩阵是奇异的**：Krylov 落在哪一级由迭代子空间决定，
+不是由 case 决定（实测 T 整体塌到 0）。定常热 case 至少要有一个温度条件或一个源。
+② **闭合盒 + 均匀力的压力-速度地板**：均匀力是投影求解能吃下的力，理论上盒中
+什么都不该动、`dp/dz = f_z = β(T−tRef)|g|`。SIMPLE 会停在 continuity 1.05e-4、
+uMax 1.5e-4（压力锁住的模态）；换成 PISO 跑 1000 步后 u_x 6.9e-12、
+worstContinuity 2.5e-10，但 max|U| 仍是 **2.706e-4**、`dp/dz` 0.099972 对 0.098100。
+关键是**对照实验**：把 `energy{}` 整块删掉、改由等价的均匀
+`force (0 0 0.0981)` 驱动同一个盒，读到同一个 2.706e-4 与同样的两端压力——
+这个地板属于闭合盒耦合本身，不属于能量方程。`p_rgh` formulation 仍待做，
+在那之前 `energyBuoyantRest` 的断言按"回答不了这个力的耦合会给出什么"来定标：
+Stokes 速度 `f H²/ν = 2.45 m/s`（比残差高四个量级）与压降的**符号**。
+
+**涡扩散用梯度输运类比 + Pr_t**，前提是网格解析副层（`y+ ≈ 1` 时 nut 在壁面 → 0，
+壁面热流保持分子级）；壁函数网格会高估换热，热壁函数是下一个增量（未做）。黏性
+耗散只算分子应力（`ν|S_ij|²/cp`，`strainRate` 由湍流层给），湍流动能的释热要等
+k 方程本身（未做）。
+
+**六个回归算例**（`tests/check_energy.py`，每个模式都拿内核**没被给的**数对表；
+实测值即 ctest 打印的 notes）：
+
+| 算例 | 核对什么 | 实测 |
+|---|---|---|
+| `energyConductionFixed` | 无流动 + 两端 fixedValue：逐点直线、壁面速率 `kA dT/dx` | 剖面误差 **0.000e+00** K；0.2 W 对 0.2 W；balance −3.975e-12 W |
+| `energyConductionFlux` | `heatFlux` 的**符号**与 fixedGradient：Fourier 定斜率不定水平 | 剖面离 Fourier 解 1.600e-08 K；受热面 319.75 K，面上真值 320 K；balance −2.287e-10 |
+| `energyConductionSource` | 体源：镜像对称 + 两端各带走 `S·Vol/2` | 对称 0.000e+00 K（25 K 升温上）；峰值 325 K 对 `SL²/8k` = 325 K；剖面离连续抛物线 1.563e-02 K（升温的 0.06%，即半格壁面偏移）；balance −1.112e-10 |
+| `energyDecay` | 隐式 Euler + 绝热均值守恒 + **扩散算子自己的离散误差** | 200 步；离散特征值 9.864532 对连续 k² 9.869604；离散衰减因子 0.373802218 对连续 0.372707839（比真 PDE 慢 0.294%）；幅值历史离离散本征模 4.640e-13 相对；离散均值 0.000e+00；balance 0 |
+| `energyBuoyantRest` | 浮力进入**压力能回答**的地方（含上面那条地板） | max\|U\| 2.706e-04 对无平衡时的 Stokes 尺度 2.453e+00；`dp/dz` 0.099972 对 `f_z` 0.098100，直线残差 3.475e-04 比 `f·H` = 0.04905；T 不漂移；balance 2.254e-11 |
+| `energyChannelFlux` | 对流↔连续性通量的耦合 + `Nu_Dh = 140/17` + 剖面形状不变量 | 23 次扫描收敛；`Umax` 0.100000000833 对 `aH²/8ν`；流量 0.00134 m³/s（沿程散布 9.915e-09）；混杯升温 **0.0189393944 W** 对面供给 **0.0189393945 W**；`Tw−Tb` 2.42409318 K 对 `17qh/35k` = 2.42857143（`Nu_Dh` 8.2505 对 8.2353）；两壁不对称 0.000e+00 K；形状比 `(Tb−T_centre)/(Tw−Tb)` = 0.285116 对 `39/136` = 0.286765；balance −9.898e-15 |
+
+`energyChannelFlux` 的两条设计值得记：几何是 y ∈ [0, 0.2] 的平行板渠道，所以
+`H = 0.2`、半通道高 `h = 0.1`、`Dh = 4h = 0.4`——`Umax = a H²/(8ν)` 用**全通道高**，
+`Tw − Tb = 17 q h/(35 k)` 用**半通道高**，两者混用壁面偏移就差一倍。κ 从 0.01 降到
+0.002 是为了把轴向佩莱数 `Ub L/α` 推到 33（Pr = ν/α = 5）——0.01 时等温入口沿轴向
+倒灌 −0.0035 W，把 `Tb` 斜率压到 13.4（解析 15）并留下 0.65 K 的线性拟合残差；
+形状比 `39/136` 与 q、κ、流量都无关，纯导热的场在那里给 0，
+所以它断言的是对流-扩散平衡本身而不是某个系数。
+
+**case 侧 keys**：`energy{ rho cp kappa turbulentPrandtl volumetricSource
+viscousDissipation expansion referenceT gravity relaxation initialT initialMode
+initialAmplitude initialAxis }`（除 `volumetricSource` 之类缺省外，`fromCase` 对
+非法值直接 `cfFatal`：ρ/cp/κ 必须为正、`relaxation ∈ (0,1]`、`initialMode ≥ 0`）；
+`patches{ name{ T | heatFlux | TType/TValue } }`；`initialMode > 0` 时初始场是
+`initialT + A·cos(mode·π·ξ)`——它在零通量墙上正是中心差分 Neumann Laplacian 的
+**精确本征向量**，这就是 `energyDecay` 能有闭式对照的原因。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |
@@ -665,6 +748,10 @@ vtu 额外写 `U`、`p`、`csf`。
 | `interfaceProperties::k()`（`fvc::div(M)`） | `vof::interfaceCurvature()`（只累加两侧都带界面的面，减去自身法向） |
 | `surfaceTensionForce`（CSF，`f = −σκ∇α` 的密度归一形式） | `vof::surfaceTensionForce`（`f = −(σ/ρ)κ∇α`，符号从 n̂ 朝内的约定推出；p_in − p_out = σ/(ρR) 内侧更高） |
 | `interFoam` 把 `f = F/rho` 挂到 `UEqn` 右端 | `PisoControls::cellForce`（每单元加速度进动量右端，由 HbyA/`explicitOperator` 携带，通量经与压力同一套配对看到它） |
+| `buoyantBoussinesqSimpleFoam` / `PisoFoam` 的 `TEqn` | `EnergyModel::correctEnergy`（`fvm::ddt + fvm::div(phi,T) + fvm::laplacian(alpha,T,-1)`，读求解器自己的连续性通量） |
+| `alphat = nut/Prt`（`turbulentTransport` 的热扩散） | `EnergyModel::alphaCell()` = `kappa/(rho cp) + nut/turbulentPrandtl`（梯度输运类比，前提是网格解析副层） |
+| `fvOptions` 的 `wallHeatFlux` / `fixedGradient` T | `patches{ name{ heatFlux q; } }` → `fixedGradient = q/kappa`（正 = 进入流体）；无键的 patch 缺省 `zeroGradient` = 绝热 |
+| `T` 的 `buoyancyForce = beta*(T-Tn)*g`（`BoussinesqBaseForce`） | `EnergyModel::buoyancyForce()` = `−beta (T − tRef) gravity`（只含偏差项，参考静水由 `force` 自己带；参考静水随高度变化需要 `p_rgh`，未做） |
 
 ## 7. 测试体系
 - `tests/unit/kernelTests.cpp`（CTest `kernel.unit`）：字典解析、网格几何
@@ -714,7 +801,8 @@ vtu 额外写 `U`、`p`、`csf`。
   **均匀 κ 上表面力成对抵消**（ΣV·f = 3.5e-17 相对——Gauss 梯度在闭合域上的
   恒等式；力恰好非零于带、带外恰好 0；正曲率液滴受力向内，outward 精确为 0；
   κ=0 ⇒ f 逐位为 0）；
-- `tests/cases/*`：十五个物理回归算例 + `tests/check_*.py` 断言：
+- `tests/cases/*`：二十七个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
+  `twoFluid*` 五个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
   - `transientBlowdown` / `transientRlc` / `transientSlug`（见 4.2）
@@ -773,6 +861,28 @@ vtu 额外写 `U`、`p`、`csf`。
     公式会给 0.571 s——差 35%，穿越钟裁决）、振幅逐周期衰减（0.359→0.180→0.165→0.126，
     双轴都衰减）、dp 呼吸 0.432..0.525 均值 0.502 对 σ/(ρR)=0.5057、释放在
     0.87×毛细速度内、t>0.25 后 ≤0.202、vtu 独立复算体积/aspect/法向/κ——见 5.10）；
+  - `energyConductionFixed` / `energyConductionFlux` / `energyConductionSource`
+    （无流动的三道热传导题，逐点从 vtu 质心比对）：两端 fixedValue 的直线剖面误差
+    **恰为 0.000e+00 K**、壁面速率 0.2 W 对 `kA dT/dx` = 0.2；`heatFlux` 的符号约定
+    （剖面离 Fourier 解 1.6e-8 K、受热面读 319.75 而面上真值 320）；均匀体源的镜像
+    对称恰为 0、两端各带走 `S·Vol/2` = 1.0000000000 W、峰值 325 K 对 `SL²/8k`，
+    离连续抛物线的 1.56e-2 K 就是中心格式施加壁值的半格偏移。三个 case 的
+    `in + source − enthalpyOut` 分别为 −3.975e-12 / −2.287e-10 / −1.112e-10 W；
+  - `energyDecay`（PISO，绝热盒里的余弦模态衰减）：`cos(mπ(i+½)/N)` 是中心差分
+    Neumann Laplacian 的精确本征向量，checker 重放求解器自己的 `dt` 序列断言
+    `1/Π(1+dt·α·λ_d)`（逐报告点 4.64e-13 相对）、200 步、离散均值恰等于 `initialT`
+    （1e-12）、`|enthalpyOut| ≤ 1e-12`，再拿这个因子对连续 `exp(−αk²t)`
+    （0.373802218 对 0.372707839）——报的是扩散算子的离散误差而不是把它藏起来；
+  - `energyBuoyantRest`（PISO，均匀受热闭盒）：`dp/dz` 0.099972 对
+    `f_z = β(T−tRef)|g|` = 0.098100 且符号正确、沿程压到直线的残差 3.475e-04
+    比 `f·H` = 0.04905、T 不漂移。残差 max|U| = 2.706e-4 是**闭盒耦合自身的地板**
+    （无 `energy{}` 块、改用等价 `force` 的对照 case 复现同一个数），断言因此按
+    无平衡时的 Stokes 尺度 `f H²/ν` = 2.45 m/s 定标——见 5.11；
+  - `energyChannelFlux`（SIMPLE，双壁等热流的渠道 Poiseuille）：23 次扫描收敛、
+    `Umax` 0.100000000833 对 `aH²/8ν`、混杯升温 0.0189393944 W 对面供给
+    0.0189393945 W（1e-6 相对，不需要任何解析输入）、`Tw−Tb` 2.42409 K 对
+    `17qh/35k` = 2.42857（`Nu_Dh` 8.2505 对 140/17 = 8.2353）、两壁偏移差恰为 0、
+    形状比 `(Tb−T_centre)/(Tw−Tb)` = 0.285116 对与 q/κ/流量都无关的 39/136——见 5.11；
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

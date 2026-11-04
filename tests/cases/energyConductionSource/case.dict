@@ -1,0 +1,64 @@
+// Uniform volumetric heat generation held between two isothermal faces.
+//   -k d2T/dx2 = S  =>  T = 300 + S/(2k) x (L - x),  Tmax = 300 + S L2 /(8k) = 325
+// The mirror symmetry of the discrete problem makes two identities exact rather
+// than asymptotic: the profile reads the same from both ends, and each face
+// carries away exactly half the generated heat, S*Vol/2 = 1 W. tests/check_energy.py
+// mode `source` asserts those two tightly and the parabola itself to the
+// half-cell wall offset of a cell-centred scheme, which is what a source term
+// in the energy equation has to be verified against.
+block
+{
+    min   (0 0 0);
+    max   (1 0.2 0.1);
+    cells (40 1 1);
+
+    xmin  { name left;   type wall; }
+    xmax  { name right;  type wall; }
+    ymin  { name bottom; type wall; }
+    ymax  { name top;    type wall; }
+    zmin  { name front;  type wall; }
+    zmax  { name back;   type wall; }
+}
+
+nu 0.01;
+
+patches
+{
+    left   { U (0 0 0); UType fixedValue; p 0; pType fixedValue; T 300; }
+    right  { U (0 0 0); UType fixedValue; pType zeroGradient; T 300; }
+    bottom { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top    { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    front  { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    back   { U (0 0 0); UType fixedValue; pType zeroGradient; }
+}
+
+energy
+{
+    rho 1; cp 1; kappa 0.5;
+    volumetricSource 100;
+    relaxation 1;
+    initialT 300;
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+simple
+{
+    maxIterations 20;
+    continuityTol 1e-10;
+    pcorrTol      1e-10;
+    momentumTol   1e-10;
+    relaxU        0.9;
+    relaxP        0.3;
+}
+
+output
+{
+    vtk out_energy_source.vtu;
+}

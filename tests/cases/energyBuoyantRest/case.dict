@@ -1,0 +1,81 @@
+// A uniformly heated fluid in a sealed box under gravity: the Boussinesq force
+//   f = -beta (T - tRef) g
+// is the same in every cell here, and a uniform force is exactly what a
+// projection can absorb. So the state at rest is not approximately but exactly at
+// rest, with
+//   dp/dz = f_z = beta (T - tRef) |g| = 1e-3 * 10 * 9.81 = 0.0981
+// over the height of the box, and p = 0.0981 z between its two ends.
+// tests/check_energy.py mode `rest` asserts that the velocity stays at machine
+// zero and that the pressure the coupling converges to is that profile: the case
+// guards that the buoyancy enters the momentum where the pressure can answer it,
+// and it fails loudly if the coupling ever starts a circulation.
+//
+// The transient solver runs it because the answer has to be reached, not assumed.
+// dp/dz = f_z at the top face means the pressure needs a fixed value at BOTH ends
+// of the force direction - a Dirichlet only at the bottom pins the slope to zero
+// and leaves the force unanswered - and in a box closed on every face the outer
+// loop of a steady solver then creeps toward that state instead of relaxing to it.
+block
+{
+    min   (0 0 0);
+    max   (0.1 0.1 0.5);
+    cells (2 2 25);
+
+    xmin  { name west;   type wall; }
+    xmax  { name east;   type wall; }
+    ymin  { name bottom; type wall; }
+    ymax  { name top;    type wall; }
+    zmin  { name lower;  type wall; }
+    zmax  { name upper;  type wall; }
+}
+
+nu 0.01;
+
+patches
+{
+    west   { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    east   { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    bottom { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top    { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    lower  { U (0 0 0); UType fixedValue; p 0; pType fixedValue; T 310; }
+    upper  { U (0 0 0); UType fixedValue; p 0.04905; pType fixedValue; }
+}
+
+energy
+{
+    rho 1; cp 1; kappa 0.05;
+    expansion 1e-3;
+    referenceT 300;
+    gravity (0 0 -9.81);
+    // one uniform offset from the reference temperature: no gradient anywhere, so
+    // the field cannot evolve and only the force it implies matters. The offset is
+    // also held by a fixedValue on the lower face, because with every wall
+    // adiabatic and no source the thermal matrix is singular and the level the
+    // linear solver lands on is a property of the Krylov space, not of the case.
+    initialT 310;
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+piso
+{
+    // dz = 0.02, so the wall-normal viscous time dz^2/nu is 0.04 s: the run ends
+    // 25 of them after the start-up kick the force gives before the pressure
+    // answers, which leaves the fixed point rather than the transient.
+    dt            1e-2;
+    endTime       10;
+    correctors    2;
+    continuityTol 1e-12;
+    reportEvery   50;
+}
+
+output
+{
+    vtk out_energy_rest.vtu;
+}

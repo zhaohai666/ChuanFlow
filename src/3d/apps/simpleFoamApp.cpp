@@ -10,6 +10,7 @@
 #include "cf/fvm/SimpleSolver.h"
 #include "cf/fvm/VtkWriter.h"
 
+#include "caseEnergy.h"
 #include "caseInit.h"
 #include "caseTurbulence.h"
 
@@ -77,6 +78,12 @@ int main(int argc, char** argv)
         const std::unique_ptr<RansModel> turb =
             app::makeTurbulence(caseDict, mesh, U, phi, nu, schemes);
 
+        // The energy equation reads the flux the coupling closes and, through
+        // the turbulence model, the eddy viscosity and strain rate, so it is
+        // built once both exist.
+        app::CaseEnergy energy =
+            app::makeEnergy(caseDict, mesh, phi, nu, schemes, turb.get());
+
         SimpleControls ctl;
         if (caseDict.has("simple"))
         {
@@ -96,8 +103,8 @@ int main(int argc, char** argv)
             }
         }
 
-        const SimpleResult res =
-            solveIncompressibleSimple(mesh, U, p, phi, nu, schemes, ctl, turb.get());
+        const SimpleResult res = solveIncompressibleSimple(mesh, U, p, phi, nu, schemes, ctl,
+                                                          turb.get(), energy.model.get());
 
         log::info("SIMPLE done: iterations=", res.iterations,
                   " continuity=", res.finalContinuityError,
@@ -105,6 +112,7 @@ int main(int argc, char** argv)
                   res.converged ? " (converged)" : " (NOT converged)");
 
         if (turb) app::logWallReport(*turb);
+        if (energy.model) energy.logBalance();
 
         scalar uMax = 0;
         for (const Vector& u : U.internalField()) uMax = std::max(uMax, mag(u));
@@ -121,6 +129,7 @@ int main(int argc, char** argv)
                 w.addCellVector("U", U.internalField());
                 w.addCellScalar("p", p.internalField());
                 if (turb) app::writeTurbulence(w, *turb);
+                if (energy.model) energy.write(w);
                 w.write(vtk);
             }
         }

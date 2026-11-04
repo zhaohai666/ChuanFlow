@@ -1,0 +1,66 @@
+// Conduction between two isothermal faces of a sealed box at rest.
+// The velocity is zero everywhere, so the energy equation reduces to
+// -div(alpha grad T) = 0 and has one exact answer: the linear profile
+//   T(x) = 300 + (280 - 300) x / L
+// and wall heat rates of k A dT/dx = 0.5 * 0.02 * 20 = 0.2 W. tests/check_energy.py
+// mode `fixed` reads the profile out of the vtu and asserts both, which makes
+// the diffusion operator, the fixedValue temperature condition and the heat
+// balance report one test.
+block
+{
+    min   (0 0 0);
+    max   (1 0.2 0.1);
+    cells (40 1 1);
+
+    xmin  { name hot;    type wall; }
+    xmax  { name cold;   type wall; }
+    ymin  { name bottom; type wall; }
+    ymax  { name top;    type wall; }
+    zmin  { name front;  type wall; }
+    zmax  { name back;   type wall; }
+}
+
+nu 0.01;
+
+patches
+{
+    hot    { U (0 0 0); UType fixedValue; pType zeroGradient; T 300; }
+    cold   { U (0 0 0); UType fixedValue; p 0; pType fixedValue; T 280; }
+    bottom { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top    { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    front  { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    back   { U (0 0 0); UType fixedValue; pType zeroGradient; }
+}
+
+energy
+{
+    rho 1; cp 1; kappa 0.5;
+    // the box is closed and at rest, so SIMPLE stops after the first sweep and
+    // anything below 1 would leave T relaxed toward its starting value instead
+    // of at the solution of the equation
+    relaxation 1;
+    initialT 200;
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+simple
+{
+    maxIterations 20;
+    continuityTol 1e-10;
+    pcorrTol      1e-10;
+    momentumTol   1e-10;
+    relaxU        0.9;
+    relaxP        0.3;
+}
+
+output
+{
+    vtk out_energy_conduction.vtu;
+}

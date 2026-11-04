@@ -1,0 +1,64 @@
+// Conduction driven by a prescribed wall heat flux on one face and an isothermal
+// face on the other, in a sealed box at rest.
+// Fourier's law makes this exactly solvable without knowing the profile's
+// constant: the flux fixes the slope and the cold face fixes the level, so
+//   dT/dx = -q / k = -10 / 0.5 = -20 K/m,  T(L) = 300  =>  T(0) = 320
+// and both walls have to report q * A = 10 * 0.02 = 0.2 W with opposite signs.
+// tests/check_energy.py mode `flux` asserts the profile, the two wall rates and
+// the closure of the balance, which is what pins the sign convention of the
+// `heatFlux` key (positive heats the fluid).
+block
+{
+    min   (0 0 0);
+    max   (1 0.2 0.1);
+    cells (40 1 1);
+
+    xmin  { name feed;   type wall; }
+    xmax  { name cold;   type wall; }
+    ymin  { name bottom; type wall; }
+    ymax  { name top;    type wall; }
+    zmin  { name front;  type wall; }
+    zmax  { name back;   type wall; }
+}
+
+nu 0.01;
+
+patches
+{
+    feed   { U (0 0 0); UType fixedValue; pType zeroGradient; heatFlux 10; }
+    cold   { U (0 0 0); UType fixedValue; p 0; pType fixedValue; T 300; }
+    bottom { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top    { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    front  { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    back   { U (0 0 0); UType fixedValue; pType zeroGradient; }
+}
+
+energy
+{
+    rho 1; cp 1; kappa 0.5;
+    relaxation 1;
+    initialT 200;
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+simple
+{
+    maxIterations 20;
+    continuityTol 1e-10;
+    pcorrTol      1e-10;
+    momentumTol   1e-10;
+    relaxU        0.9;
+    relaxP        0.3;
+}
+
+output
+{
+    vtk out_energy_flux.vtu;
+}

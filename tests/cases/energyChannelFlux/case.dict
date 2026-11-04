@@ -1,0 +1,77 @@
+// Heated laminar channel: a force-driven plane Poiseuille flow with the same
+// heat flux entering through both walls.
+// For a fully developed flow with uniform wall flux the temperature field has a
+// closed form, and the checker tests the part of it that is not the streamwise
+// trend - the cross-sectional shape, which is where convection and wall-normal
+// conduction actually balance:
+//   u(eta)  = Umax (1 - eta^2),   T = G x + theta(eta)
+//   theta   = A h^2 (eta^2/2 - eta^4/12 - 13/140) + C h eta
+//   A = G Umax/alpha,  C = q/k - 2 A h/3,  G = q/(rho cp Ub h)
+// Its wall value gives the Nusselt number of the geometry,
+//   Tw - Tb = 17 q h / (35 k)  =>  Nu_Dh = 140/17 = 8.235  (Dh = 4h)
+// and its slope gives the mixing-cup rise, so tests/check_energy.py mode
+// `channel` verifies convection against the flux that closes continuity and the
+// eddy-free diffusion of a scalar through a sheared velocity - the coupling a
+// heat-exchanger or a heated wellbore calculation lives or dies on.
+// rho = cp = 1 keeps the equation kinematic, so alpha = kappa = 2e-3 and
+// Pr = nu/alpha = 5. The conductivity is deliberately low: the axial Pe = Ub L /
+// alpha = 33 is what keeps the isothermal inlet from conducting backwards into
+// the interior, which at kappa = 0.01 (Pe 6.7) flattened the mixing-cup slope to
+// 13.4 against the analytic 15 and left a 0.65 K linear-fit residual.
+block
+{
+    min   (0 0 0);
+    max   (1 0.2 0.1);
+    cells (20 20 1);
+
+    xmin  { name left;   type symmetry; }
+    xmax  { name right;  type symmetry; }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+nu 0.01;
+
+patches
+{
+    // uniform gradient: the field is x-invariant, so zeroGradient is exact, and
+    // one fixed pressure anchors the Poisson solve against the body force
+    left  { UType zeroGradient; p 0; pType fixedValue; T 300; }
+    right { UType zeroGradient; pType zeroGradient; }
+    bottom{ U (0 0 0); UType fixedValue; pType zeroGradient; heatFlux 0.1; }
+    top   { U (0 0 0); UType fixedValue; pType zeroGradient; heatFlux 0.1; }
+}
+
+energy
+{
+    rho 1; cp 1; kappa 0.002;
+    relaxation 1;
+    initialT 300;
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+simple
+{
+    maxIterations 2000;
+    continuityTol 1e-8;
+    pcorrTol      1e-8;
+    momentumTol   1e-8;
+    relaxU        0.9;
+    relaxP        0.03;
+    pRelaxStart   0.02;
+    force       (0.2 0 0);
+}
+
+output
+{
+    vtk out_energy_channel.vtu;
+}

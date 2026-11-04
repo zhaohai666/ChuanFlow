@@ -17,7 +17,8 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
                                                 scalar nu,
                                                 const Schemes& schemes,
                                                 const PisoControls& ctl,
-                                                IEddyViscosity* turb)
+                                                IEddyViscosity* turb,
+                                                IEnergyCoupling* energy)
 {
     const label nC = mesh.nCells();
     const auto& vol = mesh.cellVolumes();
@@ -27,6 +28,9 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
 
     if (turb) turb->correctTurbulence(ctl.dt);
     const Field<scalar>* nuEffFace = turb ? &turb->nuEffFace() : nullptr;
+    // the buoyancy of the temperature the previous step left behind; it rides
+    // into HbyA with the other forces, so it reaches the flux the same way
+    const Field<Vector>* buoy = energy ? energy->buoyancyForce() : nullptr;
 
     // The pressure keeps its own BCs; the correction equation is not needed
     // here because p is solved implicitly inside the step (see below).
@@ -45,7 +49,8 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
     {
         const std::size_t u = static_cast<std::size_t>(c);
         const Vector force =
-            ctl.bodyForce + (ctl.cellForce ? (*ctl.cellForce)[u] : Vector::zero());
+            ctl.bodyForce + (ctl.cellForce ? (*ctl.cellForce)[u] : Vector::zero())
+                          + (buoy ? (*buoy)[u] : Vector::zero());
         const Vector rhs = vol[u] * (force - gradP[u]);
         for (int comp = 0; comp < 3; ++comp)
         {
@@ -177,6 +182,10 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
             break;
         }
     }
+
+    // The temperature rides the flux the step closed on, so the buoyancy the
+    // next step is forced with is the one this step's motion produced.
+    if (energy) energy->correctEnergy(ctl.dt);
 
     return res;
 }

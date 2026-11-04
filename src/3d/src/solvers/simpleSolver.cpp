@@ -37,7 +37,8 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
                                        scalar nu,
                                        const Schemes& schemes,
                                        const SimpleControls& ctl,
-                                       IEddyViscosity* turb)
+                                       IEddyViscosity* turb,
+                                       IEnergyCoupling* energy)
 {
     const label nC = mesh.nCells();
     const auto& vol = mesh.cellVolumes();
@@ -48,6 +49,7 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
     for (int iter = 1; iter <= ctl.maxIterations; ++iter)
     {
         if (turb) turb->correctTurbulence(0);
+        const Field<Vector>* buoy = energy ? energy->buoyancyForce() : nullptr;
 
         // ---------------- momentum ----------------
         // deferred pressure gradient: the solve carries -V grad(p^n) so x is
@@ -73,7 +75,10 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         for (label c = 0; c < nC; ++c)
         {
             const std::size_t u = static_cast<std::size_t>(c);
-            const Vector rhs = vol[u] * (ctl.bodyForce - gradPn[u]);
+            // the buoyancy of the previous sweep's temperature, so the force and
+            // the field that produced it belong to the same sweep
+            const Vector rhs =
+                vol[u] * (ctl.bodyForce + (buoy ? (*buoy)[u] : Vector::zero()) - gradPn[u]);
             for (int comp = 0; comp < 3; ++comp)
             {
                 UEqn.addRhs(c, comp, rhs[comp]);
@@ -284,6 +289,11 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
             U.internalField()[u] = Hfree[u]
                                  - aP * rAUr[u] * (gradPFull[u] - gradPn[u]);
         }
+
+        // Temperature is transported by the flux this sweep closed, so the
+        // buoyancy the next sweep is forced with comes from the velocity field
+        // that the current sweep produced.
+        if (energy) energy->correctEnergy(0);
 
         const scalar errAfter = continuityError(mesh, phi);
 

@@ -130,6 +130,61 @@ add_test(
         $<TARGET_FILE:chflow-vof>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofOscillating/case.dict)
 
+# 3D energy equation. The three conduction cases have no flow at all, so they
+# isolate the diffusion operator, the temperature conditions (fixedValue,
+# heatFlux, adiabatic) and the heat-balance report; the decay case runs the same
+# physics through the transient coupling against a discrete eigenmode; the rest
+# case is the Boussinesq force a uniform temperature offset implies, and the
+# channel case is where convection, wall flux and the continuity flux have to
+# agree - its Nusselt number is the number the kernel is not given.
+add_test(
+    NAME verify.energyConductionFixed
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_energy.py
+        $<TARGET_FILE:chflow-simple-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/energyConductionFixed/case.dict
+        fixed)
+
+add_test(
+    NAME verify.energyConductionFlux
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_energy.py
+        $<TARGET_FILE:chflow-simple-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/energyConductionFlux/case.dict
+        flux)
+
+add_test(
+    NAME verify.energyConductionSource
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_energy.py
+        $<TARGET_FILE:chflow-simple-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/energyConductionSource/case.dict
+        source)
+
+add_test(
+    NAME verify.energyDecay
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_energy.py
+        $<TARGET_FILE:chflow-piso-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/energyDecay/case.dict
+        decay)
+
+add_test(
+    NAME verify.energyBuoyantRest
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_energy.py
+        $<TARGET_FILE:chflow-piso-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/energyBuoyantRest/case.dict
+        rest)
+
+add_test(
+    NAME verify.energyChannelFlux
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_energy.py
+        $<TARGET_FILE:chflow-simple-foam>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/energyChannelFlux/case.dict
+        channel)
+
 add_test(
     NAME verify.steadyNetwork
     COMMAND ${Python3_EXECUTABLE}

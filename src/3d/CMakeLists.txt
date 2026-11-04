@@ -17,6 +17,7 @@ add_library(cf3d STATIC
     src/solvers/pressureCorrection.cpp
     src/solvers/simpleSolver.cpp
     src/solvers/pisoSolver.cpp
+    src/solvers/energySolver.cpp
     src/multiphase/vof.cpp
 )
 

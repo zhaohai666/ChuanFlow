@@ -13,6 +13,7 @@
 #include "cf/fvm/PisoSolver.h"
 #include "cf/fvm/VtkWriter.h"
 
+#include "caseEnergy.h"
 #include "caseInit.h"
 #include "caseTurbulence.h"
 
@@ -115,6 +116,12 @@ int main(int argc, char** argv)
         const std::unique_ptr<RansModel> turb =
             app::makeTurbulence(caseDict, mesh, U, phi, nu, schemes);
 
+        // The energy equation reads the flux the coupling closes and, through
+        // the turbulence model, the eddy viscosity and strain rate, so it is
+        // built once both exist.
+        app::CaseEnergy energy =
+            app::makeEnergy(caseDict, mesh, phi, nu, schemes, turb.get());
+
         scalar t = 0;
         int step = 0, maxCorrectors = 0;
         scalar worstContinuity = 0;
@@ -126,7 +133,7 @@ int main(int argc, char** argv)
             PisoControls stepCtl = ctl;
             stepCtl.dt = dt;
             res = solveTransientIncompressiblePiso(mesh, U, p, phi, nu, schemes, stepCtl,
-                                                   turb.get());
+                                                   turb.get(), energy.model.get());
             t += dt;
             ++step;
             maxCorrectors = std::max(maxCorrectors, res.correctorsUsed);
@@ -139,6 +146,12 @@ int main(int argc, char** argv)
                 log::info("t ", num(t), " uMax ", num(uMax),
                           " cont ", num(res.continuityError),
                           " correctors ", res.correctorsUsed);
+                if (energy.model)
+                {
+                    const volScalarField& T = energy.temperature();
+                    log::info("energy t ", num(t), " Tmin ", num(T.min()),
+                              " Tmax ", num(T.max()));
+                }
             }
         }
 
@@ -164,6 +177,7 @@ int main(int argc, char** argv)
         // the vtu then describe the field the run ended with.
         if (turb) turb->correctTurbulence(ctl.dt);
         if (turb) app::logWallReport(*turb);
+        if (energy.model) energy.logBalance();
 
         log::info("piso done: steps ", step, " endTime ", num(t),
                   " maxCorrectors ", maxCorrectors,
@@ -179,6 +193,7 @@ int main(int argc, char** argv)
                 w.addCellVector("U", U.internalField());
                 w.addCellScalar("p", p.internalField());
                 if (turb) app::writeTurbulence(w, *turb);
+                if (energy.model) energy.write(w);
                 w.write(vtk);
             }
         }

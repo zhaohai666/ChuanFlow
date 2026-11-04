@@ -2,6 +2,7 @@
 
 #include "cf/common/Vector.h"
 #include "cf/fvm/EddyViscosity.h"
+#include "cf/fvm/EnergyCoupling.h"
 #include "cf/fvm/FvMatrix.h"
 
 namespace cf
@@ -84,6 +85,9 @@ struct SimpleResult
 /// `turb` (null for laminar) is advanced once per outer iteration and supplies
 /// the face-wise nu + nut for the momentum diffusion, so on a wall-function
 /// mesh the wall shear is the law-of-the-wall value.
+/// `energy` (null when the case has no thermal field) transports temperature
+/// with the flux of the sweep just closed, once per outer iteration, and its
+/// Boussinesq acceleration forces the momentum equation of the next one.
 /// A case is converged when the pressure has stopped moving (pcorrTol -- the
 /// |dp| branch is the primary signal here) or the predictor continuity is
 /// below continuityTol, *and* the velocity has stopped changing at the
@@ -95,6 +99,7 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
                                        scalar nu,
                                        const Schemes& schemes,
                                        const SimpleControls& ctl,
-                                       IEddyViscosity* turb = nullptr);
+                                       IEddyViscosity* turb = nullptr,
+                                       IEnergyCoupling* energy = nullptr);
 
 } // namespace cf

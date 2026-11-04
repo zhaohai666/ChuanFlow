@@ -1,0 +1,70 @@
+// Decay of a cosine temperature mode in a closed box at rest, advanced with the
+// transient solver.
+// A cosine over the cell centres, cos(m pi (i + 1/2)/N), is an *exact*
+// eigenvector of the cell-centred Neumann Laplacian, with
+//   lambda_d = 4 sin^2(m pi / 2N) / dx^2
+// so implicit Euler on a zero-flux field has the closed answer
+//   amplitude(t) = A / product_n (1 + dt alpha lambda_d)
+// and the discrete mean is conserved exactly. tests/check_energy.py mode `decay`
+// replays the solver's own step sequence to compare the reported extrema with
+// that factor, then compares the factor with the continuous exp(-alpha k^2 t):
+// one line tests the transient term and the adiabatic condition, the other the
+// size of the discretisation error.
+block
+{
+    min   (0 0 0);
+    max   (1 0.2 0.1);
+    cells (40 1 1);
+
+    xmin  { name left;   type wall; }
+    xmax  { name right;  type wall; }
+    ymin  { name bottom; type wall; }
+    ymax  { name top;    type wall; }
+    zmin  { name front;  type wall; }
+    zmax  { name back;   type wall; }
+}
+
+nu 0.01;
+
+patches
+{
+    left   { U (0 0 0); UType fixedValue; p 0; pType fixedValue; }
+    right  { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    bottom { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top    { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    front  { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    back   { U (0 0 0); UType fixedValue; pType zeroGradient; }
+}
+
+// no T key on any patch: every face is adiabatic, which is what makes the mode
+// an eigenvector and the mean an invariant
+energy
+{
+    rho 1; cp 1; kappa 0.5;
+    initialT 0;
+    initialMode 1;
+    initialAmplitude 1;
+    initialAxis x;
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+piso
+{
+    dt          1e-3;
+    endTime     0.2;
+    correctors  2;
+    continuityTol 1e-12;
+    reportEvery 50;
+}
+
+output
+{
+    vtk out_energy_decay.vtu;
+}

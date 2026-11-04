@@ -37,6 +37,15 @@ namespace cf
 /// 1/(1 + dt C |s*| D / K_s). The mixture momentum feels the slip inertia
 /// alpha alpha_g (rhoG - rhoL) ds/dt lagged one step; it vanishes at steady
 /// state, so the steady holdups of the algebraic closures are reproduced.
+/// The full closure (model full) solves the gas momentum per section
+/// instead - the distributed pressure momentum form: the gas share of the
+/// mixture row alpha_g dp (with the proportional wall split alpha_g fr
+/// cancelling against the gas friction share) minus gas gravity minus the
+/// interfacial drag drives dvG/dt, which with vG = vM + alpha s reduces to
+///   ds/dt = [(rho_m - rhoG)(g sinT + du/dt) - sigma/alpha_g]/(alpha rhoG),
+/// terminal slip s* = sign(R) sqrt(alpha_g |R| / C) with
+/// R = (rho_m - rhoG)(g sinT + du/dt): buoyancy and mixture acceleration
+/// drive the slip, wall friction rides the pressure field.
 /// Phases are incompressible and the area is constant, so the mixture
 /// velocity is uniform along the pipe. With the gas EOS on (fluid gasR > 0)
 /// the gas density becomes a per-section state evolved by gas mass
@@ -136,12 +145,19 @@ struct TwoFluidClosure
 {
     int model = 0;             // 0 = wallis (constant slip velocity),
                                // 1 = zuber (vG = C0 vM + vD),
-                               // 2 = dynamic (transported slip state)
+                               // 2 = dynamic (transported slip state),
+                               // 3 = full gas momentum (transported slip
+                               // state driven by the per-cell gas momentum
+                               // balance: buoyancy + mixture acceleration
+                               // against the interfacial drag; the wall
+                               // friction rides the pressure field through
+                               // the proportional split)
     double slipVelocity = 0;   // wallis us, m/s (positive = gas runs ahead)
     double c0 = 1.0;           // zuber profile parameter
     double driftVelocity = 0;  // zuber vD, m/s
-    double interfacialDrag = 0;// dynamic: kg/m4, drag law sigma = C s |s|
-                               // per unit volume; required > 0 for model 2
+    double interfacialDrag = 0;// dynamic/full: kg/m4, drag law
+                               // sigma = C s |s| per unit volume;
+                               // required > 0 for models 2 and 3
 };
 
 struct TwoFluidBoundary
@@ -417,6 +433,12 @@ private:
     double liquidFlux(double alpha, double s) const;
     double gasVolumeFlux(double alpha, double s) const;
     double gasVelocity(double alpha, double s) const;
+    // closures with a transported slip state share the face-local flux
+    // machinery (models 2 and 3 differ only in the slip ODE)
+    bool slipClosure() const
+    {
+        return cfg_.closure.model == 2 || cfg_.closure.model == 3;
+    }
     bool eosOn() const { return cfg_.fluid.gasR > 0; }
     double gasDensityOf(double p, double temperature) const
     {
@@ -480,6 +502,8 @@ private:
 ///   closure { model wallis; slipVelocity 0.3; }   // or model zuber;
 ///                                                 //      C0 1.2; driftVelocity 0.15;
 ///                                                 // or model dynamic;
+///                                                 //      interfacialDrag 500;
+///                                                 // or model full;
 ///                                                 //      interfacialDrag 500;
 ///   initial { alpha 0; water 0; temperature 300; fills { ... } }
 ///   boundaries

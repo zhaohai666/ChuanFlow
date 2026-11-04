@@ -1,0 +1,82 @@
+// Full gas momentum closure (distributed pressure momentum, first
+// increment): a rate-driven vertical riser with the ideal-gas EOS on and
+// closure model "full". The per-section slip state is driven by the gas
+// momentum balance with the local mixture-row pressure gradient substituted
+// (the gas share alpha_g dp with the proportional wall split alpha_g fr
+// cancelling it), which reduces to
+//   ds/dt = [(rho_m - rhoG)(g sinT + du/dt) - sigma/alpha_g]/(alpha rhoG),
+// sigma = C s|s| semi-implicit through the origin secant, so the terminal
+// slip is s* = sign(R) sqrt(alpha_g |R| / C) with R = (rho_m - rhoG) g sinT
+// (du/dt = 0 for a rate-driven line). Wall friction rides the pressure
+// field: the drive carries buoyancy and mixture acceleration only.
+//
+// Closed-form steady state (volume conservation pins the phase fluxes at
+// the injected rates, and the gas mass flux in = out at the injected
+// reference density pins rhoG* = rhoG = 500 exactly, hence the EOS pressure
+// p* = rhoG gasR T0 = 1.5e8 Pa uniform):
+//   rho_m - rhoG = alpha (rhoL - rhoG) = 500 alpha
+//   s* = sqrt(alpha_g alpha (rhoL - rhoG) g / C)   (C = 1000, sinT = 1)
+//   F(alpha*, s*) = vsl = 0.15   (liquid volume flux pins the holdup)
+// The (alpha*, s*) pair is a coupled fixed point solved by iteration here:
+// alpha* = 0.776065, s* = 0.923114 (checker root-finds independently).
+// The heavy artificial gas (rhoG 500, gasR 1000) makes the slip ODE
+// genuinely inertial at dt 0.05 (rate dt ~ 1), exercising the implicit
+// Euler relaxation instead of a quasi-algebraic terminal pin. The
+// buoyancy-driven fallback keeps the bulk liquid flux negative through
+// much of the transient (liquid actually flows down while the gas rushes
+// past), so the injected-cut front needs ~350 s to fully flush - hence
+// the long endTime.
+//
+// tests/check_two_fluid.py mode fullmomentum replicates the coupled slip +
+// Godunov holdup + water + gas mass recursion cell by cell (1e-9), checks
+// vsl + vsg = vm and p = rhoG gasR T0 per section, the Churchill + gravity
+// drop, the pnode march from the outlet anchor, and the uniform steady
+// state (alpha*, s*, rhoG* = 500, flushed water cut).
+//
+// Measured anchors (dt 0.05, endTime 400): steady alpha* = 0.776065,
+// s* = 0.923114, EOS pressure 1.500000e8 Pa, water cut flushed to 0.3.
+fluid
+{
+    rhoL 1000;
+    rhoG 500;
+    muL  0.01;
+    muG  1e-5;
+    gasR 1000;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 90;
+    sections 20;
+}
+
+closure
+{
+    model full;
+    interfacialDrag 1000;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.8;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.15; vsg 0.25; waterFraction 0.3; }
+    outlet { type fixedPressure; p 1.5e8; }  // absolute with the EOS on;
+                                             // only the backflow ghost uses
+                                             // it (G >= 0 throughout)
+}
+
+time
+{
+    dt 0.05;
+    endTime 400;
+    reportEvery 400;
+}

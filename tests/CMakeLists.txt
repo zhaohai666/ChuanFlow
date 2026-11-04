@@ -332,7 +332,7 @@ foreach(tcase twoFluidFront twoFluidSteadyHoldupWallis
               twoFluidDynamicSlipHoldup twoFluidCompressibleHoldup
               twoFluidWellChain twoFluidHydrateSealed twoFluidHydrateFlow
               twoFluidJunction twoFluidNetworkSpan
-              twoFluidEntrained)
+              twoFluidEntrained twoFluidFullMomentum)
     string(REGEX REPLACE "^twoFluid" "" mode ${tcase})
     string(TOLOWER ${mode} mode)
     add_test(

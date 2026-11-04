@@ -156,6 +156,25 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             d_0 = (E_in vsl + alpha* (dx/tau) E_eq*) /
             (alpha* (vG* + dx/tau)) — the flushed water cut and the
             per-cell Churchill pressure drop.
+  mode = fullmomentum    : full gas momentum closure (distributed pressure
+            momentum first increment) - rate-driven vertical riser with the
+            ideal-gas EOS on. The per-section slip solves
+            ds/dt = [(rho_m - rhoG)(g sinT + aM) - sigma/alpha_g]
+                    / (alpha rhoG)
+            with sigma = C s|s| semi-implicit through the origin secant:
+            the mixture-row pressure gradient is substituted (the gas share
+            alpha_g fr cancels the proportional gas wall split), so only
+            buoyancy and the mixture acceleration drive the slip and wall
+            friction rides the pressure field. Rate-driven: aM = 0, so the
+            terminal slip is s* = sqrt(alpha_g alpha (rhoL - rhoG) g / C)
+            and the coupled fixed point F(alpha*, s*) = vsl with
+            F(a) = s a^2 + (vM - s) a; volume conservation pins rhoG* = rhoG
+            exactly (EOS pressure p* = rhoG gasR T0 uniform). The checker
+            replicates the coupled slip + Godunov holdup + water + gas-mass
+            recursion cell by cell (1e-9), verifies vsl + vsg = vm and the
+            flushed water cut, the Churchill + gravity pressure drop and the
+            pnode march from the outlet anchor, and the uniform steady state
+            (alpha*, s*, rhoG* = rhoG).
 """
 import math
 import subprocess
@@ -1998,6 +2017,208 @@ elif mode == "entrained":
                      f"{drift[:4]}")
     else:
         print("ok:   steady state held over the final 10 s")
+
+elif mode == "fullmomentum":
+    # full gas momentum closure (distributed pressure momentum): rate
+    # driven vertical riser, EOS on. The per-section slip solves
+    #   ds/dt = [(rho_m - rhoG)(g sinT + aM) - sigma/alpha_g]/(alpha rhoG)
+    # with sigma = C s|s| semi-implicit through the origin secant: the
+    # mixture-row pressure gradient is substituted (its alpha_g fr share
+    # cancels the proportional gas wall split), so buoyancy and the
+    # mixture acceleration drive the slip and wall friction rides the
+    # pressure field. Rate-driven: vm is pinned at the injected rates from
+    # the constructor on, so aM = 0 and the terminal slip is
+    # s* = sqrt(alpha_g alpha (rhoL - rhoG) g / C) with the coupled
+    # fixed point F(alpha*, s*) = vsl, F(a) = s a^2 + (vM - s) a
+    N, L, DI, DT = 20, 20.0, 0.02, 0.05
+    C_DRAG, VSL, VSG, VM = 1000.0, 0.15, 0.25, 0.4
+    GAS_R, T0 = 1000.0, 300.0
+    RHO_L, RHO_G, MU_L, MU_G = 1000.0, 500.0, 0.01, 1e-5
+    SIN_T, PHI_IN, PHI0, A0 = 1.0, 0.3, 0.8, 0.5
+    P_OUT = 1.5e8
+    DX = L / N
+
+    def rho_g_cell(mg, a):
+        ag = 1.0 - a
+        return mg / (ag * DX) if ag > 1e-12 else RHO_G
+
+    def slip_map(a, s_old, mg, dt):
+        # kernel slipStep model full: buoyancy drive (rate-driven aM = 0),
+        # section-local gas density, origin-secant semi-implicit drag
+        ag = 1.0 - a
+        if a <= 1e-12 or ag <= 1e-12:
+            return 0.0
+        rho_g = rho_g_cell(mg, a)
+        rho_m = a * RHO_L + ag * rho_g
+        drive = (rho_m - rho_g) * G * SIN_T
+        rate = C_DRAG * abs(s_old) / (ag * a * rho_g)
+        return (s_old / dt + drive / (a * rho_g)) / (1.0 / dt + rate)
+
+    def face_fluxes(alpha, slip):
+        # liquid and gas volume fluxes of the full closure: the same face
+        # machinery as the dynamic closure (interior godunov on the
+        # averaged slip, outlet face the last cell's flux)
+        flux, gvol = [VSL], [VSG]
+        for j in range(1, N):
+            s = 0.5 * (slip[j - 1] + slip[j])
+            flux.append(godunov(s, VM - s, 0.0, alpha[j - 1], alpha[j]))
+            gvol.append(godunov(-s, s - VM, VM, alpha[j - 1], alpha[j]))
+        sl = slip[N - 1]
+        a_end = alpha[N - 1]
+        flux.append(sl * a_end * a_end + (VM - sl) * a_end)
+        gvol.append(VM + (sl - VM) * a_end - sl * a_end * a_end)
+        return flux, gvol
+
+    # coupled steady state: s*(a) = sqrt(alpha_g a (rhoL - rhoG) g / C)
+    # and the holdup root F(alpha*, s*(alpha*)) = vsl, iterated to machine
+    # precision (the map contracts at ~0.3 per sweep)
+    k_drive = (RHO_L - RHO_G) * G * SIN_T / C_DRAG
+
+    def s_of(a):
+        return math.sqrt((1.0 - a) * a * k_drive)
+
+    a_it = 0.7
+    for _ in range(200):
+        s_it = s_of(a_it)
+        disc = (VM - s_it) ** 2 + 4.0 * s_it * VSL
+        a_new = ((s_it - VM) + math.sqrt(disc)) / (2.0 * s_it)
+        if abs(a_new - a_it) < 1e-15:
+            a_it = a_new
+            break
+        a_it = a_new
+    a_star = a_it
+    s_star_v = s_of(a_star)
+
+    # coupled transient replication with the gas-mass state (kg/m2)
+    alpha = [A0] * N
+    slip = [0.0] * N
+    water = [PHI0] * N
+    mg = [RHO_G * (1.0 - A0) * DX] * N
+    steps_done = 0
+    net_in = 0.0
+    for k, fr in enumerate(frames):
+        want_steps = 0 if k == 0 else k * 400
+        while steps_done < want_steps:
+            slip = [slip_map(alpha[i], slip[i], mg[i], DT) for i in range(N)]
+            flux, gvol = face_fluxes(alpha, slip)
+            wf = [PHI_IN * flux[0]]
+            for j in range(1, N):
+                if flux[j] == 0:
+                    wf.append(0.0)
+                else:
+                    wf.append((water[j - 1] if flux[j] >= 0 else water[j])
+                              * flux[j])
+            wf.append(water[N - 1] * flux[N])
+            gm = []
+            for j in range(N + 1):
+                if j == 0:
+                    rho_up = RHO_G  # injected reference density
+                elif j == N:
+                    rho_up = (rho_g_cell(mg[N - 1], alpha[N - 1])
+                              if gvol[j] >= 0 else P_OUT / (GAS_R * T0))
+                elif gvol[j] >= 0:
+                    rho_up = rho_g_cell(mg[j - 1], alpha[j - 1])
+                else:
+                    rho_up = rho_g_cell(mg[j], alpha[j])
+                gm.append(rho_up * gvol[j])
+            new_a, new_w, new_mg = [], [], []
+            for i in range(N):
+                na = min(max(alpha[i] + DT / DX * (flux[i] - flux[i + 1]),
+                             0.0), 1.0)
+                af_new = (alpha[i] * water[i]
+                          + DT / DX * (wf[i] - wf[i + 1]))
+                cap = max(na, 0.0)
+                af_new = min(max(af_new, 0.0), cap)
+                new_a.append(na)
+                new_w.append(af_new / cap if cap > 1e-9 else 0.0)
+                new_mg.append(max(mg[i] - DT * (gm[i + 1] - gm[i]), 0.0))
+            alpha, water, mg = new_a, new_w, new_mg
+            net_in += DT * (gm[0] - gm[N])
+            steps_done += 1
+        t = fr["t"]
+        check(f"vm imposed (t={t})", fr["vm"], VM, 1e-12)
+        ok_frame = True
+        for i in range(N):
+            got = fr["cells"][i]
+            want_p = rho_g_cell(mg[i], alpha[i]) * GAS_R * T0
+            if (abs(got["alpha"] - alpha[i]) > 1e-9 + 1e-9 * abs(alpha[i])
+                    or abs(got.get("s", 0.0) - slip[i])
+                    > 1e-9 + 1e-9 * abs(slip[i])
+                    or abs(got.get("p", 0.0) - want_p) > 1e-9 * want_p
+                    or abs(got.get("water", 0.0) - water[i])
+                    > 1e-9 + 1e-9 * abs(water[i])):
+                fails.append(f"cell {i} (t={t}): got={got} want alpha="
+                             f"{alpha[i]} s={slip[i]} p={want_p} "
+                             f"water={water[i]}")
+                ok_frame = False
+                break
+        if ok_frame:
+            print(f"ok:   alpha/slip/p/water fields replicated at t={t}"
+                  " (1e-9)")
+    # global gas inventory: emitted p/alpha reconstruct the solver's
+    # inventory, which must equal the replicated boundary-flux balance
+    m0 = sum(RHO_G * (1.0 - A0) * DX for _ in range(N))
+    m_end = sum(c["p"] * (1.0 - c["alpha"]) * DX / (GAS_R * T0)
+                for c in frames[-1]["cells"])
+    check("gas inventory balance", m_end, m0 + net_in, 1e-9)
+    # steady state: the coupled (alpha*, s*) fixed point with rhoG* = RHO_G
+    rho_m = a_star * RHO_L + (1.0 - a_star) * RHO_G
+    mu_m = a_star * MU_L + (1.0 - a_star) * MU_G
+    re = rho_m * VM * DI / mu_m
+    fr_cell = churchill(re, 0.0) * (DX / DI) * 0.5 * rho_m * VM * VM
+    grav_cell = rho_m * G * SIN_T * DX
+    dp_want = N * (fr_cell + grav_cell)
+    p_star = RHO_G * GAS_R * T0
+    for c in frames[-1]["cells"]:
+        if abs(c["alpha"] - a_star) > 1e-9:
+            fails.append(f"steady holdup {c['alpha']} != {a_star}")
+            break
+        if abs(c["s"] - s_star_v) > 1e-9 + 1e-9 * abs(s_star_v):
+            fails.append(f"steady slip {c['s']} != {s_star_v}")
+            break
+        if abs(c["vsl"] - VSL) > 1e-9:
+            fails.append(f"steady vsl {c['vsl']} != {VSL}")
+            break
+        if abs(c["vsg"] - VSG) > 1e-9:
+            fails.append(f"steady vsg {c['vsg']} != {VSG}")
+            break
+        if abs(c["p"] - p_star) > 1e-9 * p_star:
+            fails.append(f"steady p {c['p']} != {p_star} (rhoG* != rhoG)")
+            break
+    else:
+        print(f"ok:   uniform steady (alpha*, s*) = ({a_star:.10f},"
+              f" {s_star_v:.10f}) with rhoG* = rhoG and the EOS pressure"
+              f" {p_star:.6e} (1e-9)")
+    check("pressure drop (Churchill friction + gravity)", frames[-1]["dp"],
+          dp_want, 1e-9)
+    # node pressure march from the outlet anchor: p[j] = p[j+1] + loss_j
+    node_bad = [j for j in range(N + 1)
+                if abs(frames[-1]["nodes"][j]
+                       - (P_OUT + (N - j) * (fr_cell + grav_cell)))
+                > 1e-9 * (P_OUT + (N - j) * (fr_cell + grav_cell))]
+    if node_bad:
+        fails.append(f"pnode march off at nodes {node_bad[:4]}")
+    else:
+        print(f"ok:   pnode marches from the outlet anchor {P_OUT:.6e} by"
+              f" the per-cell loss {fr_cell + grav_cell:.6e} (1e-9)")
+    wat_bad = [i for i in range(N)
+               if abs(frames[-1]["cells"][i]["water"] - PHI_IN) > 1e-9]
+    if wat_bad:
+        fails.append(f"steady water cells {wat_bad[:4]} != injected cut")
+    else:
+        print(f"ok:   water cut flushed to the injected {PHI_IN} (1e-9)")
+    drift = []
+    for key, tol in (("alpha", 1e-9), ("water", 1e-9), ("s", 1e-9),
+                     ("p", 1e-9 * P_OUT)):
+        for i in range(N):
+            if (abs(frames[-1]["cells"][i][key]
+                    - frames[-2]["cells"][i][key]) > tol):
+                drift.append(f"{key}[{i}]")
+    if drift:
+        fails.append(f"state still drifting between the last two frames: "
+                     f"{drift[:4]}")
+    else:
+        print("ok:   steady state held over the final 20 s")
 
 else:
     raise SystemExit(f"unknown mode {mode}")

@@ -121,8 +121,9 @@ int main(int argc, char** argv)
             const std::vector<double> vsl = s.cellVsl();
             const std::vector<double> vsg = s.cellVsg();
             const std::vector<double> sl
-                = c.closure.model == 2 ? s.cellSlip()
-                                       : std::vector<double>();
+                = c.closure.model == 2 || c.closure.model == 3
+                      ? s.cellSlip()
+                      : std::vector<double>();
             const std::vector<double> T = s.cellTemperature();
             const std::vector<double> ep
                 = c.fluid.gasR > 0 ? s.cellPressure() : std::vector<double>();

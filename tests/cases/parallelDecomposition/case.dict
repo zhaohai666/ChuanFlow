@@ -1,0 +1,74 @@
+// Domain decomposition of the 3D kernel: a 12 x 8 x 5 hex box (480 cells) cut
+// into 1, 2, 3, 5, 7, 8 and 16 domains by a recursive coordinate-median split,
+// with the explicit Gauss operators evaluated domain by domain.
+//
+// Two fields ride the same cut:
+//
+//   linear    T = 1 + 2x - y + 0.5z
+//             the exactness anchor: bounded-linear interpolation is exact for a
+//             linear field, so the Gauss sum gives (2, -1, 0.5) on hex and tet
+//             meshes alike. Nothing here depends on how the mesh is cut.
+//   quadratic T = 1 + 2x - y + 0.5z + 3x^2 - 0.25y^2 + 1.5xy - 2yz + 0.75zx
+//             the invariance field: its discrete gradient is NOT the analytic
+//             one (interpolation at a face carries an O(dx^2) error), so what is
+//             owed is that the decomposed stencil reproduces the serial one.
+//
+// Three things are checked:
+//
+//   1. The partition is a partition: 480 cells, each owned once, load balanced
+//      to one cell; the faces reassemble the mesh exactly (boundary entries =
+//      the mesh's boundary faces, local internal + coupled = its internal ones).
+//   2. A decomposed stencil IS the serial stencil. Every domain sweeps its faces
+//      in global order and interpolates with the mesh's own bounded weights, so
+//      the assembled gradient and net out-flux match the serial fvc::grad /
+//      fvc::divPhi bit for bit -- gradDev and divDev are reported and the
+//      checker expects 0, not a fitted tolerance. The same fields must also come
+//      out of 1, 2, 3, 5, 7, 8 and 16 domains.
+//   3. The physics does not move when the mesh is cut. The linear field's
+//      gradient is the analytic one (gradAnalytic), and a divergence-free field
+//      keeps a zero net out-flux on every cell that has no face on the outer
+//      boundary -- including the cells a cut runs through, where the two sides
+//      of the coupled face must use one flux value.
+//
+// Halo slots must hold exactly their owner's value (the app fatals otherwise and
+// reports the checksum it exchanged), and the per-domain partials reduced to one
+// global sum/min/max must equal the serial ones.
+//
+// One .vtu per domain count, all in global cell order, so the checker can weigh
+// the fields itself: out_parallel_1.vtu ... _16.vtu.
+block
+{
+    min   (0 0 0);
+    max   (1 0.5 0.25);
+    cells (12 8 5);
+}
+
+decompose
+{
+    domains (1 2 3 5 7 8 16);
+}
+
+field
+{
+    linear    (1 2 -1 0.5 0 0 0 0 0 0);
+    quadratic (1 2 -1 0.5 3 -0.25 0 1.5 -2 0.75);
+}
+
+verify
+{
+    // linear field: gradient against the analytic one, on this hex mesh
+    linearGradAnalyticTol 1e-10;
+    // quadratic field: reported for reference, only required to be O(dx)
+    quadraticGradAnalyticTol 0.10;
+    // decomposed sweep against the serial one: expected to be exact
+    stencilDevTol   0;
+    // cut-to-cut invariance of the written fields: expected to be exact
+    domainCountDevTol 0;
+    // interior-cell net out-flux of a divergence-free field
+    divInteriorTol  1e-13;
+}
+
+output
+{
+    vtk out_parallel.vtu;
+}

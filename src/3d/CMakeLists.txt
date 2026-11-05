@@ -3,6 +3,8 @@ add_library(cf3d STATIC
     src/mesh/blockMesh.cpp
     src/mesh/gmshMesh.cpp
     src/mesh/meshLoader.cpp
+    src/parallel/domainDecomposition.cpp
+    src/parallel/domainOperators.cpp
     src/fields/volFields.cpp
     src/discrete/fvMatrix.cpp
     src/discrete/interpolate.cpp

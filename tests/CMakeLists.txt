@@ -215,6 +215,26 @@ add_test(
         $<TARGET_FILE:chflow-3d-compressible>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/sodShockTube/case.dict)
 
+# 3D domain decomposition, first increment: the partition, the halo exchange and
+# the global reductions, verified with no MPI in sight. The checker re-derives
+# the coordinate-median ordering and every domain's halo/face classes from the
+# mesh geometry in the .vtu, holds the assembled gradient and net out-flux to the
+# serial operators exactly, and requires the written fields to be identical for
+# 1, 2, 3, 5, 7, 8 and 16 domains (hex) and 1, 3, 7 and 13 (tets).
+add_test(
+    NAME verify.parallelDecomposition
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_parallel.py
+        $<TARGET_FILE:chflow-3d-parallel>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/parallelDecomposition/case.dict)
+
+add_test(
+    NAME verify.parallelDecompositionTet
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_parallel.py
+        $<TARGET_FILE:chflow-3d-parallel>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/parallelDecomposition/caseTet.dict)
+
 # 3D energy equation. The three conduction cases have no flow at all, so they
 # isolate the diffusion operator, the temperature conditions (fixedValue,
 # heatFlux, adiabatic) and the heat-balance report; the decay case runs the same

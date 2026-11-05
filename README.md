@@ -259,8 +259,20 @@ print(result.pressure_profile)
   对 0.532；`sodShockTube` 400 格上 checker 逐格重放同一套递推、与写出的场差 5.0e-13，
   星态 p*/u*/ρ* 没给求解器而平台逐点对精确 Riemann 采样（star right 0.02%，稀疏扇区对着
   自己那条自相似剖面 4.6%/6.4%），接触与激波按密度剖面的半跃变交叉点定身（0.21σ、0.09σ），
-  全场 L1 在 400/800 格的收敛率 ρ 0.66、u 0.83、p 0.77）
-  已落地，可压缩 Navier–Stokes（黏性应力与热通量）、高阶重构、MPI 并行与 Eigen/PETSc 后端待做）
+  全场 L1 在 400/800 格的收敛率 ρ 0.66、u 0.83、p 0.77）+
+  **三维并行首增量**（与传输后端无关的区域分解内核：递归坐标中位数排序后连续切片，
+  负载 max−min ≤ 1；耦合面两侧各挂一个 halo 槽位、按 peer 归组成一一对齐的收发计划；
+  `reduceSum/Min/Max` 顶上 Allreduce。逐域算子**逐位**复现串行 `fvc::grad`/`fvc::divPhi`
+  ——每域按全局面号升序扫自己那片面、用网格自己的有界权重插内部面，所以分解不换来精度：
+  12×8×5 hex 切 1/2/3/5/7/8/16 域、95 个 gmsh 四面体切 1/3/7/13 域，`gradDev`/`divDev`/
+  `haloDrift` 恰为 0，1/16 域与 1 域写出的场逐格相同。切割也不挪物理：线性锚场梯度
+  在 hex 上对解析值 4.8e-14（corrected 7.7e-13）、无散通量在**含切缝**的内区格上净出流
+  2.2e-19；checker 自己从 .vtu 几何重跑同一套排序与 halo 推导，逐域核对 owned/halo/
+  internal/coupled/boundary/messages 与写出的 `domain` 场，并独立重算 Σ t·V、min/max
+  与 halo 校验和。两点踩过的坑：质心有 1e-16 舍入噪声，同一层格的切点与对称块的轴向
+  都会被噪声决定，故坐标带宽内视为相等、按格号定序并优先 x）
+  已落地，可压缩 Navier–Stokes（黏性应力与热通量）、高阶重构待做；本增量不含 MPI 传输后端
+  （本机无 mpirun/mpi.h，收发缓冲区已按 Isend/Recv 形状备好）与跨域矩阵求解，Eigen/PETSc 后端待做）
 - 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
   黑油物性相关式（Standing 泡点、Vazquez-Beggs Rs/Bo/co、Beggs-Robinson 与

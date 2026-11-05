@@ -15,14 +15,14 @@
 ## 1. 总体分层
 
 ```
-apps (chflow-1d-steady / chflow-1d-transient / chflow-pvt / chflow-scalar-transport / chflow-simple-foam / chflow-piso-foam / chflow-vof)
+apps (chflow-1d-steady / chflow-1d-transient / chflow-pvt / chflow-scalar-transport / chflow-simple-foam / chflow-piso-foam / chflow-vof / chflow-3d-compressible / chflow-3d-parallel)
   ├── src/1d          一维管网内核（M1 稳态节点法 + M2 首增量：瞬态/持液率/水合物）
   │      └── src/common  基础层（字典解析、日志/异常）
   ├── src/pvt         统一物性层（PR 状态方程 / 多组分 TP 闪蒸 / PVT 表插值）
   │      └── src/common  基础层（字典解析、日志/异常）
   ├── src/bindings    pybind11 模块 chflow_core（Python 包 python/chflow）
   │      └── src/1d + src/pvt
-  └── src/3d          三维 FVM 内核（mesh / fields / discrete / solvers / turbulence / multiphase / io）
+  └── src/3d          三维 FVM 内核（mesh / fields / discrete / solvers / turbulence / multiphase / parallel / io）
         └── src/common  基础层（向量、Field 容器、稀疏矩阵+Krylov求解、字典解析、日志/异常）
 cli/  Rust 自动化入口 chuanflow（run steady|transient|pvt <case.dict>，定位并转发引擎二进制）
 ```
@@ -1250,6 +1250,73 @@ Navier–Stokes；一阶——没有 MUSCL/TVD 重构，激波宽度就是 `σ`�
 散度定理逐格成立，真正的 multidim 激波（斜激波、马赫盘）还没算例；也没和不可压层或 1D
 两流体共享状态（`pvt` 的真实气体 `c(p,T)` 还没接进 `primitives()`）。
 
+## 5.17 区域分解与 halo 交换 `parallel/DomainDecomposition.h` + `src/parallel/`（M3：并行首增量）
+
+对标 OpenFOAM 的 `decomposePar` + `processorMesh` + `Pstream`，但**不绑定任何传输后端**：
+本增量交付的是分解拓扑、耦合面消息计划与全局归约——MPI（或任何别的后端）只负责把
+已经按 Isend/Recv 形状备好的缓冲区搬到线上。本机没有 mpirun/mpi.h，所以所有断言都在
+**同进程内**按域循环完成：这正是"后端无关"能被验证的方式。
+
+**分解**：递归坐标中位数**排序**（`orderBlock`）再连续切片 `d = (i·nDomains)/nCells`，
+负载不均衡度天生 ≤ 1。切片是纯数组区间，因此 checker 能一模一样的复现它。排序有两个
+必须钉死的细节，都是踩出来的：
+
+- **质心有 ~1e-16 的舍入噪声**。一层格（沿轴向坐标相同）在精确算术下并列，实际却不：
+  若直接按 double 排，切片的分界点由噪声决定，分解就不再"由几何可复现"。所以先按
+  (坐标, 格号) 排，再把**噪声带**（1e-9·该轴向范围）内的连续一段整体按格号重排。
+- **对称块的三个轴向范围在精确算术下相等**（单位立方体四面体格就是这种），于是"选最长
+  轴"同样由噪声决定，第一次切的方向都能变（实测 hex 上 48 格、tet 上 76 格跑错域）。
+  规则改成：在 1e-9·max 带内取最长轴，**并列时优先 x**。
+
+**寻址**：`DomainFace{face, cell, peer, sign}`。同域内部面在本域列两条（±1），耦合面在
+两侧各列一条，边界面只由 owner 列一条——三类相加恰好重组全局网格，app 每次运行都断言
+这点（`boundary == mesh 边界数`、`internal/2 + coupled == mesh 内部面数`、`coupled 条目
+== 2·coupled 面`）。halo 槽位**惰性分配**（`slotOf`：不在本域 map 里就追加到 owned 之后），
+所以一个 peer 跨几个耦合面也只占一格，随之而来的消息不变式是
+`exchange 搬动值数 == 2 · 耦合面数`（不是 halo 槽位数——这条一开始就写错了）。
+每个 peer 一条连续、索引互相对齐的收发计划：发送只写自己的 owned 槽、接收只写 halo 槽，
+因此没有次序冲突，天然就是 MPI 点对点该搬的东西。
+
+**算子**：`DomainMesh` 带本域的逐面几何（`faceSf`/`faceCentres`/`faceDelta`/`faceOwnerWeight`）
+与 owned 格的体积/质心。这里 `faceDelta` 必须是 `面心 − 全局 owner 质心`，不能是
+`deltaCoeffVec()`（那是 C_n − C_o）——串行 `gaussGrad` 的非正交修正用的就是前者。
+`assembledGrad`/`assembledDivPhi` 逐域扫**本域面表**（全局面号升序），对每个格做与串行
+**完全相同**的浮点加序，所以 `gradDev`/`divDev` 是 0 而不是"某个小容差"。corrected
+格式额外需要两次修正pass之间插一次 `exchange(grad)`——串行同意的做法。
+
+**归约**：`reduceSum/Min/Max` 就是 Allreduce 的替身。app 打印各域 partial 的和/最小/最大
+并与串行同序累加的结果对比（`sumDev/minDev/maxDev`），checker 再从 .vtu 独立重算
+`Σ t·V`（体积由 checker 自己按散度定理在网格面上积出来）。
+
+**测试**（`tests/check_parallel.py`，两个 case：`case.dict` 12×8×5 hex 切 1/2/3/5/7/8/16 域、
+`caseTet.dict` 95 个 gmsh 四面体切 1/3/7/13 域）：
+
+| 断言 | hex | tet |
+|---|---|---|
+| `gradDev`（分解算子 vs 串行算子，两格式两场） | 恰 0 | 恰 0 |
+| `divDev`（分解净出流 vs `fvc::divPhi`） | 恰 0 | 恰 0 |
+| `haloDrift`、`sumDev/minDev/maxDev` | 恰 0 | 恰 0 |
+| 16 域与 1 域写出的场逐格相同 | 恰 0 | 恰 0 |
+| 线性锚场梯度对解析值（checker 自己从 .vtu 算） | 4.8e-14 linear / 7.7e-13 corrected | 不断言，见下 |
+| 无散通量 `U=(y,z,0)` 在内区格（**含切缝穿的格**）净出流 | 2.2e-19 | 4.2e-17 |
+| checker 复现的 `domain` 场 + 逐域 owned/halo/internal/coupled/boundary/messages | 全对 | 全对 |
+
+两个场各有分工：**线性**场是"与网格无关的精确性锚"（有界线性插值对线性面值是精确的，
+所以散度和梯度该给出解析答案，切几刀都一样）；**二次**场不是——面插值对二次带 O(dx²)
+误差，边界格上留下 `c₄·dx/4 = 0.0625` 的残差，它的作用是检验"分解逐位复现串行"。
+（一开始把这两个角色混了：串行参照在**所有**面用解析值、域路径只在边界用解析值内部插值，
+于是 1 域也读出 0.0625 的假偏差。）
+
+tet 案例**不**断言精度，只断言"切割不改变精度"：在这 95 个粗四面体上串行 corrected 格式
+连线性场的梯度都复现不了（实测 gradAnalytic ≈ 217，linear 也 5.7），因为斜面让有界权重
+饱和截断——这是格式在该网格上的性质，1 域时就存在。checker 把它作为 note 如实打印。
+
+**本增量的边界**：① 没有传输后端——收发计划、槽位与缓冲区都按 MPI 点对点形状备好了，
+但 `MPI_Isend/Recv`/`Waitall` 与 `MPI_Allreduce` 还没接（需要装 MPI 工具链，属于系统级变更，
+要先确认）。② 只有**显式**算子被并行化；`fvMatrix` 的装配与求解仍是整网格单进程，
+域耦合的线性求解（半对角 + 界面 Schur/多重网格）是下一条。③ 没有重叠/多级 halo，
+没有网格重排（scotch/metis），分解只有 RCD 这一种。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |
@@ -1290,6 +1357,11 @@ Navier–Stokes；一阶——没有 MUSCL/TVD 重构，激波宽度就是 `σ`�
 | `alphatWallFunction`（温度壁面律，`u_tau y/T+` 面扩散率） | `EnergyModel::faceGamma()` 对 fixedValue wall 面的覆盖：两支 Jayatilleke 律 `T+`（`turbulence/WallFunction.h` 的 `thermalTPlus`），副层极限退回分子导热；Pr < 0.5 拒绝 |
 | `fvOptions` 的 `wallHeatFlux` / `fixedGradient` T | `patches{ name{ heatFlux q; } }` → `fixedGradient = q/kappa`（正 = 进入流体）；无键的 patch 缺省 `zeroGradient` = 绝热 |
 | `T` 的 `buoyancyForce = beta*(T-Tn)*g`（`BoussinesqBaseForce`） | `EnergyModel::buoyancyForce()` = `−beta (T − tRef) gravity`（只含偏差项，参考静水由 `force` 自己带或被 `pRgh` 开关吸收进 `p_rgh = p − force·x`；偏差力本身不能被吸收，压住它要 buoyantFoam 式浮力修正通量，未做） |
+| `decomposePar` + `decomposeParDict`（`hierarchical`/`simple`） | `cf::parallel::Decomposition`（`src/3d/src/parallel/domainDecomposition.cpp`：递归坐标中位数排序 + 连续切片，case.dict 的 `decompose{ domains (…); }`，见 5.17） |
+| `processorPolyMesh` / `growPatch` 的 coupled 面与 `/neighbour` patch | `Decomposition::faces(d)` 里的 `cf::parallel::DomainFace{face, cell, peer, sign}` + 惰性 halo 槽（`slot = nCells(d) + idx`）；`cf::parallel::DomainMesh` 的 rank-local 几何 |
+| `Pstream::gather/scatter`（`processorLduInterface` 的 send/recv） | `cf::parallel::exchange(dec, local)`（每 peer 一段连续、收发同序的槽位计划 `sendPlan/recvPlan`）；MPI 传输后端尚未接 |
+| `Pstream::sum/min/max`（`gsum`/`gMin`） | `cf::parallel::reduceSum/reduceMin/reduceMax`（同 `Allreduce` 语义的进程内归约） |
+| `PstreamOps` 作用在 `fvc::grad` / `fvc::div` 的 halo 上 | `cf::parallel::assembledGrad` / `assembledDivPhi`（逐域按全局面序重放串行表达式，因此与串行 `fvc::` **逐位相同**，见 5.17） |
 
 ## 7. 测试体系
 - `tests/unit/kernelTests.cpp`（CTest `kernel.unit`）：字典解析、网格几何
@@ -1501,6 +1573,16 @@ Navier–Stokes；一阶——没有 MUSCL/TVD 重构，激波宽度就是 `σ`�
     0.76%/0.96%、star right 0.02%、far right ~0，接触与激波位置取密度剖面的半跃变交叉点，
     分别偏 0.205σ（1.25 dx）与 0.091σ（0.76 dx），`max u` 0.92961 对 `u*` 0.92745（0.23%）；
     全场 L1 在 400/800 格上给出收敛率 ρ 0.66、u 0.83、p 0.77（断言带 [0.4, 1.5]）。
+  - `parallelDecomposition/case.dict` 与 `caseTet.dict`（§5.17：区域分解 + 耦合面 halo +
+    全局归约的第一道算例，hex 切 1/2/3/5/7/8/16 域、95 个 gmsh 四面体切 1/3/7/13 域）：
+    checker 从 .vtu 几何**自己重跑**同一套坐标中位数排序，逐域核对 owned/halo/internal/
+    coupled/boundary/messages 与写出的 `domain` 场，并要求三类面条目恰好重组全局网格；
+    分解算子对串行 `fvc::grad`/`fvc::divPhi` 的偏差、halo 校验漂移、`sumDev/minDev/maxDev`
+    以及 16 域与 1 域写出的场全部**恰为 0**（不是拟合容差）；线性锚场的梯度由 checker
+    独立按散度定理从 .vtu 面几何算出体积后与解析值比（hex 4.8e-14 / corrected 7.7e-13），
+    无散通量 `U=(y,z,0)` 在包括被切缝穿过在内的内区格上净出流 2.2e-19（hex）/ 4.2e-17（tet）。
+    tet 案例不断言梯度精度：该网格上串行 corrected 格式自己就复现不了线性场（gradAnalytic
+    ≈ 217，1 域时即为如此），只断言切割不改变它。
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

@@ -12,3 +12,6 @@ target_link_libraries(chflow-vof PRIVATE cf3d)
 
 add_executable(chflow-3d-compressible compressibleApp.cpp)
 target_link_libraries(chflow-3d-compressible PRIVATE cf3d)
+
+add_executable(chflow-3d-parallel parallelApp.cpp)
+target_link_libraries(chflow-3d-parallel PRIVATE cf3d)

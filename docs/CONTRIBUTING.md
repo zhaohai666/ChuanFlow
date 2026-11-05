@@ -76,6 +76,20 @@ python3 tests/check_euler.py \
     "$PWD/build/src/3d/apps/chflow-3d-compressible" \
     "$PWD/tests/cases/sodShockTube/case.dict"
 
+# 三维区域分解首增量：同一个块按 1/2/3/5/7/8/16 域各切一次、逐域跑显式算子，
+# 每次域数写一份**全局单元序**的 vtu。check_parallel.py 从 vtu 的几何自己重跑
+# 同一套坐标中位数分解，断言分区性与面数重装配、分解算子与串行逐位相等、
+# halo 值不漂移、归约等于串行的 sum/min/max，以及不同域数写出的场一模一样
+./build/src/3d/apps/chflow-3d-parallel tests/cases/parallelDecomposition/case.dict
+python3 tests/check_parallel.py \
+    "$PWD/build/src/3d/apps/chflow-3d-parallel" \
+    "$PWD/tests/cases/parallelDecomposition/case.dict"
+# 同一套契约跑在 Gmsh 四面体网格上（三角形面、无非正交对）：只断言"切割不改变
+# 它"，因为这张网格自身的格式误差就吃不下线性场（见 caseTet.dict 头注释）
+python3 tests/check_parallel.py \
+    "$PWD/build/src/3d/apps/chflow-3d-parallel" \
+    "$PWD/tests/cases/parallelDecomposition/caseTet.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict
@@ -213,6 +227,35 @@ app 每 `reportEvery` 步报 `mass / mom / energy / impulse / pmin / pmax / cfl`
 总能量应当逐报告点不变，动量随 `impulse(t) = ∫dt Σ_b (p Sf)_x` 变化，所以
 `check_euler.py` 既断言 `mom + impulse = mom(0)`，也用 Python 重放同一套 HLLC 递推与写出的场
 逐格比对（1e-9）。CFL 越界（`dt·amax/dxMin > 1`）与非有限状态都直接报错，不做回退。
+
+**三维区域分解**（`chflow-3d-parallel`）不读 `schemes{}`/`patches{}`：它把网格切成
+1、2、3、5…个域，逐域跑显式 Gauss 算子，所以字典里只有网格、域数、两个测试多项式场
+和验收阈值。`field{}` 的两个键都是十个系数
+`T = c0 + c1x + c2y + c3z + c4x² + c5y² + c6z² + c7xy + c8yz + c9zx`——
+`linear` 把 c4..c9 置零，是**精确性锚点**（有界线性插值对线性场精确，Gauss 和给出解析梯度）；
+`quadratic` 是**不变性场**（它的离散梯度本就不是解析值，欠它的只是"分解 == 串行"）：
+
+```
+block { min (0 0 0); max (1 0.5 0.25); cells (12 8 5); }
+decompose { domains (1 2 3 5 7 8 16); }        // 每个域数各切一遍、各写一份 vtu
+field {
+    linear    (1 2 -1 0.5 0 0 0 0 0 0);
+    quadratic (1 2 -1 0.5 3 -0.25 0 1.5 -2 0.75);
+}
+verify {
+    linearGradAnalyticTol    1e-10;   // 线性场对解析梯度（缺该键则只打印不断言）
+    quadraticGradAnalyticTol 0.10;
+    stencilDevTol            0;       // 分解算子 vs 串行：要求逐位相等
+    domainCountDevTol        0;       // 1 域与 16 域写出的场：要求逐位相等
+    divInteriorTol           1e-13;   // 无散通量在被切缝穿过的内区格上的净出流
+}
+output { vtk out_parallel.vtu; }      // 实际写 out_parallel_<域数>.vtu
+```
+
+app 报 `parallel stencil …` / `parallel flux …` / `parallel reduce …` 三族行（17 位有效
+数字）；`verify{}` 只有 `check_parallel.py` 读，app 自己不判定。求解器把 `.vtu` 写在 **cwd**，
+所以手动跑要在 case 目录里跑，或者接受根目录多出一份
+`out_parallel_*.vtu`（已被 `.gitignore` 覆盖）；`check_parallel.py` 自己以 case 目录为 cwd。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

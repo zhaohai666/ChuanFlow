@@ -142,19 +142,21 @@ int main(int argc, char** argv)
 
             log::info("transient seed ", s, " starting resistance ", num(seeds[s]));
             const TransientCoupledResult res =
-                solveTransientCoupled1d3d(net, edge, block, ctl, tc.dt, tc.endTime);
+                solveTransientCoupled1d3d(net, {edge}, {&block}, ctl, tc.dt, tc.endTime);
 
             for (std::size_t i = 0; i < res.steps.size(); ++i)
             {
                 const TransientCoupledStep& st = res.steps[i];
                 const TransientInterfacePass& p = st.history.back();
+                const EdgeExchange& ex = st.edges[0];
                 log::info("transient step ", i + 1, ": t ", num(st.t),
-                          " q ", num(st.q), " dpNetwork ", num(p.dpNetwork),
-                          " dpBlock ", num(st.dpPa), " R ", num(st.resistance),
-                          " residual ", num(st.residual),
+                          " q ", num(ex.q), " dpNetwork ",
+                          num(ex.resistance * ex.q),
+                          " dpBlock ", num(ex.dpPa), " R ", num(ex.resistance),
+                          " residual ", num(ex.residual),
                           " passes ", st.passes, " subPasses ", st.history.size(),
-                          " sweeps ", p.sweeps, " newton ", num(p.newtonResidual),
-                          " blockConverged ", (p.blockConverged ? 1 : 0));
+                          " sweeps ", ex.sweeps, " newton ", num(p.newtonResidual),
+                          " blockConverged ", (ex.blockConverged ? 1 : 0));
 
                 std::ostringstream nodes;
                 nodes << std::setprecision(17);
@@ -186,8 +188,9 @@ int main(int argc, char** argv)
                       " dpPa ", num(m.dpPa));
 
             log::info("transient coupled seed ", s, ": edge ", edgeName,
-                      " steps ", res.steps.size(), " q ", num(res.q),
-                      " dp ", num(res.dpPa), " R ", num(res.resistance),
+                      " steps ", res.steps.size(), " q ", num(res.state[0].q),
+                      " dp ", num(res.state[0].dpPa),
+                      " R ", num(res.state[0].resistance),
                       " residual ", num(res.residual),
                       " t ", num(net.time()));
 

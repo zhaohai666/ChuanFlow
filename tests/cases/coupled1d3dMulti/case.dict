@@ -1,0 +1,115 @@
+# coupled1d3dMulti: two 3D detailed regions inside one steady network.
+#
+#   Src -> A -> { X1 (3D duct) || By (1D bypass) } -> X2 (3D duct) -> B -> Snk
+#
+# X1 is a parallel branch, so the node split decides how much of the injected
+# rate it takes; X2 is in series, so it carries the whole rate no matter what
+# the split does. That pairing is the point: an interface pass has to give both
+# regions their own rate from one network solve, and an edge that starts far off
+# must not be able to move the other edge's answer.
+#
+# With laminar partners the drops are linear in the rate, so the network plus the
+# two blocks reduce to series-parallel resistances and the operating point is
+# closed form:
+#   R_X1 = 12 mu L / (H^3 W) = 3.75e6,  R_X2 = 1.6e7 (same law, other gap),
+#   R_By = 128 mu L / (pi D^4) = 7.545e6, R_A = R_B = 2.037e5,
+#   R_total = R_A + (R_X1 R_By)/(R_X1 + R_By) + R_X2 + R_B = 1.891e7 Pa.s/m3
+#   q_X1 = Q R_By/(R_X1+R_By) = 2.005e-5, q_X2 = Q = 3.0e-5 m3/s
+# The blocks add their own entrance lengths on top of the duct values, so the
+# checker anchors on the duct resistances with a band rather than on these.
+#
+# Three starting sets, each quoting a coefficient for both edges at once: the
+# checker requires all three to land on the same per-edge state.
+fluid { rho 800; mu 0.1; }
+
+nodes {
+    Src {};
+    J1 {};
+    J2 {};
+    J3 {};
+    Snk { pressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 3.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    // the coupled edges: length and diameter describe the detailed region and
+    // are only used for the reported velocity and Reynolds number
+    X1 { from J1; to J2; length 0.5;  diameter 0.02;
+         coupledResistance 3.75e6; }
+    By { from J1; to J2; length 1.5;  diameter 0.03; }
+
+    X2 { from J2; to J3; length 0.4;  diameter 0.015;
+         coupledResistance 1.6e7; }
+
+    B  { from J3; to Snk; length 5.0; diameter 0.1; }
+}
+
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    // the partner's own solve sets the floor: each block resolves its drop to
+    // about 1e-5 of itself, and the interface residual is the gap between two
+    // solvers rather than between a number and itself
+    tolerance 1e-4;
+    maxOuterIterations 8;
+    starts {
+        // both edges start one third of the way under their own duct value,
+        // then one edge high and one low, then the other way round
+        lo   { X1 1.25e6;  X2 5.3e6; }
+        mix  { X1 3.75e6;  X2 5.3e6; }
+        high { X1 1.125e7; X2 5.3e6; }
+    }
+}
+
+details {
+    // X1: the 0.5 x 0.02 x 0.02 m duct of the single-edge cases, so its own
+    // numbers are directly comparable with those
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.5 0.02 0.02);
+            cells (50 20 1);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.12; max 0.49; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_multi_X1.vtu;
+    }
+
+    # X2: a different aspect ratio and a shorter gap, so its resistance is four
+    # times X1's and the two edges are not the same problem twice
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.4 0.01 0.03);
+            cells (40 20 6);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.15; max 0.38; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_multi_X2.vtu;
+    }
+}

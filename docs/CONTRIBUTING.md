@@ -14,8 +14,9 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure   # 全量回归约 3 分钟（poiseuille 37 s、
-                                             # 瞬态耦合 28 s、稳态耦合 20 s 占大头）
+ctest --test-dir build --output-on-failure   # 全量回归（77 项）约 340 s ≈ 6 分钟，
+                                             # 大头：多边耦合 65 s、poiseuille 37 s、
+                                             # 瞬态耦合 43 s、稳态耦合 30 s
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -114,6 +115,19 @@ python3 tests/check_coupled_1d3d.py \
 python3 tests/check_transient_coupled_1d3d.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient" \
     "$PWD/tests/cases/transientCoupled1d3d/case.dict"
+
+# 多边分区耦合：一张管网同时挂两块三维详细区（X1 在并联支里、X2 在串联位置上）。
+# app 按"初值集"逐个跑整趟外层回路，逐趟**对每条边**打印 R/q/dpBlock/残差/趟数与块收敛位，
+# 再给 name-keyed 的逐边 dp/q、节点压力与管流、每边的块自测；每边各自的 vtu 只在最后一组
+# 初值写。check_coupled_1d3d_multi.py 断言逐边接口恒等式、纯 1D 侧的衡算与压力链、
+# "一趟一次网络解 + 每伙伴一次解"（数日志里 SIMPLE iter 1: 的条数）、边互不借力
+# （X2 首趟压降在三组之间逐位相同）、三组初值逐边落同一点、串并联闭式工况点，
+# 以及**两块各自**的守恒/已发展梯度/抛物剖面对各自的间隙。
+# 约 65 s（1000 + 4800 单元、三组初值共 8 趟 = 16 次块解）
+./build/src/coupling/apps/chflow-coupled-1d3d-multi tests/cases/coupled1d3dMulti/case.dict
+python3 tests/check_coupled_1d3d_multi.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-multi" \
+    "$PWD/tests/cases/coupled1d3dMulti/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
@@ -364,6 +378,50 @@ volume"）与 `liquidFraction < 1`（缺省是 1.0，第一步突加的速率还
 （`contErr <= bestContErr`）会让首个 predictor 连续性低于该 case 最终落到的
 HbyA/压力通量地板的热启动再也走不到 `|dp|` 分支（实测 0.00768788 对 0.00769587，首步烧满
 300 迭代报未收敛）；`simpleSolver.cpp:343` 因此留 1% 余量，防发散的初衷不变。
+
+**多边分区耦合**（`chflow-coupled-1d3d-multi`）把 `edge`/`seeds`/`detail` 三个单数键换成
+复数：`couple{ edges (…) starts{} }` 列出被详细化的所有管名与"一整组初值"，`details{}` 按
+**管名**给每块自己的网格、格式、SIMPLE 控制与 vtu。1D 侧的 `fluid/nodes/sources/pipes/solve`
+与稳态单边逐字同形，一条边被详细化就把该管的摩阻换成它的界面电阻：
+
+```
+pipes {
+    X1 { from J1; to J2; length 0.5; diameter 0.02; coupledResistance 3.75e6; }  // 并联支里
+    By { from J1; to J2; length 1.5; diameter 0.03; }
+    X2 { from J2; to J3; length 0.4; diameter 0.015; coupledResistance 1.6e7; }  // 串联位置上
+}
+couple {
+    edges ( X1 X2 );            // 顺序即接口里的边顺序，日志与结果都按它排
+    relax 1.0;  tolerance 1e-4;  maxOuterIterations 8;
+    starts {                    // 每组给**每条边**一个初值电阻，整组各跑一趟外层回路
+        lo   { X1 1.25e6;  X2 5.3e6; }
+        mix  { X1 3.75e6;  X2 5.3e6; }
+        high { X1 1.125e7; X2 5.3e6; }
+    }
+}
+details {
+    X1 { block { … } probe { min 0.12; max 0.49; } schemes { … } simple { … }
+         vtk out_multi_X1.vtu; }
+    X2 { block { … } probe { min 0.15; max 0.38; } schemes { … } simple { … }
+         vtk out_multi_X2.vtu; }
+}
+```
+
+多边侧五条容易踩的约定：① 一层循环是**块 Gauss–Seidel**，不是每边各自迭代到收敛：一趟 =
+一次网络解 + 每个伙伴各一次解，所有边的系数同一趟刷新，停止条件取**最差**的那条边
+（`res.residual == max_i residual_i`）。逐边各自收敛会让先谈拢的边读到别的边的半状态，
+"一趟对应一个系统状态"就没了；checker 因此数日志里 `SIMPLE iter 1:` 的条数来钉
+"块解 == 趟数 × 边数"。② 接口结果里**没有** `dpNetwork` 字段——它恒等于 `resistance * q`，
+两侧在 `CoupledNetwork.h` 里各自算同一式子；`EdgeExchange` 每条边一行，`OuterIteration.edges`
+是同一趟所有边的快照。③ `starts{}` 用嵌套字典而不是列表：一组初值要给每条边各一个数，
+而 `cf::common::Dictionary` 的列表只支持标量，读不了 `((a b) (c d))`；键名（`lo/mix/high`）
+只用于日志与 checker 配对。④ 每边的 vtu **只在最后一组初值**写（每组的块解会覆盖同一文件），
+`out_multi_*.vtu` 已被 `.gitignore` 覆盖。⑤ 伙伴非线性时接口映射可能发散：并联边上的二次
+伙伴把电阻映射成 `R2 → R0 + k·q2`，其中 `q2 = Q·R1/(R1+R2)` 是分流结果，映射自身的不动点处
+导数是
+`−k·Q·R1/(R1+R2)²`——`k=1e7` 是 −0.041（收敛，单元用例用的就是它，`tolerance 1e-8` 下 30 趟上限
+内落定），`k=1e9` 是 −730（60 趟也收不下）。这不是 bug 而是缺 Aitken/IQN：单元里除了断言收敛，
+还额外断言该导数 < 1，别把它当成已解决。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

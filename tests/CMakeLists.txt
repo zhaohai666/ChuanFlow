@@ -371,6 +371,17 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupled1d3d/case.dict)
 
+# two detailed regions on one network: a parallel duct whose rate the split
+# decides and a series duct whose rate topology pins, so the checker reads the
+# interface per edge, the network laws off the 1D side alone, each block's field
+# against its own duct, and the whole thing against a series-parallel closed form
+add_test(
+    NAME verify.coupled1d3dMulti
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_coupled_1d3d_multi.py
+        $<TARGET_FILE:chflow-coupled-1d3d-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3dMulti/case.dict)
+
 foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug" "valve;Valve")
     list(GET tmode 0 mode)
     list(GET tmode 1 Mode)

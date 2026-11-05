@@ -15,7 +15,7 @@
 ## 1. 总体分层
 
 ```
-apps (chflow-1d-steady / chflow-1d-transient / chflow-pvt / chflow-scalar-transport / chflow-simple-foam / chflow-piso-foam / chflow-vof / chflow-3d-compressible / chflow-3d-parallel / chflow-coupled-1d3d / chflow-coupled-1d3d-transient)
+apps (chflow-1d-steady / chflow-1d-transient / chflow-pvt / chflow-scalar-transport / chflow-simple-foam / chflow-piso-foam / chflow-vof / chflow-3d-compressible / chflow-3d-parallel / chflow-coupled-1d3d / chflow-coupled-1d3d-transient / chflow-coupled-1d3d-multi)
   ├── src/1d          一维管网内核（M1 稳态节点法 + M2 首增量：瞬态/持液率/水合物）
   │      └── src/common  基础层（字典解析、日志/异常）
   ├── src/pvt         统一物性层（PR 状态方程 / 多组分 TP 闪蒸 / PVT 表插值）
@@ -1501,6 +1501,88 @@ q_X^n = q_∞ + (q_X^1 − q_∞) / (1 + dt/τ)^(n−1),  q_∞ = R_By·Q/(R_X+R
 回避，而不是靠 Aitken/IQN 硬扛。④ 块场在步内被解多次，只有**最后**一次留在 `measure()`
 里，中间趟的场不可回放（记录的只有各趟的 sweeps/收敛位）。
 
+### 5.20 多边同时详细化 `solveCoupled1d3d(net, edges, blocks, ...)`（M4：一张管网同时挂两块三维详细区）
+
+5.18/5.19 只把一条边交给一个伙伴。真实站场常常同时有几处需要详细化的地方（一个节流器
+加一段复杂几何），而核里"边"原本是标量参数。这一增量把它变成列表：
+
+```cpp
+CoupledResult        solveCoupled1d3d(OneDNetwork&, const std::vector<label>& edges,
+                                      std::vector<ICoupledElement*> blocks, ...);
+TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork&, const std::vector<label>&,
+                                                 std::vector<ICoupledElement*>, ...);
+```
+
+`blocks` 借用不拥有，长度必须等于 `edges`；`CoupledResult::edges/state` 与
+`TransientCoupledStep::edges` 都按调用方给的**边序**排列，每趟的全部逐边记录留在
+`OuterIteration::edges` / `TransientInterfacePass::edges` 里。原先的 `dpNetwork` 字段
+去掉了：它就是 `resistance * q`，检查器按逐位恒等式自己重算，反而更硬。
+
+**一趟里怎么做**（block Gauss–Seidel，稳态与瞬态同构）：
+
+```
+解一次网络（隐式，带所有边的当前系数）
+对每条边 i：q_i = |网络给出的该边流量|，dpBlock_i = blocks[i]->lossAt(q_i)
+                        残差_i = |R_i·q_i − dpBlock_i| / dpBlock_i
+若 max_i 残差_i <= tolerance 就采纳这一趟；否则所有 R_i 一起按 dpBlock_i/q_i 松弛刷新
+```
+
+三条设计决定都值得说明：
+
+1. **所有伙伴对着同一次网络解求值**。逐边各自迭代到收敛会让边 i 看到边 j 的半成品状态，
+   两侧就不再是同一时间层上的同一个状态——5.18 的"一次交换说一件事"会被破坏。
+2. **停止条件取最差边**（`res.residual == max_i 残差_i`），不是最后一条边。单元侧
+   `coupling.unit` 与算例检查器都按这条断言（实测 `worstResidual` 与接受趟里较大者逐位相同）。
+3. **成本是 1 + N**：一趟 = 一次网络解 + 每伙伴一次解，绝不更多。算例侧直接数日志里
+   `SIMPLE iter 1:` 的条验证：3 组初值共 8 趟、块解恰 16 次 = 2 × 8。
+
+**实测**（`tests/cases/coupled1d3dMulti`：`Src → A → { X1(3D) ∥ By(1D) } → X2(3D) → B → Snk`，
+注入 3.0e-5 m³/s，Snk 定压 1.0e6 Pa，块 1000 + 4800 单元，全跑约 64 s）：
+
+| 断言 | 数值 |
+|---|---|
+| 每边 `R·q ==` 网络自己的压降；每趟残差 == 两解之差 | 1e-9 相对带 / 1e-9 |
+| 接受趟 `q ==` 网络流量 == 块入口积分流量 | 逐位 / 最差 5e-16 相对 |
+| 串联边 X2 每趟 `q == Q`（拓扑钉死） | 1e-16 相对 |
+| 两条 lead `q == Q`、`q_X1 + q_By == Q`、`dp_X1 == R_By·q_By` | ≤1e-8 / ≤1e-8 / 1e-6 带内，实测 ~1e-13 |
+| 压力链 Src→J1→J2→J3→Snk 跨两个界面闭合 | 1e-9 相对 |
+| 首趟真的远：X2 三组同为 0.66007，X1 最高 2.0649 | 界面不是被初值喂出来的 |
+| 趟数 lo 3 / mix 2 / high 3，全部收敛 | 带 ≤8 |
+| 三组初值逐边落同一点（q/dp/R 跨度） | 最差 2.4e-5 相对（带 1e-3） |
+| 收敛系数对各自 duct 的平面 Poiseuille | X1 3.6856e6 对 3.75e6（0.983）、X2 1.55916e7 对 1.6e7（0.9745），带 [0.94, 1.06] |
+| 端到端压降对串并联闭式 | 554.3 对 567.4 Pa（−2.3%，带 5%） |
+| 分流对闭式 `q_X1 = Q·R_By/(R_X1+R_By)` | 2.01547e-5 对 2.00399e-5（+0.57%，带 3%） |
+| 块内守恒（进 == 出）、逐平面同速率 | X1 ~1e-9、X2 5.4e-5 相对（热启动只解 9 趟的解精度，带 1e-3） |
+| `probeSlope·L` 对该块报告的 `dpPa` | 0.16% / 0.68%（带 2%） |
+| 中心线速度对平均（平面 Poiseuille 为 1.5） | 1.472 / 1.472（带 ±0.04） |
+| Re（按各自 `q`） | 10.3 / 20.4，层流——上面那些线性闭式的前提 |
+
+算例故意让两条边是**不同**的问题：并联边的速率由分压决定、串联边的速率被拓扑钉死，
+于是有些恒等式可以完全不依赖块就验证。可伪证性靠两处：三组初值给 X2 的起点与流量都
+相同 ⇒ 它的首趟 `dpBlock` 必须逐位相同（伙伴之间没有串信息），而 X1 的首趟速率在三组
+之间差 2 倍以上（两边确实在各自移动）。
+
+**单元侧**（`coupling.unit` 新增 35 条，两个解析伙伴）：稳态两边——并联边对上闭式分流
+`Q·R_By/(R_By+R_1)`、串联边对上全流量、两条边各落在自己伙伴的系数上、一次共享刷新即定
+（`iterations == 2`）、每个伙伴每趟恰好被调一次、`res.residual` 等于接受趟的较大者、
+远初值（一边 40× 高、一边 8× 低）落同一点；一边线性一边二次（`dp = R0 q + k q²`）时，
+分流对上二次方程的正根到 1e-6，且需要多于一次刷新。畸形输入被拒：同一边出现两次、
+伙伴列表长度不符、空伙伴。瞬态两边——每步两个残差都收敛、串联边每步都等于注入速率、
+并联边仍对上 5.19 那条离散闭式爬升、每边的动量行用**自己**伙伴的压降闭合
+（`Δp_nodes == dpPa_i + M_i·Δq_i/dt`）、块解次数 == 趟数（每边一次）、fatal 的消息
+**点名最差那条边**且时钟停在起点。
+
+**顺手测到的一件事**：非线性强的伙伴会让未加速的 block Gauss–Seidel 发散。二次伙伴挂在
+并联边时，接口映射是 `R_2 → R_0 + k·Q·R_1/(R_1+R_2)`，不动点处导数
+`−k·Q·R_1/(R_1+R_2)²`：`k=1e7` 时约 −0.041（收敛，测试用的就是这个数），`k=1e9` 时约 −730，
+60 趟也收不下来。这不是多边带来的新毛病，单边版本同样如此，但它现在**被测试钉住了**
+（单元里那条"映射是压缩的"断言就是这件事的可伪证入口）。
+
+**本增量的边界**：① 多边只在稳态算例里跑过，瞬态多边目前只有单元覆盖（伙伴解太贵）。
+② 界面上仍是每边一个标量，没有 Aitken/IQN——上面的导数 −730 就是缺它的代价。
+③ 伙伴仍是准稳态不可压层流块。④ 一趟里各边的系数独立刷新，边与边之间不共享 Jacobian：
+这是"一次网络解 + N 次独立块解"，不是块对角的隐式耦合。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |
@@ -1550,6 +1632,7 @@ q_X^n = q_∞ + (q_X^1 − q_∞) / (1 + dt/τ)^(n−1),  q_∞ = R_By·Q/(R_X+R
 | 3D 区域约化成管网的一个阻力系数（system-couple 的"black box 压降"端） | `cf::coupling::ICoupledElement::lossAt(qMag)` + 生产实现 `DetailBlock`（SIMPLE 块 + `BlockMeasure` 自测：压降、进出通量、逐截面平面通量、探针梯度） |
 | 1D 侧承载 3D 区域的边界条件（`fanPressure`/`porousJump` 一类压降模型） | `NetworkPipe::coupledResistance`（正的 `R` 时 `pipeLossAt` 短路成 `R·Q`，与本管摩阻/重位/阀泵互斥，见 4 与 5.18）；瞬态侧 `TransientPipeConfig::coupledResistance` 只替换本管摩阻，重位与区域惯量留在 1D |
 | OLGA / Fluent 的**瞬态** embedded detailed section（每个时间层内再把界面上迭代一次） | `cf::coupling::solveTransientCoupled1d3d`（`TransientCoupledControls{ maxSubIterations relax tolerance }` + 逐步 `TransientCoupledStep`，见 5.19） |
+| Fluent 的**多** detailed section（一张管网同时挂 N 个 3D 区） | 两个入口都收 `const std::vector<label>& edges` + `std::vector<ICoupledElement*> blocks`：一趟一次网络解、所有伙伴对同一次解求值、系数一起刷新、停止条件取最差边（`couple{ edges ( ... ) starts{ name{ <edge> R; } } }` + `details{ <edge>{ ... } }`，见 5.20） |
 | 时间层内"已解出但尚未采纳"的状态（分区接口要在同一层重解） | `TransientNetwork::solveStep` / `commitStep` / `pendingPipeFlow` / `pendingPressure`（`setCoupledResistance` 即作废挂起步，见 5.19） |
 
 ## 7. 测试体系
@@ -1815,6 +1898,18 @@ q_X^n = q_∞ + (q_X^1 − q_∞) / (1 + dt/τ)^(n−1),  q_∞ = R_By·Q/(R_X+R
     q_∞ 回归对上闭式 1e-6 相对）、末端工况点（距 q_∞ 0.14%、收敛系数 3.93214e6 对 duct 值
     3.75e6 = +4.86%、Re 80 层流、接口末值 == 块场自测 `dpPa` 逐位）、块内守恒与已发展剖面
     （同 §5.18 各带：`dp/dx` 1162 对 1182、剖面最坏 0.0088 m/s、横向 1.8e-5）。
+  - `coupled1d3dMulti`（§5.20：一张管网同时挂两块三维详细区，`Src → A → { X1(3D) ∥ By(1D) }
+    → X2(3D) → B → Snk`，注入 3.0e-5 m³/s，X1 是 0.5×0.02×0.02 m、X2 是 0.4×0.01×0.03 m
+    的平面渠道）：八组断言全绿——每边接口身份（每趟 `残差 == |R·q − dpBlock|/dpBlock` 到 1e-9，
+    接受趟 `R·q ==` 网络自己的压降到 1e-9、`q ==` 网络流量 == 块入口积分流量到 5e-16）、
+    纯 1D 侧的陈述（两条主导线与串联边都等于 Q 到 ≤1e-8、`q_X1+q_By == Q`、并联两边共享压降
+    `dp_X1 == R_By·q_By` 到 1e-13、跨两个界面的压力链 1e-9）、界面日程（首趟确实远：X2 三组
+    同为 0.66007、X1 最高 2.0649；趟数 3/2/3 ≤8；块解 16 次 == 2 边 × 8 趟，按日志里
+    `SIMPLE iter 1:` 计数）、边互不借力（X2 首趟 `dpBlock` 在三组之间逐位相同，而 X1 首趟速率
+    相差 >2×）、三组初值逐边落同一点（跨度 ≤2.4e-5）、闭式工况点（端到端 554.3 对 567.4 Pa
+    即 −2.3%、分流 2.01547e-5 对 2.00399e-5 即 +0.57%、收敛系数对各自 duct 平面 Poiseuille
+    0.983 / 0.9745）、两块各自的场（守恒 X1 ~1e-9 / X2 5.4e-5、`probeSlope·L` 对 `dpPa`
+    0.16% / 0.68%、中心线 1.472 对 1.5、逐列积分流量对块速率 2% 带内、Re 10.3 / 20.4 层流）。
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

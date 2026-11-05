@@ -192,19 +192,20 @@ int main()
         coupling::CoupledControls ctl;
         ctl.tolerance = 1e-10;
         const coupling::CoupledResult res =
-            coupling::solveCoupled1d3d(net, edge, block, ctl, nc);
+            coupling::solveCoupled1d3d(net, {edge}, {&block}, ctl, nc);
 
         CHECK(res.converged, "linear partner converges");
         CHECK(res.iterations == 2, "linear partner needs one coefficient refresh");
-        CHECK(relNear(res.q, 0.025, 1e-12), "rate is dp/R of the partner");
-        CHECK(relNear(res.resistance, 4.0e6, 1e-12), "coefficient is the partner's");
-        CHECK(relNear(net.pipes[edge].coupledResistance, res.resistance, 1e-15),
+        CHECK(relNear(res.state[0].q, 0.025, 1e-12), "rate is dp/R of the partner");
+        CHECK(relNear(res.state[0].resistance, 4.0e6, 1e-12),
+              "coefficient is the partner's");
+        CHECK(relNear(net.pipes[edge].coupledResistance, res.state[0].resistance, 1e-15),
               "network carries the reported coefficient");
-        CHECK(relNear(block.lastQ(), res.q, 1e-15),
+        CHECK(relNear(block.lastQ(), res.state[0].q, 1e-15),
               "the partner was measured at the reported rate");
-        CHECK(relNear(block.lastDp(), res.dpPa, 1e-15),
+        CHECK(relNear(block.lastDp(), res.state[0].dpPa, 1e-15),
               "the reported drop is the partner's own answer");
-        CHECK(relNear(res.dpPa, res.resistance * res.q, 1e-10),
+        CHECK(relNear(res.state[0].dpPa, res.state[0].resistance * res.state[0].q, 1e-10),
               "reported drop equals coefficient times rate");
         CHECK(res.history.size() == 2, "history holds every interface pass");
     }
@@ -218,7 +219,7 @@ int main()
         ctl.tolerance = 1e-10;
         ctl.relax = 0.5;
         const coupling::CoupledResult r1 =
-            coupling::solveCoupled1d3d(damped, e1, b1, ctl, nc);
+            coupling::solveCoupled1d3d(damped, {e1}, {&b1}, ctl, nc);
 
         OneDNetwork quick = twoNodeNetwork(2.0e5, 1.0e5);
         const label e2 = quick.addPipe(linearPipe("X", "Src", "Snk", 4.0e6));
@@ -226,11 +227,12 @@ int main()
         coupling::CoupledControls ctl2 = ctl;
         ctl2.relax = 1.0;
         const coupling::CoupledResult r2 =
-            coupling::solveCoupled1d3d(quick, e2, b2, ctl2, nc);
+            coupling::solveCoupled1d3d(quick, {e2}, {&b2}, ctl2, nc);
 
         CHECK(r1.converged && r2.converged, "both interface schemes converge");
-        CHECK(relNear(r1.q, r2.q, 1e-10), "relaxation does not move the fixed point");
-        CHECK(relNear(r1.resistance, 4.0e6, 1e-10), "relaxed coefficient is the same");
+        CHECK(relNear(r1.state[0].q, r2.state[0].q, 1e-10),
+              "relaxation does not move the fixed point");
+        CHECK(relNear(r1.state[0].resistance, 4.0e6, 1e-10), "relaxed coefficient is the same");
         CHECK(r1.iterations > r2.iterations, "relaxation costs passes to get there");
     }
 
@@ -249,12 +251,13 @@ int main()
         ctl.relax = 0.5;
         ctl.maxOuterIterations = 400;
         const coupling::CoupledResult res =
-            coupling::solveCoupled1d3d(net, edge, block, ctl, nc);
+            coupling::solveCoupled1d3d(net, {edge}, {&block}, ctl, nc);
 
         CHECK(res.converged, "quadratic partner converges");
-        CHECK(relNear(res.q, qExact, 1e-9), "nonlinear fixed point is the exact root");
+        CHECK(relNear(res.state[0].q, qExact, 1e-9),
+              "nonlinear fixed point is the exact root");
         CHECK(res.residual < 1e-10, "interface residual reaches the tolerance");
-        CHECK(relNear(block.lastQ(), res.q, 1e-15),
+        CHECK(relNear(block.lastQ(), res.state[0].q, 1e-15),
               "nonlinear partner measured the reported rate");
     }
 
@@ -270,7 +273,7 @@ int main()
         coupling::CoupledControls ctl;
         ctl.tolerance = 1e-10;
         const coupling::CoupledResult res =
-            coupling::solveCoupled1d3d(net, edge, block, ctl, nc);
+            coupling::solveCoupled1d3d(net, {edge}, {&block}, ctl, nc);
 
         // current divider between the partner and the 1D bypass
         const double qBlockExact = qIn * rBy / (rBlock + rBy);
@@ -281,7 +284,7 @@ int main()
         const double pSrcExact = pJ1Exact + qIn * rLead;
 
         CHECK(res.converged, "branched network converges");
-        CHECK(relNear(res.q, qBlockExact, 1e-10), "coupled edge carries its branch share");
+        CHECK(relNear(res.state[0].q, qBlockExact, 1e-10), "coupled edge carries its branch share");
         CHECK(relNear(res.network.nodePressure[0], pSrcExact, 1e-10),
               "source node pressure matches the closed form");
         CHECK(relNear(res.network.nodePressure[1], pJ1Exact, 1e-10),
@@ -291,7 +294,7 @@ int main()
 
         const auto& pf = res.network.pipeFlows;
         CHECK(relNear(pf[0].flowRate, qIn, 1e-10), "the lead takes the whole rate");
-        CHECK(relNear(pf[0].flowRate, res.q + pf[2].flowRate, 1e-10),
+        CHECK(relNear(pf[0].flowRate, res.state[0].q + pf[2].flowRate, 1e-10),
               "node split: in = coupled + bypass");
         CHECK(relNear(pf[1].dpTotal, pf[2].dpTotal, 1e-12),
               "parallel branches share their drop");
@@ -310,17 +313,18 @@ int main()
         ctl.relax = 0.5;            // ... on a rate of one half per pass
         ctl.maxOuterIterations = 3;
         const coupling::CoupledResult res =
-            coupling::solveCoupled1d3d(net, edge, block, ctl, nc);
+            coupling::solveCoupled1d3d(net, {edge}, {&block}, ctl, nc);
 
         CHECK(!res.converged, "a stopped loop says it stopped");
         CHECK(res.iterations == 3, "every allowed pass ran");
         CHECK(res.history.size() == 3, "each pass is in the history");
-        CHECK(relNear(block.lastQ(), res.q, 1e-15),
+        CHECK(relNear(block.lastQ(), res.state[0].q, 1e-15),
               "the stopped state is still one state");
-        CHECK(relNear(block.lastDp(), res.dpPa, 1e-15),
+        CHECK(relNear(block.lastDp(), res.state[0].dpPa, 1e-15),
               "the reported drop is the partner's own last answer");
         CHECK(relNear(res.residual,
-                      std::abs(res.resistance * res.q - res.dpPa) / res.dpPa, 1e-10),
+                      std::abs(res.state[0].resistance * res.state[0].q - res.state[0].dpPa)
+                          / res.state[0].dpPa, 1e-10),
               "the residual is the gap between the two solvers");
     }
 
@@ -345,17 +349,17 @@ int main()
         coupling::TransientCoupledControls ctl;
         ctl.tolerance = 1e-12;
         const coupling::TransientCoupledResult res =
-            coupling::solveTransientCoupled1d3d(net, edge, block, ctl, dt, endTime);
+            coupling::solveTransientCoupled1d3d(net, {edge}, {&block}, ctl, dt, endTime);
 
         CHECK(res.steps.size() == static_cast<std::size_t>(nSteps),
               "transient loop runs every step of the interval");
-        CHECK(relNear(block.lastQ(), res.q, 1e-15),
+        CHECK(relNear(block.lastQ(), res.state[0].q, 1e-15),
               "the reported state is the one the partner was measured at");
-        CHECK(relNear(res.steps[0].q, qFirst, 1e-9),
+        CHECK(relNear(res.steps[0].edges[0].q, qFirst, 1e-9),
               "the first step splits the sudden rate by inertance");
-        CHECK(relNear(res.resistance, rBlock, 1e-12),
+        CHECK(relNear(res.state[0].resistance, rBlock, 1e-12),
               "the interface lands on the linear partner's coefficient");
-        CHECK(relNear(net.coupledResistanceOf(edge), res.resistance, 1e-15),
+        CHECK(relNear(net.coupledResistanceOf(edge), res.state[0].resistance, 1e-15),
               "the network carries the coefficient the last step was solved with");
         CHECK(relNear(net.time(), endTime, 1e-15), "the clock reaches endTime");
 
@@ -376,9 +380,8 @@ int main()
             const double qExact = n == 1
                 ? qFirst
                 : qInf + (qFirst - qInf) * std::pow(decay, 1 - n);
-            everyStepAgreed = everyStepAgreed && s.residual <= ctl.tolerance;
-            rampExact = rampExact && relNear(s.q, qExact, 1e-9);
-            rampExact = rampExact && relNear(s.q, qExact, 1e-9);
+            everyStepAgreed = everyStepAgreed && s.edges[0].residual <= ctl.tolerance;
+            rampExact = rampExact && relNear(s.edges[0].q, qExact, 1e-9);
             identityExact = identityExact
                 && relNear(s.flowRate[0], qIn, 1e-10)
                 && relNear(s.flowRate[3], qIn, 1e-10)
@@ -388,8 +391,8 @@ int main()
             // and the region's own acceleration
             const double dpNodes = s.pressure[1] - s.pressure[2];
             chainExact = chainExact
-                && relNear(dpNodes, s.dpPa + mX * (s.q - qPrev) / dt, 1e-8);
-            qPrev = s.q;
+                && relNear(dpNodes, s.edges[0].dpPa + mX * (s.edges[0].q - qPrev) / dt, 1e-8);
+            qPrev = s.edges[0].q;
         }
         CHECK(everyStepAgreed, "every time step closes the interface gap");
         CHECK(rampExact, "the inertial ramp follows the discrete closed form");
@@ -412,7 +415,7 @@ int main()
         coupling::TransientCoupledControls exact;
         exact.tolerance = 1e-10;
         const coupling::TransientCoupledResult r1 =
-            coupling::solveTransientCoupled1d3d(quick, 1, b1, exact, dt, endTime);
+            coupling::solveTransientCoupled1d3d(quick, {1}, {&b1}, exact, dt, endTime);
 
         TransientNetwork damped(transientBranched(qIn, 1.0e6));
         AnalyticElement b2(4.0e6, 0.0);
@@ -420,7 +423,7 @@ int main()
         relaxed.relax = 0.5;
         relaxed.maxSubIterations = 60;
         const coupling::TransientCoupledResult r2 =
-            coupling::solveTransientCoupled1d3d(damped, 1, b2, relaxed, dt, endTime);
+            coupling::solveTransientCoupled1d3d(damped, {1}, {&b2}, relaxed, dt, endTime);
 
         long passes1 = 0, passes2 = 0;
         bool sameRamp = true;
@@ -428,11 +431,12 @@ int main()
         {
             passes1 += r1.steps[n].passes;
             passes2 += r2.steps[n].passes;
-            sameRamp = sameRamp && relNear(r1.steps[n].q, r2.steps[n].q, 1e-10);
+            sameRamp = sameRamp
+                && relNear(r1.steps[n].edges[0].q, r2.steps[n].edges[0].q, 1e-10);
         }
         CHECK(sameRamp, "the relaxed interface follows the same ramp");
         CHECK(passes2 > passes1, "relaxation costs partner runs to get there");
-        CHECK(relNear(r2.resistance, 4.0e6, 1e-10), "relaxed coefficient is the same");
+        CHECK(relNear(r2.state[0].resistance, 4.0e6, 1e-10), "relaxed coefficient is the same");
     }
 
     // ---- a step the interface cannot agree on stops the run ----
@@ -445,12 +449,234 @@ int main()
         bool stopped = false;
         try
         {
-            coupling::solveTransientCoupled1d3d(net, 1, block, stuck, 0.05, 0.5);
+            coupling::solveTransientCoupled1d3d(net, {1}, {&block}, stuck, 0.05, 0.5);
         }
         catch (const Error&) { stopped = true; }
         CHECK(stopped, "an unagreed step is fatal instead of committed");
         CHECK(net.time() == 0.0 && net.pipeFlows()[1] == 0.0,
               "a fatal interface leaves the network at its start");
+    }
+
+    // ---- two edges at once: each partner gets its own rate from one solve ----
+    {
+        // Src -> A -> { X1 || By } -> X2 -> Snk : X1 sits in a branch, so the
+        // node split decides its rate, while X2 is in series, so continuity pins
+        // it. A loop that solved the network per edge, or handed both partners
+        // the same rate, fails here rather than in the 3D case.
+        OneDNetwork net;
+        net.fluid = FluidProperties{800.0, 0.1};
+        net.addNode("Src"); net.addNode("J1"); net.addNode("J2"); net.addNode("Snk");
+        net.setNodePressure("Snk", 1.0e5);
+        net.setNodeRate("Src", 0.02);
+        net.addPipe(linearPipe("A", "Src", "J1", 1.0e6));
+        const label e1 = net.addPipe(linearPipe("X1", "J1", "J2", 1.0e6));
+        net.addPipe(linearPipe("By", "J1", "J2", 4.0e6));
+        const label e2 = net.addPipe(linearPipe("X2", "J2", "Snk", 1.0e6));
+
+        AnalyticElement b1(2.0e6, 0.0), b2(8.0e6, 0.0);
+        coupling::CoupledControls ctl;
+        ctl.tolerance = 1e-12;
+        const coupling::CoupledResult res =
+            coupling::solveCoupled1d3d(net, {e1, e2}, {&b1, &b2}, ctl, nc);
+
+        const double qX1 = 0.02 * 4.0e6 / (4.0e6 + 2.0e6);
+        CHECK(res.converged, "two linear partners converge together");
+        CHECK(res.edges.size() == 2 && res.state.size() == 2,
+              "the result carries one state per edge");
+        CHECK(res.edges[0] == e1 && res.edges[1] == e2, "the states are in edge order");
+        CHECK(relNear(res.state[0].q, qX1, 1e-11),
+              "the branch edge takes the closed-form split");
+        CHECK(relNear(res.state[1].q, 0.02, 1e-11),
+              "the series edge carries the whole rate");
+        CHECK(relNear(res.state[0].resistance, 2.0e6, 1e-11)
+              && relNear(res.state[1].resistance, 8.0e6, 1e-11),
+              "each edge lands on its own partner's coefficient");
+        CHECK(relNear(res.state[0].dpPa, 2.0e6 * qX1, 1e-11)
+              && relNear(res.state[1].dpPa, 8.0e6 * 0.02, 1e-11),
+              "each partner reports its own drop");
+        CHECK(res.iterations == 2, "one shared refresh settles both edges");
+        CHECK(b1.calls() == 2 && b2.calls() == 2,
+              "one pass runs each partner once, never twice");
+        CHECK(res.history.size() == 2 && res.history[1].edges.size() == 2,
+              "each iteration records both edges");
+        CHECK(relNear(res.residual, std::max(res.history[1].edges[0].residual,
+                                             res.history[1].edges[1].residual), 1e-12),
+              "the reported residual is the worst edge of the accepted pass");
+        CHECK(relNear(net.pipes[static_cast<std::size_t>(e1)].coupledResistance,
+                      res.state[0].resistance, 1e-15)
+              && relNear(net.pipes[static_cast<std::size_t>(e2)].coupledResistance,
+                         res.state[1].resistance, 1e-15),
+              "the network carries both accepted coefficients");
+
+        // the same two edges starting anywhere else reach the same state, and a
+        // starting set that is far off on one edge does not stall the other
+        AnalyticElement c1(2.0e6, 0.0), c2(8.0e6, 0.0);
+        net.pipes[static_cast<std::size_t>(e1)].coupledResistance = 8.0e7;
+        net.pipes[static_cast<std::size_t>(e2)].coupledResistance = 1.0e6;
+        const coupling::CoupledResult far =
+            coupling::solveCoupled1d3d(net, {e1, e2}, {&c1, &c2}, ctl, nc);
+        CHECK(relNear(far.state[0].q, qX1, 1e-11) && relNear(far.state[1].q, 0.02, 1e-11),
+              "the fixed point does not belong to the starting set");
+        CHECK(relNear(far.state[0].resistance, res.state[0].resistance, 1e-9)
+              && relNear(far.state[1].resistance, res.state[1].resistance, 1e-9),
+              "both edges agree across starting sets to the interface tolerance");
+    }
+
+    // ---- two edges, one of them nonlinear: the split is the partners' ----
+    {
+        // X1 || X2 with nothing else between the nodes, so the drop equality and
+        // the rate sum together decide the split: R1 (Q - q2) = (R0 + k q2) q2.
+        // The quadratic partner is kept mild on purpose: the interface map
+        // R2 -> R0 + k Q R1/(R1 + R2) has derivative -k Q R1/(R1+R2)^2 at the
+        // fixed point, so a stiff k makes the un-accelerated block Gauss-Seidel
+        // diverge -- which is why the interface is still scalar per edge here.
+        const double Q = 0.02, r1 = 2.0e6, r0 = 1.0e6, k = 1.0e7;
+        const double q2 = (-(r0 + r1) + std::sqrt((r0 + r1) * (r0 + r1)
+                                                  + 4.0 * k * r1 * Q)) / (2.0 * k);
+        CHECK(q2 > 0 && q2 < Q, "the quadratic partner has a real split");
+        CHECK(std::abs(-k * Q * r1 / std::pow(r1 + r0 + k * q2, 2)) < 1.0,
+              "this interface map is contractive");
+
+        OneDNetwork net;
+        net.fluid = FluidProperties{800.0, 0.1};
+        net.addNode("Src"); net.addNode("J1"); net.addNode("J2"); net.addNode("Snk");
+        net.setNodePressure("Snk", 1.0e5);
+        net.setNodeRate("Src", Q);
+        net.addPipe(linearPipe("A", "Src", "J1", 1.0e6));
+        const label e1 = net.addPipe(linearPipe("X1", "J1", "J2", 1.0e6));
+        const label e2 = net.addPipe(linearPipe("X2", "J1", "J2", 4.0e6));
+        net.addPipe(linearPipe("B", "J2", "Snk", 1.0e6));
+
+        AnalyticElement b1(r1, 0.0), b2(r0, k);
+        coupling::CoupledControls ctl;
+        ctl.tolerance = 1e-8;
+        ctl.maxOuterIterations = 30;
+        const coupling::CoupledResult res =
+            coupling::solveCoupled1d3d(net, {e1, e2}, {&b1, &b2}, ctl, nc);
+
+        CHECK(res.converged, "a linear and a quadratic partner converge together");
+        CHECK(relNear(res.state[1].q, q2, 1e-6), "the quadratic edge takes its root");
+        CHECK(relNear(res.state[0].q, Q - q2, 1e-6), "the linear edge takes the rest");
+        CHECK(relNear(res.state[0].dpPa, res.state[1].dpPa, 1e-7),
+              "the two partners agree on one drop between the same nodes");
+        CHECK(res.iterations > 2, "the nonlinear edge needs more than one refresh");
+    }
+
+    // ---- the loop refuses a malformed edge list ----
+    {
+        OneDNetwork net = branchedNetwork(0.02);
+        const label edge = 1;
+        AnalyticElement block(4.0e6, 0.0);
+        coupling::CoupledControls ctl;
+        ctl.tolerance = 1e-10;
+        auto fatal = [&ctl, &net, &nc](const std::vector<label>& edges,
+                                       std::vector<coupling::ICoupledElement*> blocks)
+        {
+            try { coupling::solveCoupled1d3d(net, edges, blocks, ctl, nc); }
+            catch (const Error&) { return true; }
+            return false;
+        };
+        CHECK(fatal({edge, edge}, {&block, &block}),
+              "the same edge twice is rejected, not solved twice");
+        CHECK(fatal({edge}, {nullptr}), "an edge with no partner is rejected");
+        CHECK(fatal({edge}, {&block, &block}),
+              "a partner list that does not match the edges is rejected");
+    }
+
+    // ---- transient: two edges, one branch and one series, per step ----
+    {
+        const double qIn = 0.02, dt = 0.15, endTime = 0.6;
+        TransientCase c;
+        c.fluid = FluidProperties{800.0, 0.1};
+        TransientNodeConfig src, j1, j2, j3, snk;
+        src.name = "Src"; j1.name = "J1"; j2.name = "J2"; j3.name = "J3";
+        snk.name = "Snk"; snk.pressureFixed = true; snk.pressure = 1.0e5;
+        for (TransientNodeConfig* n : {&src, &j1, &j2, &j3})
+        {
+            n->volume = 1.0;
+            n->liquidFraction = 0.5;
+        }
+        c.nodes = {src, j1, j2, j3, snk};
+        c.pipes = {coupledPipe("A", "Src", "J1", 10.0, 1.0e6),
+                   coupledPipe("X1", "J1", "J2", 10.0, 1.0e6),
+                   coupledPipe("By", "J1", "J2", 1.0, 1.0e6),
+                   coupledPipe("X2", "J2", "J3", 10.0, 1.0e6),
+                   coupledPipe("B", "J3", "Snk", 10.0, 1.0e6)};
+        TransientSource feed;
+        feed.nodeName = "Src";
+        feed.rate = qIn;
+        c.sources = {feed};
+
+        TransientNetwork net(c);
+        const label e1 = 1, e2 = 3;
+        AnalyticElement b1(4.0e6, 0.0), b2(2.0e6, 0.0);
+        coupling::TransientCoupledControls ctl;
+        ctl.tolerance = 1e-12;
+        const coupling::TransientCoupledResult res =
+            coupling::solveTransientCoupled1d3d(net, {e1, e2}, {&b1, &b2}, ctl, dt, endTime);
+
+        const double section = 0.25 * M_PI * 0.05 * 0.05;
+        const double mX1 = 800.0 * 10.0 / section, mBy = 800.0 * 1.0 / section;
+        const double tau = (mX1 + mBy) / (4.0e6 + 1.0e6);
+        const double qInf = qIn * 1.0e6 / (4.0e6 + 1.0e6);
+        const double qFirst = (mBy / dt + 1.0e6) * qIn / ((mX1 + mBy) / dt + 4.0e6 + 1.0e6);
+        const double mX2 = 800.0 * 10.0 / section;
+
+        CHECK(res.edges.size() == 2 && res.steps[0].edges.size() == 2,
+              "every time step reports both edges");
+        CHECK(res.steps.back().history.back().edges.size() == 2,
+              "the history records both edges of the accepted pass");
+
+        bool agreed = true, seriesPinned = true, splitsExact = true, rowsExact = true;
+        long totalPasses = 0;
+        double qPrev1 = 0.0, qPrev2 = 0.0;
+        for (std::size_t n = 0; n < res.steps.size(); ++n)
+        {
+            const coupling::TransientCoupledStep& s = res.steps[n];
+            const double qExact = n == 0
+                ? qFirst
+                : qInf + (qFirst - qInf) * std::pow(1.0 + dt / tau, 1 - static_cast<int>(n) - 1);
+            agreed = agreed && s.edges[0].residual <= ctl.tolerance
+                && s.edges[1].residual <= ctl.tolerance;
+            seriesPinned = seriesPinned && relNear(s.edges[1].q, qIn, 1e-9);
+            splitsExact = splitsExact && relNear(s.edges[0].q, qExact, 1e-8);
+            // each edge's own momentum row, closed by its own partner's drop
+            const double dp1 = s.pressure[1] - s.pressure[2];
+            const double dp2 = s.pressure[2] - s.pressure[3];
+            rowsExact = rowsExact
+                && relNear(dp1, s.edges[0].dpPa + mX1 * (s.edges[0].q - qPrev1) / dt, 1e-7)
+                && relNear(dp2, s.edges[1].dpPa + mX2 * (s.edges[1].q - qPrev2) / dt, 1e-7);
+            qPrev1 = s.edges[0].q;
+            qPrev2 = s.edges[1].q;
+            totalPasses += s.passes;
+        }
+        CHECK(agreed, "both interfaces close at every time level");
+        CHECK(seriesPinned, "the series edge carries the injected rate at every step");
+        CHECK(splitsExact, "the branch edge still follows its own inertial ramp");
+        CHECK(rowsExact, "each edge's row closes against its own partner");
+        CHECK(b1.calls() == totalPasses && b2.calls() == totalPasses,
+              "one pass runs each partner exactly once");
+        CHECK(relNear(net.coupledResistanceOf(e1), res.state[0].resistance, 1e-15)
+              && relNear(net.coupledResistanceOf(e2), res.state[1].resistance, 1e-15),
+              "the network carries both accepted coefficients");
+
+        // an edge the interface cannot close stops the run and says which one
+        TransientNetwork stuckNet(c);
+        AnalyticElement s1(4.0e6, 0.0), s2(2.0e6, 0.0);
+        coupling::TransientCoupledControls tight;
+        tight.maxSubIterations = 1;
+        tight.tolerance = 1e-12;
+        bool stopped = false;
+        std::string what;
+        try
+        {
+            coupling::solveTransientCoupled1d3d(stuckNet, {e1, e2}, {&s1, &s2},
+                                                tight, dt, 0.3);
+        }
+        catch (const Error& e) { stopped = true; what = e.what(); }
+        CHECK(stopped, "an unagreed multi-edge step is fatal instead of committed");
+        CHECK(what.find("X1") != std::string::npos, "the message names the worst edge");
+        CHECK(stuckNet.time() == 0.0, "a fatal interface leaves the clock at its start");
     }
 
     std::cout << (failures == 0 ? "coupling unit: all checks passed\n"

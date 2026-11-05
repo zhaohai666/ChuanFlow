@@ -351,70 +351,111 @@ void DetailBlock::measure(const SimpleResult& res, scalar qMag)
 // the partitioned outer loop
 // ------------------------------------------------------------------
 
-CoupledResult solveCoupled1d3d(OneDNetwork& net, label edge,
-                               ICoupledElement& block,
+CoupledResult solveCoupled1d3d(OneDNetwork& net,
+                               const std::vector<label>& edges,
+                               std::vector<ICoupledElement*> blocks,
                                const CoupledControls& ctl,
                                const SteadyControls& netCtl)
 {
-    if (edge < 0 || static_cast<std::size_t>(edge) >= net.pipes.size())
-        cfFatal("coupling: no pipe at index " + std::to_string(edge));
+    if (edges.empty())
+        cfFatal("coupling: the interface needs at least one coupled edge");
+    if (blocks.size() != edges.size())
+        cfFatal("coupling: " + std::to_string(edges.size()) + " coupled edges need"
+                " one partner each, got " + std::to_string(blocks.size()));
     if (!(ctl.relax > 0 && ctl.relax <= 1))
         cfFatal("coupling: the interface relaxation must be in (0, 1]");
-    NetworkPipe& coupled = net.pipes[static_cast<std::size_t>(edge)];
-    if (!(coupled.coupledResistance > 0))
-        cfFatal("coupling: pipe '" + coupled.name + "' is the coupled edge but"
-                " carries no starting resistance");
+
+    // every edge is a pipe the network can charge a coefficient for, and one
+    // pipe cannot carry two partners: they would overwrite each other's drop
+    std::vector<NetworkPipe*> coupled;
+    for (std::size_t i = 0; i < edges.size(); ++i)
+    {
+        const label edge = edges[i];
+        if (edge < 0 || static_cast<std::size_t>(edge) >= net.pipes.size())
+            cfFatal("coupling: no pipe at index " + std::to_string(edge));
+        bool repeats = false;
+        for (std::size_t j = 0; j < i; ++j)
+            repeats = repeats || (edges[j] == edge);
+        NetworkPipe& pipe = net.pipes[static_cast<std::size_t>(edge)];
+        if (repeats)
+            cfFatal("coupling: pipe '" + pipe.name + "' is coupled twice");
+        if (blocks[i] == nullptr)
+            cfFatal("coupling: edge '" + pipe.name + "' has no partner");
+        if (!(pipe.coupledResistance > 0))
+            cfFatal("coupling: pipe '" + pipe.name + "' is a coupled edge but"
+                    " carries no starting resistance");
+        coupled.push_back(&pipe);
+    }
 
     CoupledResult out;
-    out.edge = edge;
+    out.edges = edges;
 
     for (label it = 1; it <= ctl.maxOuterIterations; ++it)
     {
-        const scalar R = coupled.coupledResistance;
         SteadyNetworkResult res = solveSteadyNetwork(net, netCtl);
         if (!res.converged)
             cfFatal("coupling: the 1D network did not converge at interface"
                     " iteration " + std::to_string(it) + " (residual "
                     + fmt(res.relativeResidual) + " after "
-                    + std::to_string(res.iterations) + " iterations at R "
-                    + fmt(R) + ")");
-
-        const PipeFlowResult& edgeFlow = res.pipeFlows[static_cast<std::size_t>(edge)];
-        const scalar q = std::abs(edgeFlow.flowRate);
-        const scalar dpBlock = block.lossAt(q);
+                    + std::to_string(res.iterations) + " iterations)");
 
         OuterIteration step;
         step.iteration = it;
-        step.resistance = R;
-        step.q = q;
-        step.dpPa = dpBlock;
-        // The network's own statement about this edge against the partner's.
-        // Both come out of a solver, so this gap is a cross-solver residual and
-        // not a number compared with itself.
-        step.residual = std::abs(edgeFlow.dpTotal - dpBlock) / std::max(std::abs(dpBlock), 1e-300);
-        step.blockConverged = block.lastConverged();
-        step.sweeps = block.lastSweeps();
         step.networkResidual = res.relativeResidual;
-        out.history.push_back(step);
+        scalar worst = 0;
 
-        // this pass is a state of the coupled system: the network was solved
-        // with `R`, so its rate `q` is the rate that coefficient delivers, and
-        // the partner was measured at exactly that rate. Record it as the
-        // answer before touching the coefficient, so a caller that reads
-        // (R, q, dpNetwork, dpBlock) reads one operating point and not two a
-        // solve apart.
+        for (std::size_t i = 0; i < coupled.size(); ++i)
+        {
+            const NetworkPipe& pipe = *coupled[i];
+            const label edge = edges[i];
+            const PipeFlowResult& edgeFlow =
+                res.pipeFlows[static_cast<std::size_t>(edge)];
+            const scalar q = std::abs(edgeFlow.flowRate);
+            if (!(q > 0))
+                cfFatal("coupling: the network delivers no rate through coupled"
+                        " pipe '" + pipe.name + "'; a partner cannot be evaluated"
+                        " at zero rate");
+            const scalar dpBlock = blocks[i]->lossAt(q);
+
+            EdgeExchange ex;
+            ex.edge = edge;
+            ex.name = pipe.name;
+            ex.resistance = pipe.coupledResistance;
+            ex.q = q;
+            ex.dpPa = dpBlock;
+            // The network's own statement about this edge against the partner's.
+            // Both come out of a solver, so this gap is a cross-solver residual and
+            // not a number compared with itself.
+            ex.residual = std::abs(edgeFlow.dpTotal - dpBlock)
+                          / std::max(std::abs(dpBlock), 1e-300);
+            ex.sweeps = blocks[i]->lastSweeps();
+            ex.blockConverged = blocks[i]->lastConverged();
+            worst = std::max(worst, ex.residual);
+            step.edges.push_back(ex);
+        }
+
+        out.history.push_back(step);
+        // this pass is a state of the coupled system: the network was solved with
+        // these coefficients, so each rate is the rate that coefficient delivers,
+        // and every partner was measured at exactly its own rate. Record it as the
+        // answer before touching the coefficients, so a caller that reads
+        // (R, q, dpNetwork, dpBlock) per edge reads one operating point and not
+        // two solves apart.
         out.network = res;
-        out.q = q;
-        out.dpPa = dpBlock;
-        out.resistance = R;
-        out.residual = step.residual;
+        out.state = step.edges;
+        out.residual = worst;
         out.iterations = it;
-        out.converged = step.residual <= ctl.tolerance;
+        out.converged = worst <= ctl.tolerance;
         if (out.converged) break;
 
-        // the next pass starts from the refreshed coefficient; the accepted
-        // state above keeps the one it was solved with
-        coupled.coupledResistance = (1.0 - ctl.relax) * R + ctl.relax * (dpBlock / q);
+        // the next pass starts from the refreshed coefficients; the accepted
+        // state above keeps the ones it was solved with
+        for (std::size_t i = 0; i < coupled.size(); ++i)
+        {
+            const EdgeExchange& ex = step.edges[i];
+            coupled[i]->coupledResistance =
+                (1.0 - ctl.relax) * ex.resistance + ctl.relax * (ex.dpPa / ex.q);
+        }
     }
 
     return out;
@@ -424,13 +465,17 @@ CoupledResult solveCoupled1d3d(OneDNetwork& net, label edge,
 // the transient partitioned loop
 // ------------------------------------------------------------------
 
-TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net, label edge,
-                                                 ICoupledElement& block,
+TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
+                                                 const std::vector<label>& edges,
+                                                 std::vector<ICoupledElement*> blocks,
                                                  const TransientCoupledControls& ctl,
                                                  double dt, double endTime)
 {
-    if (edge < 0 || static_cast<std::size_t>(edge) >= net.pipeNames().size())
-        cfFatal("coupling: no transient pipe at index " + std::to_string(edge));
+    if (edges.empty())
+        cfFatal("coupling: the transient interface needs at least one coupled edge");
+    if (blocks.size() != edges.size())
+        cfFatal("coupling: " + std::to_string(edges.size()) + " coupled edges need"
+                " one partner each, got " + std::to_string(blocks.size()));
     if (!(ctl.relax > 0 && ctl.relax <= 1))
         cfFatal("coupling: the interface relaxation must be in (0, 1]");
     if (ctl.maxSubIterations < 1)
@@ -447,13 +492,28 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net, label ed
         cfFatal("coupling: endTime " + fmt(endTime) + " is shorter than one"
                 " step of " + fmt(dt));
 
-    scalar R = net.coupledResistanceOf(edge);
-    if (!(R > 0))
-        cfFatal("coupling: transient pipe '" + net.pipeNames()[static_cast<std::size_t>(edge)]
-                + "' is the coupled edge but carries no starting resistance");
+    std::vector<scalar> R(edges.size());
+    for (std::size_t i = 0; i < edges.size(); ++i)
+    {
+        const label edge = edges[i];
+        if (edge < 0 || static_cast<std::size_t>(edge) >= net.pipeNames().size())
+            cfFatal("coupling: no transient pipe at index " + std::to_string(edge));
+        const std::string& name = net.pipeNames()[static_cast<std::size_t>(edge)];
+        bool repeats = false;
+        for (std::size_t j = 0; j < i; ++j)
+            repeats = repeats || (edges[j] == edge);
+        if (repeats)
+            cfFatal("coupling: transient pipe '" + name + "' is coupled twice");
+        if (blocks[i] == nullptr)
+            cfFatal("coupling: transient edge '" + name + "' has no partner");
+        R[i] = net.coupledResistanceOf(edge);
+        if (!(R[i] > 0))
+            cfFatal("coupling: transient pipe '" + name
+                    + "' is a coupled edge but carries no starting resistance");
+    }
 
     TransientCoupledResult out;
-    out.edge = edge;
+    out.edges = edges;
     out.nodeNames.assign(net.nodeNames().begin(), net.nodeNames().end());
     out.pipeNames.assign(net.pipeNames().begin(), net.pipeNames().end());
 
@@ -463,65 +523,82 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net, label ed
         label passes = 0;
         bool agreed = false;
 
-        // Re-solve the same step from the same committed start until the rate
-        // it delivers is the rate the partner's drop belongs to. Nothing is
-        // advanced in here, so the refresh is a real iteration on one time
-        // level rather than a drift along the trajectory.
+        // Re-solve the same step from the same committed start until every
+        // partner's drop belongs to the rate the step delivers through its edge.
+        // Nothing is advanced in here, so the refresh is a real iteration on one
+        // time level rather than a drift along the trajectory.
         for (label pass = 1; pass <= ctl.maxSubIterations; ++pass)
         {
             const double newton = net.solveStep(dt);
-            const scalar q = std::abs(net.pendingPipeFlow(edge));
-            const scalar dpPa = block.lossAt(q);
 
             TransientInterfacePass rec;
             rec.pass = pass;
-            rec.resistance = R;
-            rec.q = q;
-            rec.dpNetwork = R * q;
-            rec.dpPa = dpPa;
-            rec.residual = std::abs(rec.dpNetwork - dpPa) / std::max(std::abs(dpPa), 1e-300);
-            rec.sweeps = block.lastSweeps();
-            rec.blockConverged = block.lastConverged();
             rec.newtonResidual = newton;
+            scalar worst = 0;
+            for (std::size_t i = 0; i < edges.size(); ++i)
+            {
+                const label edge = edges[i];
+                EdgeExchange ex;
+                ex.edge = edge;
+                ex.name = net.pipeNames()[static_cast<std::size_t>(edge)];
+                ex.resistance = R[i];
+                ex.q = std::abs(net.pendingPipeFlow(edge));
+                if (!(ex.q > 0))
+                    cfFatal("coupling: the transient step delivers no rate through"
+                            " coupled pipe '" + ex.name + "'; a partner cannot be"
+                            " evaluated at zero rate");
+                ex.dpPa = blocks[i]->lossAt(ex.q);
+                ex.residual = std::abs(ex.resistance * ex.q - ex.dpPa)
+                              / std::max(std::abs(ex.dpPa), 1e-300);
+                ex.sweeps = blocks[i]->lastSweeps();
+                ex.blockConverged = blocks[i]->lastConverged();
+                worst = std::max(worst, ex.residual);
+                rec.edges.push_back(ex);
+            }
             step.history.push_back(rec);
             passes = pass;
 
-            if (rec.residual <= ctl.tolerance)
+            if (worst <= ctl.tolerance)
             {
                 agreed = true;
                 break;
             }
-            R = (1.0 - ctl.relax) * R + ctl.relax * (dpPa / q);
-            net.setCoupledResistance(edge, R);
+            for (std::size_t i = 0; i < edges.size(); ++i)
+            {
+                const EdgeExchange& ex = rec.edges[i];
+                R[i] = (1.0 - ctl.relax) * R[i] + ctl.relax * (ex.dpPa / ex.q);
+                net.setCoupledResistance(edges[i], R[i]);
+            }
         }
 
         if (!agreed)
+        {
+            const EdgeExchange& worst = *std::max_element(
+                step.history.back().edges.begin(),
+                step.history.back().edges.end(),
+                [](const EdgeExchange& a, const EdgeExchange& b)
+                { return a.residual < b.residual; });
             cfFatal("coupling: the transient interface did not agree at step "
                     + std::to_string(s + 1) + " after "
-                    + std::to_string(passes) + " passes (residual "
-                    + fmt(step.history.back().residual) + ", rate "
-                    + fmt(step.history.back().q) + " m3/s at t "
-                    + fmt(net.time() + dt) + " s)");
+                    + std::to_string(passes) + " passes (worst edge '" + worst.name
+                    + "': residual " + fmt(worst.residual) + ", rate "
+                    + fmt(worst.q) + " m3/s at t " + fmt(net.time() + dt) + " s)");
+        }
 
-        // the accepted step is the one solved with the coefficient it reports,
-        // and that coefficient is what the next step starts from
+        // the accepted step is the one solved with the coefficients it reports,
+        // and those coefficients are what the next step starts from
         net.commitStep();
         step.t = net.time();
         step.passes = passes;
-        step.q = step.history.back().q;
-        step.dpPa = step.history.back().dpPa;
-        step.resistance = step.history.back().resistance;
-        step.residual = step.history.back().residual;
+        step.edges = step.history.back().edges;
         step.pressure = net.pressure();
         step.flowRate = net.pipeFlows();
         out.steps.push_back(std::move(step));
     }
 
-    const TransientCoupledStep& last = out.steps.back();
-    out.q = last.q;
-    out.dpPa = last.dpPa;
-    out.resistance = last.resistance;
-    out.residual = last.residual;
+    out.state = out.steps.back().edges;
+    for (const EdgeExchange& ex : out.state)
+        out.residual = std::max(out.residual, ex.residual);
     return out;
 }
 

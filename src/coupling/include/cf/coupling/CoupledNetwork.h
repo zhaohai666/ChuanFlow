@@ -139,19 +139,29 @@ private:
 // The partitioned outer loop
 // ------------------------------------------------------------------
 
-/// One interface exchange: the network was solved with `resistance`, carried
-/// `q`, and the partner reported `dpPa` for it. `residual` is the mismatch
-/// between what the network charged and what the partner reported, relative to
-/// the partner's number: exactly zero at the common solution.
-struct OuterIteration
+/// One edge's side of one interface exchange: the network was solved while the
+/// pipe carried `resistance`, delivered `q`, and the partner reported `dpPa` for
+/// exactly that rate. `residual` is the mismatch between what the network
+/// charged and what the partner reported, relative to the partner's number:
+/// zero for that edge at the common solution.
+struct EdgeExchange
 {
-    label iteration = 0;
+    label edge = -1;
+    std::string name;
     scalar resistance = 0;
     scalar q = 0;
     scalar dpPa = 0;
     scalar residual = 0;
     label sweeps = 0;
     bool blockConverged = false;
+};
+
+/// One pass of the steady interface: every coupled edge evaluated against the
+/// same network solve.
+struct OuterIteration
+{
+    label iteration = 0;
+    std::vector<EdgeExchange> edges;
     scalar networkResidual = 0;
 };
 
@@ -160,38 +170,43 @@ struct CoupledControls
     label maxOuterIterations = 40;
     scalar relax = 1.0;    // interface relaxation; < 1 damps a strongly
                            // nonlinear (e.g. turbulent) partner
-    scalar tolerance = 1e-9; // relative interface residual
+    scalar tolerance = 1e-9; // relative interface residual, per edge
 };
 
 struct CoupledResult
 {
     std::vector<OuterIteration> history;
     SteadyNetworkResult network;
-    label edge = -1;         // the pipe index that carries the block
-    scalar q = 0;            // rate through the coupled element at that coefficient
-    scalar dpPa = 0;         // the partner's drop at exactly that rate
-    scalar resistance = 0;   // the coefficient the reported network was solved with
-    scalar residual = 0;
+    std::vector<label> edges;             // pipe indices, in interface order
+    std::vector<EdgeExchange> state;      // the reported network's per-edge state
+    scalar residual = 0;                  // the worst edge: what the stop used
     label iterations = 0;
     bool converged = false;
 };
 
 /// Gauss-Seidel on the interface: the 1D network is asked for the rate through
-/// the coupled edge given the drop coefficient it currently carries, the
-/// detailed model is then run at that rate and answers with its own drop, and
-/// the coefficient is refreshed. The fixed point is the state where the drop
-/// the network charges equals the drop the detailed model reports at the rate
-/// the network delivers -- which is exactly the continuity-plus-momentum
-/// statement at the interface.
+/// each coupled edge given the drop coefficients it currently carries, every
+/// detailed model is then run at its own rate and answers with its own drop, and
+/// the coefficients are refreshed. The fixed point is the state where, at every
+/// edge, the drop the network charges equals the drop the detailed model reports
+/// at the rate the network delivers - which is exactly the
+/// continuity-plus-momentum statement at that interface.
+///
+/// All partners are evaluated against the *same* network solve, so one pass
+/// costs one network solve plus one solve per detailed region; the edges are
+/// refreshed together and the pass stops on the worst edge, which is what makes
+/// a second region actually couple rather than run in its own loop.
 ///
 /// For a laminar partner the reported drop is linear in the rate, so one
 /// refresh lands on the fixed point; the relaxation and the residual are here
 /// for the nonlinear ones.
 ///
-/// `net` is mutated: the coupled pipe's `coupledResistance` ends at the
-/// converged coefficient, so `result.network` and `net` describe the same state.
-CoupledResult solveCoupled1d3d(OneDNetwork& net, label edge,
-                               ICoupledElement& block,
+/// `net` is mutated: every coupled pipe ends at its converged coefficient, so
+/// `result.network` and `net` describe the same state. `blocks` is used, not
+/// owned, and must be the same length as `edges`.
+CoupledResult solveCoupled1d3d(OneDNetwork& net,
+                               const std::vector<label>& edges,
+                               std::vector<ICoupledElement*> blocks,
                                const CoupledControls& ctl,
                                const SteadyControls& netCtl);
 
@@ -209,33 +224,23 @@ struct TransientCoupledControls
     scalar tolerance = 1e-4;
 };
 
-/// One interface exchange inside one time step. `dpNetwork` is what the 1D side
-/// charged the region (its coefficient times the rate it delivered) and `dpPa`
-/// what the partner reported for that rate; the two are produced by different
-/// solvers, so their gap is a cross-solver residual.
+/// One interface exchange inside one time step: every coupled edge evaluated
+/// against the same uncommitted step. `newtonResidual` is that 1D step's own
+/// convergence, shared by the edges because it is one solve.
 struct TransientInterfacePass
 {
     label pass = 0;
-    scalar resistance = 0;
-    scalar q = 0;
-    scalar dpNetwork = 0;
-    scalar dpPa = 0;
-    scalar residual = 0;
-    label sweeps = 0;
-    bool blockConverged = false;
-    double newtonResidual = 0;   // the 1D step's own Newton convergence
+    std::vector<EdgeExchange> edges;
+    double newtonResidual = 0;
 };
 
-/// A time step the interface agreed on, with the whole 1D state at it, so a
+/// A time step every interface agreed on, with the whole 1D state at it, so a
 /// caller can read the transient response without solving anything again.
 struct TransientCoupledStep
 {
     double t = 0;                    // the time the step arrives at
-    scalar q = 0;                    // rate through the coupled edge
-    scalar dpPa = 0;                 // the partner's drop at exactly that rate
-    scalar resistance = 0;           // the coefficient the step was solved with
-    scalar residual = 0;
     label passes = 0;
+    std::vector<EdgeExchange> edges; // the accepted pass, one per coupled edge
     std::vector<double> pressure;    // every node, at the accepted state
     std::vector<double> flowRate;    // every pipe, at the accepted state
     std::vector<TransientInterfacePass> history;
@@ -243,24 +248,22 @@ struct TransientCoupledStep
 
 struct TransientCoupledResult
 {
-    label edge = -1;
+    std::vector<label> edges;
     std::vector<std::string> nodeNames;
     std::vector<std::string> pipeNames;
     std::vector<TransientCoupledStep> steps;
-    scalar q = 0;          // the last step's accepted state, repeated for
-    scalar dpPa = 0;       // callers that only want where the run ended
-    scalar resistance = 0;
-    scalar residual = 0;
+    std::vector<EdgeExchange> state;  // the last step's accepted per-edge state
+    scalar residual = 0;              // the worst edge at that last step
 };
 
-/// Advance a transient 1D network whose coupled pipe is handed to a detailed
-/// model, exchanging rate for drop inside every time step: the step is solved
-/// with the coefficient the interface currently carries, the partner is run at
-/// the rate that step delivers, and the coefficient is refreshed from the
-/// partner's drop - all without committing the step, so a refresh re-solves the
-/// same step from the same start. The step commits once the two sides agree, and
-/// the coefficient carries into the next step, where the same statement has to
-/// hold at the new rate.
+/// Advance a transient 1D network whose coupled pipes are handed to detailed
+/// models, exchanging rate for drop inside every time step: the step is solved
+/// with the coefficients the interface currently carries, every partner is run
+/// at the rate that step delivers through its own edge, and the coefficients are
+/// refreshed from the drops reported - all without committing the step, so a
+/// refresh re-solves the same step from the same start. The step commits once
+/// every edge agrees, and the coefficients carry into the next step, where the
+/// same statement has to hold at the new rates.
 ///
 /// The partner is asked for a drop at an *instant*, which is what keeps the
 /// interface stable. A time-accurate partner would report its region's
@@ -275,13 +278,15 @@ struct TransientCoupledResult
 /// twice reads there - in the case that ships, where the region holds 43% of the
 /// loop's inertance, as a 43% longer time constant.
 ///
-/// A step the interface cannot agree on is fatal: continuing would commit a
-/// state whose two sides disagree, and the rest of the series would inherit it.
+/// A step any edge cannot agree on is fatal: continuing would commit a state
+/// whose sides disagree, and the rest of the series would inherit it.
 ///
-/// `net` is mutated: it ends at the last committed step, with the coupled pipe
-/// carrying the coefficient that step was solved with.
-TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net, label edge,
-                                                 ICoupledElement& block,
+/// `net` is mutated: it ends at the last committed step, with every coupled pipe
+/// carrying the coefficient that step was solved with. `blocks` is used, not
+/// owned, and must be the same length as `edges`.
+TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
+                                                 const std::vector<label>& edges,
+                                                 std::vector<ICoupledElement*> blocks,
                                                  const TransientCoupledControls& ctl,
                                                  double dt, double endTime);
 

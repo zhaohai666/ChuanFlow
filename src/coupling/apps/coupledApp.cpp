@@ -142,11 +142,13 @@ int main(int argc, char** argv)
             net.pipes[static_cast<std::size_t>(edge)].coupledResistance = seeds[s];
 
             log::info("seed ", s, " starting resistance ", num(seeds[s]));
-            const CoupledResult res = solveCoupled1d3d(net, edge, block, ctl, netCtl);
+            const CoupledResult res =
+                solveCoupled1d3d(net, {edge}, {&block}, ctl, netCtl);
+            const EdgeExchange& st = res.state[0];
 
             log::info("coupled seed ", s, ": iterations ", res.iterations,
-                      " q ", num(res.q), " dp ", num(res.dpPa),
-                      " R ", num(res.resistance), " residual ", num(res.residual),
+                      " q ", num(st.q), " dp ", num(st.dpPa),
+                      " R ", num(st.resistance), " residual ", num(res.residual),
                       res.converged ? " (converged)" : " (NOT converged)");
 
             const BlockMeasure& m = block.measure();
@@ -164,11 +166,12 @@ int main(int argc, char** argv)
 
             for (const OuterIteration& it : res.history)
             {
+                const EdgeExchange& ex = it.edges[0];
                 log::info("interface seed ", s, " iter ", it.iteration,
-                          " R ", num(it.resistance), " q ", num(it.q),
-                          " dpBlock ", num(it.dpPa),
-                          " sweeps ", it.sweeps,
-                          " residual ", num(it.residual));
+                          " R ", num(ex.resistance), " q ", num(ex.q),
+                          " dpBlock ", num(ex.dpPa),
+                          " sweeps ", ex.sweeps,
+                          " residual ", num(ex.residual));
             }
 
             const PipeFlowResult& edgeFlow =
@@ -208,8 +211,9 @@ int main(int argc, char** argv)
                       " dp ", num(f.dpTotal));
         }
 
-        log::info("coupled solved: edge ", edgeName, " q ", num(last.q),
-                  " dp ", num(last.dpPa), " R ", num(last.resistance),
+        const EdgeExchange& ex = last.state[0];
+        log::info("coupled solved: edge ", edgeName, " q ", num(ex.q),
+                  " dp ", num(ex.dpPa), " R ", num(ex.resistance),
                   " iterations ", last.iterations,
                   " residual ", num(last.residual));
 

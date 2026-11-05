@@ -360,6 +360,17 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3d/case.dict)
 
+# the same duct and the same network, put in motion: the interface is iterated
+# inside every time step, so the checker closes each step's momentum row against
+# the block's own drop, and regresses the ramp the two solvers produce together
+# against the discrete closed form built from the region's inertance
+add_test(
+    NAME verify.transientCoupled1d3d
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_1d3d.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupled1d3d/case.dict)
+
 foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug" "valve;Valve")
     list(GET tmode 0 mode)
     list(GET tmode 1 Mode)

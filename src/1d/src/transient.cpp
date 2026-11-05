@@ -2,6 +2,8 @@
 
 #include <cmath>
 #include <limits>
+#include <string>
+#include <utility>
 
 #include "cf/common/Error.h"
 
@@ -58,6 +60,16 @@ double valveKAt(double kOpen, double kClosed,
     if (os < 0 || t < os) return kClosed;
     if (t < oe) return kClosed + (t - os) / (oe - os) * (kOpen - kClosed);
     return kOpen;
+}
+
+/// A coupled pipe's loss is its partner's, so no local loss may share it.
+void requireNoValve(const std::string& name, double kOpen, double closeStart,
+                    double openStart)
+{
+    if (kOpen > 0 || closeStart >= 0 || openStart >= 0)
+        cfFatal("transient: pipe '" + name
+                + "' is a coupled element: its loss is the partner model's, so"
+                  " it cannot carry a valve");
 }
 
 } // namespace
@@ -121,6 +133,13 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         geo.roughness = pc.roughness;
         geo.elevation = pc.elevation;
         geo.valveK = pc.valveK;
+        geo.coupledResistance = pc.coupledResistance;
+        if (pc.coupledResistance < 0)
+            cfFatal("transient: pipe '" + pc.name + "' has a negative coupled"
+                    " resistance");
+        if (pc.coupledResistance > 0)
+            requireNoValve(pc.name, pc.valveK, pc.valveCloseStart,
+                           pc.valveOpenStart);
         net_.addPipe(geo);
         PipeDyn d;
         d.geo = net_.pipes.back();
@@ -153,7 +172,7 @@ const std::vector<std::string>& TransientNetwork::pipeNames() const
     return pipeNames_;
 }
 
-double TransientNetwork::step(double dt)
+double TransientNetwork::solveStep(double dt)
 {
     if (!(dt > 0)) cfFatal("transient: dt must be positive");
     const std::size_t nP = pipes_.size();
@@ -201,8 +220,18 @@ double TransientNetwork::step(double dt)
             const double pT = pressureOf(pd.geo.to);
             const double dp = pF - pT;
             const double grav = fluid_.rho * kGravity * pd.geo.elevation;
-            const double fr = frictionDp(pd.geo, fluid_, x[k]);
-            const double slope = frictionSlope(pd.geo, fluid_, x[k]);
+            // A coupled pipe's friction is its partner's statement, not ours:
+            // the detailed model already reports the whole drop of that region,
+            // so adding this pipe's own Churchill friction on top would charge
+            // the network twice for the same wall. It stays linear in Q because
+            // the interface refreshes the coefficient every pass. Gravity and
+            // the region's inertance rho*L/A stay on the 1D side - the partner
+            // is asked for a drop at an instant, not for the fluid's momentum.
+            const double R = pd.geo.coupledResistance;
+            const double fr = R > 0 ? R * x[k] : frictionDp(pd.geo, fluid_, x[k]);
+            const double slope = R > 0
+                                    ? 1.0 / R
+                                    : frictionSlope(pd.geo, fluid_, x[k]);
             const double ar = pipeArea(pd.geo.diameter);
             const double vd = kv[k] * fluid_.rho * std::abs(x[k]) * x[k]
                             / (2.0 * ar * ar);
@@ -248,7 +277,20 @@ double TransientNetwork::step(double dt)
         for (std::size_t i = 0; i < nEq; ++i) x[i] += negR[i];
     }
 
-    // commit the solved state
+    xPending_ = std::move(x);
+    pendingDt_ = dt;
+    pending_ = true;
+    return maxRel;
+}
+
+void TransientNetwork::commitStep()
+{
+    if (!pending_) cfFatal("transient: commitStep with no step solved");
+    const double dt = pendingDt_;
+    const std::size_t nP = pipes_.size();
+    const std::size_t nN = nodes_.size();
+    const std::vector<double>& x = xPending_;
+
     for (std::size_t k = 0; k < nP; ++k)
     {
         pipes_[k].qPrev = x[k];
@@ -302,7 +344,62 @@ double TransientNetwork::step(double dt)
     }
 
     t_ += dt;
+    pending_ = false;
+}
+
+double TransientNetwork::step(double dt)
+{
+    const double maxRel = solveStep(dt);
+    commitStep();
     return maxRel;
+}
+
+double TransientNetwork::pendingPipeFlow(label k) const
+{
+    if (!pending_) cfFatal("transient: no step is pending to read a flow from");
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return xPending_[static_cast<std::size_t>(k)];
+}
+
+double TransientNetwork::pendingPressure(label i) const
+{
+    if (!pending_) cfFatal("transient: no step is pending to read a pressure from");
+    if (i < 0 || static_cast<std::size_t>(i) >= nodes_.size())
+        cfFatal("transient: no node at index " + std::to_string(i));
+    const NodeDyn& d = nodes_[static_cast<std::size_t>(i)];
+    return d.fixed
+               ? d.pPrev
+               : xPending_[pipes_.size() + static_cast<std::size_t>(d.unk)];
+}
+
+bool TransientNetwork::pipeCoupled(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].geo.coupledResistance > 0;
+}
+
+double TransientNetwork::coupledResistanceOf(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].geo.coupledResistance;
+}
+
+void TransientNetwork::setCoupledResistance(label k, double resistance)
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    if (!(resistance > 0))
+        cfFatal("transient: coupled pipe '" + pipeNames_[k] + "' needs a"
+                " positive resistance, got " + std::to_string(resistance));
+    const PipeDyn& pd = pipes_[static_cast<std::size_t>(k)];
+    requireNoValve(pipeNames_[k], pd.geo.valveK, pd.closeStart, pd.openStart);
+    pipes_[static_cast<std::size_t>(k)].geo.coupledResistance = resistance;
+    // whatever was pending was solved with the old coefficient, so it is no
+    // longer a state of the system and has to be re-solved
+    pending_ = false;
 }
 
 std::vector<double> TransientNetwork::liquidVolumes() const
@@ -416,6 +513,7 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
         p.elevation = pd.getScalarOr("elevation", 0.0);
         p.initialFlow = pd.getScalarOr("initialFlow", 0.0);
         p.valveK = pd.getScalarOr("valve", 0.0);
+        p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
         if (pd.has("valveClose"))
         {
             const Dictionary& vc = pd.getDict("valveClose");

@@ -18,6 +18,10 @@ namespace cf
 ///   * valve local loss dp = K rho |v| v / 2 (same K convention as the
 ///     steady kernel) with optional linear close/open schedules K(t),
 ///   * gravity head,
+///   * or, for a pipe handed to a partner model (`coupledResistance`), that
+///     partner's statement of the region's drop - while the region's inertance
+///     stays here, because the partner is asked for a drop at an instant,
+///     exactly as the steady coupling layer asks it (see src/coupling),
 /// advanced by implicit Euler with a Newton solve on (Q, p), plus drift-flux
 /// transport of the mobile liquid volume per node (slug tracking) and an
 /// exact integrating-factor first-order hydrate kinetics substep.
@@ -55,6 +59,12 @@ struct TransientPipeConfig
     double valveKClosed = 0;
     double valveOpenStart = -1;
     double valveOpenEnd = -1;
+    // Pa/(m3/s): hand this pipe's loss to a partner model, the same hook the
+    // steady kernel's NetworkPipe::coupledResistance offers. The momentum row
+    // then charges R*Q for the region instead of this pipe's own friction; the
+    // region's inertance rho*L/A stays on the 1D side, so the partner only has
+    // to state the drop it resists. A coupled pipe carries no valve.
+    double coupledResistance = 0;
 };
 
 struct TransientSource
@@ -101,6 +111,32 @@ public:
     /// One implicit-Euler step of size dt; returns max scaled Newton residual.
     double step(double dt);
 
+    /// Solve the implicit-Euler step of size dt from the committed state and
+    /// leave it pending: nothing advances, so the caller may re-solve the same
+    /// step from the same start as many times as it likes. This is what a
+    /// partitioned interface needs to refresh a coupled coefficient within one
+    /// time step. Returns max scaled Newton residual.
+    double solveStep(double dt);
+
+    /// Adopt the pending step: flows, pressures, liquid transport and the clock
+    /// all move to the state `solveStep` solved. Fatal if none is pending.
+    void commitStep();
+
+    /// The pending step's state; fatal while no step is pending.
+    double pendingPipeFlow(label k) const;
+    double pendingPressure(label i) const;
+
+    /// Set the partner coefficient of pipe `k` (index in `pipeNames()`). A
+    /// pending step is dropped: it was solved with the old coefficient, so it
+    /// is no longer a state of the system.
+    void setCoupledResistance(label k, double resistance);
+
+    /// True while `pipe k` is handed to a partner model.
+    bool pipeCoupled(label k) const;
+
+    /// Pipe `k`'s partner coefficient (Pa/(m3/s)), or 0 when it is not coupled.
+    double coupledResistanceOf(label k) const;
+
     double time() const { return t_; }
     const std::vector<std::string>& nodeNames() const { return net_.nodeNames; }
     const std::vector<std::string>& pipeNames() const;
@@ -143,6 +179,9 @@ private:
     std::vector<double> q_;  // current pipe flows
     FluidProperties fluid_;
     double t_ = 0;
+    std::vector<double> xPending_; // solveStep's state, not yet committed
+    double pendingDt_ = 0;
+    bool pending_ = false;
 };
 
 /// Advance the case by endTime/dt steps, sampling every reportEvery steps
@@ -161,6 +200,8 @@ TransientSeries runTransient(const TransientCase& c, double dt,
 ///                valveOpen { start 10; end 14; } } }
 ///   sources { s1 { node TANK; rate 0.0; fraction 1; } }
 ///   time { dt 0.01; endTime 10; reportEvery 1; }
+/// A pipe may instead carry `coupledResistance <R>` (Pa/(m3/s)), which hands
+/// its loss to a partner model - see cf::coupling::solveTransientCoupled1d3d.
 TransientCase loadTransientFromDict(const Dictionary& caseDict);
 struct TransientTimeControls
 {

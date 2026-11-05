@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "cf/1d/Network.h"
+#include "cf/1d/Transient.h"
 #include "cf/common/Dictionary.h"
 #include "cf/common/Labels.h"
 #include "cf/fvm/Fields.h"
@@ -193,6 +194,96 @@ CoupledResult solveCoupled1d3d(OneDNetwork& net, label edge,
                                ICoupledElement& block,
                                const CoupledControls& ctl,
                                const SteadyControls& netCtl);
+
+// ------------------------------------------------------------------
+// the transient partitioned loop
+// ------------------------------------------------------------------
+
+/// Controls for the interface exchanges inside one time step of a transient
+/// run: the same statement as `CoupledControls`, applied repeatedly instead of
+/// once.
+struct TransientCoupledControls
+{
+    label maxSubIterations = 8;
+    scalar relax = 1.0;
+    scalar tolerance = 1e-4;
+};
+
+/// One interface exchange inside one time step. `dpNetwork` is what the 1D side
+/// charged the region (its coefficient times the rate it delivered) and `dpPa`
+/// what the partner reported for that rate; the two are produced by different
+/// solvers, so their gap is a cross-solver residual.
+struct TransientInterfacePass
+{
+    label pass = 0;
+    scalar resistance = 0;
+    scalar q = 0;
+    scalar dpNetwork = 0;
+    scalar dpPa = 0;
+    scalar residual = 0;
+    label sweeps = 0;
+    bool blockConverged = false;
+    double newtonResidual = 0;   // the 1D step's own Newton convergence
+};
+
+/// A time step the interface agreed on, with the whole 1D state at it, so a
+/// caller can read the transient response without solving anything again.
+struct TransientCoupledStep
+{
+    double t = 0;                    // the time the step arrives at
+    scalar q = 0;                    // rate through the coupled edge
+    scalar dpPa = 0;                 // the partner's drop at exactly that rate
+    scalar resistance = 0;           // the coefficient the step was solved with
+    scalar residual = 0;
+    label passes = 0;
+    std::vector<double> pressure;    // every node, at the accepted state
+    std::vector<double> flowRate;    // every pipe, at the accepted state
+    std::vector<TransientInterfacePass> history;
+};
+
+struct TransientCoupledResult
+{
+    label edge = -1;
+    std::vector<std::string> nodeNames;
+    std::vector<std::string> pipeNames;
+    std::vector<TransientCoupledStep> steps;
+    scalar q = 0;          // the last step's accepted state, repeated for
+    scalar dpPa = 0;       // callers that only want where the run ended
+    scalar resistance = 0;
+    scalar residual = 0;
+};
+
+/// Advance a transient 1D network whose coupled pipe is handed to a detailed
+/// model, exchanging rate for drop inside every time step: the step is solved
+/// with the coefficient the interface currently carries, the partner is run at
+/// the rate that step delivers, and the coefficient is refreshed from the
+/// partner's drop - all without committing the step, so a refresh re-solves the
+/// same step from the same start. The step commits once the two sides agree, and
+/// the coefficient carries into the next step, where the same statement has to
+/// hold at the new rate.
+///
+/// The partner is asked for a drop at an *instant*, which is what keeps the
+/// interface stable. A time-accurate partner would report its region's
+/// inertial term `rho*L/A*(q - q_prev)/dt` inside that drop, making the
+/// coefficient the network solves for depend on the previous step's rate: the
+/// map becomes `R -> a - c/R`, whose derivative at a stiff region is far above
+/// 1, so plain Gauss-Seidel cannot converge. So the region's inertance stays on
+/// the 1D side - implicit, in the same momentum row as the rest of the network
+/// - and the partner contributes the resistance it resists at the rate it is
+/// given. The split is falsifiable: the time constant of the resulting ramp is
+/// `(M_X + M_By)/(R_X + R_By)`, so a system carrying the region's inertance
+/// twice reads there - in the case that ships, where the region holds 43% of the
+/// loop's inertance, as a 43% longer time constant.
+///
+/// A step the interface cannot agree on is fatal: continuing would commit a
+/// state whose two sides disagree, and the rest of the series would inherit it.
+///
+/// `net` is mutated: it ends at the last committed step, with the coupled pipe
+/// carrying the coefficient that step was solved with.
+TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net, label edge,
+                                                 ICoupledElement& block,
+                                                 const TransientCoupledControls& ctl,
+                                                 double dt, double endTime);
 
 } // namespace coupling
 } // namespace cf

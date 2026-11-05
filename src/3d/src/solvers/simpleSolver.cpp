@@ -336,7 +336,11 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         // continuity to have stopped growing and is only consulted once the
         // startup transient has passed.
         // momentumTol gates both branches on the velocity having settled.
-        const bool settled = contErr <= bestContErr;
+        // A warm start can begin below the floor its predictor flux settles at,
+        // and then strict monotonicity is unreachable for the rest of the sweep:
+        // the guard is against continuity that is still growing, and a percent
+        // below the best is far enough from that to catch.
+        const bool settled = contErr <= bestContErr * 1.01 + 1e-12;
         bestContErr = std::min(bestContErr, contErr);
         const bool momentumSettled = !(ctl.momentumTol > 0) || uRes <= ctl.momentumTol;
         if (momentumSettled &&

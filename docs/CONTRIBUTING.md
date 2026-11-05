@@ -14,7 +14,8 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure   # 全量回归约 1 分钟（poiseuille 占 37 s）
+ctest --test-dir build --output-on-failure   # 全量回归约 3 分钟（poiseuille 37 s、
+                                             # 瞬态耦合 28 s、稳态耦合 20 s 占大头）
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -101,6 +102,18 @@ python3 tests/check_parallel.py \
 python3 tests/check_coupled_1d3d.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d" \
     "$PWD/tests/cases/coupled1d3d/case.dict"
+
+# 瞬态分区耦合：同一个网络、同一块网格改成从静止被突加的注入速率驱动。app 逐时间层
+# 打印 q/dpNetwork/dpBlock/R/残差/趟数/newton 与块收敛标志，外加 name-keyed 的节点压力与
+# 管流序列；vtu 是最后一个时间层、最后一次子迭代的块场（步内解多次，只有最后一次可回放）。
+# check_transient_coupled_1d3d.py 断言每步的动量恒等式
+# dp = R·q + M·Δq/dt、三段流量衡算、首步对"突加速率按惯量分"闭式、由整条爬升回归出的
+# τ 与 q∞、末端距工况点（且必须 >0），以及块侧守恒/已发展梯度/抛物剖面。
+# 约 28 s（60 步共 95 次 1000 格块解）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient tests/cases/transientCoupled1d3d/case.dict
+python3 tests/check_transient_coupled_1d3d.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient" \
+    "$PWD/tests/cases/transientCoupled1d3d/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
@@ -315,6 +328,42 @@ output { vtk out_coupled_block.vtu; }        // 最后一个种子的块场
 `DetailBlock::applyBoundary` 因此对非 inlet/outlet/wall 面一律用 `zeroGradient`。
 ③ 三维核的 `p` 是运动压力（m²/s²），管网用 Pa，换算在 `lossAt` 里乘 ρ 完成——
 `BlockMeasure::dpPa` 已经是 Pa，别在 checker 里再乘一次。
+
+**瞬态分区耦合**（`chflow-coupled-1d3d-transient`）把上面字典里的 `solve{}` 换成 1D 瞬态的
+`time{}`，其余键（`fluid/nodes/sources/pipes/couple/detail/output`）与稳态侧逐字同形；变的
+是这几处的语义：
+
+```
+nodes {
+    Src { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }  // 接住突加速率的节点要留持液余量
+    Snk { fixedPressure 1.0e6; }                             // 瞬态侧的定压键名
+}
+pipes { X { ...; coupledResistance 3.75e6; } }               // 只替换本管**摩阻**
+time  { dt 0.02; endTime 1.2; reportEvery 1; }              // dt/τ ≈ 0.077：一步跨 7.7% 时间常数
+couple {
+    edge X;  seeds ( 3.75e6 );  relax 1.0;
+    tolerance 1e-4;               // 不得严于伙伴自己的分辨率：pcorrTol 1e-5 ⇒ 残差地板 ~1e-5…1e-4
+    maxSubIterations 8;           // 取代稳态的 maxOuterIterations，用尽即 fatal
+}
+```
+
+① `coupledResistance` 在瞬态侧**只**替换本管摩阻：重位和该区域的惯性 `ρL/A` 仍留在 1D 的
+隐式动量行里，与网络其余部分一起被隐式解，伙伴每步只报"此刻该速率抵抗的压降"（准稳态
+`lossAt`）。这不是省事：让块报含惯性的压降，接口映射就成了 `R → a − c/R`，其在本算例 stiff
+区的线性化导数 `|c/R²| = 2.7e8 ≫ 1`，分区 Gauss–Seidel 直接发散；反过来把区域惯量算两遍，
+时间常数 `τ = (M_X + M_By)/(R_X + R_By)` 会被抬高 `M_X/(M_X+M_By)`——本算例 43%。checker 因此
+是拿整条爬升回归出的 τ（带 5%）来钉这个切分，而不是只验末端。
+② 耦合管与 `valve`/`valveClose`/`valveOpen` 互斥，构造网络与 `setCoupledResistance` 刷新时
+都会拒绝（`requireNoValve`）。接住注入速率的自由节点要同时给 `volume`（否则"free node needs a
+volume"）与 `liquidFraction < 1`（缺省是 1.0，第一步突加的速率还没有任何管流带走它，提交时即
+撞"liquid exceeds its volume"）。定压节点写成 `fixedPressure`。
+③ 步内回路是"解而不采纳"：`net.solveStep(dt)` 把状态挂在 pending 上、`commitStep()` 才推进
+时钟与持液输运，所以刷新系数走 `setCoupledResistance` 会**显式作废**挂起的步（那步是用旧
+系数解的，已不是系统状态）。谈不拢就 fatal，不会提交一个两侧不一致的状态往下滚。
+④ 瞬态接口每步都**热启动**块，而 SIMPLE 外收敛的 `settled` 判据若写回严格单调
+（`contErr <= bestContErr`）会让首个 predictor 连续性低于该 case 最终落到的
+HbyA/压力通量地板的热启动再也走不到 `|dp|` 分支（实测 0.00768788 对 0.00769587，首步烧满
+300 迭代报未收敛）；`simpleSolver.cpp:343` 因此留 1% 余量，防发散的初衷不变。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

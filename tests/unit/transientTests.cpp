@@ -5,6 +5,7 @@
 #include <iostream>
 
 #include "cf/1d/Transient.h"
+#include "cf/common/Error.h"
 
 using namespace cf;
 
@@ -151,6 +152,109 @@ int main()
               "slug: node 3 fill matches the cascade");
         CHECK(relNear(s.samples[4].liquidFraction[4], a4, 1e-9),
               "slug: node 4 fill matches the cascade");
+    }
+
+    // ---- a coupled pipe charges its partner's coefficient, not its own wall ----
+    {
+        TransientCase c;
+        c.fluid = FluidProperties{800.0, 0.1};
+        TransientNodeConfig a, b;
+        a.name = "Up"; a.pressureFixed = true; a.pressure = 1.0e5;
+        b.name = "Dn"; b.pressureFixed = true; b.pressure = 0.0;
+        TransientPipeConfig p;
+        p.name = "X"; p.fromName = "Up"; p.toName = "Dn";
+        p.length = 10.0; p.diameter = 0.02;
+        p.coupledResistance = 1.0e6;
+        c.nodes = {a, b}; c.pipes = {p};
+
+        const double area = 0.25 * M_PI * p.diameter * p.diameter;
+        const double inertia = c.fluid.rho * p.length / area;   // 2.5465e7
+        const double dt = 0.05;
+        const double qExact = a.pressure / (inertia / dt + p.coupledResistance);
+
+        TransientNetwork sim(c);
+        CHECK(sim.pipeCoupled(0) && sim.coupledResistanceOf(0) == 1.0e6,
+              "a coupled pipe reports its coefficient");
+        const double newton = sim.step(dt);
+        CHECK(newton < 1e-11, "coupled momentum row solves to Newton tolerance");
+        // this geometry's own Hagen-Poiseuille resistance is 2.5e8 -- 250 times
+        // the partner's 1e6 -- so a pipe that also charged its wall would run at
+        // 1.3e-4 here, and at 3.9e-4 once its inertia is forgotten as well: both
+        // are about a factor two away from the answer above. The agreement band
+        // is the kernel's own: the Newton loop stops at a 1e-11 scaled residual,
+        // which on a row dominated by inertia/dt is a ~1e-10 relative rate.
+        CHECK(relNear(sim.pipeFlows()[0], qExact, 1e-10),
+              "coupled rate follows R*Q plus inertance, not the pipe's friction");
+    }
+
+    // ---- a coupled pipe cannot also carry a valve ----
+    {
+        TransientCase c;
+        c.fluid = FluidProperties{800.0, 0.1};
+        TransientNodeConfig a, b;
+        a.name = "Up"; a.pressureFixed = true; a.pressure = 1.0e5;
+        b.name = "Dn"; b.pressureFixed = true; b.pressure = 0.0;
+        TransientPipeConfig p;
+        p.name = "X"; p.fromName = "Up"; p.toName = "Dn";
+        p.length = 10.0; p.diameter = 0.02;
+        p.coupledResistance = 1.0e6;
+        p.valveK = 2.0;
+        c.nodes = {a, b}; c.pipes = {p};
+        bool rejected = false;
+        try { TransientNetwork sim(c); }
+        catch (const Error&) { rejected = true; }
+        CHECK(rejected, "constructing a coupled pipe with a valve is refused");
+    }
+
+    // ---- solveStep leaves the state alone, commitStep adopts it ----
+    {
+        TransientCase c;
+        c.fluid = FluidProperties{800.0, 0.1};
+        TransientNodeConfig a, b;
+        a.name = "Up"; a.pressureFixed = true; a.pressure = 1.0e5;
+        b.name = "Dn"; b.pressureFixed = true; b.pressure = 0.0;
+        TransientPipeConfig p;
+        p.name = "X"; p.fromName = "Up"; p.toName = "Dn";
+        p.length = 10.0; p.diameter = 0.02;
+        p.coupledResistance = 1.0e6;
+        c.nodes = {a, b}; c.pipes = {p};
+
+        const double dt = 0.05;
+        const double area = 0.25 * M_PI * p.diameter * p.diameter;
+        const double inertia = c.fluid.rho * p.length / area;
+
+        TransientNetwork sim(c);
+        const double res1 = sim.solveStep(dt);
+        const double q1 = sim.pendingPipeFlow(0);
+        const double res2 = sim.solveStep(dt);
+        const double q2 = sim.pendingPipeFlow(0);
+        CHECK(q1 == q2 && res1 == res2 && res1 < 1e-11
+              && sim.time() == 0.0 && sim.pipeFlows()[0] == 0.0,
+              "re-solving a step from the same start gives the same state");
+        sim.commitStep();
+        CHECK(sim.pipeFlows()[0] == q2 && relNear(sim.time(), dt, 1e-15),
+              "commitStep adopts the pending rate and the clock");
+        bool refused = false;
+        try { sim.commitStep(); }
+        catch (const Error&) { refused = true; }
+        CHECK(refused, "committing twice is refused");
+
+        // a coefficient change invalidates the pending step: it was solved
+        // against the partner's old statement, not this one
+        sim.solveStep(dt);
+        sim.setCoupledResistance(0, 2.0e6);
+        bool dropped = false;
+        try { sim.commitStep(); }
+        catch (const Error&) { dropped = true; }
+        CHECK(dropped, "refreshing the coefficient drops the pending step");
+
+        TransientNetwork joined(c);
+        joined.setCoupledResistance(0, 2.0e6);
+        joined.solveStep(0.1);
+        CHECK(relNear(joined.pendingPipeFlow(0), 1.0e5 / (inertia / 0.1 + 2.0e6), 1e-10),
+              "a re-solved step carries the refreshed coefficient");
+        CHECK(joined.pendingPressure(0) == 1.0e5 && joined.pendingPressure(1) == 0.0,
+              "Dirichlet nodes read their own pressure at every time level");
     }
 
     if (failures)

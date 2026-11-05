@@ -1,0 +1,110 @@
+# transientCoupled1d3d: the same network and the same 3D detailed region as the
+# steady coupled case, but driven by a rate that is switched on at t = 0:
+#   Src -> A -> { X (the 3D block) || By (1D bypass) } -> B -> Snk
+# The network starts from rest, so the sudden injection first splits by the two
+# branches' inertance and only then relaxes, with time constant
+#   tau = (M_X + M_By) / (R_X + R_By),
+# to the steady operating point the 3D block alone defines. The region's
+# resistance is the block's own answer at each time level; its inertance
+# rho*L/A stays on the 1D side, implicit in the same momentum row as the rest of
+# the network. Verified by tests/check_transient_coupled_1d3d.py.
+#
+# The block is the same 0.5 x 0.02 x 0.02 m duct as tests/cases/coupled1d3d, so
+# the rate the series settles to is the rate that case converges to (~1.58e-4
+# m3/s, ~4% below the analytic split) and the interface coefficient settles to
+# the laminar duct value plus its entrance length.
+#
+# Measured on this case, and what the checker anchors on:
+#   * first step 1.38651e-4 m3/s - 87.9% of the settled 1.57775e-4, because the
+#     network starts from rest and a sudden rate divides by inertance
+#   * time constant 0.2631 s (closed form (M_X + M_By)/(R_X + R_By) = 0.2589),
+#     so one time constant spans ~13 steps and 60 steps end 0.14% short
+#   * settled coefficient 3.93214e6 Pa.s/m3 against the planar duct value
+#     3.75e6; 95 block solves for 60 steps, the seed corrected on the first one
+fluid { rho 800; mu 0.1; }
+
+# Src, J1 and J2 are incompressible ports (no bulkModulus), so the branch split
+# is a result of the momentum balance alone rather than of node compliance. They
+# still hold liquid with room to spare, because the injected rate has to go
+# somewhere on the very first step, when every pipe flow is still zero.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 2.4e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    // X is the coupled edge: length and diameter describe the detailed region
+    // and give the 1D side its inertance, while its whole loss comes from the
+    // 3D solve through coupledResistance.
+    X  { from J1; to J2; length 0.5;   diameter 0.02;
+         coupledResistance 3.75e6; }
+
+    By { from J1; to J2; length 1.5;   diameter 0.03; }
+    B  { from J2; to Snk; length 5.0;  diameter 0.1; }
+}
+
+// dt 0.02 against tau ~ 0.26 s: ~13 steps per time constant, and 60 steps run
+// past 4.5 of them, so the series ends within 1% of the steady operating point
+time { dt 0.02; endTime 1.2; reportEvery 1; }
+
+couple {
+    edge X;
+    // one starting coefficient, under the converged one: the checker sees the
+    // interface correct it on the first step and then agree at every later time
+    // level without another partner run
+    seeds ( 3.75e6 );
+    relax 1.0;
+    // the block's own solve resolves its drop to ~1e-5 of itself, and the
+    // interface residual is the gap between two solvers; asking for less than
+    // the partner's resolution would only burn passes inside every step
+    tolerance 1e-4;
+    maxSubIterations 8;
+}
+
+detail {
+    block {
+        min   (0 0 0);
+        max   (0.5 0.02 0.02);
+        cells (50 20 1);
+
+        xmin  { name inlet;   type inlet;    }
+        xmax  { name outlet;  type outlet;   }
+        ymin  { name bottom;  type wall;     }
+        ymax  { name top;     type wall;     }
+        zmin  { name front;   type symmetry; }
+        zmax  { name back;    type symmetry; }
+    }
+
+    // cross-section window the developed gradient is measured over: the entry
+    // length at this Reynolds number is ~0.08 m, so the window starts past it
+    probe { min 0.12; max 0.49; }
+
+    schemes {
+        ddt       steady;
+        div       upwind;
+        laplacian corrected;
+        grad      corrected;
+    }
+
+    simple {
+        maxIterations 300;
+        continuityTol 1e-6;
+        pcorrTol      1e-5;
+        momentumTol   1e-5;
+        relaxU        0.9;
+        relaxP        0.03;
+        pRelaxStart   0.02;
+    }
+}
+
+output {
+    vtk out_transient_coupled_block.vtu;
+}

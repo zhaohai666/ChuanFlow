@@ -15,7 +15,7 @@
 ## 1. 总体分层
 
 ```
-apps (chflow-1d-steady / chflow-1d-transient / chflow-pvt / chflow-scalar-transport / chflow-simple-foam / chflow-piso-foam / chflow-vof / chflow-3d-compressible / chflow-3d-parallel / chflow-coupled-1d3d)
+apps (chflow-1d-steady / chflow-1d-transient / chflow-pvt / chflow-scalar-transport / chflow-simple-foam / chflow-piso-foam / chflow-vof / chflow-3d-compressible / chflow-3d-parallel / chflow-coupled-1d3d / chflow-coupled-1d3d-transient)
   ├── src/1d          一维管网内核（M1 稳态节点法 + M2 首增量：瞬态/持液率/水合物）
   │      └── src/common  基础层（字典解析、日志/异常）
   ├── src/pvt         统一物性层（PR 状态方程 / 多组分 TP 闪蒸 / PVT 表插值）
@@ -241,6 +241,8 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
   而那个"层流上限"也从 HP 几何值换成 `1/R`（HP 是几何的性质，不是这条边的物理）。
   加载时校验三条：R ≥ 0、该管不得是黑油/PVT 管（`march` 逐段算压降，不是一个系数）、
   不得同时带阀或泵（否则"这条边的压降"语义不再唯一）。回路见 5.18；
+  瞬态内核的同一钩子是 `TransientPipeConfig::coupledResistance`，但它只替换本管摩阻——
+  重位与区域惯性 `ρL/A` 仍留在 1D 的隐式动量行里，伙伴因此只需报"此刻抵抗的压降"（见 5.19）。
 
 - **表驱动单相物性（PVT 供给 ρ(p)/μ(p)）**：`PvtFluid`（严格递增压力
   网格 + ρ/μ 表，节点间分段线性、表端钳位；NaN/p≤0 取首条，Newton 早期
@@ -1411,9 +1413,93 @@ R ← couple.seeds 给定的初值
 掐停的回路如实报 `!converged` 且残差恒等式仍成立。
 
 **本增量的边界**：① 只打通**稳态、单相、不可压、单向**（网络→块给速率，块→网络给压降）；
-瞬态耦合、可压块、多相块未做。② 一次只详细化一条边，没有多块接口、没有块间的次结构。
+瞬态耦合见 5.19，可压块、多相块未做。② 一次只详细化一条边，没有多块接口、没有块间的次结构。
 ③ 外层只有 Gauss–Seidel + 常数松弛——Aitken/IQN 拟 Newton 未做，强非线性伙伴靠 `relax`。
 ④ 界面只在"压降↔速率"这一个标量上耦合；速度剖面、湍流量、相分数的界面映射未做。
+
+### 5.19 分区 1D ↔ 3D 瞬态耦合 `solveTransientCoupled1d3d`（M4：把同一段三维详细区放进时间步进里）
+
+同一张块网格、同一个网络，改成**从零速起步**：`time{ dt 0.02; endTime 1.2; }` 里每一步
+界面上再套一层子迭代，交换的还是"压降↔速率"，app 是 `chflow-coupled-1d3d-transient`。
+
+**伙伴为什么必须保持准稳态**（这一条决定了本增量的形状）：让块报**含惯性的**压降
+（时程精确的 PISO 块，报 `ρL/A·(q−q_prev)/dt + 摩阻`）在分区 Gauss–Seidel 下不收敛——
+网络解出来的系数会依赖上一步的速率，接口映射变成 `R → a − c/R`，其在 stiff 区的
+线性化导数 `|c/R²|` 在本算例是 **2.7e8 ≫ 1**。所以三维侧继续只报"此刻该速率抵抗的压降"
+（就是 5.18 的 `lossAt`），而区域的惯性 `ρL/A` **留在 1D 侧**，与网络其余部分在同一
+隐式动量行里被解。这个切分是可反证的：时间常数 `τ = (M_X + M_By)/(R_X + R_By)`，把区域
+惯量算两遍会把 τ 抬高 `M_X/(M_X+M_By)`——本算例是 **43%**。
+
+**1D 侧的钩子**：`TransientPipeConfig::coupledResistance` + `TransientNetwork` 上四个新
+入口。`step(dt)` 被拆成 `solveStep(dt)`（解出这一步、把状态挂在 `xPending_` 上，**什么都不
+推进**）与 `commitStep()`（采纳挂起的步：流量、压力、持液输运和时钟一起走过去）。接口因此
+能在**同一个时间层**上反复重解，而不是沿着轨迹漂：刷新 `R` 走 `setCoupledResistance`，它
+显式作废挂起的步——那一步是用旧系数解的，已经不再是系统的状态（有单测钉住"重解逐位相同"
+与"刷新后提交被拒绝"）。约束与稳态侧一致：`coupledResistance` 为正替换本管摩阻（重位和
+惯量仍归 1D），且与阀互斥。
+
+**每步的回路**：
+
+```
+每步 n：重复
+  ① net.solveStep(dt)（不提交）→ q^n = |pendingPipeFlow(edge)|
+  ② 块在 q^n 上解一次          → dpBlock
+  ③ residual = |R·q^n − dpBlock| / dpBlock，≤ tolerance 就 commitStep()
+     否则刷新 R 再来一遍（最多 couple{ maxSubIterations } 趟）
+```
+
+不接受"没谈拢的一步"：谈不拢直接 fatal 而不是提交一个两侧不一致的状态再往下滚。
+
+**离散闭式（不是连续解）**：网络从静止起步，`t=0` 的连续方程并不成立，于是第一步特殊。
+隐式欧拉加不可压端口给
+
+```
+q_X^1 = Q·(R_By + M_By/dt) / ((M_X + M_By)/dt + R_X + R_By)      // 突加速率按惯量分
+q_X^n = q_∞ + (q_X^1 − q_∞) / (1 + dt/τ)^(n−1),  q_∞ = R_By·Q/(R_X+R_By)
+```
+
+若丢掉区域的惯量，序列会**直接**从 `q_∞` 起步——这就是上面那条反证在第一步的形式。
+
+**实测**（`tests/cases/transientCoupled1d3d`，网格、流体、拓扑与 `coupled1d3d` 逐字相同，
+所以末端就是稳态算例那个工况点）：
+
+| 断言 | 数值 |
+|---|---|
+| 每步节点压降 == `R·q + M·Δq/dt`（X，用该步实测 R） | 最差 1.75e-10 相对（Newton 地板） |
+| 同上 By / A / B（旁通用 Hagen-Poiseuille，lead 含首步惯性冲击） | 1.15e-13 / 2.0e-12 / 3.9e-13 |
+| 每步接口残差恒等式、`dpNetwork == R·q`、`q == q_X`、`t == n·dt` | 1e-9 / 逐位 / 逐位 / 6.7e-16 绝对 |
+| 每步三段衡算：`q_A == Q`、`q_A == q_X + q_By`、`q_B == q_X + q_By` | ≤1.4e-20 绝对 |
+| 第一步速率对惯量分压闭式 | 1.38651e-4 对 1.38623e-4（2.07e-4 相对，带 1e-3） |
+| 起步深度 `q^1/q_∞` | 0.879（带 <0.95：序列真的在爬） |
+| 由序列回归 `q^n = A + B q^(n−1)` 的 τ 对闭式 | 0.26314 对 0.25885 s（1.66%，带 5%；算两遍惯量读 0.3698） |
+| 同一回归的 `q_∞` 对闭式 | 1.57774e-4 对 1.57775e-4（1e-6 相对，带 1%） |
+| 末端距工况点 | 0.14%（带 0.5%，且必须 >0：末端不是被假定的） |
+| 收敛系数对层流 duct 电阻 | 3.93214e6 对 3.75e6（+4.86%，与稳态算例同一个数） |
+| 每步块解趟数：首步 2 趟修正种子、其后 1~2 趟 | 60 步共 95 次块解（带 ≤120） |
+| 块内守恒、已发展梯度、抛物剖面、横向速度 | 同 5.18 各带（`dp/dx` 1162 对 1182） |
+
+**层流伙伴为何每步只需 ~1.6 次块解**：区域的 `dp/q` 与速率无关，接口把种子修正一次之后
+系数就基本正确，其后每步的失配只剩块自己的解误差（`pcorrTol 1e-5` ⇒ 残差 ~1e-5…1e-4，
+在 `tolerance 1e-4` 下多数步一趟即定、少数两趟）。
+
+**顺带修的一处核问题**：SIMPLE 外收敛的 `settled` 判据原写作 `contErr <= bestContErr`
+严格单调。瞬态接口每步都**热启动**，而热启动的首个 predictor 连续性可以低于该 case
+最终落到的 HbyA/压力通量地板（实测 0.00768788 对 0.00769587），于是"best"再也打不破、
+`|dp|` 分支永远走不到——首步的块解烧满 300 迭代并报未收敛。判据改成留 1% 余量
+（`simpleSolver.cpp:343`），防发散的初衷不变；改后每步块解都收敛，本算例总时长 28 s。
+
+**单元侧**（`coupling.unit` 新增 20 条，解析伙伴）：12 步线性伙伴逐步对上离散闭式（含
+首步惯量分压与 `Δp_nodes = dpBlock + M_X·Δq/dt`）到 1e-9；每步 `block.lastQ() == res.q`
+到 1e-15（一步之内两侧说的是同一个状态）；块解总次数恰好 `nSteps + 1`；`relax 0.5` 与
+`1.0` 落同一条爬升曲线、只是趟数更多；`maxSubIterations 1` 时 fatal 且网络**仍停在起点**
+（`time()==0`、流量为 0）。`transient.unit` 另钉住 `solveStep`/`commitStep` 的语义、重复
+提交被拒、刷新系数作废挂起步、耦合管带阀被拒。
+
+**本增量的边界**：① 伙伴仍是准稳态不可压层流块——区域的非物理"瞬时惯性"由 1D 侧承担，
+块内的真实非定常（涡脱落、可压波）未进界面。② 界面上仍是单个标量（压降↔速率）。
+③ 步内子迭代仍是 Gauss–Seidel + 常数松弛，惯性效应带来的 added-mass 靠"把惯量留在 1D"
+回避，而不是靠 Aitken/IQN 硬扛。④ 块场在步内被解多次，只有**最后**一次留在 `measure()`
+里，中间趟的场不可回放（记录的只有各趟的 sweeps/收敛位）。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
@@ -1462,7 +1548,9 @@ R ← couple.seeds 给定的初值
 | `PstreamOps` 作用在 `fvc::grad` / `fvc::div` 的 halo 上 | `cf::parallel::assembledGrad` / `assembledDivPhi`（逐域按全局面序重放串行表达式，因此与串行 `fvc::` **逐位相同**，见 5.17） |
 | Fluent **system coupling** / OLGA **embedded detailed section**（管网一条边的内部换成 3D 区，界面上交换压降↔速率） | `cf::coupling::solveCoupled1d3d`（`src/coupling`：界面上的 Gauss–Seidel + 常数松弛，`couple{ edge seeds relax tolerance }`，见 5.18） |
 | 3D 区域约化成管网的一个阻力系数（system-couple 的"black box 压降"端） | `cf::coupling::ICoupledElement::lossAt(qMag)` + 生产实现 `DetailBlock`（SIMPLE 块 + `BlockMeasure` 自测：压降、进出通量、逐截面平面通量、探针梯度） |
-| 1D 侧承载 3D 区域的边界条件（`fanPressure`/`porousJump` 一类压降模型） | `NetworkPipe::coupledResistance`（正的 `R` 时 `pipeLossAt` 短路成 `R·Q`，与本管摩阻/重位/阀泵互斥，见 4 与 5.18） |
+| 1D 侧承载 3D 区域的边界条件（`fanPressure`/`porousJump` 一类压降模型） | `NetworkPipe::coupledResistance`（正的 `R` 时 `pipeLossAt` 短路成 `R·Q`，与本管摩阻/重位/阀泵互斥，见 4 与 5.18）；瞬态侧 `TransientPipeConfig::coupledResistance` 只替换本管摩阻，重位与区域惯量留在 1D |
+| OLGA / Fluent 的**瞬态** embedded detailed section（每个时间层内再把界面上迭代一次） | `cf::coupling::solveTransientCoupled1d3d`（`TransientCoupledControls{ maxSubIterations relax tolerance }` + 逐步 `TransientCoupledStep`，见 5.19） |
+| 时间层内"已解出但尚未采纳"的状态（分区接口要在同一层重解） | `TransientNetwork::solveStep` / `commitStep` / `pendingPipeFlow` / `pendingPressure`（`setCoupledResistance` 即作废挂起步，见 5.19） |
 
 ## 7. 测试体系
 - `tests/unit/kernelTests.cpp`（CTest `kernel.unit`）：字典解析、网格几何
@@ -1473,6 +1561,10 @@ R ← couple.seeds 给定的初值
 - `tests/unit/transientTests.cpp`（CTest `transient.unit`）：水合物动力学
   精确指数（1e-12）、单步 2×2 隐式 Euler 闭式对照（1e-10）、静止平衡、
   无速率时相不变、带速率时液量指数衰减、slug case.dict 往返与级联递推；
+  耦合边另钉五条：`coupledResistance` 管的隐式闭式 `q = Δp/(ρL/A/dt + R)`（1e-10——
+  同一根管若还带自己的 2.5e8 摩阻会读到 1.30e-4 而非 1.96e-4，忘掉惯量则是 3.9e-4）、
+  耦合管带阀被拒、`solveStep` 不推进任何东西且逐位可重解、`commitStep` 采纳挂起步且
+  重复提交被拒、刷新系数即作废挂起步（§5.19）；
 - `tests/unit/pvtTests.cpp`（CTest `pvt.unit`）：全部是 EOS 内部不变量而非
   文献数值——临界点三重根 `Z = 0.30740`、`v_c/b = Z_c/B_c`、低压理想气体
   极限、纯组分饱和压处逸度相等（1e-9）与随 T 单调、纯组分泡点 ≡ 饱和压
@@ -1548,8 +1640,12 @@ R ← couple.seeds 给定的初值
   链闭合；被 `maxOuterIterations` 掐停的回路如实报 `!converged`、恰好跑了 3 趟、
   残差恒等式 `|R·q − dpPa|/dpPa` 仍成立（拿一个精确线性伙伴 + `relax 0.5` 才测得出
   "停了"——`relax 1` 下它一趟就残差 0）；两端定压的两节点网络 `nFree == 0`、
-  节点残差恰 0，用作"网络侧不带任何迭代误差"的参照；
-- `tests/cases/*`：四十二个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
+  节点残差恰 0，用作"网络侧不带任何迭代误差"的参照。瞬态回路同一套：12 步线性解析
+  伙伴逐步对上离散闭式（首步按惯量分压 + 其后每步 `(1+dt/τ)^{-1}` 衰减，1e-9）、每步
+  `block.lastQ() == res.q`（1e-15，一步之内两侧同一状态）、块解总次数恰 `nSteps+1`、
+  每步残差 ≤ tolerance、节点压降 == `dpBlock + M_X·Δq/dt`（1e-8）；`relax 0.5` 落同一条
+  爬升曲线只是趟数更多；`maxSubIterations 1` 时 fatal 且网络仍停在起点（§5.19）；
+- `tests/cases/*`：六十个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
   `twoFluid*` 十七个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
@@ -1708,6 +1804,17 @@ R ← couple.seeds 给定的初值
     = +2.7%、分流 1.5777e-4 对 1.6032e-4 = −1.6%、块实测电阻 3.933e6 落在层流 duct 值
     3.75e6 的 1.00–1.06 倍带内、Re_X 20–200 保证解析对照成立）；初值无关性：三种子的
     q/dp/R 互差 1.6e-5 / 1.0e-5 / 4.7e-5 相对。
+  - `transientCoupled1d3d`（§5.19：同一个网络、同一块网格改成从静止被突加的注入速率驱动，
+    `dt 0.02 × 60 步`）：七组断言全绿——每步的离散 1D 陈述（节点压降 == `R·q + M·Δq/dt`，
+    用该步实测的块系数，最差 1.75e-10 相对；旁通支用 Hagen-Poiseuille，1.15e-13；两条主导线
+    含首步惯性冲击，2.0e-12）、每步接口身份（`dpNetwork == R·q`、残差 == 两求解器之差、
+    `q == q_X`、块自己报收敛，均逐位到 1e-12 以下）、每步三段衡算（`q_A == Q == q_X+q_By == q_B`
+    到 1.4e-20）、界面日程（首步 2 趟修正种子、60 步共 95 次块解 ≤ 120 的上限、每步残差
+    ≤1e-4）、爬升对离散闭式（首步 1.38651e-4 对惯量分压 1.38623e-4 即 2.1e-4 相对、起步深度
+    0.879 而非 1、序列回归 τ 0.26314 对闭式 0.25885 即 1.66%（把区域惯量算两遍读 0.3698）、
+    q_∞ 回归对上闭式 1e-6 相对）、末端工况点（距 q_∞ 0.14%、收敛系数 3.93214e6 对 duct 值
+    3.75e6 = +4.86%、Re 80 层流、接口末值 == 块场自测 `dpPa` 逐位）、块内守恒与已发展剖面
+    （同 §5.18 各带：`dp/dx` 1162 对 1182、剖面最坏 0.0088 m/s、横向 1.8e-5）。
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

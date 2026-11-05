@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <string>
 #include <utility>
 
 #include "cf/common/Error.h"
@@ -416,6 +417,111 @@ CoupledResult solveCoupled1d3d(OneDNetwork& net, label edge,
         coupled.coupledResistance = (1.0 - ctl.relax) * R + ctl.relax * (dpBlock / q);
     }
 
+    return out;
+}
+
+// ------------------------------------------------------------------
+// the transient partitioned loop
+// ------------------------------------------------------------------
+
+TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net, label edge,
+                                                 ICoupledElement& block,
+                                                 const TransientCoupledControls& ctl,
+                                                 double dt, double endTime)
+{
+    if (edge < 0 || static_cast<std::size_t>(edge) >= net.pipeNames().size())
+        cfFatal("coupling: no transient pipe at index " + std::to_string(edge));
+    if (!(ctl.relax > 0 && ctl.relax <= 1))
+        cfFatal("coupling: the interface relaxation must be in (0, 1]");
+    if (ctl.maxSubIterations < 1)
+        cfFatal("coupling: the transient interface needs at least one pass per"
+                " time step");
+    if (!(dt > 0))
+        cfFatal("coupling: the transient step size must be positive (dt "
+                + fmt(dt) + ")");
+    if (!(endTime > 0))
+        cfFatal("coupling: the transient run needs a positive endTime ("
+                + fmt(endTime) + ")");
+    const std::size_t nSteps = static_cast<std::size_t>(endTime / dt + 0.5);
+    if (nSteps < 1)
+        cfFatal("coupling: endTime " + fmt(endTime) + " is shorter than one"
+                " step of " + fmt(dt));
+
+    scalar R = net.coupledResistanceOf(edge);
+    if (!(R > 0))
+        cfFatal("coupling: transient pipe '" + net.pipeNames()[static_cast<std::size_t>(edge)]
+                + "' is the coupled edge but carries no starting resistance");
+
+    TransientCoupledResult out;
+    out.edge = edge;
+    out.nodeNames.assign(net.nodeNames().begin(), net.nodeNames().end());
+    out.pipeNames.assign(net.pipeNames().begin(), net.pipeNames().end());
+
+    for (std::size_t s = 0; s < nSteps; ++s)
+    {
+        TransientCoupledStep step;
+        label passes = 0;
+        bool agreed = false;
+
+        // Re-solve the same step from the same committed start until the rate
+        // it delivers is the rate the partner's drop belongs to. Nothing is
+        // advanced in here, so the refresh is a real iteration on one time
+        // level rather than a drift along the trajectory.
+        for (label pass = 1; pass <= ctl.maxSubIterations; ++pass)
+        {
+            const double newton = net.solveStep(dt);
+            const scalar q = std::abs(net.pendingPipeFlow(edge));
+            const scalar dpPa = block.lossAt(q);
+
+            TransientInterfacePass rec;
+            rec.pass = pass;
+            rec.resistance = R;
+            rec.q = q;
+            rec.dpNetwork = R * q;
+            rec.dpPa = dpPa;
+            rec.residual = std::abs(rec.dpNetwork - dpPa) / std::max(std::abs(dpPa), 1e-300);
+            rec.sweeps = block.lastSweeps();
+            rec.blockConverged = block.lastConverged();
+            rec.newtonResidual = newton;
+            step.history.push_back(rec);
+            passes = pass;
+
+            if (rec.residual <= ctl.tolerance)
+            {
+                agreed = true;
+                break;
+            }
+            R = (1.0 - ctl.relax) * R + ctl.relax * (dpPa / q);
+            net.setCoupledResistance(edge, R);
+        }
+
+        if (!agreed)
+            cfFatal("coupling: the transient interface did not agree at step "
+                    + std::to_string(s + 1) + " after "
+                    + std::to_string(passes) + " passes (residual "
+                    + fmt(step.history.back().residual) + ", rate "
+                    + fmt(step.history.back().q) + " m3/s at t "
+                    + fmt(net.time() + dt) + " s)");
+
+        // the accepted step is the one solved with the coefficient it reports,
+        // and that coefficient is what the next step starts from
+        net.commitStep();
+        step.t = net.time();
+        step.passes = passes;
+        step.q = step.history.back().q;
+        step.dpPa = step.history.back().dpPa;
+        step.resistance = step.history.back().resistance;
+        step.residual = step.history.back().residual;
+        step.pressure = net.pressure();
+        step.flowRate = net.pipeFlows();
+        out.steps.push_back(std::move(step));
+    }
+
+    const TransientCoupledStep& last = out.steps.back();
+    out.q = last.q;
+    out.dpPa = last.dpPa;
+    out.resistance = last.resistance;
+    out.residual = last.residual;
     return out;
 }
 

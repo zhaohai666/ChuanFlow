@@ -2,18 +2,23 @@
 // analytic partner models so the loop itself -- not the 3D solve behind it --
 // is what fails when it is wrong.
 //
-// The three things these cases pin down:
+// The four things these cases pin down:
 //   * the loop lands on the state where the drop the network charges equals
 //     the drop the partner reports at the rate the network delivers;
 //   * for a linear partner one coefficient refresh is enough, and the answer
 //     does not depend on the starting coefficient or on the relaxation;
 //   * the numbers a caller reads out of CoupledResult describe ONE state:
-//     the rate the partner was last asked for is the rate being reported.
+//     the rate the partner was last asked for is the rate being reported;
+//   * the transient loop re-solves one time step until the interface agrees
+//     and then commits exactly that step, so its ramp follows the discrete
+//     closed form of the inertial network it is coupled into.
 #include <cmath>
 #include <iostream>
 #include <string>
 
 #include "cf/1d/Network.h"
+#include "cf/1d/Transient.h"
+#include "cf/common/Error.h"
 #include "cf/coupling/CoupledNetwork.h"
 
 using namespace cf;
@@ -113,6 +118,62 @@ SteadyControls netCtl()
     SteadyControls c;
     c.maxIter = 200;
     c.tol = 1e-12;
+    return c;
+}
+
+/// A transient pipe handed to a partner: length and diameter set its
+/// inertance rho*L/A, `resistance` its loss law.
+TransientPipeConfig coupledPipe(const std::string& name, const std::string& from,
+                                const std::string& to, double length,
+                                double resistance)
+{
+    TransientPipeConfig p;
+    p.name = name;
+    p.fromName = from;
+    p.toName = to;
+    p.length = length;
+    p.diameter = 0.05;
+    p.coupledResistance = resistance;
+    return p;
+}
+
+/// Rate-driven transient chain with the coupled edge in parallel with a
+/// bypass: Src -> A -> {edge || By} -> B -> Snk. Every pipe is a linear
+/// resistor, so the whole system is exactly solvable: the incompressible
+/// ports force Q_A = Q_B = qIn and Q_By = qIn - Q_X from the first step on, and
+/// the two parallel momentum rows add up to
+///   (M_X + M_By) dQ_X/dt + (R_X + R_By) Q_X = R_By qIn,
+/// which implicit Euler relaxes as Q_X(n) = qInf + (Q_X(1) - qInf)(1 + dt/tau)^(1-n).
+/// The very first step is different: the network starts at rest while the
+/// injection is already on, so continuity cannot hold at t = 0 and the sudden
+/// rate splits by inertance rather than by resistance,
+///   Q_X(1) = (M_By/dt + R_By) qIn / ((M_X + M_By)/dt + R_X + R_By).
+/// That is the statement the interface must reproduce -- a model that dropped
+/// the region's inertance would start at qInf instead.
+/// All four pipes are coupled so no Churchill friction disturbs the linearity.
+TransientCase transientBranched(double qIn, double edgeSeed)
+{
+    TransientCase c;
+    c.fluid = FluidProperties{800.0, 0.1};
+    TransientNodeConfig src, j1, j2, snk;
+    src.name = "Src"; j1.name = "J1"; j2.name = "J2";
+    snk.name = "Snk"; snk.pressureFixed = true; snk.pressure = 1.0e5;
+    // incompressible ports (no bulk modulus) that still hold liquid, because
+    // the injected rate has to go somewhere in the inventory the kernel tracks
+    for (TransientNodeConfig* n : {&src, &j1, &j2})
+    {
+        n->volume = 1.0;
+        n->liquidFraction = 0.5;
+    }
+    c.nodes = {src, j1, j2, snk};
+    c.pipes = {coupledPipe("A", "Src", "J1", 10.0, 1.0e6),
+               coupledPipe("X", "J1", "J2", 10.0, edgeSeed),
+               coupledPipe("By", "J1", "J2", 1.0, 1.0e6),
+               coupledPipe("B", "J2", "Snk", 10.0, 1.0e6)};
+    TransientSource feed;
+    feed.nodeName = "Src";
+    feed.rate = qIn;
+    c.sources = {feed};
     return c;
 }
 
@@ -261,6 +322,135 @@ int main()
         CHECK(relNear(res.residual,
                       std::abs(res.resistance * res.q - res.dpPa) / res.dpPa, 1e-10),
               "the residual is the gap between the two solvers");
+    }
+
+    // ---- transient loop against a linear partner: the discrete closed form ----
+    {
+        const double qIn = 0.02, rBlock = 4.0e6, rBy = 1.0e6;
+        const double dt = 0.15, endTime = 1.8;
+        const int nSteps = 12;
+        const double section = 0.25 * M_PI * 0.05 * 0.05;
+        const double mX = 800.0 * 10.0 / section, mBy = 800.0 * 1.0 / section;
+        const double tau = (mX + mBy) / (rBlock + rBy);
+        const double qInf = qIn * rBy / (rBlock + rBy);
+        const double decay = 1.0 + dt / tau;
+        const double qFirst = (mBy / dt + rBy) * qIn / ((mX + mBy) / dt + rBlock + rBy);
+        CHECK(qFirst < 0.75 * qInf,
+              "the case really ramps: its inertial and resistive dividers differ");
+
+        TransientNetwork net(transientBranched(qIn, 1.0e6));
+        const label edge = 1; // "X"
+        AnalyticElement block(rBlock, 0.0);
+
+        coupling::TransientCoupledControls ctl;
+        ctl.tolerance = 1e-12;
+        const coupling::TransientCoupledResult res =
+            coupling::solveTransientCoupled1d3d(net, edge, block, ctl, dt, endTime);
+
+        CHECK(res.steps.size() == static_cast<std::size_t>(nSteps),
+              "transient loop runs every step of the interval");
+        CHECK(relNear(block.lastQ(), res.q, 1e-15),
+              "the reported state is the one the partner was measured at");
+        CHECK(relNear(res.steps[0].q, qFirst, 1e-9),
+              "the first step splits the sudden rate by inertance");
+        CHECK(relNear(res.resistance, rBlock, 1e-12),
+              "the interface lands on the linear partner's coefficient");
+        CHECK(relNear(net.coupledResistanceOf(edge), res.resistance, 1e-15),
+              "the network carries the coefficient the last step was solved with");
+        CHECK(relNear(net.time(), endTime, 1e-15), "the clock reaches endTime");
+
+        // a linear partner's fixed point does not depend on the rate, so the
+        // first step needs one refresh and every later step is already agreed
+        CHECK(res.steps[0].passes == 2, "first step needs one coefficient refresh");
+        long passes = 0;
+        for (const coupling::TransientCoupledStep& s : res.steps) passes += s.passes;
+        CHECK(passes == nSteps + 1, "later steps agree without another partner run");
+        CHECK(block.calls() == nSteps + 1, "every partner run is one interface pass");
+
+        bool everyStepAgreed = true, rampExact = true, identityExact = true;
+        bool chainExact = true;
+        double qPrev = 0.0;
+        for (int n = 1; n <= nSteps; ++n)
+        {
+            const coupling::TransientCoupledStep& s = res.steps[static_cast<std::size_t>(n - 1)];
+            const double qExact = n == 1
+                ? qFirst
+                : qInf + (qFirst - qInf) * std::pow(decay, 1 - n);
+            everyStepAgreed = everyStepAgreed && s.residual <= ctl.tolerance;
+            rampExact = rampExact && relNear(s.q, qExact, 1e-9);
+            rampExact = rampExact && relNear(s.q, qExact, 1e-9);
+            identityExact = identityExact
+                && relNear(s.flowRate[0], qIn, 1e-10)
+                && relNear(s.flowRate[3], qIn, 1e-10)
+                && relNear(s.flowRate[1] + s.flowRate[2], qIn, 1e-10);
+            // what the region's two statements say about the same interface:
+            // the node pressure difference drives both the partner's resistance
+            // and the region's own acceleration
+            const double dpNodes = s.pressure[1] - s.pressure[2];
+            chainExact = chainExact
+                && relNear(dpNodes, s.dpPa + mX * (s.q - qPrev) / dt, 1e-8);
+            qPrev = s.q;
+        }
+        CHECK(everyStepAgreed, "every time step closes the interface gap");
+        CHECK(rampExact, "the inertial ramp follows the discrete closed form");
+        CHECK(identityExact, "incompressible ports hold the series rate at every step");
+        CHECK(chainExact, "region drop equals partner drop plus its own inertance");
+
+        const coupling::TransientCoupledStep& first = res.steps[0];
+        CHECK(relNear(first.pressure[3], 1.0e5, 1e-15),
+              "the fixed node keeps its pressure at every time level");
+        CHECK(res.steps[0].history.size() == 2 && res.steps[1].history.size() == 1,
+              "the history holds every pass of every step");
+    }
+
+    // ---- relaxation and seeds change the passes, not the trajectory ----
+    {
+        const double qIn = 0.02, dt = 0.15, endTime = 1.8;
+
+        TransientNetwork quick(transientBranched(qIn, 4.0e6));
+        AnalyticElement b1(4.0e6, 0.0);
+        coupling::TransientCoupledControls exact;
+        exact.tolerance = 1e-10;
+        const coupling::TransientCoupledResult r1 =
+            coupling::solveTransientCoupled1d3d(quick, 1, b1, exact, dt, endTime);
+
+        TransientNetwork damped(transientBranched(qIn, 1.0e6));
+        AnalyticElement b2(4.0e6, 0.0);
+        coupling::TransientCoupledControls relaxed = exact;
+        relaxed.relax = 0.5;
+        relaxed.maxSubIterations = 60;
+        const coupling::TransientCoupledResult r2 =
+            coupling::solveTransientCoupled1d3d(damped, 1, b2, relaxed, dt, endTime);
+
+        long passes1 = 0, passes2 = 0;
+        bool sameRamp = true;
+        for (std::size_t n = 0; n < r1.steps.size(); ++n)
+        {
+            passes1 += r1.steps[n].passes;
+            passes2 += r2.steps[n].passes;
+            sameRamp = sameRamp && relNear(r1.steps[n].q, r2.steps[n].q, 1e-10);
+        }
+        CHECK(sameRamp, "the relaxed interface follows the same ramp");
+        CHECK(passes2 > passes1, "relaxation costs partner runs to get there");
+        CHECK(relNear(r2.resistance, 4.0e6, 1e-10), "relaxed coefficient is the same");
+    }
+
+    // ---- a step the interface cannot agree on stops the run ----
+    {
+        TransientNetwork net(transientBranched(0.02, 1.0e6));
+        AnalyticElement block(4.0e6, 0.0);
+        coupling::TransientCoupledControls stuck;
+        stuck.maxSubIterations = 1;   // one pass cannot reach a far seed
+        stuck.tolerance = 1e-12;
+        bool stopped = false;
+        try
+        {
+            coupling::solveTransientCoupled1d3d(net, 1, block, stuck, 0.05, 0.5);
+        }
+        catch (const Error&) { stopped = true; }
+        CHECK(stopped, "an unagreed step is fatal instead of committed");
+        CHECK(net.time() == 0.0 && net.pipeFlows()[1] == 0.0,
+              "a fatal interface leaves the network at its start");
     }
 
     std::cout << (failures == 0 ? "coupling unit: all checks passed\n"

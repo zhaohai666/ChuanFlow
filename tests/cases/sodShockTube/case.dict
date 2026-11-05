@@ -1,0 +1,54 @@
+// Sod shock tube: the canonical Riemann problem for the density-based Euler
+// increment. A 1 m pipe segment (1 cell square cross-section, 400 cells along
+// x) is split at x = 0.5 into a high-pressure driver (rho 1, p 1) and a driven
+// section (rho 0.125, p 0.1); both sides at rest. The diaphragm bursts into a
+// left rarefaction, a contact and a right shock -- the exact solution at
+// t = 0.2 has the fan head at x ~ 0.263, the fan tail at x ~ 0.486, the
+// contact at x ~ 0.686 and the shock at x ~ 0.850, so nothing reaches the
+// walls yet and the wall impulse is exactly dt*(pR - pL)*A per step while the
+// undisturbed ends hold. All faces are impermeable slip walls; momentum is
+// exchanged with them (left wall pushes the fluid +x, right end drags it back)
+// and the checker verifies mom(t) = mom0 - impulse(t).
+//
+// dt/dx is 0.1 here, so the CFL number on the fastest wave -- the shock at
+// 1.75 -- is 0.175, and the checker's own replicated recursion runs the same
+// number. What the scheme owes against the exact solution is measured on the
+// against the exact solution is measured on the fronts' diffusive widths: the
+// numerical viscosity of first-order Godunov is |lambda| dx / 2, so a front of
+// speed lambda is spread over a few sigma = sqrt(|lambda| dx t / 2) (at this
+// mesh: 0.017 for the fan head, 0.015 for the contact, 0.021 for the shock).
+// The plateaus are compared pointwise with the exact sample outside those
+// widths -- far left, the rarefaction (which is compared against its own
+// self-similar profile, not exempted), star left, star right, far right -- and
+// the contact and shock positions are read as the density profile's mid-jump
+// crossing. Doubling the mesh has to cut the whole-field L1 error at an order
+// between 0.4 and 1.5; the sharpest number here is p*, which the star plateaus
+// read to under 1%. The per-step replication of the discrete HLLC recursion is
+// checked to 1e-9.
+fluid { gamma 1.4; }
+
+block
+{
+    min (0 0 0);
+    max (1 0.01 0.01);
+    cells (400 1 1);
+}
+
+initial
+{
+    diaphragm 0.5;
+    left { rho 1;    u 0; p 1;   }
+    right { rho 0.125; u 0; p 0.1; }
+}
+
+time
+{
+    dt 0.00025;
+    endTime 0.2;
+    reportEvery 100;
+}
+
+output
+{
+    vtk sodFinal.vtu;
+}

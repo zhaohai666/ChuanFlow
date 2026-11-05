@@ -68,6 +68,14 @@ python3 tests/check_vof.py \
     "$PWD/build/src/3d/apps/chflow-vof" \
     "$PWD/tests/cases/vofOscillating/case.dict"
 
+# 密度基可压缩 Euler（Sod 激波管）：app 逐步报质量/动量/能量/壁冲量/压力上下界与 CFL，
+# check_euler.py 用 Python 重放同一套 HLLC 递推（含同一个波速估计）与写出的场逐格比对，
+# 再对精确 Riemann 解的平台、锋的半跃变交叉位置与全场 L1 的加密收敛率断言
+./build/src/3d/apps/chflow-3d-compressible tests/cases/sodShockTube/case.dict
+python3 tests/check_euler.py \
+    "$PWD/build/src/3d/apps/chflow-3d-compressible" \
+    "$PWD/tests/cases/sodShockTube/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict
@@ -185,6 +193,26 @@ patches { left { U (0 0 0); p 0; } right { U (0 0 0); pType zeroGradient; } ... 
 
 验收的是拉普拉斯跃变 `p_in − p_out = σ/(ρR)`（内核的 p 是运动学压强 p/ρ）、
 斜坡只属于带、解场的镜像对称、以及伪速度幅值对 √(σ/(ρR)) 的比值。
+
+**密度基可压缩 Euler**（`chflow-3d-compressible`）不读 `schemes{}`/`patches{}`：状态是每单元
+的广延守恒量 `(ρV, ρu V, ρEV)`，边界一律是不可透滑移壁，所以字典只有四块——
+`fluid{gamma}`、`initial{diaphragm; left/right{rho,u,p}}`、`time{dt,endTime,reportEvery}`、
+`output{vtk}`（网格仍走下面的 `block{}`/`mesh{}` 二选一）：
+
+```
+fluid { gamma 1.4; }
+initial {
+    diaphragm 0.5;
+    left  { rho 1;     u 0; p 1;   }
+    right { rho 0.125; u 0; p 0.1; }
+}
+time { dt 0.00025; endTime 0.2; reportEvery 100; }
+```
+
+app 每 `reportEvery` 步报 `mass / mom / energy / impulse / pmin / pmax / cfl`：闭盒里质量与
+总能量应当逐报告点不变，动量随 `impulse(t) = ∫dt Σ_b (p Sf)_x` 变化，所以
+`check_euler.py` 既断言 `mom + impulse = mom(0)`，也用 Python 重放同一套 HLLC 递推与写出的场
+逐格比对（1e-9）。CFL 越界（`dt·amax/dxMin > 1`）与非有限状态都直接报错，不做回退。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

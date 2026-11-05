@@ -204,6 +204,17 @@ add_test(
         $<TARGET_FILE:chflow-vof>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofFit/case.dict)
 
+# density-based Euler, first increment: the Sod shock tube on the polyhedral
+# kernel. The checker re-runs the HLLC recursion cell by cell (1e-9), holds the
+# mass/energy totals and the wall-impulse momentum balance exact, and compares
+# the plateaus with the exact Riemann solution whose star state it solves itself
+add_test(
+    NAME verify.sodShockTube
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_euler.py
+        $<TARGET_FILE:chflow-3d-compressible>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/sodShockTube/case.dict)
+
 # 3D energy equation. The three conduction cases have no flow at all, so they
 # isolate the diffusion operator, the temperature conditions (fixedValue,
 # heatFlux, adiabatic) and the heat-balance report; the decay case runs the same

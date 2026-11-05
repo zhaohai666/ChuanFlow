@@ -1192,6 +1192,64 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
 跃变仍走 `vofDroplet` 的抹开场 + §5.10 模板。闭合这最后一环需要力带上重新抹一层权重、或压力
 格式能看见界面——下一个增量的题目。
 
+### 5.16 密度基可压缩 Euler `apps/compressibleApp.cpp`（M3：激波捕捉首增量）
+
+前面的 3D 层全是不可压的：压力把速度投回无散，声速只是"根本不存在的数"。`chflow-3d-compressible`
+是第一条走**密度基**的回路——没有压力投影、没有线性求解器，守恒量自己带压缩性，激波由面通量
+自己涌现。
+
+**状态与格式**：每单元存**广延**总量 `(ρV, ρu V, ρE V)`，理想气体 `e = p/((γ−1)ρ)`、
+`p = (γ−1)ρe`、`c = √(γp/ρ)` 每次 `primitives()` 从总量重算；时间推进是一阶 Godunov
+`U_i += dt·Σ_f Φ_f`（广延量，所以**不除 V**——写成 `dt/V·ΣΦ` 时第 2 步 ρ 就跳到 ±4.3e4，
+这条单位恒等式现在由 checker 的逐格复现钉住）。面通量 `Φ = F(U_L,U_R)·|S_f|` 取 **HLLC
+近似 Riemann 通量**（Toro）：`S_M = (p_R − p_L + ρ_L u_L(S_L−u_L) − ρ_R u_R(S_R−u_R)) /
+(ρ_L(S_L−u_L) − ρ_R(S_R−u_R))`，星态 `ρ*_K = ρ_K(S_K−u_K)/(S_K−S_M)`、
+`U*_K = ρ*_K(1, S_M n̂ + u_tK, (ρE)_K/ρ_K + (S_M−u_nK)(S_M + p_K/(ρ_K(S_K−u_nK))))`，
+通量 `F*_K = F_K + S_K(U*_K − U_K)`；切向速度原样穿过接触面。几何全部来自 `polyMesh`
+（`faceSf()` 的带符号面积、`cellVolumes()`），所以同一份代码对块网格和非结构网格都成立；
+`y/z` 两向的墙通量在单截面列上逐分量相消，离散系统**就是** 1D，横向速度精确保持 0。
+边界一律取不可透滑移壁：`Φ = (0, p·S_f, 0)`——质量和总能量一格都不出门，动量交给墙。
+于是守恒语义要按闭盒来读：`mom(t) + impulse(t) = mom(0)`，`impulse(t) = ∫dt Σ_b (p S_f)_x`
+由 app 自己累加上报；锋未触壁的两段里墙压就是初值，闭式 `dt(p_R−p_L)A` 每步，checker 两者
+都断言（实测 1e-9 相对）。
+
+**波速是这个格式的全部难点**（也是本增量唯一一次"格式看着对、物理全错"）：声学包络
+`S_L = min(u_L−c_L, u_R−c_R)`、`S_R = max(u_L+c_L, u_R+c_R)` 在隔膜处给 `S_R = 1.183`，
+而 Sod 的真激波跑 **1.752**（RH：`p* − p_R = ρ_R S_sh u*`，`p* = 0.30313`、`u* = 0.92745`）。
+估计的扇形**没包住它要携带的那道波**，于是隔膜面的动量通量读 0.059 对真值 0.532、激波被摊成
+一条谁也认不出的斜坡（单格最陡 Δρ 只有跃变的 18%）。Einfeldt/Roe 形式
+`S_R = max(0, u_R+c_R, ũ+ã)` 也挡不住：Roe 平均 `H̃ = 3.3172 ⇒ c̃ = 1.1519`，`ũ+ã = 1.152`。
+改用 Toro 的**激波自适应**估计：先取两稀疏近似解的压力
+`p*_0 = [((γ−1)/2)(u_L−u_R) + c_L + c_R] / [c_L p_L^{−(γ−1)/2γ} + c_R p_R^{−(γ−1)/2γ}]`
+的 `2γ/(γ−1)` 次幂，再 `q_K = 1`（`p*_0 ≤ p_K`，那侧是稀疏波，头速就是 `u_K − c_K`）否则
+`q_K = √((γ+1)/(2γ)·p*_0/p_K + (γ−1)/(2γ))`，最后 `S_K = u_nK ± c_K q_K`。`q` 就是
+Rankine–Hugoniot 激波速度关系本身，所以 `p*_0` 估准时 `S_R` 就是真激波速——Sod 上
+`p*_0 = 0.30674`、`q_R = 1.66536`、`S_R = 1.7625` 对 1.7517。换掉估计后什么都不用再调：
+星态读回 `p*` 到 0.02%、激波位置到 0.76 dx。
+
+**checker（`tests/check_euler.py`，case `sodShockTube`）五组断言**，前四组各用一种不同的办法：
+① **它就是那个离散解**——Python 逐格重放同一套 HLLC 递推（含同一个 `q` 估计、同一个散射与
+更新顺序），400 格上写出的 ρ/u/p 与复现值差 **5.0e-13**（契约 1e-9）；下面任何物理断言只有在
+这条成立时才有意义。② **闭盒守恒**：8 个报告点上质量与总能量 1e-12 相对、
+`mom + impulse − mom(0)` 恰为 0、且锋触壁前 `impulse = dt(p_R−p_L)A·steps` 闭式（1e-9）。
+③ **精确 Riemann 解**（`p*, u*` 由压力函数的 Newton + 二分、星态密度由 RH/等熵关系）——求解器
+**没有**被告知其中任何一个。一阶格式的数值黏性 `|λ| dx/2` 把每道锋摊成几个
+`σ_λ = √(|λ| dx t/2)` 宽（本网格：头 0.017、尾 0.004、接触 0.015、激波 0.021），窗口的豁免
+因此按**物理宽度**而不是格数定，同一组容差在任何网格上说的是同一件事：远离锋的平台逐点对
+精确采样比对（稀疏扇区不豁免，直接对自己那条自相似剖面比）——far left ρ 0.16%/p 0.22%、
+fan 4.58%/6.35%、star left 0.76%/0.96%、star right 0.02%/0.02%、far right ~0；两道锋的位置读
+密度剖面的**半跃变交叉点**（格心线性内插，不是"最陡那一格"——抹开的锋照样带着自己的位置），
+接触 0.205σ（1.25 dx）、激波 0.091σ（0.76 dx）；`max u = 0.92961` 对 `u* = 0.92745`（0.23%）。
+④ **收敛率**：全场 L1 误差在本格与 checker 自己写的加密格（x 加倍、dt 减半，CFL 不变）上
+各算一次，`log2(coarse/fine)` 落在 [0.4, 1.5]——实测 ρ 0.66、u 0.83、p 0.77；带三道间断的解
+里锋的扩散贡献 √dx，所以这不是"一阶"的漂亮数字，而是它真实的样子。⑤  positivity 与横向速度
+恒 0。精确解自己先被钉在 Toro 公布的 Sod 星态上（4 个数 5e-4 内）才被用来当参照。
+
+**本增量的边界**（往下补的顺序）：无黏——没有应力张量与热通量，所以还不是可压缩
+Navier–Stokes；一阶——没有 MUSCL/TVD 重构，激波宽度就是 `σ`；单截面列——横向只用来验证
+散度定理逐格成立，真正的 multidim 激波（斜激波、马赫盘）还没算例；也没和不可压层或 1D
+两流体共享状态（`pvt` 的真实气体 `c(p,T)` 还没接进 `primitives()`）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |
@@ -1205,6 +1263,7 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
 | `lduMatrix` + PBiCGStab | `SparseMatrix` + 右预处理 BiCGStab |
 | `simpleFoam` | `solveIncompressibleSimple` + `chflow-simple-foam` |
 | `pisoFoam` | `solveTransientIncompressiblePiso` + `chflow-piso-foam` |
+| `rhoCentralFoam` / 密度基可压缩 Euler 回路（`divScheme` 的 Riemann 通量） | `chflow-3d-compressible`（`src/3d/apps/compressibleApp.cpp`：多面体网格上的广延守恒量递推 + 一阶 Godunov HLLC 面通量 + 理想气体，见 5.16） |
 | `system/fvSchemes` 字典 | case.dict 的 `schemes{}`（`loadSchemes`） |
 | `correctedSnGrad` 非正交修正 | `fvMatrix::registerCorrector` |
 | `pEqn.flux()` | `correctFluxes`（`pressureCorrection.cpp`，SIMPLE/PISO 共用） |
@@ -1307,7 +1366,7 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
   进口交出的体积精确、clamp 恰为 0——这是 α 方程的一阶迎风做不到的；40×40 圆盘自转
   40 步逐步相体积漂移 ≤ 6.9e-16 相对、clamp ≤ 4.42e-17、α ∈ [0,1]、带 60→70 格、
   限流最多 336 面且最小因子 0.5（同格两个出流棱柱在角上重合处）；
-- `tests/cases/*`：四十一个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
+- `tests/cases/*`：四十二个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
   `twoFluid*` 十七个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
     Hagen-Poiseuille 串并联闭式解，含重位水头，1 次 Newton 收敛）
@@ -1427,12 +1486,21 @@ dp −28% 且伪电流 32%。所以**这个开关今天是锐利场工具**：`v
     0.0189393945 W（1e-6 相对，不需要任何解析输入）、`Tw−Tb` 2.42409 K 对
     `17qh/35k` = 2.42857（`Nu_Dh` 8.2505 对 140/17 = 8.2353）、两壁偏移差恰为 0、
     形状比 `(Tb−T_centre)/(Tw−Tb)` = 0.285116 对与 q/κ/流量都无关的 39/136——见 5.11；
-  - `thermalWallChannel`（SIMPLE，热壁函数渠道，kEpsilon 与 kOmegaSST 各跑一遍）：
+    - `thermalWallChannel`（SIMPLE，热壁函数渠道，kEpsilon 与 kOmegaSST 各跑一遍）：
     checker 用 Python 重写两支温度律与离散传导问题——报告的 T+ 11.8956036 全同
     （1e-8）、墙速率对 `ρcp·u_tau·A·ΔT/T+`（1e-8）、vtu 场对重述三对角解最大偏差
     3.5e-5 K（kEpsilon）/ 1.7e-5 K（SST，即外迭代的残余而非公式差）、重述系统通量
     恒定 1.5e-12 相对、壁通量是分子首格通量的 3.08 倍、镜像对称 0.0、balance
     ~1e-11 相对——见 5.11；
+  - `sodShockTube`（§5.16：密度基可压缩 Euler 的第一道算例——1 m 管段、单格方形截面、
+    400 格沿 x，x=0.5 隔膜两侧 `ρ 1 / p 1` 与 `ρ 0.125 / p 0.1` 皆静止，t=0.2 结束；
+    全部边界是不可透滑移壁）：checker 用 Python 逐格重放同一套 HLLC 递推，写出的场与复现值差
+    **5.0e-13**（契约 1e-9）；闭盒质量与总能量 1e-12、`mom + impulse − mom(0)` 恰 0、锋触壁前
+    `impulse = dt(p_R−p_L)A·steps` 闭式 1e-9；星态**没给**求解器，平台逐点对精确采样：
+    far left ρ 0.16%/p 0.22%、稀疏扇区（对自己那条自相似剖面）4.58%/6.35%、star left
+    0.76%/0.96%、star right 0.02%、far right ~0，接触与激波位置取密度剖面的半跃变交叉点，
+    分别偏 0.205σ（1.25 dx）与 0.091σ（0.76 dx），`max u` 0.92961 对 `u*` 0.92745（0.23%）；
+    全场 L1 在 400/800 格上给出收敛率 ρ 0.66、u 0.83、p 0.77（断言带 [0.4, 1.5]）。
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

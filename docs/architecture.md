@@ -15,15 +15,18 @@
 ## 1. 总体分层
 
 ```
-apps (chflow-1d-steady / chflow-1d-transient / chflow-pvt / chflow-scalar-transport / chflow-simple-foam / chflow-piso-foam / chflow-vof / chflow-3d-compressible / chflow-3d-parallel)
+apps (chflow-1d-steady / chflow-1d-transient / chflow-pvt / chflow-scalar-transport / chflow-simple-foam / chflow-piso-foam / chflow-vof / chflow-3d-compressible / chflow-3d-parallel / chflow-coupled-1d3d)
   ├── src/1d          一维管网内核（M1 稳态节点法 + M2 首增量：瞬态/持液率/水合物）
   │      └── src/common  基础层（字典解析、日志/异常）
   ├── src/pvt         统一物性层（PR 状态方程 / 多组分 TP 闪蒸 / PVT 表插值）
   │      └── src/common  基础层（字典解析、日志/异常）
   ├── src/bindings    pybind11 模块 chflow_core（Python 包 python/chflow）
   │      └── src/1d + src/pvt
-  └── src/3d          三维 FVM 内核（mesh / fields / discrete / solvers / turbulence / multiphase / parallel / io）
-        └── src/common  基础层（向量、Field 容器、稀疏矩阵+Krylov求解、字典解析、日志/异常）
+  ├── src/3d          三维 FVM 内核（mesh / fields / discrete / solvers / turbulence / multiphase / parallel / io）
+  │     └── src/common  基础层（向量、Field 容器、稀疏矩阵+Krylov求解、字典解析、日志/异常）
+  └── src/coupling    分区耦合层（稳态管网的一条边换成三维详细块；M4 首增量）
+        ├── src/1d + src/3d（各自独立，互不知道对方存在）
+        └── src/common  基础层
 cli/  Rust 自动化入口 chuanflow（run steady|transient|pvt <case.dict>，定位并转发引擎二进制）
 ```
 
@@ -230,6 +233,14 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
   | `steadyEquipmentValve` | 定压差 + K=500 阀：q 对层流二次根 1e-9，dpValve = Kρq²/2A²（占压降 2.5%）|
   | `steadyEquipmentPump` | 闭环路（两端等压）：工作点 = 系统曲线∩扬程曲线二次根（q*=3.085629e-4、H=24.1315 m），dpPump = −ρg·H(q*) 与摩阻逐 Pa 相等（回路恒等式），净 dp = 0 |
   | `steadyEquipmentNetwork` | 源率驱动串联网（阀→自由节点→泵 + 10 m 高程→定压终端）：p_J1=72750 / p_W1=173511 对闭式链 1e-6；泵几乎顶平高程（p_J1 < 终端压力）——泵头符号错误的符号测试（差 ~4 bar）|
+
+- **耦合边 `coupledResistance`（把一条管交给三维求解器）**：pipe 字典可带
+  `coupledResistance <R>`（Pa·s/m³）。它为正的瞬间，本管的 Churchill 摩阻、重位、阀、
+  泵在 `pipeLossAt` 里全部被 `R·q` 取代——这条边不再有自己的 1D 物理，它的压降由伙伴
+  报来；Newton 的电导仍是对本管 law 的中心差分， law 此时恰为线性所以斜率就是 `1/R`，
+  而那个"层流上限"也从 HP 几何值换成 `1/R`（HP 是几何的性质，不是这条边的物理）。
+  加载时校验三条：R ≥ 0、该管不得是黑油/PVT 管（`march` 逐段算压降，不是一个系数）、
+  不得同时带阀或泵（否则"这条边的压降"语义不再唯一）。回路见 5.18；
 
 - **表驱动单相物性（PVT 供给 ρ(p)/μ(p)）**：`PvtFluid`（严格递增压力
   网格 + ρ/μ 表，节点间分段线性、表端钳位；NaN/p≤0 取首条，Newton 早期
@@ -1317,6 +1328,93 @@ tet 案例**不**断言精度，只断言"切割不改变精度"：在这 95 个
 域耦合的线性求解（半对角 + 界面 Schur/多重网格）是下一条。③ 没有重叠/多级 halo，
 没有网格重排（scotch/metis），分解只有 RCD 这一种。
 
+### 5.18 分区 1D ↔ 3D 耦合 `src/coupling/`（M4 首增量：稳态管网里嵌入一段三维详细区）
+
+对标 Fluent 的 **system coupling** 与 OLGA 的 embedded detailed section：管网的一条边的
+**内部**换成一块三维 SIMPLE 网格，两侧在界面上交换"该速率对应的压降"直到一致。
+没有联合隐式矩阵、没有 Jacobian——是界面上的 Gauss–Seidel。新目录 `src/coupling`
+（`cfcoupling`，`PUBLIC` 依赖 `cf1d` 与 `cf3d`）与 app `chflow-coupled-1d3d`。
+
+**1D 侧的钩子**：`NetworkPipe::coupledResistance`（Pa·s/m³）。置为正数后，这条管的
+全部摩阻/重位/局部损失被 `R·Q` **替换**（`pipeLossAt` 直接短路），1D 只带着一个接口
+系数，细节物理全在三维侧。字典里写 `coupledResistance <value>;`，`loadNetworkFromDict`
+校验三条硬约束：非负、该管不得是黑油/PVT 管、不得同时带阀或泵——三种混合语义下
+"这条边的压降"不再是单一数。
+
+**伙伴接口**：`ICoupledElement::lossAt(qMag)`（恒正，流向两侧同电阻）加
+`lastSweeps()/lastConverged()`（默认 0/true，让解析伙伴也能被回归）。纯虚是为了
+**接口本身可以先于三维实现被回归**：`tests/unit/couplingTests.cpp` 用一个
+`dp = R0·q + k·q²` 的解析块测回路，三维块只是另一个实现。
+
+**三维详细块** `DetailBlock`：网格由 `MeshLoader::fromCase` 读（`detail{ block{…} }`
+或 `mesh{…}`），入口/出口 patch 由 `polyMesh` 自己的 patch 类型（`inlet`/`outlet`）识别，
+流轴向取入口面积向量 `|ΣSf|` 的主导分量、`flowSign_` 修正朝向——**不**再维护第二份
+接口描述，两套配置迟早对不上。构造时还断言两个 patch 的面积向量互相抵消到 1e-6
+（否则"同一个截面"不成立）。
+
+`lossAt(qMag)` 每次把入口速度重设为该速率隐含的塞流 `qMag/inletArea_`、出口 `p` 固定 0、
+壁面 `U` 无滑移、其余面 `U` 与 `p` 一律 `zeroGradient`，再跑一次 SIMPLE，返回测得的压降。
+**为什么不是 `symmetry`/`wall`**：SIMPLE 把三个动量分量装配在同一矩阵、共享对角
+（`simpleSolver.cpp:110` 断言），而这两个 BC 只固定法向分量——第一次跑就被那条断言
+撞崩。`zeroGradient` 对三分量一致，是这里唯一安全的侧条件。
+
+`BlockMeasure` 带出最后一次解的全部可核验量：格数、SIMPLE 外迭代数、是否收敛、块测压降
+`dpPa`（= ρ × 体积加权截面均值的首−末；三维核的 p 是运动压力 m²/s²，管网用 Pa，
+换算在这里做）、被要求的速率、入口/出口 patch 通量、**每一横截面平面净通量的 min/max**
+（含 patch 平面——这是离散的连续性陈述）、探针窗内的最小二乘梯度 `probeSlope` 与到直线的
+最大偏离 `probeSpread`、入口面积、塞流速度、`uxMax` 与只限探针截面的 `uxCentre`。
+数全从三维场自己量出来，回归因此分得出"块报了个不同的压降"与"块不再守恒"。
+
+**外层回路** `solveCoupled1d3d`：
+
+```
+R ← couple.seeds 给定的初值
+每趟：
+  ① 以 R 作 coupledResistance 解网络  → q、dpNetwork = R·q、节点压力
+  ② 块在 q 上解一次                  → dpBlock（块自己的测值）
+  ③ residual = |dpNetwork − dpBlock| / dpBlock
+     ——两个求解器之间的差，不是拿一个数和自己比
+  ④ 记下这一趟**开始时**的 R 作为报告状态，再刷新 R ← (1−ω)R + ω·dpBlock/q
+```
+
+不动点就是"网络所收的压降 = 块在所交付速率上报的压降"，即界面上的连续+动量陈述本身。
+层流伙伴 dp∝q ⇒ 一次刷新即命中；`relax` 与残差判据是为非线性（湍流）伙伴准备的。
+
+**"报告的状态只有一致"是踩出来的**：曾有循环结束后再解一次取最终态的写法，于是
+`out.resistance` 描述的系数与 `out.q`、块的 `fluxIn` 来自不同迭代——一个跨求解器的
+不一致。现在的结构上不可能：接受的那一趟原样报告，循环后不再解。
+
+**残差地板归谁管**：接口残差的下限是块自己解的误差（本例 `pcorrTol 1e-5` ⇒ ~1e-5），
+`couple{ tolerance }` 设得比伙伴分辨率更紧只会白烧外迭代；网络侧 `solve{ tol }` 同理
+受限于节点残差地板（对注入速率 ~1e-12 相对），本例因此取 `1e-10`。这两条都在 case 注释里。
+
+**物理锚与实测**（`tests/cases/coupled1d3d`：`Src → A → { X(三维块) ∥ By(一维旁通) } → B → Snk`，
+0.5×0.02×0.02 m 渠道、μ=0.1、ρ=800、注入 2.4e-4 m³/s ⇒ 塞流 ~0.39 m/s、Re_Dh≈64 层流，
+入口长度 `≈0.06·Re_Dh·Dh≈0.077 m`、探针窗 `0.12–0.49` 落在其外）：
+
+| 断言 | 数值 |
+|---|---|
+| 已发展段 `dp/dx` 对平面 Poiseuille `12μU/H²` | 1163 对 1183（−1.7%，带 3%） |
+| 块实测 `dp/Q` 对层流 duct 电阻 `12μL/(H³W)` | 3.933e6 对 3.75e6（+4.9%，多的是入口段） |
+| 端到端压差对闭式管网（解析电阻） | 718.2 对 699 Pa（+2.7%，带 4%） |
+| 分支流量对闭式分流 | 1.5777e-4 对 1.6032e-4 m³/s（−1.6%） |
+| 网络分支流量 == 块 `fluxIn` | 1e-12 相对（机器精度） |
+| `fluxOut − fluxIn`、逐截面平面通量极差 | ≤1e-7 相对 |
+| 剖面逐格对抛物线（从 .vtu 独立重算） | 最大偏差 0.0088 m/s（峰速 1.5%） |
+| 横向速度 / 中心线速 | ≤1.9e-5 m/s / = 1.5 倍均值 |
+| 压力链闭合、`dp_X == dp_By`、`pJ1−pJ2 == dp_X`、节点衡算 | 1e-9 相对 |
+| 三个种子（1.0e6/3.75e6/1.2e7）的 q / dp / R 互差 | 1.6e-5 / 1.0e-5 / 4.7e-5 相对 |
+
+**单元侧**（`coupling.unit`，解析伙伴）：线性伙伴恰好 2 趟命中且网络最终带的就是报告
+电阻；`relax 0.5` 与 `1.0` 落同一不动点、只是趟数更多；二次伙伴收敛到 `dp(q)=Δp` 的
+解析根（1e-9）；分支网络复现闭式分流与节点压力（1.8e5/1.6e5/1.4e5/1e5）；被 `maxOuter`
+掐停的回路如实报 `!converged` 且残差恒等式仍成立。
+
+**本增量的边界**：① 只打通**稳态、单相、不可压、单向**（网络→块给速率，块→网络给压降）；
+瞬态耦合、可压块、多相块未做。② 一次只详细化一条边，没有多块接口、没有块间的次结构。
+③ 外层只有 Gauss–Seidel + 常数松弛——Aitken/IQN 拟 Newton 未做，强非线性伙伴靠 `relax`。
+④ 界面只在"压降↔速率"这一个标量上耦合；速度剖面、湍流量、相分数的界面映射未做。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |
@@ -1362,6 +1460,9 @@ tet 案例**不**断言精度，只断言"切割不改变精度"：在这 95 个
 | `Pstream::gather/scatter`（`processorLduInterface` 的 send/recv） | `cf::parallel::exchange(dec, local)`（每 peer 一段连续、收发同序的槽位计划 `sendPlan/recvPlan`）；MPI 传输后端尚未接 |
 | `Pstream::sum/min/max`（`gsum`/`gMin`） | `cf::parallel::reduceSum/reduceMin/reduceMax`（同 `Allreduce` 语义的进程内归约） |
 | `PstreamOps` 作用在 `fvc::grad` / `fvc::div` 的 halo 上 | `cf::parallel::assembledGrad` / `assembledDivPhi`（逐域按全局面序重放串行表达式，因此与串行 `fvc::` **逐位相同**，见 5.17） |
+| Fluent **system coupling** / OLGA **embedded detailed section**（管网一条边的内部换成 3D 区，界面上交换压降↔速率） | `cf::coupling::solveCoupled1d3d`（`src/coupling`：界面上的 Gauss–Seidel + 常数松弛，`couple{ edge seeds relax tolerance }`，见 5.18） |
+| 3D 区域约化成管网的一个阻力系数（system-couple 的"black box 压降"端） | `cf::coupling::ICoupledElement::lossAt(qMag)` + 生产实现 `DetailBlock`（SIMPLE 块 + `BlockMeasure` 自测：压降、进出通量、逐截面平面通量、探针梯度） |
+| 1D 侧承载 3D 区域的边界条件（`fanPressure`/`porousJump` 一类压降模型） | `NetworkPipe::coupledResistance`（正的 `R` 时 `pipeLossAt` 短路成 `R·Q`，与本管摩阻/重位/阀泵互斥，见 4 与 5.18） |
 
 ## 7. 测试体系
 - `tests/unit/kernelTests.cpp`（CTest `kernel.unit`）：字典解析、网格几何
@@ -1438,6 +1539,16 @@ tet 案例**不**断言精度，只断言"切割不改变精度"：在这 95 个
   进口交出的体积精确、clamp 恰为 0——这是 α 方程的一阶迎风做不到的；40×40 圆盘自转
   40 步逐步相体积漂移 ≤ 6.9e-16 相对、clamp ≤ 4.42e-17、α ∈ [0,1]、带 60→70 格、
   限流最多 336 面且最小因子 0.5（同格两个出流棱柱在角上重合处）；
+- `tests/unit/couplingTests.cpp`（CTest `coupling.unit`）：**分区回路本身**用解析伙伴
+  `dp = R0·q + k·q²` 测，三维块只是另一个实现——线性伙伴恰好 2 趟命中、q = 闭式
+  0.025、R = 4e6，且网络最终带的就是报告的那个电阻、伙伴最后一次被问的速率就是
+  报回来的 q（报告状态一致性）；`relax 0.5` 与 `1.0` 落同一不动点、只是趟数更多；
+  二次伙伴收敛到 `dp(q) = Δp` 的解析根 `(-R0+√(R0²+4kΔp))/(2k)`（1e-9，残差 <1e-10）；
+  分支管网复现闭式分流 q_X = 0.01 与节点压力 1.8e5/1.6e5/1.4e5/1e5、两支压降相等、
+  链闭合；被 `maxOuterIterations` 掐停的回路如实报 `!converged`、恰好跑了 3 趟、
+  残差恒等式 `|R·q − dpPa|/dpPa` 仍成立（拿一个精确线性伙伴 + `relax 0.5` 才测得出
+  "停了"——`relax 1` 下它一趟就残差 0）；两端定压的两节点网络 `nFree == 0`、
+  节点残差恰 0，用作"网络侧不带任何迭代误差"的参照；
 - `tests/cases/*`：四十二个物理回归算例 + `tests/check_*.py` 断言（1D 两流体
   `twoFluid*` 十七个见 §4.3 的表）：
   - `steadyNetwork`（两井集输层流管网：节点压力/流量/Re/压降对比
@@ -1583,6 +1694,20 @@ tet 案例**不**断言精度，只断言"切割不改变精度"：在这 95 个
     无散通量 `U=(y,z,0)` 在包括被切缝穿过在内的内区格上净出流 2.2e-19（hex）/ 4.2e-17（tet）。
     tet 案例不断言梯度精度：该网格上串行 corrected 格式自己就复现不了线性场（gradAnalytic
     ≈ 217，1 域时即为如此），只断言切割不改变它。
+  - `coupled1d3d`（§5.18：分区 1D↔3D 稳态耦合的第一道算例——`Src → A → { X(0.5×0.02×0.02 m
+    三维 SIMPLE 块，1000 格) ∥ By(一维旁通) } → B → Snk`，注入 2.4e-4 m³/s、远端定压 1 MPa，
+    三个初值电阻 `1.0e6/3.75e6/1.2e7` 各跑一整趟回路）：七组断言全绿——接口身份
+    （网络分支流量 == 块 `fluxIn` 到 1e-12 相对、`dpNetwork == R·q`、残差 ==
+    `|dpNetwork−dpBlock|/dpBlock`、每趟块自己报收敛）、节点衡算（`Q_A == Q_X+Q_By == Q_B`、
+    主导线 carries 注入速率）、压力链（`dp_A+dp_X+dp_B == pSrc−pSnk`、`dp_X == dp_By`、
+    `pJ1−pJ2 == dp_X`、汇点守住参考压）、块内守恒（`|fluxOut−fluxIn| ≤ 1e-7·fluxIn`、
+    逐横截面平面净通量极差 ≤1e-7·q）、已发展段物理（`dp/dx` 1163 对 `12μU/H²` = 1183
+    即 −1.7%、截面均值贴直线散差 0.091 Pa = 压降的 1.5e-4、中心线速 = 1.5 倍均值、
+    `入口面积×塞速 == fluxIn`）、从 .vtu 独立重算的剖面（逐格对抛物线最坏 0.0088 m/s =
+    峰速 1.5%、横向速度 ≤1.9e-5、逐列通量对 fluxIn 2%）、闭式工作点（端到端 718.2 对 699 Pa
+    = +2.7%、分流 1.5777e-4 对 1.6032e-4 = −1.6%、块实测电阻 3.933e6 落在层流 duct 值
+    3.75e6 的 1.00–1.06 倍带内、Re_X 20–200 保证解析对照成立）；初值无关性：三种子的
+    q/dp/R 互差 1.6e-5 / 1.0e-5 / 4.7e-5 相对。
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

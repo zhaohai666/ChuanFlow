@@ -23,6 +23,7 @@ add_subdirectory(src/common)
 add_subdirectory(src/pvt)
 add_subdirectory(src/1d)
 add_subdirectory(src/3d)
+add_subdirectory(src/coupling)
 
 # Python bindings (README M1): pybind11 via FetchContent. Skipped when no
 # interpreter development headers are available so the C++ build never breaks.

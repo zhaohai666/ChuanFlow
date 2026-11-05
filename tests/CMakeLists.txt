@@ -64,6 +64,14 @@ target_compile_definitions(plic_tests PRIVATE
     CF_MESH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/meshes")
 add_test(NAME plic.unit COMMAND plic_tests)
 
+# the partitioned 1D<->3D interface loop against analytic partner models: the
+# linear case must need one coefficient refresh, the nonlinear one must land on
+# the exact root of dp(Q) = dp_network(Q), and every number a caller reads must
+# describe one state (rate the partner was asked for == rate reported)
+add_executable(coupling_tests unit/couplingTests.cpp)
+target_link_libraries(coupling_tests PRIVATE cfcoupling)
+add_test(NAME coupling.unit COMMAND coupling_tests)
+
 # ---- analytic verification cases ----
 add_test(
     NAME verify.advectionDiffusion
@@ -340,6 +348,17 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_pvt.py
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyPvtColumn/case.dict)
+
+# partitioned steady 1D<->3D coupling: the same duct solved in 3D replaces the
+# analytic law of edge X, so the checker compares the interface against the
+# closed-form network (branch split, pressure chain), the block against planar
+# Poiseuille, and the fixed point against three independent starting coefficients
+add_test(
+    NAME verify.coupled1d3d
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_coupled_1d3d.py
+        $<TARGET_FILE:chflow-coupled-1d3d>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3d/case.dict)
 
 foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug" "valve;Valve")
     list(GET tmode 0 mode)

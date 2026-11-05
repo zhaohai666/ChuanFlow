@@ -1,0 +1,95 @@
+// Steady single-phase network with one 3D detailed region embedded in it:
+//   Src -> A -> { X (the 3D block) || By (1D bypass) } -> B -> Snk
+// The total rate is injected at Src and the far end carries the pressure
+// reference, so the branch split, the block's drop and the whole pressure
+// profile are results, not inputs. Verified by tests/check_coupled_1d3d.py.
+//
+// The block is a 0.5 x 0.02 x 0.02 m duct: at the resulting ~0.4 m/s plug
+// speed its Reynolds number is ~64, so its developed pressure gradient is the
+// planar Poiseuille value 12*mu*U/H^2 and the interface coefficient the
+// partitioned loop converges to is the analytic 12*mu*L/(H^3*W).
+fluid { rho 800; mu 0.1; }
+
+nodes {
+    Src  {};
+    J1   {};
+    J2   {};
+    Snk  { pressure 1.0e6;  }
+}
+
+sources {
+    feed { node Src; rate 2.4e-4; }
+}
+
+pipes {
+    // A and B are the short 1D leads; By is the parallel branch the detailed
+    // region has to compete with for the flow.
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    // X is the coupled edge: length and diameter describe the detailed region
+    // itself (they are used for the reported velocity and Reynolds number),
+    // and its whole loss comes from the 3D solve through coupledResistance.
+    X  { from J1; to J2; length 0.5;   diameter 0.02;
+         coupledResistance 3.75e6; }
+
+    By { from J1; to J2; length 1.5;   diameter 0.03; }
+    B  { from J2; to Snk; length 5.0;  diameter 0.1; }
+}
+
+// tol 1e-10: this network's node residual bottoms out at a few 1e-13 m3/s
+// (~1e-12 relative to the injected rate), so asking for less would only make
+// the Newton spin at the floor between interface iterations
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edge X;
+    // three starting coefficients - under, at and over the converged one - so
+    // the checker can see the fixed point does not belong to the initial value
+    seeds ( 1.0e6 3.75e6 1.2e7 );
+    relax 1.0;
+    // the block's own solve resolves its drop to ~1e-5 of itself, and the
+    // interface residual is the gap between two solvers; asking for less than
+    // the partner's resolution would only burn outer iterations
+    tolerance 1e-4;
+    maxOuterIterations 6;
+}
+
+detail {
+    block {
+        min   (0 0 0);
+        max   (0.5 0.02 0.02);
+        cells (50 20 1);
+
+        xmin  { name inlet;   type inlet;    }
+        xmax  { name outlet;  type outlet;   }
+        ymin  { name bottom;  type wall;     }
+        ymax  { name top;     type wall;     }
+        zmin  { name front;   type symmetry; }
+        zmax  { name back;    type symmetry; }
+    }
+
+    // cross-section window the developed gradient is measured over: the entry
+    // length at this Reynolds number is ~0.08 m, so the window starts past it
+    probe { min 0.12; max 0.49; }
+
+    schemes {
+        ddt       steady;
+        div       upwind;
+        laplacian corrected;
+        grad      corrected;
+    }
+
+    simple {
+        maxIterations 300;
+        continuityTol 1e-6;
+        pcorrTol      1e-5;
+        momentumTol   1e-5;
+        relaxU        0.9;
+        relaxP        0.03;
+        pRelaxStart   0.02;
+    }
+}
+
+output {
+    vtk out_coupled_block.vtu;
+}

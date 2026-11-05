@@ -75,6 +75,14 @@ double pumpHeadOf(const NetworkPipe& p, double q)
 double pipeLossAt(const NetworkPipe& pipe, const FluidProperties& fluid,
                   double q)
 {
+    // A coupled element's loss is its partner's statement, not ours: the
+    // detailed model already reports the whole drop of that region, so adding
+    // this pipe's own friction on top would charge the network twice for the
+    // same wall. Linear in q because the coupling layer refreshes the
+    // coefficient every outer iteration (exact for laminar, secant-like for
+    // anything else).
+    if (pipe.coupledResistance > 0) return pipe.coupledResistance * q;
+
     const double v = q / pipeArea(pipe);
     const double re = fluid.rho * v * pipe.diameter / fluid.mu;
     const double f = churchillFriction(re, pipe.roughness / pipe.diameter);
@@ -228,7 +236,11 @@ void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     const double scale = std::max(std::abs(dpTotal),
                                   fluid.rho * kGravity * std::abs(pipe.elevation));
     const double h = std::max(1e-6 * std::abs(out.dpFriction), 1e-7 * scale);
-    const double lam = laminarConductance(pipe, fluid);
+    // for a coupled element the slope of its own law is the exact bound; the
+    // Hagen-Poiseuille limit of the pipe geometry is not its physics
+    const double lam = pipe.coupledResistance > 0
+                           ? 1.0 / pipe.coupledResistance
+                           : laminarConductance(pipe, fluid);
     if (h > 0)
     {
         double Hp, Hm;
@@ -881,12 +893,24 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.pumpHead = pd.getScalarOr("pumpHead", 0.0);
         p.pumpRate = pd.getScalarOr("pumpRate", 0.0);
         p.pumpShutoffHead = pd.getScalarOr("pumpShutoffHead", p.pumpHead);
+        p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
         if (p.valveK < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative valve"
                     " coefficient");
         if (p.pumpHead < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative pump"
                     " head");
+        if (p.coupledResistance < 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' has a negative coupled"
+                    " resistance");
+        if (p.coupledResistance > 0 && (net.hasBlackOil || net.hasPvtFluid))
+            cfFatal("steadyNetwork: pipe '" + name + "' is a coupled element,"
+                    " which the single-phase constant-property law is the only"
+                    " one that carries");
+        if (p.coupledResistance > 0 && (p.valveK > 0 || p.pumpHead > 0))
+            cfFatal("steadyNetwork: pipe '" + name + "' is a coupled element:"
+                    " its loss is the partner model's, so it cannot carry a"
+                    " valve or a pump");
         if (p.pumpHead > 0 && p.pumpShutoffHead < p.pumpHead)
             cfFatal("steadyNetwork: pipe '" + name + "' has a pump curve that"
                     " rises with rate (pumpShutoffHead < pumpHead)");

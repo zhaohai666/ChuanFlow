@@ -53,6 +53,16 @@ struct NetworkPipe
                                // pump on); constant head when pumpRate = 0
     double pumpShutoffHead = 0;// m at zero rate (defaults to pumpHead)
     double pumpRate = 0;       // m3/s where pumpHead is quoted
+
+    /// Coupled element (the 1D side of a 1D<->3D interface): when > 0 this
+    /// pipe carries NO 1D resistance of its own – its whole loss is
+    /// `coupledResistance * |Q|`, supplied by the partner model, and the
+    /// friction/valve terms are skipped so nothing is counted twice. The
+    /// coupling layer re-solves the network with an updated value until the
+    /// drop the network sees equals the drop the detailed model reports.
+    /// Length and diameter stay meaningful: they are the detailed region's own
+    /// geometry, used for the reported velocity and Reynolds number.
+    double coupledResistance = 0; // Pa/(m3/s), i.e. Pa.s/m3
 };
 
 /// Steady single-phase node-model pipeline network (the M1 "SteadySolver"
@@ -176,7 +186,10 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
 ///                valve 2.5;                 // loss coefficient K
 ///                pumpHead 25;               // m of head at pumpRate
 ///                pumpRate 0.02;             // 0 = constant-head pump
-///                pumpShutoffHead 30; } }    // defaults to pumpHead
+///                pumpShutoffHead 30;        // defaults to pumpHead
+///                coupledResistance 3.8e6;   // Pa/(m3/s): the 1D side of a
+///                                           // 1D<->3D interface (see above)
+///              } }
 ///   sources { s1 { node W1; rate 0.002; } }
 ///   solve { maxIter 100; tol 1e-10; relax 1.0; }
 /// Tabulated-property variant: fluid { pvt { pressure ( 1e5 1e6 4e6 );

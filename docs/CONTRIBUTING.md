@@ -3,7 +3,7 @@
 ## 1. 开发环境与构建
 
 - C++20（Apple clang 14+ / GCC 12+ / Clang 14+ 实测通过），CMake ≥ 3.24；
-- 内核层（`src/common`、`src/1d`、`src/3d`）**零第三方依赖**：只允许 C++ 标准库。
+- 内核层（`src/common`、`src/1d`、`src/3d`、`src/coupling`）**零第三方依赖**：只允许 C++ 标准库。
   Eigen/PETSc/spdlog 等只能出现在未来的可选后端模块，不进入内核；
 - 测试需要 Python 3.10+（只用标准库）；
 - 可选层：Python 绑定 `src/bindings` 经 FetchContent 拉取 pybind11
@@ -89,6 +89,18 @@ python3 tests/check_parallel.py \
 python3 tests/check_parallel.py \
     "$PWD/build/src/3d/apps/chflow-3d-parallel" \
     "$PWD/tests/cases/parallelDecomposition/caseTet.dict"
+
+# 分区 1D↔3D 耦合首增量：管网的一条边（X）由三维 SIMPLE 块承担。app 按 couple.seeds
+# 里的每个初值电阻各跑一整趟外层回路，逐趟打印 R/q/dp/残差与块的自测量
+# （进出通量、逐截面平面通量极差、探针窗梯度与散布、剖面峰值），最后一趟的场写 vtu。
+# check_coupled_1d3d.py 断言接口恒等式（网络分支流量 == 块 fluxIn 到 1e-12、
+# 残差 == |dpNetwork−dpBlock|/dpBlock）、节点衡算与压力链闭合、块内守恒、
+# 已发展段 dp/dx 对平面 Poiseuille、vtu 剖面逐格对抛物线，以及闭式工作点与初值无关性。
+# 约 20 s（三个种子各带一次 1000 格 SIMPLE 扫）
+./build/src/coupling/apps/chflow-coupled-1d3d tests/cases/coupled1d3d/case.dict
+python3 tests/check_coupled_1d3d.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d" \
+    "$PWD/tests/cases/coupled1d3d/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
@@ -256,6 +268,53 @@ app 报 `parallel stencil …` / `parallel flux …` / `parallel reduce …` 三
 数字）；`verify{}` 只有 `check_parallel.py` 读，app 自己不判定。求解器把 `.vtu` 写在 **cwd**，
 所以手动跑要在 case 目录里跑，或者接受根目录多出一份
 `out_parallel_*.vtu`（已被 `.gitignore` 覆盖）；`check_parallel.py` 自己以 case 目录为 cwd。
+
+**分区 1D ↔ 3D 耦合**（`chflow-coupled-1d3d`）把一个稳态管网字典与一个三维块字典叠在
+同一个文件里，再加一块 `couple{}` 说明哪条边被详细化——1D 侧读 `fluid/nodes/sources/pipes/solve`，
+3D 侧只在 `detail{}` 里读自己的网格、格式与 SIMPLE 控制：
+
+```
+fluid { rho 800; mu 0.1; }                    // 两侧共用；3D 侧的 nu = mu/rho
+nodes { Src {}; J1 {}; J2 {}; Snk { pressure 1.0e6; } }
+sources { feed { node Src; rate 2.4e-4; } }   // 速率驱动：分支分配是结果而不是输入
+pipes {
+    A  { from Src; to J1; length 5.0; diameter 0.1; }
+    X  { from J1; to J2; length 0.5; diameter 0.02;   // length/diameter 只用于
+         coupledResistance 3.75e6; }                  // 报告 v 与 Re，压降来自 3D
+    By { from J1; to J2; length 1.5; diameter 0.03; }
+    B  { from J2; to Snk; length 5.0; diameter 0.1; }
+}
+solve { maxIter 200; tol 1e-10; relax 1.0; }  // 网络节点残差的地板是注入速率的 ~1e-12 相对
+couple {
+    edge X;                                  // 被详细化的管名
+    seeds ( 1.0e6 3.75e6 1.2e7 );            // 每个初值电阻各跑一整趟外层回路
+    relax 1.0;                               // < 1 给非线性（湍流）伙伴阻尼
+    tolerance 1e-4;                          // 接口相对残差；地板是伙伴自己解的误差
+    maxOuterIterations 6;
+}
+detail {
+    block { min (0 0 0); max (0.5 0.02 0.02); cells (50 20 1);
+            xmin { name inlet;  type inlet;  }    // 进出口由 patch **类型**识别，
+            xmax { name outlet; type outlet; }    // 不需要在外层 patches{} 再写一遍
+            ymin { name bottom; type wall;   }    // 无滑移
+            ymax { name top;    type wall;   }
+            zmin { name front;  type symmetry; }  // 侧向：内部按 zeroGradient 处理
+            zmax { name back;   type symmetry; } }
+    probe { min 0.12; max 0.49; }            // 测已发展梯度的横截面窗口，须在入口段之外
+    schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+    simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5; momentumTol 1e-5;
+             relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+}
+output { vtk out_coupled_block.vtu; }        // 最后一个种子的块场
+```
+
+三条容易踩的约定：① `coupledResistance > 0` 与黑油/PVT 管、`valve`、`pump` 互斥，
+`loadNetworkFromDict` 直接报错——混合语义下"这条边的压降"不再是单一数。
+② 块内**不能**给侧向 `symmetry`/`wall` 的动量条件：SIMPLE 把三个动量分量装配在同一
+矩阵、共享对角，而这两个类型只固定法向分量，第一次装配就撞对角一致性断言；
+`DetailBlock::applyBoundary` 因此对非 inlet/outlet/wall 面一律用 `zeroGradient`。
+③ 三维核的 `p` 是运动压力（m²/s²），管网用 Pa，换算在 `lossAt` 里乘 ρ 完成——
+`BlockMeasure::dpPa` 已经是 Pa，别在 checker 里再乘一次。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

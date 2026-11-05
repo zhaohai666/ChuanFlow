@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iomanip>
 #include <limits>
+#include <memory>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -53,6 +54,172 @@ std::string fmt(scalar v)
     os << std::setprecision(17) << v;
     return os.str();
 }
+
+scalar dot(const std::vector<scalar>& a, const std::vector<scalar>& b)
+{
+    scalar s = 0;
+    for (std::size_t i = 0; i < a.size(); ++i)
+        s += a[i] * b[i];
+    return s;
+}
+
+scalar norm(const std::vector<scalar>& a) { return std::sqrt(dot(a, a)); }
+
+void axpy(std::vector<scalar>& y, const std::vector<scalar>& x, scalar a)
+{
+    for (std::size_t i = 0; i < y.size(); ++i)
+        y[i] += a * x[i];
+}
+
+/// Interface quasi-Newton over the whole coefficient vector (Aitken / IQN-ILS).
+///
+/// The interface fixed point is `r(x) = g(x) - x = 0`, where `x` is the vector of
+/// coefficients the network carries and `g(x)` what the partners report for the
+/// rates that `x` delivers. Each pass supplies one secant pair, so the stored
+/// pairs define an approximate inverse of `r'` on the subspace their `dr`
+/// directions span; the step is Newton there and the plain relaxed step along the
+/// directions nothing has been measured yet.
+///
+/// One edge and one stored pair is exactly Aitken's delta-squared step: the
+/// residual's component along `dr` is projected out, so only the secant term
+/// `dr·r` survives. That is the case the un-accelerated loop cannot do - a
+/// strongly nonlinear partner makes the map's derivative far above 1, and plain
+/// Gauss-Seidel then diverges however many passes it is given.
+///
+/// Vectors are normalised by each edge's starting coefficient, so the least
+/// squares is not decided by which edge happens to carry the larger resistance.
+class InterfaceQuasiNewton
+{
+public:
+    InterfaceQuasiNewton(label history, scalar limit)
+        : maxPairs_(history < 1 ? 1 : static_cast<std::size_t>(history)), limit_(limit)
+    {}
+
+    InterfaceQuasiNewton(const InterfaceQuasiNewton&) = delete;
+    InterfaceQuasiNewton& operator=(const InterfaceQuasiNewton&) = delete;
+
+    /// `x` is what `r` was measured at; returns the next `x`.
+    std::vector<scalar> next(const std::vector<scalar>& x,
+                             const std::vector<scalar>& r,
+                             scalar relax)
+    {
+        if (hasPrev_)
+        {
+            std::vector<scalar> dx(x.size()), dr(r.size());
+            for (std::size_t i = 0; i < dx.size(); ++i)
+            {
+                dx[i] = x[i] - xPrev_[i];
+                dr[i] = r[i] - rPrev_[i];
+            }
+            note(std::move(dx), std::move(dr));
+        }
+        xPrev_ = x;
+        rPrev_ = r;
+        hasPrev_ = true;
+        buildBasis(x.size());
+
+        std::vector<scalar> perp = r;
+        for (const std::vector<scalar>& q : pairsQ_)
+            axpy(perp, q, -dot(q, r));
+
+        std::vector<scalar> step;
+        for (const scalar v : perp)
+            step.push_back(relax * v);
+        for (std::size_t j = 0; j < pairsQ_.size(); ++j)
+            axpy(step, pairsX_[j], -dot(pairsQ_[j], r));
+
+        const scalar rn = norm(r);
+        const scalar sn = norm(step);
+        if (limit_ > 0 && rn > 0 && sn > limit_ * rn)
+        {
+            const scalar cap = (limit_ * rn) / sn;
+            for (scalar& v : step)
+                v *= cap;
+        }
+
+        std::vector<scalar> out = x;
+        axpy(out, step, 1.0);
+        // a coefficient at or below zero would charge the network a drop that
+        // opposes its own rate; a secant pair built from a far-from-linear map can
+        // ask for that, so the step is floored at a millionth of the seed instead.
+        for (scalar& v : out)
+            if (!(v > 1e-6)) v = 1e-6;
+        return out;
+    }
+
+    /// The map changed, so the pairs no longer measure it: a new time step solves
+    /// a different interface problem even when the partners are unchanged.
+    void reset()
+    {
+        windowX_.clear();
+        windowR_.clear();
+        pairsX_.clear();
+        pairsQ_.clear();
+        hasPrev_ = false;
+    }
+
+private:
+    /// Record the pair just measured.
+    void note(std::vector<scalar> dx, std::vector<scalar> dr)
+    {
+        if (!(norm(dr) > 0))
+            return;
+        windowX_.push_back(std::move(dx));
+        windowR_.push_back(std::move(dr));
+        while (windowX_.size() > maxPairs_)
+        {
+            windowX_.erase(windowX_.begin());
+            windowR_.erase(windowR_.begin());
+        }
+    }
+
+    /// Re-orthogonalise the window from the newest pair downwards. The newest pair
+    /// is the best local description of the map, so it always keeps a column; an
+    /// older one survives only for the directions the newer pair cannot see.
+    /// Keeping the *oldest* instead is what freezes a single-edge interface: all
+    /// its pairs are parallel, so only the first would ever be stored and every
+    /// later step would be Newton on one stale measurement rather than a secant
+    /// on the two most recent ones.
+    void buildBasis(std::size_t size)
+    {
+        pairsX_.clear();
+        pairsQ_.clear();
+        for (std::size_t p = windowR_.size(); p-- > 0;)
+        {
+            std::vector<scalar> q = windowR_[p];
+            std::vector<scalar> w = windowX_[p];
+            const scalar raw = norm(q);
+            // the same combinations on both vectors keep the secant condition
+            // holding, and the dr columns then span an orthonormal basis, so the
+            // least squares is a projection and needs no matrix solve.
+            for (std::size_t j = 0; j < pairsQ_.size(); ++j)
+            {
+                const scalar s = dot(pairsQ_[j], q);
+                axpy(q, pairsQ_[j], -s);
+                axpy(w, pairsX_[j], -s);
+            }
+            const scalar kept = norm(q);
+            if (!(kept > 1e-6 * raw))
+                continue;   // adds no direction the newer pairs do not already have
+            for (scalar& v : q) v /= kept;
+            for (scalar& v : w) v /= kept;
+            pairsQ_.push_back(std::move(q));
+            pairsX_.push_back(std::move(w));
+            if (pairsQ_.size() == size)
+                break;   // the interface operator cannot have more rank than this
+        }
+    }
+
+    std::vector<std::vector<scalar>> windowX_;
+    std::vector<std::vector<scalar>> windowR_;
+    std::vector<std::vector<scalar>> pairsX_;
+    std::vector<std::vector<scalar>> pairsQ_;
+    std::vector<scalar> xPrev_;
+    std::vector<scalar> rPrev_;
+    bool hasPrev_ = false;
+    std::size_t maxPairs_;
+    scalar limit_;
+};
 
 } // namespace
 
@@ -390,6 +557,16 @@ CoupledResult solveCoupled1d3d(OneDNetwork& net,
     CoupledResult out;
     out.edges = edges;
 
+    // the coefficients the run starts from: the quasi-Newton works in units of
+    // them, so the interface operator is scaled edge by edge
+    std::vector<scalar> seed(coupled.size());
+    for (std::size_t i = 0; i < coupled.size(); ++i)
+        seed[i] = coupled[i]->coupledResistance;
+
+    std::unique_ptr<InterfaceQuasiNewton> qn;
+    if (ctl.accelerate)
+        qn = std::make_unique<InterfaceQuasiNewton>(ctl.qnHistory, ctl.qnLimit);
+
     for (label it = 1; it <= ctl.maxOuterIterations; ++it)
     {
         SteadyNetworkResult res = solveSteadyNetwork(net, netCtl);
@@ -450,11 +627,27 @@ CoupledResult solveCoupled1d3d(OneDNetwork& net,
 
         // the next pass starts from the refreshed coefficients; the accepted
         // state above keeps the ones it was solved with
-        for (std::size_t i = 0; i < coupled.size(); ++i)
+        if (qn)
         {
-            const EdgeExchange& ex = step.edges[i];
-            coupled[i]->coupledResistance =
-                (1.0 - ctl.relax) * ex.resistance + ctl.relax * (ex.dpPa / ex.q);
+            std::vector<scalar> x(coupled.size()), r(coupled.size());
+            for (std::size_t i = 0; i < coupled.size(); ++i)
+            {
+                const EdgeExchange& ex = step.edges[i];
+                x[i] = ex.resistance / seed[i];
+                r[i] = (ex.dpPa / ex.q - ex.resistance) / seed[i];
+            }
+            const std::vector<scalar> next = qn->next(x, r, ctl.relax);
+            for (std::size_t i = 0; i < coupled.size(); ++i)
+                coupled[i]->coupledResistance = next[i] * seed[i];
+        }
+        else
+        {
+            for (std::size_t i = 0; i < coupled.size(); ++i)
+            {
+                const EdgeExchange& ex = step.edges[i];
+                coupled[i]->coupledResistance =
+                    (1.0 - ctl.relax) * ex.resistance + ctl.relax * (ex.dpPa / ex.q);
+            }
         }
     }
 
@@ -512,16 +705,25 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                     + "' is a coupled edge but carries no starting resistance");
     }
 
+    // the coefficients the run starts from: the quasi-Newton works in units of
+    // them, edge by edge
+    const std::vector<scalar> Rseed = R;
+
     TransientCoupledResult out;
     out.edges = edges;
-    out.nodeNames.assign(net.nodeNames().begin(), net.nodeNames().end());
-    out.pipeNames.assign(net.pipeNames().begin(), net.pipeNames().end());
+    out.nodeNames.assign(net.nodeNames().begin(), net.nodeNames().end());    out.pipeNames.assign(net.pipeNames().begin(), net.pipeNames().end());
+
+    std::unique_ptr<InterfaceQuasiNewton> qn;
+    if (ctl.accelerate)
+        qn = std::make_unique<InterfaceQuasiNewton>(ctl.qnHistory, ctl.qnLimit);
 
     for (std::size_t s = 0; s < nSteps; ++s)
     {
         TransientCoupledStep step;
         label passes = 0;
         bool agreed = false;
+        if (qn)
+            qn->reset();
 
         // Re-solve the same step from the same committed start until every
         // partner's drop belongs to the rate the step delivers through its edge.
@@ -563,11 +765,30 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                 agreed = true;
                 break;
             }
-            for (std::size_t i = 0; i < edges.size(); ++i)
+            if (qn)
             {
-                const EdgeExchange& ex = rec.edges[i];
-                R[i] = (1.0 - ctl.relax) * R[i] + ctl.relax * (ex.dpPa / ex.q);
-                net.setCoupledResistance(edges[i], R[i]);
+                std::vector<scalar> x(R.size()), r(R.size());
+                for (std::size_t i = 0; i < R.size(); ++i)
+                {
+                    const EdgeExchange& ex = rec.edges[i];
+                    x[i] = ex.resistance / Rseed[i];
+                    r[i] = (ex.dpPa / ex.q - ex.resistance) / Rseed[i];
+                }
+                const std::vector<scalar> next = qn->next(x, r, ctl.relax);
+                for (std::size_t i = 0; i < R.size(); ++i)
+                {
+                    R[i] = next[i] * Rseed[i];
+                    net.setCoupledResistance(edges[i], R[i]);
+                }
+            }
+            else
+            {
+                for (std::size_t i = 0; i < edges.size(); ++i)
+                {
+                    const EdgeExchange& ex = rec.edges[i];
+                    R[i] = (1.0 - ctl.relax) * R[i] + ctl.relax * (ex.dpPa / ex.q);
+                    net.setCoupledResistance(edges[i], R[i]);
+                }
             }
         }
 

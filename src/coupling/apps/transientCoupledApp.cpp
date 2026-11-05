@@ -82,6 +82,7 @@ int main(int argc, char** argv)
         TransientCoupledControls ctl;
         ctl.maxSubIterations = static_cast<label>(cd.getScalarOr("maxSubIterations", ctl.maxSubIterations));
         ctl.relax = cd.getScalarOr("relax", ctl.relax);
+        ctl.accelerate = cd.has("accelerate") && cd.getBool("accelerate");
         ctl.tolerance = cd.getScalarOr("tolerance", ctl.tolerance);
         // the starting interface coefficients: each one runs the whole transient
         // series on its own, so a seed that lands anywhere else is not a
@@ -116,7 +117,8 @@ int main(int argc, char** argv)
 
         log::info("transient network+block: block has ", mesh.nCells(), " cells and ",
                   mesh.nPatches(), " patches; nu ", num(c.fluid.mu / c.fluid.rho),
-                  "; dt ", num(tc.dt), " endTime ", num(tc.endTime));
+                  "; dt ", num(tc.dt), " endTime ", num(tc.endTime),
+                  "; interface ", (ctl.accelerate ? "quasi-Newton" : "plain Gauss-Seidel"));
 
         for (std::size_t s = 0; s < seeds.size(); ++s)
         {

@@ -171,6 +171,16 @@ struct CoupledControls
     scalar relax = 1.0;    // interface relaxation; < 1 damps a strongly
                            // nonlinear (e.g. turbulent) partner
     scalar tolerance = 1e-9; // relative interface residual, per edge
+
+    /// Interface quasi-Newton over the whole coefficient vector (Aitken/IQN).
+    /// Off by default: for a linear partner one refresh is already the fixed
+    /// point, and the plain step is exactly that refresh. The accelerated step
+    /// is for partners whose drop is not proportional to their rate - for those,
+    /// the plain step's interface map can have a derivative above 1 and cannot
+    /// converge at all, however many passes it is given.
+    bool accelerate = false;
+    label qnHistory = 8;      // secant pairs the operator is built from
+    scalar qnLimit = 100.0;   // safeguard: max |step| / |residual|
 };
 
 struct CoupledResult
@@ -222,6 +232,12 @@ struct TransientCoupledControls
     label maxSubIterations = 8;
     scalar relax = 1.0;
     scalar tolerance = 1e-4;
+    /// As in `CoupledControls`, but the secant history is rebuilt inside every
+    /// time step: the interface problem there depends on the step's own history
+    /// term, so a pair from the previous step measures a different map.
+    bool accelerate = false;
+    label qnHistory = 8;
+    scalar qnLimit = 100.0;
 };
 
 /// One interface exchange inside one time step: every coupled edge evaluated

@@ -528,8 +528,10 @@ int main()
         // the rate sum together decide the split: R1 (Q - q2) = (R0 + k q2) q2.
         // The quadratic partner is kept mild on purpose: the interface map
         // R2 -> R0 + k Q R1/(R1 + R2) has derivative -k Q R1/(R1+R2)^2 at the
-        // fixed point, so a stiff k makes the un-accelerated block Gauss-Seidel
-        // diverge -- which is why the interface is still scalar per edge here.
+        // fixed point. That derivative is bounded by -1, so a stiff k never
+        // diverges the un-accelerated block Gauss-Seidel -- it only crawls (a
+        // stiff k costs hundreds of passes). This block pins the split, so it
+        // stays mild; the crawl is measured by the accelerated blocks below.
         const double Q = 0.02, r1 = 2.0e6, r0 = 1.0e6, k = 1.0e7;
         const double q2 = (-(r0 + r1) + std::sqrt((r0 + r1) * (r0 + r1)
                                                   + 4.0 * k * r1 * Q)) / (2.0 * k);
@@ -677,6 +679,204 @@ int main()
         CHECK(stopped, "an unagreed multi-edge step is fatal instead of committed");
         CHECK(what.find("X1") != std::string::npos, "the message names the worst edge");
         CHECK(stuckNet.time() == 0.0, "a fatal interface leaves the clock at its start");
+    }
+
+    // ---- Aitken on one edge: what a near-1 interface map costs the plain loop ----
+    {
+        // X || By with a quadratic X. The map the plain loop iterates is
+        //   R -> r0 + k * Q * rBy / (rBy + R),
+        // and at its fixed point its derivative is -k*Q*rBy/(rBy+R)^2, which for
+        // a strongly form-lossy partner approaches -1: the iteration then walks as
+        // a sawtooth and needs hundreds of passes, although it never diverges.
+        // One secant pair per pass (Aitken delta-squared for a scalar interface)
+        // is Newton along the measured direction, so it lands in a handful.
+        const double Q = 0.02, rBy = 4.0e6, r0 = 1.0e6, k = 1.75e10;
+        // the split the two laws agree on: rBy (Q - q) = (r0 + k q) q
+        const double qX = (-(r0 + rBy) + std::sqrt((r0 + rBy) * (r0 + rBy)
+                                                   + 4.0 * k * rBy * Q)) / (2.0 * k);
+        const double rX = r0 + k * qX;
+        const double slope = -k * Q * rBy / std::pow(rBy + rX, 2);
+        CHECK(relNear(qX, 2.0e-3, 1e-12), "the chosen k puts the split where it was set");
+        CHECK(slope < -0.8, "the plain interface map is near-1, i.e. nearly sawtooth");
+
+        coupling::CoupledControls ctl;
+        ctl.tolerance = 1e-10;
+        ctl.relax = 1.0;
+
+        ctl.maxOuterIterations = 40;
+        OneDNetwork slow(branchedNetwork(Q));
+        AnalyticElement slowBlock(r0, k);
+        const coupling::CoupledResult plain =
+            coupling::solveCoupled1d3d(slow, {1}, {&slowBlock}, ctl, netCtl());
+        CHECK(!plain.converged, "40 passes are not enough for a near-1 map");
+        CHECK(std::abs(plain.state[0].q - qX) > 1e-4 * qX,
+              "and its 40th pass is still far from the split");
+
+        ctl.maxOuterIterations = 400;
+        OneDNetwork farNet(branchedNetwork(Q));
+        AnalyticElement farBlock(r0, k);
+        const coupling::CoupledResult slowButSure =
+            coupling::solveCoupled1d3d(farNet, {1}, {&farBlock}, ctl, netCtl());
+        CHECK(slowButSure.converged && slowButSure.iterations > 60,
+              "the plain loop gets there, at a price in partner solves");
+
+        OneDNetwork fastNet(branchedNetwork(Q));
+        AnalyticElement fastBlock(r0, k);
+        ctl.accelerate = true;
+        const coupling::CoupledResult fast =
+            coupling::solveCoupled1d3d(fastNet, {1}, {&fastBlock}, ctl, netCtl());
+        CHECK(fast.converged, "the accelerated loop reaches the same fixed point");
+        CHECK(fast.iterations <= 12, "in a dozen passes rather than hundreds");
+        CHECK(slowButSure.iterations > 10 * fast.iterations,
+              "so each partner solve the plain loop spends is ten it does not need");
+        CHECK(relNear(fast.state[0].q, qX, 1e-6), "accelerated rate is the closed-form split");
+        CHECK(relNear(fast.state[0].resistance, rX, 1e-6), "and its coefficient is");
+        CHECK(relNear(fast.state[0].q, slowButSure.state[0].q, 1e-6),
+              "both loops answer the same interface statement");
+        CHECK(fastBlock.calls() == fast.iterations,
+              "acceleration adds no partner solve per pass");
+    }
+
+    // ---- a linear interface is untouched: the first step is the plain step ----
+    {
+        OneDNetwork plainNet(branchedNetwork(0.02));
+        AnalyticElement plainBlock(4.0e6, 0.0);
+        coupling::CoupledControls ctl;
+        ctl.tolerance = 1e-12;
+        ctl.maxOuterIterations = 8;
+        const coupling::CoupledResult plain =
+            coupling::solveCoupled1d3d(plainNet, {1}, {&plainBlock}, ctl, netCtl());
+
+        ctl.accelerate = true;
+        OneDNetwork qnNet(branchedNetwork(0.02));
+        AnalyticElement qnBlock(4.0e6, 0.0);
+        const coupling::CoupledResult qn =
+            coupling::solveCoupled1d3d(qnNet, {1}, {&qnBlock}, ctl, netCtl());
+
+        CHECK(plain.iterations == 2 && qn.iterations == 2,
+              "one refresh is the fixed point with or without the quasi-Newton");
+        CHECK(qn.history[0].edges[0].resistance == plain.history[0].edges[0].resistance,
+              "the first pass has no secant pair yet, so it steps exactly as plain does");
+        CHECK(relNear(qn.state[0].q, plain.state[0].q, 1e-12)
+              && relNear(qn.state[0].dpPa, plain.state[0].dpPa, 1e-12),
+              "and the linear answer is the same number");
+    }
+
+    // ---- two edges, one of them nearly non-iterable ----
+    {
+        // The stiff partner sits on X2, in parallel with the linear X1, so the
+        // split is decided by the two partners and the network has to be solved
+        // again for whichever coefficient the interface operator proposes.
+        const double Q = 0.02, r1 = 2.0e6, r0 = 1.0e6, k = 1.75e10;
+        const double q2 = (-(r0 + r1) + std::sqrt((r0 + r1) * (r0 + r1)
+                                                  + 4.0 * k * r1 * Q)) / (2.0 * k);
+        const double r2 = r0 + k * q2;
+
+        auto makeNet = [Q]
+        {
+            OneDNetwork net;
+            net.fluid = FluidProperties{800.0, 0.1};
+            net.addNode("Src"); net.addNode("J1"); net.addNode("J2"); net.addNode("Snk");
+            net.setNodePressure("Snk", 1.0e5);
+            net.setNodeRate("Src", Q);
+            net.addPipe(linearPipe("A", "Src", "J1", 1.0e6));
+            net.addPipe(linearPipe("X1", "J1", "J2", 1.0e6));
+            net.addPipe(linearPipe("X2", "J1", "J2", 4.0e6));
+            net.addPipe(linearPipe("B", "J2", "Snk", 1.0e6));
+            return net;
+        };
+
+        coupling::CoupledControls ctl;
+        ctl.tolerance = 1e-10;
+        ctl.maxOuterIterations = 400;
+
+        OneDNetwork slowNet(makeNet());
+        AnalyticElement b1(2.0e6, 0.0), b2(r0, k);
+        const coupling::CoupledResult plain =
+            coupling::solveCoupled1d3d(slowNet, {1, 2}, {&b1, &b2}, ctl, netCtl());
+        CHECK(plain.converged, "the two-edge plain loop does reach the split");
+        CHECK(plain.iterations > 2, "but the stiff edge makes it walk");
+
+        OneDNetwork fastNet(makeNet());
+        AnalyticElement qn1(2.0e6, 0.0), qn2(r0, k);
+        ctl.accelerate = true;
+        const coupling::CoupledResult qn =
+            coupling::solveCoupled1d3d(fastNet, {1, 2}, {&qn1, &qn2}, ctl, netCtl());
+        CHECK(qn.converged, "the accelerated two-edge loop converges");
+        CHECK(qn.iterations <= 10 && plain.iterations > 20 * qn.iterations,
+              "with the whole interface vector accelerated together");
+        CHECK(relNear(qn.state[1].q, q2, 1e-6), "the stiff edge takes its closed-form rate");
+        CHECK(relNear(qn.state[1].resistance, r2, 1e-6), "and its closed-form coefficient");
+        CHECK(relNear(qn.state[0].q + qn.state[1].q, Q, 1e-9),
+              "the two edges still carry the injected rate between them");
+        CHECK(relNear(qn.state[0].dpPa, qn.state[1].dpPa, 1e-7),
+              "and still agree on one drop across the same two nodes");
+        CHECK(qn1.calls() == qn.iterations && qn2.calls() == qn.iterations,
+              "one network solve and one solve per partner, as the plain loop promises");
+    }
+
+    // ---- the same acceleration inside every time step ----
+    {
+        // the bypass here is 1e6, so this k puts the interface map's derivative at
+        // -0.5: the plain loop needs about twenty passes per step to reach 1e-6
+        const double qIn = 0.02, dt = 0.05, endTime = 1.0;
+        // k puts the same map's derivative at -0.82: the plain loop needs dozens of
+        // passes per step for its 1e-6, the secant a handful
+        const double r0 = 1.0e6, k = 1.12e10;
+
+        coupling::TransientCoupledControls ctl;
+        ctl.tolerance = 1e-6;
+        ctl.relax = 1.0;
+        ctl.maxSubIterations = 120;
+
+        TransientNetwork slowNet(transientBranched(qIn, 1.0e6));
+        AnalyticElement slowBlock(r0, k);
+        const coupling::TransientCoupledResult plain =
+            coupling::solveTransientCoupled1d3d(slowNet, {1}, {&slowBlock}, ctl, dt, endTime);
+
+        long plainPasses = 0;
+        for (const coupling::TransientCoupledStep& st : plain.steps)
+            plainPasses += st.passes;
+
+        TransientNetwork fastNet(transientBranched(qIn, 1.0e6));
+        AnalyticElement fastBlock(r0, k);
+        ctl.accelerate = true;
+        ctl.maxSubIterations = 6;
+        const coupling::TransientCoupledResult qn =
+            coupling::solveTransientCoupled1d3d(fastNet, {1}, {&fastBlock}, ctl, dt, endTime);
+
+        long qnPasses = 0;
+        bool everyStepAgreed = qn.steps.size() == plain.steps.size();
+        for (const coupling::TransientCoupledStep& st : qn.steps)
+        {
+            qnPasses += st.passes;
+            for (const coupling::EdgeExchange& ex : st.edges)
+                everyStepAgreed = everyStepAgreed && ex.residual <= ctl.tolerance;
+        }
+        CHECK(everyStepAgreed, "every accelerated step is one the interface agreed on");
+        CHECK(qnPasses < plainPasses,
+              "the secant step needs fewer passes per step than the plain one");
+
+        // the pass budget, not just the count: with eight passes per step the
+        // plain loop cannot agree somewhere, and the accelerated one does
+        TransientNetwork tightNet(transientBranched(qIn, 1.0e6));
+        AnalyticElement tightBlock(r0, k);
+        coupling::TransientCoupledControls tight = ctl;
+        tight.accelerate = false;
+        tight.maxSubIterations = 8;
+        bool plainStalled = false;
+        try
+        {
+            coupling::solveTransientCoupled1d3d(tightNet, {1}, {&tightBlock},
+                                               tight, dt, endTime);
+        }
+        catch (const Error&) { plainStalled = true; }
+        CHECK(plainStalled, "eight passes per step is not enough for the plain map");
+        CHECK(qn.steps.size() == 20, "the accelerated arm finishes the run on those eight");
+        CHECK(fastBlock.calls() == qnPasses,
+              "the transient acceleration costs no partner solve beyond one per pass");
+        CHECK(relNear(qn.steps.back().edges[0].q, plain.steps.back().edges[0].q, 1e-4),
+              "both arms end on the same split at the same time");
     }
 
     std::cout << (failures == 0 ? "coupling unit: all checks passed\n"

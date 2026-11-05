@@ -82,6 +82,7 @@ int main(int argc, char** argv)
         CoupledControls ctl;
         ctl.maxOuterIterations = static_cast<label>(cd.getScalarOr("maxOuterIterations", ctl.maxOuterIterations));
         ctl.relax = cd.getScalarOr("relax", ctl.relax);
+        ctl.accelerate = cd.has("accelerate") && cd.getBool("accelerate");
         ctl.tolerance = cd.getScalarOr("tolerance", ctl.tolerance);
         // the starting interface coefficients: each one runs the whole
         // partitioned solve on its own, so a seed that lands anywhere else is

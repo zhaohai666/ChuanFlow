@@ -318,6 +318,7 @@ couple {
     relax 1.0;                               // < 1 给非线性（湍流）伙伴阻尼
     tolerance 1e-4;                          // 接口相对残差；地板是伙伴自己解的误差
     maxOuterIterations 6;
+    accelerate no;                           // yes ⇒ 界面上用准 Newton（Aitken/IQN）取系数
 }
 detail {
     block { min (0 0 0); max (0.5 0.02 0.02); cells (50 20 1);
@@ -358,6 +359,7 @@ couple {
     edge X;  seeds ( 3.75e6 );  relax 1.0;
     tolerance 1e-4;               // 不得严于伙伴自己的分辨率：pcorrTol 1e-5 ⇒ 残差地板 ~1e-5…1e-4
     maxSubIterations 8;           // 取代稳态的 maxOuterIterations，用尽即 fatal
+    accelerate no;                // yes ⇒ 每步的界面历史重建后用准 Newton（见 architecture.md §5.21）
 }
 ```
 
@@ -393,6 +395,8 @@ pipes {
 couple {
     edges ( X1 X2 );            // 顺序即接口里的边顺序，日志与结果都按它排
     relax 1.0;  tolerance 1e-4;  maxOuterIterations 8;
+    accelerate no;              // yes ⇒ 界面系数由准 Newton 给（architecture.md §5.21）
+    accelerates ( 0 1 1 );      // 可选：按 starts 的键序逐组覆盖，长度 1 时摊平到全部
     starts {                    // 每组给**每条边**一个初值电阻，整组各跑一趟外层回路
         lo   { X1 1.25e6;  X2 5.3e6; }
         mix  { X1 3.75e6;  X2 5.3e6; }
@@ -407,7 +411,7 @@ details {
 }
 ```
 
-多边侧五条容易踩的约定：① 一层循环是**块 Gauss–Seidel**，不是每边各自迭代到收敛：一趟 =
+多边侧六条容易踩的约定：① 一层循环是**块 Gauss–Seidel**，不是每边各自迭代到收敛：一趟 =
 一次网络解 + 每个伙伴各一次解，所有边的系数同一趟刷新，停止条件取**最差**的那条边
 （`res.residual == max_i residual_i`）。逐边各自收敛会让先谈拢的边读到别的边的半状态，
 "一趟对应一个系统状态"就没了；checker 因此数日志里 `SIMPLE iter 1:` 的条数来钉
@@ -416,12 +420,19 @@ details {
 是同一趟所有边的快照。③ `starts{}` 用嵌套字典而不是列表：一组初值要给每条边各一个数，
 而 `cf::common::Dictionary` 的列表只支持标量，读不了 `((a b) (c d))`；键名（`lo/mix/high`）
 只用于日志与 checker 配对。④ 每边的 vtu **只在最后一组初值**写（每组的块解会覆盖同一文件），
-`out_multi_*.vtu` 已被 `.gitignore` 覆盖。⑤ 伙伴非线性时接口映射可能发散：并联边上的二次
-伙伴把电阻映射成 `R2 → R0 + k·q2`，其中 `q2 = Q·R1/(R1+R2)` 是分流结果，映射自身的不动点处
-导数是
-`−k·Q·R1/(R1+R2)²`——`k=1e7` 是 −0.041（收敛，单元用例用的就是它，`tolerance 1e-8` 下 30 趟上限
-内落定），`k=1e9` 是 −730（60 趟也收不下）。这不是 bug 而是缺 Aitken/IQN：单元里除了断言收敛，
-还额外断言该导数 < 1，别把它当成已解决。
+`out_multi_*.vtu` 已被 `.gitignore` 覆盖。⑤ 伙伴非线性时接口映射会把外层的收缩率压到接近 −1：
+并联边上的二次伙伴把电阻映射成 `R2 → R0 + k·q2`，其中 `q2 = Q·R1/(R1+R2)` 是分流结果，映射自身
+的不动点处导数是 `−k·Q·R1/(R1+R2)²`。它**有界**，永远不到 −1，所以纯 Gauss–Seidel 不发散、只是
+任意慢：`k=1e7` 是 −0.041（单元用例用的就是它，`tolerance 1e-8` 下 30 趟上限内落定），
+`k=1.75e10` 是 −0.875，实测单边要 **183 趟**、两边一线性一二次要 **211 趟**才到 `1e-10`，
+瞬态同一问题每步只给 8 趟时未加速臂直接谈不拢（fatal）。`accelerate yes` 走界面准 Newton
+（Aitken/IQN，architecture.md §5.21）把这三笔账分别压到 **11 / 9 趟**与 20 步全过（67 趟对
+122）；线性伙伴上它是无害的——两臂都在第 2 趟落定，首趟系数逐位相同。加速的收益只在
+`coupling.unit` 的闭式伙伴上被证明；随仓库发的多边算例两块都是层流伙伴，加速臂只作回归
+（同样的 8 趟 / 16 次块解，落到与未加速臂同一个工况点）。⑥ 开 `accelerate` 时有两条别改的约定：
+割线基要**从最新的 pair 往回做 Gram–Schmidt** 重建，而不是"只追加、正交化时才决定留不留"——
+单边接口所有 `dQ` 平行（秩 1），追加式会把窗口冻在第一个 pair 上（实测 14 趟 vs 11）；瞬态则
+**每个时间层重建历史**（`qn->reset()`），因为接口问题含本步的惯性项，上一步的 pair 量的是另一个映射。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

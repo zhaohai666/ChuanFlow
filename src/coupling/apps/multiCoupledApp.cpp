@@ -118,6 +118,7 @@ int main(int argc, char** argv)
             cd.getScalarOr("maxOuterIterations", ctl.maxOuterIterations));
         ctl.relax = cd.getScalarOr("relax", ctl.relax);
         ctl.tolerance = cd.getScalarOr("tolerance", ctl.tolerance);
+        ctl.accelerate = cd.has("accelerate") && cd.getBool("accelerate");
 
         // Each named set is one whole-network run, and it quotes a starting
         // coefficient for every coupled edge at once: a single edge starting far
@@ -144,6 +145,26 @@ int main(int argc, char** argv)
         }
         if (startNames.empty())
             cfFatal("coupled1d3d: couple.starts{} needs at least one set");
+
+        // Which interface operator each starting set is run through is a per-run
+        // choice, so one case can send the same network and the same blocks
+        // through plain Gauss-Seidel and through the accelerated one and the two
+        // arms differ in the loop and in nothing else.
+        std::vector<bool> accelerates(startNames.size(), ctl.accelerate);
+        if (cd.has("accelerates"))
+        {
+            const std::vector<double> a = cd.getScalarList("accelerates");
+            if (a.size() == 1)
+                std::fill(accelerates.begin(), accelerates.end(), a[0] != 0.0);
+            else if (a.size() != accelerates.size())
+                cfFatal("coupled1d3d: couple.accelerates needs one entry per"
+                        " starting set, or exactly one for all of them (got "
+                        + std::to_string(a.size()) + " for "
+                        + std::to_string(accelerates.size()) + " sets)");
+            else
+                for (std::size_t i = 0; i < a.size(); ++i)
+                    accelerates[i] = a[i] != 0.0;
+        }
 
         // ---- the 3D side: one block per coupled edge ----
         const Dictionary& allDetails = caseDict.getDict("details");
@@ -208,8 +229,13 @@ int main(int argc, char** argv)
                           " resistance ", num(startRs[s][i]));
             }
 
+            CoupledControls runCtl = ctl;
+            runCtl.accelerate = accelerates[s];
+            log::info("start ", startName, " interface ",
+                      runCtl.accelerate ? "quasi-Newton" : "plain Gauss-Seidel");
+
             const CoupledResult res =
-                solveCoupled1d3d(net, edges, partners, ctl, netCtl);
+                solveCoupled1d3d(net, edges, partners, runCtl, netCtl);
 
             for (const OuterIteration& it : res.history)
             {
@@ -235,7 +261,9 @@ int main(int argc, char** argv)
             }
             log::info("coupled ", startName, ": iterations ", res.iterations,
                       " worstResidual ", num(res.residual),
-                      res.converged ? " (converged)" : " (NOT converged)");
+                      res.converged ? " (converged)" : " (NOT converged)",
+                      " accelerate ", (runCtl.accelerate ? 1 : 0),
+                      " blockSolves ", res.iterations * res.edges.size());
 
             // name-keyed so a checker reads the network it got rather than the
             // one it expects: the coupled edges' own drops come from the solve

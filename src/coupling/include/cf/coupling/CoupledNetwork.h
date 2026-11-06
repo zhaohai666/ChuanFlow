@@ -1,5 +1,6 @@
 #pragma once
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -11,6 +12,7 @@
 #include "cf/fvm/FvMatrix.h"
 #include "cf/fvm/PolyMesh.h"
 #include "cf/fvm/SimpleSolver.h"
+#include "cf/turbulence/TurbulenceModel.h"
 
 namespace cf
 {
@@ -65,6 +67,14 @@ struct BlockMeasure
     scalar plugSpeed = 0;     // m/s, the imposed uniform inlet velocity
     scalar uxMax = 0;         // m/s, largest streamwise velocity in the block
     scalar uxCentre = 0;      // m/s, ... restricted to the probe cross-sections
+
+    /// Turbulence the block last solved with: zeros for a laminar block, and
+    /// otherwise the numbers that say whether the wall layer is inside the
+    /// wall-function band the model is valid in.
+    std::string turbModel;    // "" when laminar
+    scalar nutMax = 0;        // m2/s, largest eddy viscosity in the region
+    scalar wallYPlusMax = 0;  // first cell's y+, max over the wall faces
+    scalar wallUTau = 0;      // m/s, area-weighted mean friction velocity
 };
 
 /// One steady incompressible duct, solved in 3D and reduced to the single number
@@ -80,11 +90,19 @@ struct BlockMeasure
 ///
 /// Each `lossAt` call re-solves from the previous solution, so a sweep of rates
 /// costs far less than the same number of cold starts.
+///
+/// `turb` is the block's own turbulence configuration: a `kEpsilon` or
+/// `kOmegaSST` model makes the reported drop a genuine power law of the rate
+/// (`dp/q ~ q^(m-1)`), which is what turns the interface into a nonlinear
+/// fixed point instead of the one-shot contraction a laminar duct gives.
+/// `laminar` -- what a case without a `turbulence{}` block asks for -- gives up
+/// the model entirely and solves exactly the equation it always did.
 class DetailBlock : public ICoupledElement
 {
 public:
     DetailBlock(polyMesh mesh, scalar nu, scalar rho, const Schemes& schemes,
-                const SimpleControls& ctl, scalar probeMin, scalar probeMax);
+                const SimpleControls& ctl, scalar probeMin, scalar probeMax,
+                const TurbulenceConfig& turb);
 
     DetailBlock(const DetailBlock&) = delete;
     DetailBlock& operator=(const DetailBlock&) = delete;
@@ -99,6 +117,10 @@ public:
     label lastSweeps() const override { return measure_.sweeps; }
     bool lastConverged() const override { return measure_.converged; }
 
+    /// The eddy-viscosity model the block solves with, or null when it is
+    /// laminar. Lives as long as the block, and holds references to its fields.
+    const RansModel* turbulence() const { return turbModel_.get(); }
+
 private:
     void buildSections();
     void applyBoundary(scalar qMag);
@@ -111,6 +133,7 @@ private:
     SimpleControls ctl_;
     scalar probeMin_;
     scalar probeMax_;
+    TurbulenceConfig turb_;
 
     label inletPatch_ = -1;
     label outletPatch_ = -1;
@@ -133,6 +156,8 @@ private:
     volScalarField p_;
     surfaceScalarField phi_;
     BlockMeasure measure_;
+    /// Declared after the fields it references so it dies before them.
+    std::unique_ptr<RansModel> turbModel_;
 };
 
 // ------------------------------------------------------------------

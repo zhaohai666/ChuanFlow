@@ -225,7 +225,8 @@ private:
 
 DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
                          const Schemes& schemes, const SimpleControls& ctl,
-                         scalar probeMin, scalar probeMax)
+                         scalar probeMin, scalar probeMax,
+                         const TurbulenceConfig& turb)
     : mesh_(std::move(mesh)),
       nu_(nu),
       rho_(rho),
@@ -233,12 +234,14 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
       ctl_(ctl),
       probeMin_(probeMin),
       probeMax_(probeMax),
+      turb_(turb),
       U_(mesh_, "U"),
       p_(mesh_, "p"),
       phi_(mesh_, "phi", 0.0)
 {
     if (!(nu_ > 0) || !(rho_ > 0))
         cfFatal("detailBlock: nu and rho must be positive");
+    turb_.validate();
 
     for (label patch = 0; patch < mesh_.nPatches(); ++patch)
     {
@@ -386,8 +389,17 @@ scalar DetailBlock::lossAt(scalar qMag)
                   " zero flow");
 
     applyBoundary(qMag);
+    // Built on the rate the interface first delivers, because the model's inlet
+    // turbulence is scaled by the imposed plug speed: `applyBoundary` has just
+    // put that speed on the inlet patch, and the factory reads it from there.
+    // Later passes keep the inlet k/omega at that scale and warm-start the rest
+    // of the field, which is what the wall layer is solved for anyway.
+    if (!turbModel_ && turb_.model != "laminar")
+        turbModel_ = RansModel::create(mesh_, U_, phi_, nu_, schemes_, turb_);
+
     const SimpleResult res = solveIncompressibleSimple(mesh_, U_, p_, phi_, nu_,
-                                                       schemes_, ctl_);
+                                                       schemes_, ctl_,
+                                                       turbModel_.get());
     measure(res, qMag);
     if (!std::isfinite(measure_.dpPa))
         cfFatal("detailBlock: non-finite pressure drop");
@@ -512,6 +524,16 @@ void DetailBlock::measure(const SimpleResult& res, scalar qMag)
     }
     measure_.uxMax = uxMax;
     measure_.uxCentre = uxCentre;
+
+    if (turbModel_)
+    {
+        scalar nutMax = 0;
+        for (const scalar v : turbModel_->nut()) nutMax = std::max(nutMax, v);
+        measure_.turbModel = turbModel_->name();
+        measure_.nutMax = nutMax;
+        measure_.wallYPlusMax = turbModel_->maxWallYPlus();
+        measure_.wallUTau = turbModel_->meanFrictionVelocity();
+    }
 }
 
 // ------------------------------------------------------------------

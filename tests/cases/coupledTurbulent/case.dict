@@ -1,0 +1,123 @@
+// Steady network whose one detailed region is a RANS block instead of a laminar
+// duct:   Src -> A -> { X (3D k-omega SST) || By (1D bypass) } -> B -> Snk.
+// The rate is injected at Src and the far end holds the pressure reference, so
+// the branch split and the block's drop are results. Verified by
+// tests/check_coupled_turbulent.py.
+//
+// The block is a plane channel, 0.6 x 0.02 x 0.02 m, with the two walls 0.02 m
+// apart and the span made periodic by the symmetry pair. Only the walls carry
+// shear, so the hydraulic diameter the friction law is read with is 2H = 0.04 m
+// and A/P = H/2. At the resulting ~0.52e-3 m3/s the plug speed is ~1.30 m/s,
+// Re_b ~52000: fully turbulent, and the first cell lands at y+ ~97, inside the
+// log layer the wall functions of k-omega SST are written for.
+//
+// This is the case where the interface is genuinely nonlinear. A laminar block's
+// dp/q barely moves with the rate - the least-squares exponent over its own
+// interface passes is 1.06, and 6% of that is convective inertia plus the entry
+// region - so the loop lands on the coefficient after one or two corrections.
+// The RANS block answers dp ~ c*q^1.74: its apparent resistance is a function of
+// the very rate the interface is hunting for. The same seed therefore runs twice
+// - once with the plain interface iteration, once with the quasi-Newton operator
+// - and the two pass counts differ only in how the next coefficient was chosen.
+fluid { rho 1000; mu 1.0e-3; }
+
+nodes {
+    Src  {};
+    J1   {};
+    J2   {};
+    Snk  { pressure 1.0e6;  }
+}
+
+sources {
+    feed { node Src; rate 1.0e-3; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    // X is the coupled edge: length and diameter describe the detailed region
+    // (they set the reported velocity and Reynolds number), and its whole loss
+    // comes from the 3D solve through coupledResistance. The seed below is 5x
+    // the converged coefficient, so the first pass overshoots the rate hard and
+    // the loop has to come back.
+    X  { from J1; to J2; length 0.6;   diameter 0.02;
+         coupledResistance 3.0e6; }
+
+    // the bypass is turbulent on its own (Re ~20000), so the 1D side is not
+    // getting a laminar shortcut while its partner pays full price
+    By { from J1; to J2; length 1.5;   diameter 0.03; }
+    B  { from J2; to Snk; length 5.0;  diameter 0.1; }
+}
+
+// tol 1e-10: the network's node residual bottoms out near 3e-12 m3/s
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edge X;
+    // the same starting coefficient twice: the only difference between the two
+    // runs is the interface operator, which is what makes the pass counts mean
+    // something
+    seeds ( 3.0e6 3.0e6 );
+    accelerates ( 0 1 );
+    relax 1.0;
+    // A RANS block whose velocity field is converged still leaves a relative
+    // continuity defect of a few 1e-3: the corrected pressure residual is at
+    // machine precision, but the flux it corrects carries the imbalance. The
+    // interface residual is a gap between two solvers, so asking for less than
+    // the partner's own resolution would only burn outer iterations that cannot
+    // be won. 1e-3 is just above that floor and both arms reach it (the
+    // quasi-Newton arm gets there to 1.4e-5).
+    tolerance 1e-3;
+    maxOuterIterations 10;
+}
+
+detail {
+    block {
+        min   (0 0 0);
+        max   (0.6 0.02 0.02);
+        cells (40 8 8);
+
+        xmin  { name inlet;   type inlet;    }
+        xmax  { name outlet;  type outlet;   }
+        ymin  { name bottom;  type wall;     }
+        ymax  { name top;     type wall;     }
+        zmin  { name front;   type symmetry; }
+        zmax  { name back;    type symmetry; }
+    }
+
+    // the entry region is over by x ~0.1 m at this Reynolds number; the window
+    // starts well past it so probeSlope is the developed gradient the wall shear
+    // has to balance
+    probe { min 0.35; max 0.59; }
+
+    turbulence {
+        model kOmegaSST;
+        intensity 0.05;
+        lengthScale 1.4e-3;
+        relaxation 0.7;
+    }
+
+    schemes {
+        ddt       steady;
+        div       upwind;
+        laplacian corrected;
+        grad      corrected;
+    }
+
+    simple {
+        maxIterations 100;
+        // see couple{} tolerance: this is the block's own continuity floor,
+        // measured rather than hoped for (the corrected pressure residual
+        // reaches 1e-10 while the flux defect stalls near 2e-3)
+        continuityTol 1e-2;
+        pcorrTol      1e-4;
+        momentumTol   1e-4;
+        relaxU        0.9;
+        relaxP        0.3;
+        pRelaxStart   0.02;
+    }
+}
+
+output {
+    vtk out_coupled_turbulent_block.vtu;
+}

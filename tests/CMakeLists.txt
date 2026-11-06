@@ -382,6 +382,17 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3dMulti/case.dict)
 
+# the same partitioned interface with a nonlinear partner: edge X is a RANS
+# channel, so its drop-per-rate is a function of the rate the interface is
+# hunting for. One seed runs under both operators, which is what lets the
+# checker read the saving as passes rather than as luck
+add_test(
+    NAME verify.coupledTurbulent
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_coupled_turbulent.py
+        $<TARGET_FILE:chflow-coupled-1d3d>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupledTurbulent/case.dict)
+
 foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug" "valve;Valve")
     list(GET tmode 0 mode)
     list(GET tmode 1 Mode)

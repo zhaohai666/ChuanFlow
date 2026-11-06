@@ -129,6 +129,21 @@ python3 tests/check_coupled_1d3d_multi.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-multi" \
     "$PWD/tests/cases/coupled1d3dMulti/case.dict"
 
+# 湍流伙伴块：同一套分区接口，X 换成 k-omega SST 的平面渠道——层的 dp/q 随速率变，
+# 接口要追的不动点第一次不再是"一次就中"。同一个种子电阻跑两趟臂：未加速的
+# block Gauss–Seidel 与准 Newton，差别只在系数怎么取。
+# check_coupled_turbulent.py 断言接口恒等式（网络记的压降 == R·q、报的压降 == 伙伴自己
+# 的、残差 == 两者的差）、把每趟的 (q, dpBlock) 拿来拟合 dp = c·q^m 得 m = 1.74（层流块
+# 恰为 1.0）、伙伴 apparent resistance 随速率变 2.12 倍、块内动量闭合
+# |dp/dx|·H/2 == ρ·u_τ²（对 1.1%）、y+ 在壁函数带内、涡粘是分子粘的 153 倍、
+# 剖面比抛物线平（u_中线/U_块 = 1.094 vs 1.5）、Pope 光壁律反推的来流速度对实测 −4.4%、
+# 两臂落同一工况点（R 差 3.7e-4 相对）且加速臂 5 趟 ≤ 未加速臂 8 趟，
+# 外加"块解次数 == 两臂趟数之和"（13 == 13）。约 42 s
+./build/src/coupling/apps/chflow-coupled-1d3d tests/cases/coupledTurbulent/case.dict
+python3 tests/check_coupled_turbulent.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d" \
+    "$PWD/tests/cases/coupledTurbulent/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict
@@ -319,6 +334,7 @@ couple {
     tolerance 1e-4;                          // 接口相对残差；地板是伙伴自己解的误差
     maxOuterIterations 6;
     accelerate no;                           // yes ⇒ 界面上用准 Newton（Aitken/IQN）取系数
+    accelerates ( 0 1 1 );                   // 可选：按 seeds 顺序逐组覆盖；长度 1 时摊平
 }
 detail {
     block { min (0 0 0); max (0.5 0.02 0.02); cells (50 20 1);
@@ -329,6 +345,8 @@ detail {
             zmin { name front;  type symmetry; }  // 侧向：内部按 zeroGradient 处理
             zmax { name back;   type symmetry; } }
     probe { min 0.12; max 0.49; }            // 测已发展梯度的横截面窗口，须在入口段之外
+    turbulence { model kOmegaSST; intensity 0.05; lengthScale 1.4e-3; }
+                                             // 缺省 = laminar：块解的就是它一直解的那条方程
     schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
     simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5; momentumTol 1e-5;
              relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
@@ -343,6 +361,13 @@ output { vtk out_coupled_block.vtu; }        // 最后一个种子的块场
 `DetailBlock::applyBoundary` 因此对非 inlet/outlet/wall 面一律用 `zeroGradient`。
 ③ 三维核的 `p` 是运动压力（m²/s²），管网用 Pa，换算在 `lossAt` 里乘 ρ 完成——
 `BlockMeasure::dpPa` 已经是 Pa，别在 checker 里再乘一次。
+④ 挂 `turbulence{}` 时块的入口湍流强度由**界面第一趟送来的速率**定：`lossAt` 先
+`applyBoundary(qMag)` 再 `RansModel::create(...)`，模型读 inlet patch 上的 `fixedValue` 速度
+算出 `k0 = 1.5(U·I)²`，此后暖启动。代价是种子电阻给得离谱时 `k0` 也离谱，接口要靠几趟把
+速率找回来（实测 `seeds 3.0e6` 时第一趟落在 2.28e-4，正确值的 0.44 倍）。另两条硬约束：
+RANS 块的相对连续性残差停在 ~2e-3（修正后的压力残差到 1e-10，但通量带着不平衡），
+所以 `couple.tolerance` 不能严于这个地板；网格第一格 `y+` 须在壁函数带（30–300）内，
+否则块报的压降不再是壁律的压降。`tests/cases/coupledTurbulent` 就是按这两条配的。
 
 **瞬态分区耦合**（`chflow-coupled-1d3d-transient`）把上面字典里的 `solve{}` 换成 1D 瞬态的
 `time{}`，其余键（`fluid/nodes/sources/pipes/couple/detail/output`）与稳态侧逐字同形；变的

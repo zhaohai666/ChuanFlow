@@ -98,6 +98,7 @@ int main(int argc, char** argv)
         polyMesh mesh = MeshLoader::fromCase(dd, argv[1]);
         const Schemes schemes = loadSchemes(dd);
         const SimpleControls blockCtl = loadSimple(dd);
+        const TurbulenceConfig blockTurb = TurbulenceConfig::fromCase(dd);
         scalar probeMin = -std::numeric_limits<scalar>::infinity();
         scalar probeMax = probeMin;
         if (dd.has("probe"))
@@ -126,7 +127,7 @@ int main(int argc, char** argv)
             // previous solution, so sharing it between seeds would let seed 2
             // inherit seed 1's interface history
             DetailBlock block(mesh, c.fluid.mu / c.fluid.rho, c.fluid.rho, schemes,
-                               blockCtl, probeMin, probeMax);
+                               blockCtl, probeMin, probeMax, blockTurb);
 
             // and one fresh network: the agreed coefficient carries from step to
             // step, so a reused instance would start the series where the
@@ -187,7 +188,12 @@ int main(int argc, char** argv)
                       " probeSections ", m.probeSections,
                       " probeSlope ", num(m.probeSlope),
                       " probeSpread ", num(m.probeSpread),
-                      " dpPa ", num(m.dpPa));
+                      " dpPa ", num(m.dpPa),
+                      " turb ", (m.turbModel.empty() ? std::string("laminar")
+                                                     : m.turbModel),
+                      " nutMax ", num(m.nutMax),
+                      " wallYPlusMax ", num(m.wallYPlusMax),
+                      " wallUTau ", num(m.wallUTau));
 
             log::info("transient coupled seed ", s, ": edge ", edgeName,
                       " steps ", res.steps.size(), " q ", num(res.state[0].q),

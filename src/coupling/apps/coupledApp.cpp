@@ -93,11 +93,32 @@ int main(int argc, char** argv)
             cfFatal("coupled1d3d: couple{} needs at least one starting"
                     " resistance in seeds ( )");
 
+        // Per-seed interface operator: the same seed run once plainly and once
+        // accelerated differs only in how the next coefficient is chosen, so
+        // the two pass counts say what the quasi-Newton did to this block.
+        std::vector<bool> accelerates(seeds.size(), ctl.accelerate);
+        if (cd.has("accelerates"))
+        {
+            const std::vector<double> a = cd.getScalarList("accelerates");
+            if (a.size() == 1)
+                std::fill(accelerates.begin(), accelerates.end(), a[0] != 0.0);
+            else if (a.size() != seeds.size())
+                cfFatal("coupled1d3d: couple.accelerates needs one entry per"
+                        " seed (" + std::to_string(seeds.size()) + " seeds, got "
+                        + std::to_string(a.size()) + ")");
+            else
+                for (std::size_t i = 0; i < a.size(); ++i)
+                    accelerates[i] = a[i] != 0.0;
+        }
+
         // ---- the 3D side ----
         const Dictionary& dd = caseDict.getDict("detail");
         polyMesh mesh = MeshLoader::fromCase(dd, argv[1]);
         const Schemes schemes = loadSchemes(dd);
         const SimpleControls blockCtl = loadSimple(dd);
+        // A detail{} without a turbulence{} block is laminar, exactly as the
+        // standalone 3D apps read their own case.
+        const TurbulenceConfig blockTurb = TurbulenceConfig::fromCase(dd);
         scalar probeMin = -std::numeric_limits<scalar>::infinity();
         scalar probeMax = probeMin;
         if (dd.has("probe"))
@@ -116,7 +137,8 @@ int main(int argc, char** argv)
         }
 
         log::info("network+block: block has ", mesh.nCells(), " cells and ",
-                  mesh.nPatches(), " patches; nu ", num(fluid.mu / fluid.rho));
+                  mesh.nPatches(), " patches; nu ", num(fluid.mu / fluid.rho),
+                  "; turbulence ", blockTurb.model);
 
         bool allConverged = true;
         CoupledResult last;
@@ -126,7 +148,7 @@ int main(int argc, char** argv)
             // previous solution, so sharing it between seeds would let seed 2
             // inherit seed 1's interface history
             DetailBlock block(mesh, fluid.mu / fluid.rho, fluid.rho, schemes,
-                               blockCtl, probeMin, probeMax);
+                               blockCtl, probeMin, probeMax, blockTurb);
 
             // and one fresh network: the loop writes the converged coefficient
             // into the coupled pipe, so a reused instance would carry it as a
@@ -142,15 +164,20 @@ int main(int argc, char** argv)
                         + "' in the network");
             net.pipes[static_cast<std::size_t>(edge)].coupledResistance = seeds[s];
 
-            log::info("seed ", s, " starting resistance ", num(seeds[s]));
+            log::info("seed ", s, " starting resistance ", num(seeds[s]),
+                      " interface ", (accelerates[s] ? "quasi-Newton"
+                                                     : "plain Gauss-Seidel"));
+            CoupledControls runCtl = ctl;
+            runCtl.accelerate = accelerates[s];
             const CoupledResult res =
-                solveCoupled1d3d(net, {edge}, {&block}, ctl, netCtl);
+                solveCoupled1d3d(net, {edge}, {&block}, runCtl, netCtl);
             const EdgeExchange& st = res.state[0];
 
             log::info("coupled seed ", s, ": iterations ", res.iterations,
                       " q ", num(st.q), " dp ", num(st.dpPa),
                       " R ", num(st.resistance), " residual ", num(res.residual),
-                      res.converged ? " (converged)" : " (NOT converged)");
+                      res.converged ? " (converged)" : " (NOT converged)",
+                      " accelerate ", (accelerates[s] ? 1 : 0));
 
             const BlockMeasure& m = block.measure();
             log::info("block seed ", s, ": cells ", m.cells, " sweeps ", m.sweeps,
@@ -163,7 +190,12 @@ int main(int argc, char** argv)
                       " probeSections ", m.probeSections,
                       " probeSlope ", num(m.probeSlope),
                       " probeSpread ", num(m.probeSpread),
-                      " dpPa ", num(m.dpPa));
+                      " dpPa ", num(m.dpPa),
+                      " turb ", (m.turbModel.empty() ? std::string("laminar")
+                                                     : m.turbModel),
+                      " nutMax ", num(m.nutMax),
+                      " wallYPlusMax ", num(m.wallYPlusMax),
+                      " wallUTau ", num(m.wallUTau));
 
             for (const OuterIteration& it : res.history)
             {

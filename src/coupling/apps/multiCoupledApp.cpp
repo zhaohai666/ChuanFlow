@@ -67,6 +67,7 @@ struct BlockSpec
     scalar probeMin = 0;
     scalar probeMax = 0;
     std::string vtk;
+    TurbulenceConfig turb;
 };
 
 BlockSpec loadBlockSpec(const Dictionary& dd, const char* argv0,
@@ -81,7 +82,8 @@ BlockSpec loadBlockSpec(const Dictionary& dd, const char* argv0,
     if (!(probeMin < probeMax))
         cfFatal("coupled1d3d: details." + edgeName + " probe min must be below max");
     return BlockSpec{MeshLoader::fromCase(dd, argv0), loadSchemes(dd), loadSimple(dd),
-                     probeMin, probeMax, dd.getWordOr("vtk", "")};
+                     probeMin, probeMax, dd.getWordOr("vtk", ""),
+                     TurbulenceConfig::fromCase(dd)};
 }
 
 } // namespace
@@ -181,7 +183,8 @@ int main(int argc, char** argv)
         {
             log::info("block ", edgeNames[i], ": ", specs[i].mesh.nCells(), " cells,",
                       " ", specs[i].mesh.nPatches(), " patches, probe ",
-                      num(specs[i].probeMin), " to ", num(specs[i].probeMax));
+                      num(specs[i].probeMin), " to ", num(specs[i].probeMax),
+                      ", turbulence ", specs[i].turb.model);
         }
         log::info("network: ", edgeNames.size(), " coupled edges, ",
                   num(startRs.size()), " starting sets; nu ", num(nu));
@@ -200,7 +203,7 @@ int main(int argc, char** argv)
             {
                 owners.push_back(std::make_unique<DetailBlock>(
                     specs[i].mesh, nu, rho, specs[i].schemes, specs[i].simple,
-                    specs[i].probeMin, specs[i].probeMax));
+                    specs[i].probeMin, specs[i].probeMax, specs[i].turb));
                 partners.push_back(owners.back().get());
             }
 
@@ -307,7 +310,10 @@ int main(int argc, char** argv)
                           num(m.plugSpeed), " uxMax ", num(m.uxMax), " uxCentre ",
                           num(m.uxCentre), " probeSections ", m.probeSections,
                           " probeSlope ", num(m.probeSlope), " probeSpread ",
-                          num(m.probeSpread), " dpPa ", num(m.dpPa));
+                          num(m.probeSpread), " dpPa ", num(m.dpPa), " turb ",
+                          (m.turbModel.empty() ? std::string("laminar") : m.turbModel),
+                          " nutMax ", num(m.nutMax), " wallYPlusMax ",
+                          num(m.wallYPlusMax), " wallUTau ", num(m.wallUTau));
                 if (s + 1 == startNames.size() && !specs[i].vtk.empty())
                 {
                     VtkWriter w(owners[i]->mesh());

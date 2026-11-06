@@ -1,0 +1,144 @@
+# transientCoupledMultiTurbulent1d3d: two RANS detailed regions inside one
+# time-stepping network. The topology is transientCoupledMulti1d3d's, the
+# interface driver is transientCoupledTurbulent's, and the third ingredient is
+# that both partners are k-omega SST blocks instead of laminar ducts:
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D bypass) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# The pairing is what has not been on the table before. Each of the three
+# ingredients already had its own increment - a turbulent partner on one edge
+# (§5.23), two edges inside the same time level (§5.25) - and the question left
+# over is whether the two edges stay independent once BOTH partners answer with
+# a nonlinear law:
+#   * X1 is a parallel branch, so its rate is a result of the momentum balance.
+#     With nonlinear partners the ramp it relaxes with is set by the sum of the
+#     SLOPES m_i*R_i, not the chords (§5.23 measured the chord formula reading
+#     this time constant 62% high on one edge).
+#   * X2 is in series, so an incompressible network hands it the whole injected
+#     rate from the first step on. Its rate is not an unknown, and with a
+#     turbulent partner its coefficient is not one either once the field is warm
+#     - the interface has only the drop left to agree on.
+# One pass still solves the network once, asks both blocks for the drop at the
+# rate that pass delivers, and stops on the WORST of the two, so the schedule
+# shows which of the two edges is actually paying for it.
+#
+# The two arms differ only in whether the interface is accelerated: the same
+# seed for both edges, plain block Gauss-Seidel against Aitken/IQN.
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node
+# compliance. They still hold liquid with room to spare, because the injected
+# rate has to go somewhere on the very first step, when every pipe flow is
+# still zero.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+# 1.2e-4 m3/s into water through a 5 mm gap is Re_bulk ~ 2.0e4: both blocks are
+# wall-function-resolved RANS, and the 1D bypass at 7e-5 m3/s through 8 mm is
+# turbulent too, so neither side of the interface gets to read a chord as if it
+# were a constant.
+sources {
+    feed { node Src; rate 1.2e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+
+    // The coupled edges. Each proxy bore is the exact equivalent diameter of
+    // its block's own section, d = 2*sqrt(H*W/pi), so the 1D side's inertance
+    // rho*L/(pi d^2/4) is rho*L/(H*W) - the same number the block measures on
+    // its own mesh. Attribution is therefore deliberately NOT a variable here:
+    // with `inertias ( network )` (the default for both arms) the two sources
+    // agree to ~1e-9 and what is left to measure is the partner's nonlinearity
+    // on two edges at once.
+    X1 { from J1; to J2; length 0.2;  diameter 0.0056418958354775631;
+         coupledResistance 1.0e7; }
+    By { from J1; to J2; length 0.3;  diameter 0.008; }
+
+    X2 { from J2; to J3; length 0.12; diameter 0.00638307648642292245;
+         coupledResistance 1.5e7; }
+
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.05 against a parallel-branch time constant of ~0.2 s: ~4 steps per time
+# constant, 12 steps ~ 2.8 constants. The trajectory is still a fraction short
+# of the resistive split at the end, which is deliberate - the checker predicts
+# the whole ramp from the discrete inertial solve instead of waiting for it to
+# die away, so a step count chosen for cost cannot weaken what is asserted.
+time { dt 0.05; endTime 0.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    // both blocks resolve their own drop to ~1e-4 of it inside their declared
+    // SIMPLE budget, and the interface residual is the gap between two solvers;
+    // asking for less than the partner's resolution would only burn passes
+    tolerance 2e-4;
+    maxSubIterations 6;
+    // one arm plain block Gauss-Seidel, one Aitken/IQN - same seed, so the only
+    // difference allowed between the two is how the interface walks
+    accelerates ( 0 1 );
+    starts {
+        gs  { X1 1.0e7; X2 1.5e7; }
+        iqn { X1 1.0e7; X2 1.5e7; }
+    }
+}
+
+details {
+    # X1: the 0.2 x 0.005 x 0.005 m duct of transientCoupledTurbulent, 8 cells
+    # across the gap so the first cell centre sits inside the log-law band
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.06; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_multi_turbulent_X1.vtu;
+    }
+
+    # X2: a different aspect ratio - 4 mm gap, 8 mm span - so its resistance is
+    # not X1's scaled, and a shorter block. Both faces normal to z are symmetry,
+    # so the spanwise count only costs cells; 2 keeps the reported y+ the same
+    # 2D problem the steady turbulent multi case describes.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.12 0.004 0.008);
+            cells (12 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.04; max 0.11; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_multi_turbulent_X2.vtu;
+    }
+}

@@ -407,6 +407,20 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiInertia/case.dict)
 
+# both edges handed to a nonlinear partner at once, on the schedule that stops on
+# the worst of them, one arm plain Gauss-Seidel and the next quasi-Newton. The
+# proxy bores are the regions' exact equivalent sections, so §5.26's attribution
+# degree of freedom cancels and the only thing left to measure is partner
+# nonlinearity: the checker closes each edge's momentum row with that edge's own
+# chord and inertance, shows the chord identity survives a RANS partner on both
+# edges, and reads the ramp's restoring term off the partners' SLOPES, not chords
+add_test(
+    NAME verify.transientCoupledMultiTurbulent1d3d
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulent1d3d/case.dict)
+
 # the same partitioned interface with a nonlinear partner: edge X is a RANS
 # channel, so its drop-per-rate is a function of the rate the interface is
 # hunting for. One seed runs under both operators, which is what lets the

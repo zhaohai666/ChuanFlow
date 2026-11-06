@@ -191,6 +191,19 @@ python3 tests/check_transient_coupled_multi_inertia.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiInertia/case.dict"
 
+# 湍流 + 多边 + 瞬态三者同台：§5.25 的两条边同时换成 §5.23 那类 RANS 伙伴，两臂只差
+# `accelerates ( 0 1 )`（种子逐位相同 ⇒ 臂间差别只能归给接口算子）。代理管孔径取区域的
+# 等效截面 `d = 2√(HW/π)` ⇒ §5.26 的归属自由度被中和，本算例只剩伙伴的本构可测。
+# check_transient_coupled_multi_turbulent.py 断言两臂 24 个边×步上 dpNetwork == R·q 到 0.0 Pa、
+# 每边动量行对发表的 Churchill 弦闭合（7.6e-14）、X1 的律 dp ∝ q^1.682 而 X2 读不出指数
+# （速率被拓扑钉死）、斜坡的恢复项是**斜率和**（+0.23%）而不是弦（+64%）、`worst` 下标
+# 53 趟全 0、块解 == 趟数 × 2、两臂末端同一状态与同一 τ，外加两块各自的壁面律
+# （y+ 41.7 / 58.4、|dp/dx|·H/2 == ρu_τ²、Pope 光壁律）。约 90 s（106 次块解 / 53 趟）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiTurbulent1d3d/case.dict
+python3 tests/check_transient_coupled_multi_turbulent.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiTurbulent1d3d/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict

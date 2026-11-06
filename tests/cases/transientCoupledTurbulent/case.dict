@@ -1,0 +1,110 @@
+# transientCoupledTurbulent: the RANS partner of tests/cases/coupledTurbulent put
+# inside a time-stepping network. Src -> A -> { X (3D turbulent block) || By (1D
+# bypass) } -> B -> Snk, at rest until a rate is switched on at t = 0.
+#
+# Every time level solves the interface, so what the series shows is how a
+# non-linear partner moves the network's own dynamics. For two laminar branches
+# the divider relaxes with tau = (M_X + M_By)/(R_X + R_By) - the chord, and
+# tests/cases/transientCoupled1d3d verifies that to 1.6%. Here the block's drop
+# goes as q^1.68 (measured across the ramp itself) and the bypass's as q^1.73
+# (Churchill at its own Re ~ 1.1e4), so the restoring coefficient is the SUM OF
+# SLOPES m_i·R_i, not the sum of chords, and the chord formula misreads this
+# ramp by 62%. Verified by tests/check_transient_coupled_turbulent.py.
+#
+# The proxy pipe X carries the region's inertance, so its bore is the block's
+# cross-section put in a circle, d = 2*sqrt(H*W/pi) = 5.641895835e-3: the 1D side
+# then holds exactly rho*L/(H*W) = 8.0e6 kg/m6 and no convention decides how much
+# inertance the detailed region "really" has.
+#
+# Measured on this case, and what the checker anchors on:
+#   * first step 5.09491e-5 m3/s - the sudden rate divides by inertance, 2.3%
+#     above the resistive split it then relaxes down to
+#   * ramp 27 steps with B = 0.7842 per step: tau 0.2468 s, closed form with the
+#     two slopes 0.2460 s (-0.34%), with the two chords 0.3990 s (+61.7%)
+#   * settled state q 4.97828e-5 m3/s, dp 1100.45 Pa, R 2.2106e7 Pa.s/m3,
+#     Re_bulk 1.99e4, y+ 41.6, u_tau 0.11547 m/s, momentum closure to 0.35%
+#   * 44 partner runs per seed (1.6 per step, 3 on the first), and the two seeds
+#     - 1.0e7 and 2.2e7, i.e. starting off the fixed point and next to it -
+#     settle on the same rate to 2.8e-5, the same coefficient to 6.2e-5 and the
+#     same time constant to 3e-5
+#
+# The interface tolerance is the partner's, not a taste: the RANS block agrees
+# its own continuity to ~2e-3 relative, so asking the interface for 1e-10 would
+# only burn passes inside every time level (see tests/cases/coupledTurbulent).
+#
+# dt 0.06 against tau 0.25 s: ~4 steps per time constant, and 27 steps run past
+# 6.5 of them, so the series ends 3.8e-5 of its rate short of the asymptote the
+# fit reads off the ramp and 6.1e-5 short of the resistive split - the 3.3e-5
+# exponential tail its own time constant predicts.
+
+fluid { rho 1000; mu 1.0e-3; }
+
+# incompressible ports, as in the laminar transient case: the branch split is the
+# momentum balance's alone, with no node compliance hiding in it
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources { feed { node Src; rate 1.2e-4; } }
+
+pipes {
+    A  { from Src; to J1; length 0.3; diameter 0.02; }
+
+    // X is the coupled edge: length and bore describe the detailed region and
+    // give the 1D side its inertance, while its whole loss comes from the 3D
+    // solve through coupledResistance. The starting coefficient is under the
+    // converged one by a factor of two, so the first step has to correct it.
+    X  { from J1; to J2; length 0.2; diameter 0.005641895835;
+         coupledResistance 1.0e7; }
+
+    // the bypass is 1D and at this rate turbulent: its own Churchill chord is
+    // the checker's anchor for the second branch's slope
+    By { from J1; to J2; length 0.3; diameter 0.008; }
+    B  { from J2; to Snk; length 0.3; diameter 0.02; }
+}
+
+time { dt 0.06; endTime 1.62; reportEvery 1; }
+
+couple {
+    edge X;
+    seeds ( 1.0e7 2.2e7 );
+    relax 1.0;
+    tolerance 2e-4;
+    maxSubIterations 6;
+    accelerate yes;
+}
+
+detail {
+    block {
+        min (0 0 0); max (0.2 0.005 0.005); cells (20 8 2);
+        xmin { name inlet;   type inlet;    }  xmax { name outlet;  type outlet;   }
+        ymin { name bottom;  type wall;     }  ymax { name top;     type wall;     }
+        zmin { name front;   type symmetry; }  zmax { name back;    type symmetry; }
+    }
+
+    // the window starts past the turbulent entry length (~4 Dh = 0.04 m) so the
+    // developed gradient the closure uses is really developed
+    probe { min 0.06; max 0.19; }
+
+    // 8 cells across a 5 mm channel put the first cell centre at dy/2 = 3.1e-4 m:
+    // with u_tau 0.115 m/s that is y+ ~ 36, inside the log-law band the wall
+    // functions assume and no finer than the interface's own budget allows
+    turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4; relaxation 0.7; }
+
+    schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+
+    simple {
+        maxIterations 60;
+        continuityTol 1e-2;
+        pcorrTol      1e-4;
+        momentumTol   1e-4;
+        relaxU        0.9;
+        relaxP        0.3;
+        pRelaxStart   0.02;
+    }
+}
+
+output { vtk out_transient_coupled_turbulent_block.vtu; }

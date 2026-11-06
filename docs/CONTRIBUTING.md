@@ -129,12 +129,12 @@ python3 tests/check_coupled_1d3d_multi.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-multi" \
     "$PWD/tests/cases/coupled1d3dMulti/case.dict"
 
-# 湍流伙伴块：同一套分区接口，X 换成 k-omega SST 的平面渠道——层的 dp/q 随速率变，
+# 湍流伙伴块：同一套分区接口，X 换成 k-omega SST 的平面渠道——块的 dp/q 随速率变，
 # 接口要追的不动点第一次不再是"一次就中"。同一个种子电阻跑两趟臂：未加速的
 # block Gauss–Seidel 与准 Newton，差别只在系数怎么取。
 # check_coupled_turbulent.py 断言接口恒等式（网络记的压降 == R·q、报的压降 == 伙伴自己
-# 的、残差 == 两者的差）、把每趟的 (q, dpBlock) 拿来拟合 dp = c·q^m 得 m = 1.74（层流块
-# 恰为 1.0）、伙伴 apparent resistance 随速率变 2.12 倍、块内动量闭合
+# 的、残差 == 两者的差）、把每趟的 (q, dpBlock) 拿来拟合 dp = c·q^m 得 m = 1.74（同一套
+# 拟合放在层流块上是 1.06）、伙伴 apparent resistance 随速率变 2.12 倍、块内动量闭合
 # |dp/dx|·H/2 == ρ·u_τ²（对 1.1%）、y+ 在壁函数带内、涡粘是分子粘的 153 倍、
 # 剖面比抛物线平（u_中线/U_块 = 1.094 vs 1.5）、Pope 光壁律反推的来流速度对实测 −4.4%、
 # 两臂落同一工况点（R 差 3.7e-4 相对）且加速臂 5 趟 ≤ 未加速臂 8 趟，
@@ -143,6 +143,23 @@ python3 tests/check_coupled_1d3d_multi.py \
 python3 tests/check_coupled_turbulent.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d" \
     "$PWD/tests/cases/coupledTurbulent/case.dict"
+
+# 瞬态湍流伙伴：同一个 RANS 渠道放进时间层内的接口，两条支路都随速率变——块是
+# q^1.68（爬升两端的 (q, dpBlock) 直接拟合出来），旁路 1D 管是 q^1.73（Churchill 在它
+# 自己 Re≈1.1e4 上的割线）。于是网络自己的时间常数不再是"两条割线之和"：
+# τ = (M_X+M_By)/(m_X·R_X + m_By·R_By) 用斜率，层流算例里 m≡1 所以割线与斜率同值。
+# check_transient_coupled_turbulent.py 断言每步动量行 dp == R·q + M·Δq/dt（到 7e-11）、
+# 旁路那一行对**外面文献里的** Churchill 割线闭合（7e-14，等于把 1D 摩阻律本身也校了）、
+# 拟合整条爬升得 B = 0.7842 对闭式 0.7835（−0.34%）而割线闭式读 0.3990 s（+62%，
+# 偏差正是阻力加权的指数 1.70）、首步按惯量分（9.5e-4）且离阻力分工况点 2.3%、
+# 末端落在拟合渐近线上（3.8e-5，与自身 τ 的指数尾巴 3.3e-5 同量级）、
+# 每种子 44 趟对 27 步且块解次数 == 两种子趟数之和（88 == 88）、两组初值落同一点
+# （速率 2.8e-5、系数 6.2e-5、τ 3e-5），外加块侧 y+/动量闭合/涡粘/剖面/Pope 与入口段。
+# 约 10 s（320 单元、两组初值共 88 次块解）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient tests/cases/transientCoupledTurbulent/case.dict
+python3 tests/check_transient_coupled_turbulent.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient" \
+    "$PWD/tests/cases/transientCoupledTurbulent/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
@@ -405,6 +422,18 @@ volume"）与 `liquidFraction < 1`（缺省是 1.0，第一步突加的速率还
 （`contErr <= bestContErr`）会让首个 predictor 连续性低于该 case 最终落到的
 HbyA/压力通量地板的热启动再也走不到 `|dp|` 分支（实测 0.00768788 对 0.00769587，首步烧满
 300 迭代报未收敛）；`simpleSolver.cpp:343` 因此留 1% 余量，防发散的初衷不变。
+⑤ `detail{}` 在瞬态侧同样能挂 `turbulence{}`（键与稳态逐字同形，稳态 ④ 的两条硬约束——
+通量地板与 `y+` 带内——一字不改地带过来）。挂上之后变的不是接口协议而是**分工的动力学**：
+伙伴的 `dp/q` 随速率变，分流的时间常数由两条支各自的**割线斜率** `m = dln(dp)/dln(q)` 定，
+不是由电阻弦定：两条支相减消掉节点压降后 `M·dq/dt = f_By(Q−q) − f_X(q)`，线性化的恢复系数是
+`S = m_X·R_X + m_By·R_By`（推导见 architecture.md §5.23）。稳态伙伴 `m ≡ 1`、弦即斜率，所以
+`transientCoupled1d3d` 的 τ 用 `S_chord = R_X + R_By` 就能对上；两个伙伴都是湍流时
+`m ≈ 1.7`，弦形式把 τ 读高 +62%。checker 因此拿两条路各算一遍（`tests/cases/
+transientCoupledTurbulent`：斜率形式 −0.34%、弦形式 +61.7%），并且**不能**再拿 1D 侧自己的
+`frictionDp` 反证旁路——那等于让网络跟自己核对，这里改用 Churchill 1977 的公开式子在
+checker 里重写一份作外部锚（旁路动量行 7e-14）。逐步的界面残差实测落在 4.4e-5…2.0e-4
+（最大在第 23 步，正压在 `tolerance 2e-4` 下面）——这个量级来自伙伴自己的通量不平衡，不是
+调出来的：稳态 ④ 说的两条地板在时间步进里一条不减，反而每步只剩 `maxSubIterations` 趟去够它。
 
 **多边分区耦合**（`chflow-coupled-1d3d-multi`）把 `edge`/`seeds`/`detail` 三个单数键换成
 复数：`couple{ edges (…) starts{} }` 列出被详细化的所有管名与"一整组初值"，`details{}` 按

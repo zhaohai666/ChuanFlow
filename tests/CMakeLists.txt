@@ -393,6 +393,17 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupledTurbulent/case.dict)
 
+# the RANS partner inside a time-stepping network: every time level agrees the
+# interface again, and the checker reads the ramp back out of the series - the
+# restoring term is the two partners' slopes, so the chord formula that closes
+# the laminar case misreads this one by the exponents it never had to carry
+add_test(
+    NAME verify.transientCoupledTurbulent
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_turbulent.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledTurbulent/case.dict)
+
 foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug" "valve;Valve")
     list(GET tmode 0 mode)
     list(GET tmode 1 Mode)

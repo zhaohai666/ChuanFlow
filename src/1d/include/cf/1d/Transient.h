@@ -131,6 +131,17 @@ public:
     /// is no longer a state of the system.
     void setCoupledResistance(label k, double resistance);
 
+    /// Replace pipe `k`'s inertance `rho*L/A` with the one its partner model
+    /// measured on its own grid. The momentum row keeps the term either way -
+    /// only the number changes - so this is the one way a detailed region can
+    /// state its momentum without putting it into the interface coefficient.
+    /// Only a coupled pipe can be asked, and a pending step is dropped for the
+    /// same reason `setCoupledResistance` drops it.
+    void setCoupledInertia(label k, double inertia);
+
+    /// The inertance (Pa.s2/m3, kg/m4) pipe `k`'s momentum row actually carries.
+    double pipeInertia(label k) const;
+
     /// True while `pipe k` is handed to a partner model.
     bool pipeCoupled(label k) const;
 
@@ -153,7 +164,7 @@ private:
     {
         NetworkPipe geo; // reuse the steady pipe geometry + friction law
         double qPrev = 0;
-        double inertia = 0; // rho L / A
+        double inertia = 0; // rho L / A, or the partner model's measurement of it
         // valve schedule: K ramps geo.valveK -> kClosed over
         // [closeStart, closeEnd] and back over [openStart, openEnd];
         // negative start times disable the ramps

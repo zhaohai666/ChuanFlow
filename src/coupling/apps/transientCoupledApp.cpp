@@ -93,6 +93,25 @@ int main(int argc, char** argv)
             cfFatal("coupled1d3dTransient: couple{} needs at least one starting"
                     " resistance in seeds ( )");
 
+        // Where the detailed region's inertance comes from, one entry per seed
+        // arm. `network` keeps the coupled pipe's own rho*L/A, which is only as
+        // good as the bore the case typed for the region; `partner` installs the
+        // block's rho*V/A^2 measured on the region's mesh in its place. Same
+        // equation either way -- which is what running both as arms of one case
+        // is for -- and the two numbers differ by the bore's shape error.
+        std::vector<std::string> inertias;
+        if (cd.has("inertias")) inertias = cd.getWordList("inertias");
+        if (inertias.empty()) inertias.push_back("network");
+        if (inertias.size() == 1 && seeds.size() > 1)
+            inertias.assign(seeds.size(), inertias[0]);
+        if (inertias.size() != seeds.size())
+            cfFatal("coupled1d3dTransient: couple{} needs inertias ( ) with one"
+                    " entry per seed, or one entry for all of them");
+        for (const std::string& w : inertias)
+            if (w != "network" && w != "partner")
+                cfFatal("coupled1d3dTransient: inertias entry '" + w
+                        + "' is neither network nor partner");
+
         // ---- the 3D side ----
         const Dictionary& dd = caseDict.getDict("detail");
         polyMesh mesh = MeshLoader::fromCase(dd, argv[1]);
@@ -119,7 +138,9 @@ int main(int argc, char** argv)
         log::info("transient network+block: block has ", mesh.nCells(), " cells and ",
                   mesh.nPatches(), " patches; nu ", num(c.fluid.mu / c.fluid.rho),
                   "; dt ", num(tc.dt), " endTime ", num(tc.endTime),
-                  "; interface ", (ctl.accelerate ? "quasi-Newton" : "plain Gauss-Seidel"));
+                  "; interface ", (ctl.accelerate ? "quasi-Newton" : "plain Gauss-Seidel"),
+                  "; region inertia ", inertias[0],
+                  (inertias.size() > 1 ? " (arms)" : ""));
 
         for (std::size_t s = 0; s < seeds.size(); ++s)
         {
@@ -143,7 +164,9 @@ int main(int argc, char** argv)
                         + "' in the network");
             net.setCoupledResistance(edge, seeds[s]);
 
-            log::info("transient seed ", s, " starting resistance ", num(seeds[s]));
+            ctl.inertiaFromPartner = (inertias[s] == "partner");
+            log::info("transient seed ", s, " starting resistance ", num(seeds[s]),
+                      " inertia ", inertias[s]);
             const TransientCoupledResult res =
                 solveTransientCoupled1d3d(net, {edge}, {&block}, ctl, tc.dt, tc.endTime);
 
@@ -159,6 +182,7 @@ int main(int argc, char** argv)
                           " residual ", num(ex.residual),
                           " passes ", st.passes, " subPasses ", st.history.size(),
                           " sweeps ", ex.sweeps, " newton ", num(p.newtonResidual),
+                          " M ", num(ex.inertance),
                           " blockConverged ", (ex.blockConverged ? 1 : 0));
 
                 std::ostringstream nodes;
@@ -189,6 +213,7 @@ int main(int argc, char** argv)
                       " probeSlope ", num(m.probeSlope),
                       " probeSpread ", num(m.probeSpread),
                       " dpPa ", num(m.dpPa),
+                      " inertance ", num(m.inertance),
                       " turb ", (m.turbModel.empty() ? std::string("laminar")
                                                      : m.turbModel),
                       " nutMax ", num(m.nutMax),

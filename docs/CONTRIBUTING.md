@@ -402,6 +402,7 @@ couple {
     tolerance 1e-4;               // 不得严于伙伴自己的分辨率：pcorrTol 1e-5 ⇒ 残差地板 ~1e-5…1e-4
     maxSubIterations 8;           // 取代稳态的 maxOuterIterations，用尽即 fatal
     accelerate no;                // yes ⇒ 每步的界面历史重建后用准 Newton（见 architecture.md §5.21）
+    inertias ( network partner ); // 每个种子臂一个区域惯量来源（缺省全是 network，见下面 ⑥）
 }
 ```
 
@@ -434,6 +435,18 @@ transientCoupledTurbulent`：斜率形式 −0.34%、弦形式 +61.7%），并�
 checker 里重写一份作外部锚（旁路动量行 7e-14）。逐步的界面残差实测落在 4.4e-5…2.0e-4
 （最大在第 23 步，正压在 `tolerance 2e-4` 下面）——这个量级来自伙伴自己的通量不平衡，不是
 调出来的：稳态 ④ 说的两条地板在时间步进里一条不减，反而每步只剩 `maxSubIterations` 趟去够它。
+⑥ 区域的惯量有两个来源：`couple{ inertias ( network partner ) }` 按 `seeds` 的臂序给（长度 1
+摊平到全部，缺省 `network`）。`network` 用耦合管自己的 `rho*L/A`——它只和 case 里敲进去的名义
+孔径一样好（方渠道配内切圆多报 **27.3%**）；`partner` 让每条耦合边取它的块在区域网格上量的
+`rho*V/Area^2`。两条别改的约定：**惯量只装进 1D 的动量行，不写进界面系数**——伙伴若报
+`R(q)*q + M*(q-qPrev)/(dt*q)`，映射就成了 `R -> a - c/R`，而"接口能分辨这条爬升"的条件正是
+`dt < M/R`，于是任何减速步把系数推过零：实测 fatal 于 `Z = -2180.209163 Pa`，把 fatal 放宽后块
+烧满 300 趟 SIMPLE 钉在连续性 0.00522332；**装载发生在全部边校验完之后**，且测量只取一次
+（它是网格属性、与时间层无关），所以报不出区域的伙伴不会把网络留在半声明状态。截面在变的区域
+直接 fatal（平面面积差过 1e-9 相对就没有单一惯量可报），而不是报一个错数。日志里每步的 `M` 是动量行
+**实际带**的那个数（`EdgeExchange::inertance`，不在解时间层时为 0），块摘要的 `inertance` 是块
+自测的那个——`tests/check_transient_coupled_inertia.py` 就是拿这两行分别对撞 `rho*L/A` 与
+`rho*V/A^2` 的独立算式来验归属的（推导与实测表见 architecture.md §5.24）。
 
 **多边分区耦合**（`chflow-coupled-1d3d-multi`）把 `edge`/`seeds`/`detail` 三个单数键换成
 复数：`couple{ edges (…) starts{} }` 列出被详细化的所有管名与"一整组初值"，`details{}` 按

@@ -1,0 +1,110 @@
+# transientCoupledInertia: the transient coupled network of
+# tests/cases/transientCoupled1d3d, run twice - once with the detailed region's
+# inertance taken from the 1D pipe that stands for it, once with the inertance
+# the 3D block measures on the region's own mesh:
+#   Src -> A -> { X (the 3D block) || By (1D bypass) } -> B -> Snk
+# The region is a 0.5 x 0.02 x 0.02 m duct, so its own rho*V/A^2 is exactly
+# 1.0e6 kg/m4, while the circular bore the pipes{} block names for it (d = 0.02,
+# the widest round pipe that fits between its walls) gives rho*L/A = 1.27324e6:
+# 27% more inertia for the same fluid, because a circle inscribed in a square
+# leaves the corners out. That error is what `inertias ( network partner )`
+# removes, and both arms are the same case so the difference is only the source
+# of one number.
+#
+# Measured on this case, and what the checker anchors on:
+#   * the first step divides the switched-on rate by INERTANCE, so the two arms
+#     part company there: 1.386514e-4 m3/s with the bore's number against
+#     1.515730e-4 with the region's - 8.2% of the settled rate, and each one
+#     closes its own first-step split to 1e-3 with the M its arm carries
+#   * the ramp's time constant is (M_X + M_By)/(R_X + R_By): fitted 0.263142 s
+#     and 0.239584 s, a ratio of 1.09833 where the bore's shape error diluted by
+#     the bypass's inertia predicts 1.10129
+#   * the operating point carries no inertia, so both arms relax to the same
+#     rate: the difference between them decays from 1.29e-5 to 1.69e-7 m3/s
+#   * the interface agrees at every time level in both arms, worst residual
+#     9.85e-5 under the case's 1e-4, and neither arm needs the quasi-Newton
+#     because the coefficient stays the resistance the partner resists at the
+#     rate it is given - the inertance enters the row, not the map
+fluid { rho 800; mu 0.1; }
+
+# Src, J1 and J2 are incompressible ports (no bulkModulus), so the branch split
+# is a result of the momentum balance alone rather than of node compliance. They
+# still hold liquid with room to spare, because the injected rate has to go
+# somewhere on the very first step, when every pipe flow is still zero.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 2.4e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    // X is the coupled edge: its loss comes from the 3D solve through
+    // coupledResistance, while its length and diameter are the 1D side's guess
+    // at the region's inertia - the guess `inertias ( partner )` replaces.
+    X  { from J1; to J2; length 0.5;   diameter 0.02;
+         coupledResistance 3.75e6; }
+
+    By { from J1; to J2; length 1.5;   diameter 0.03; }
+    B  { from J2; to Snk; length 5.0;  diameter 0.1; }
+}
+
+// dt 0.02 against tau ~ 0.26 s: ~13 steps per time constant, and 60 steps run
+// past 4.5 of them, so the series ends within 1% of the steady operating point
+time { dt 0.02; endTime 1.2; reportEvery 1; }
+
+couple {
+    edge X;
+    // the same starting coefficient in both arms: what separates them is where
+    // the region's inertia is read from, not where the interface starts
+    seeds ( 3.75e6 3.75e6 );
+    inertias ( network partner );
+    relax 1.0;
+    // the block's own solve resolves its drop to ~1e-5 of itself, and the
+    // interface residual is the gap between two solvers; asking for less than
+    // the partner's resolution would only burn passes inside every step
+    tolerance 1e-4;
+    maxSubIterations 8;
+}
+
+detail {
+    block {
+        min   (0 0 0);
+        max   (0.5 0.02 0.02);
+        cells (50 20 1);
+
+        xmin  { name inlet;   type inlet;    }
+        xmax  { name outlet;  type outlet;   }
+        ymin  { name bottom;  type wall;     }
+        ymax  { name top;     type wall;     }
+        zmin  { name front;   type symmetry; }
+        zmax  { name back;    type symmetry; }
+    }
+
+    // cross-section window the developed gradient is measured over: the entry
+    // length at this Reynolds number is ~0.08 m, so the window starts past it
+    probe { min 0.12; max 0.49; }
+
+    schemes {
+        ddt       steady;
+        div       upwind;
+        laplacian corrected;
+        grad      corrected;
+    }
+
+    simple {
+        maxIterations 300;
+        continuityTol 1e-6;
+        pcorrTol      1e-5;
+        momentumTol   1e-5;
+        relaxU        0.9;
+        relaxP        0.03;
+        pRelaxStart   0.02;
+    }
+}

@@ -337,6 +337,47 @@ void DetailBlock::buildSections()
         planes_.push_back(std::move(group));
         k = m;
     }
+
+    // The region's own hydraulic inertance, for the interface convention that
+    // lets the block state its region's momentum: rho*V/A^2. It is a property of
+    // this mesh, not of the proxy pipe the 1D side declares, so the two can be
+    // compared rather than assumed equal. The formula needs one section, and a
+    // region whose planes differ in area has no single inertance at all, so the
+    // areas are checked instead of trusted.
+    scalar areaRef = 0.0;
+    bool firstPlane = true;
+    for (const std::vector<label>& plane : planes_)
+    {
+        scalar a = 0.0;
+        for (const label f : plane) a += std::abs(sf[static_cast<std::size_t>(f)][axis_]);
+        if (firstPlane)
+        {
+            areaRef = a;
+            firstPlane = false;
+        }
+        else if (std::abs(a - areaRef) > 1e-9 * areaRef)
+            cfFatal("detailBlock: the detailed region's cross-section is not"
+                    " constant (plane areas " + std::to_string(areaRef) + " vs "
+                    + std::to_string(a) + " m2), so its momentum has no single"
+                      " inertance for the interface to carry");
+    }
+    if (!(areaRef > 0) || !(areaRef < std::numeric_limits<scalar>::max()))
+        cfFatal("detailBlock: the detailed region's cross-section area is not a"
+                " positive, finite number (" + std::to_string(areaRef)
+                + " m2), so rho*V/A^2 has no value for the interface to carry");
+    scalar volume = 0.0;
+    for (label c = 0; c < mesh_.nCells(); ++c)
+        volume += mesh_.cellVolumes()[static_cast<std::size_t>(c)];
+    // A region with no section to refer its momentum to -- or one whose cell
+    // volumes do not add up to a finite volume -- has no inertance to hand the
+    // interface, so the block says so on its own geometry instead of letting a
+    // NaN reach a momentum row.
+    inertance_ = rho_ * volume / (areaRef * areaRef);
+    if (!(areaRef > 0) || !(volume > 0) || !std::isfinite(inertance_))
+        cfFatal("detailBlock: the detailed region measures"
+                " " + std::to_string(volume) + " m3 of fluid across a"
+                " " + std::to_string(areaRef) + " m2 section, which is no"
+                  " rho*V/A^2 for the interface to install");
 }
 
 void DetailBlock::applyBoundary(scalar qMag)
@@ -420,6 +461,7 @@ void DetailBlock::measure(const SimpleResult& res, scalar qMag)
 
     measure_ = BlockMeasure{};
     measure_.cells = mesh_.nCells();
+    measure_.inertance = inertance_;
     measure_.sweeps = res.iterations;
     measure_.converged = res.converged;
     measure_.imposedQ = qMag;
@@ -739,6 +781,33 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
     if (ctl.accelerate)
         qn = std::make_unique<InterfaceQuasiNewton>(ctl.qnHistory, ctl.qnLimit);
 
+    // Where the detailed region's inertance comes from. A partner that measures
+    // its own hands the number to the network's momentum row, which keeps it
+    // implicit exactly as the pipe's own rho*L/A was kept - the one way a
+    // detailed region can state its momentum without putting it into the
+    // interface coefficient, where a rate falling through the step would turn it
+    // negative. The measurement is a property of the mesh, so it is taken once
+    // before any step is solved, and every edge is checked before any of them is
+    // installed: a partner that states no region must not leave the network
+    // half-declared.
+    if (ctl.inertiaFromPartner)
+    {
+        std::vector<scalar> measured(edges.size(), 0.0);
+        for (std::size_t i = 0; i < edges.size(); ++i)
+        {
+            measured[i] = blocks[i]->regionInertance();
+            if (!(measured[i] > 0))
+                cfFatal("coupling: transient pipe '"
+                        + net.pipeNames()[static_cast<std::size_t>(edges[i])]
+                        + "' is to take its inertance from its partner, which"
+                          " measures " + std::to_string(measured[i])
+                          + " kg/m4: a partner that states no region of its own"
+                            " has nothing to install");
+        }
+        for (std::size_t i = 0; i < edges.size(); ++i)
+            net.setCoupledInertia(edges[i], measured[i]);
+    }
+
     for (std::size_t s = 0; s < nSteps; ++s)
     {
         TransientCoupledStep step;
@@ -772,6 +841,7 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                             " coupled pipe '" + ex.name + "'; a partner cannot be"
                             " evaluated at zero rate");
                 ex.dpPa = blocks[i]->lossAt(ex.q);
+                ex.inertance = net.pipeInertia(edge);
                 ex.residual = std::abs(ex.resistance * ex.q - ex.dpPa)
                               / std::max(std::abs(ex.dpPa), 1e-300);
                 ex.sweeps = blocks[i]->lastSweeps();

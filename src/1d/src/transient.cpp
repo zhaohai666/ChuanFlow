@@ -225,8 +225,10 @@ double TransientNetwork::solveStep(double dt)
             // so adding this pipe's own Churchill friction on top would charge
             // the network twice for the same wall. It stays linear in Q because
             // the interface refreshes the coefficient every pass. Gravity and
-            // the region's inertance rho*L/A stay on the 1D side - the partner
-            // is asked for a drop at an instant, not for the fluid's momentum.
+            // the region's inertance stay on the 1D side - the partner is asked
+            // for a drop at an instant, not for the fluid's momentum; `inertia`
+            // is the pipe's own rho*L/A unless the interface measured the
+            // region's and handed the number back (setCoupledInertia).
             const double R = pd.geo.coupledResistance;
             const double fr = R > 0 ? R * x[k] : frictionDp(pd.geo, fluid_, x[k]);
             const double slope = R > 0
@@ -385,6 +387,32 @@ double TransientNetwork::coupledResistanceOf(label k) const
     if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
         cfFatal("transient: no pipe at index " + std::to_string(k));
     return pipes_[static_cast<std::size_t>(k)].geo.coupledResistance;
+}
+
+double TransientNetwork::pipeInertia(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].inertia;
+}
+
+void TransientNetwork::setCoupledInertia(label k, double inertia)
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    // Checked before anything else, so a caller cannot be told a pipe has no
+    // partner when what it handed over was not an inertance.
+    if (!(std::isfinite(inertia) && inertia > 0))
+        cfFatal("transient: a partner region's inertance must be a positive,"
+                " finite rho*Volume/Area^2; got " + std::to_string(inertia)
+                + " (kg/m4)");
+    PipeDyn& pd = pipes_[static_cast<std::size_t>(k)];
+    if (pd.geo.coupledResistance <= 0)
+        cfFatal("transient: pipe '" + pipeNames_[static_cast<std::size_t>(k)]
+                + "' has no partner model, so it has no measured inertance to"
+                  " take");
+    pd.inertia = inertia;
+    pending_ = false;
 }
 
 void TransientNetwork::setCoupledResistance(label k, double resistance)

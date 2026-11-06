@@ -11,9 +11,12 @@
 //     the rate the partner was last asked for is the rate being reported;
 //   * the transient loop re-solves one time step until the interface agrees
 //     and then commits exactly that step, so its ramp follows the discrete
-//     closed form of the inertial network it is coupled into.
+//     closed form of the inertial network it is coupled into;
+//   * the region's inertance is one number with two possible sources, and the
+//     network solves with whichever one the case names.
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <string>
 
 #include "cf/1d/Network.h"
@@ -437,6 +440,130 @@ int main()
         CHECK(sameRamp, "the relaxed interface follows the same ramp");
         CHECK(passes2 > passes1, "relaxation costs partner runs to get there");
         CHECK(relNear(r2.state[0].resistance, 4.0e6, 1e-10), "relaxed coefficient is the same");
+    }
+
+    // ---- where the detailed region's inertance comes from ----
+    {
+        // Same network, same linear partner, and a partner that hands back the
+        // region's inertance: with the number the pipe would have used anyway
+        // the two conventions must produce one trajectory, because the
+        // partitioned system is one system. With a different number the ramp is
+        // a different ramp - and only the inertance changed, since a linear
+        // partner's coefficient is its resistance either way.
+        const double section = 0.25 * M_PI * 0.05 * 0.05;
+        const double mOwn = 800.0 * 10.0 / section;      // pipe X: length 10
+        const double mRegion = mOwn * (M_PI / 4.0);      // a 78.5% equal-area bore
+        const double mBy = 800.0 * 1.0 / section;
+        const double rBlock = 4.0e6, rBy = 1.0e6, qIn = 0.02;
+        const double dt = 0.15, endTime = 1.8;
+
+        class InertialElement : public AnalyticElement
+        {
+        public:
+            InertialElement(double r0, double m) : AnalyticElement(r0, 0.0), m_(m) {}
+            double regionInertance() const override { return m_; }
+
+        private:
+            double m_;
+        };
+
+        TransientNetwork kept(transientBranched(qIn, 1.0e6));
+        TransientNetwork given(transientBranched(qIn, 1.0e6));
+        TransientNetwork other(transientBranched(qIn, 1.0e6));
+
+        coupling::TransientCoupledControls base;
+        base.tolerance = 1e-12;
+        coupling::TransientCoupledControls fromPartner = base;
+        fromPartner.inertiaFromPartner = true;
+
+        AnalyticElement plain(rBlock, 0.0);
+        InertialElement sameInertia(rBlock, mOwn), shaped(rBlock, mRegion);
+        const coupling::TransientCoupledResult rKeep =
+            coupling::solveTransientCoupled1d3d(kept, {1}, {&plain}, base, dt, endTime);
+        const coupling::TransientCoupledResult rGive =
+            coupling::solveTransientCoupled1d3d(given, {1}, {&sameInertia}, fromPartner, dt, endTime);
+        const coupling::TransientCoupledResult rShape =
+            coupling::solveTransientCoupled1d3d(other, {1}, {&shaped}, fromPartner, dt, endTime);
+
+        CHECK(rGive.steps.size() == rKeep.steps.size()
+                  && rShape.steps.size() == rKeep.steps.size(),
+              "all three conventions run the whole series");
+        bool identical = true, everyStep = true, shapeDiffers = false;
+        for (std::size_t n = 0; n < rKeep.steps.size(); ++n)
+        {
+            identical = identical
+                && relNear(rKeep.steps[n].edges[0].q, rGive.steps[n].edges[0].q, 1e-15)
+                && relNear(rKeep.steps[n].pressure[1], rGive.steps[n].pressure[1], 1e-15);
+            everyStep = everyStep
+                && relNear(rGive.steps[n].edges[0].inertance, mOwn, 1e-15)
+                && relNear(rKeep.steps[n].edges[0].inertance, mOwn, 1e-15)
+                && relNear(rShape.steps[n].edges[0].inertance, mRegion, 1e-15);
+            shapeDiffers = shapeDiffers
+                || !relNear(rShape.steps[n].edges[0].q, rKeep.steps[n].edges[0].q, 1e-6);
+        }
+        CHECK(identical,
+              "a partner that measures what the bore already says changes nothing:"
+              " one rate history, one pressure history");
+        CHECK(everyStep, "each step reports the inertance its own row was solved with");
+        CHECK(given.pipeInertia(1) == mOwn && other.pipeInertia(1) == mRegion,
+              "the network keeps the installed number after the run");
+        CHECK(shapeDiffers,
+              "and a different measurement is a different trajectory: the shape"
+              " factor moves the ramp, not just the bookkeeping");
+
+        // the reshaped arm, against the same closed forms the ramp test uses
+        const double decayShape = 1.0 + dt / ((mRegion + mBy) / (rBlock + rBy));
+        const double qInfShape = qIn * rBy / (rBlock + rBy);
+        const double q1Shape = (mBy / dt + rBy) * qIn
+                             / ((mRegion + mBy) / dt + rBlock + rBy);
+        CHECK(relNear(rShape.steps[0].edges[0].q, q1Shape, 1e-9),
+              "the first step divides the sudden rate by the installed inertance");
+        CHECK(relNear(rShape.steps[3].edges[0].q - qInfShape,
+                      (rShape.steps[2].edges[0].q - qInfShape) / decayShape, 1e-9),
+              "and relaxes with the time constant that inertance implies");
+
+        // a partner that states no region cannot leave the network half-declared
+        {
+            TransientNetwork net(transientBranched(qIn, 1.0e6));
+            AnalyticElement silent(rBlock, 0.0);   // the interface's own default
+            coupling::TransientCoupledControls asks = base;
+            asks.inertiaFromPartner = true;
+            bool refused = false;
+            try
+            {
+                coupling::solveTransientCoupled1d3d(net, {1}, {&silent}, asks, dt, endTime);
+            }
+            catch (const Error&) { refused = true; }
+            CHECK(refused,
+                  "a convention that asks a partner for a region it does not state"
+                  " is fatal, not silently the bore's number");
+            CHECK(relNear(net.pipeInertia(1), mOwn, 1e-15) && net.time() == 0.0,
+                  "and the refusal happens before anything is installed: the network"
+                  " is still the case that was typed");
+        }
+
+        // the 1D side's own guards, in the order they are checked
+        {
+            TransientCase c = transientBranched(qIn, 1.0e6);
+            c.pipes[3].coupledResistance = 0.0;      // pipe B: no partner at all
+            TransientNetwork net(c);
+            bool noPartner = false, zeroed = false, naned = false;
+            try { net.setCoupledInertia(3, 1.0e6); }
+            catch (const Error&) { noPartner = true; }
+            try { net.setCoupledInertia(1, 0.0); }
+            catch (const Error&) { zeroed = true; }
+            try { net.setCoupledInertia(1, std::numeric_limits<double>::quiet_NaN()); }
+            catch (const Error&) { naned = true; }
+            CHECK(noPartner, "only a pipe with a partner can be given a measured inertance");
+            CHECK(zeroed && naned,
+                  "a non-positive or non-finite inertance is refused before it reaches"
+                  " any row, so a degenerate region cannot quiet the ramp");
+            CHECK(relNear(net.pipeInertia(1), mOwn, 1e-15),
+                  "and a refused write leaves the row's number where it was");
+            net.setCoupledInertia(1, mRegion);
+            CHECK(relNear(net.pipeInertia(1), mRegion, 1e-15),
+                  "pipeInertia reads back what the momentum row will use");
+        }
     }
 
     // ---- a step the interface cannot agree on stops the run ----

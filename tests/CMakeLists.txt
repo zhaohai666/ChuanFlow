@@ -393,6 +393,18 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupledTurbulent/case.dict)
 
+# one region, two sources for its inertia: the same case runs once with the
+# coupled pipe's own rho*L/A and once with the rho*V/A^2 the block measures on
+# the region's mesh, so the checker closes every momentum row against the
+# inertance that arm installed and reads the bore's shape error back out of the
+# ramp the two arms produce
+add_test(
+    NAME verify.transientCoupledInertia
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_inertia.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledInertia/case.dict)
+
 # the RANS partner inside a time-stepping network: every time level agrees the
 # interface again, and the checker reads the ramp back out of the series - the
 # restoring term is the two partners' slopes, so the chord formula that closes

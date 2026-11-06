@@ -33,6 +33,14 @@ public:
     /// Always positive: the element resists the flow, whichever way it runs.
     virtual scalar lossAt(scalar qMag) = 0;
 
+    /// The region's hydraulic inertance `rho*Volume/Area^2` in kg/m4 -- the same
+    /// quantity the 1D side calls `rho*L/A`, measured on the geometry that
+    /// actually holds the fluid. Negative means the partner states no region of
+    /// its own, which is every analytic law and every steady case: there the
+    /// 1D pipe's nominal bore is the only description of the volume, so it is
+    /// also the only source of the number.
+    virtual scalar regionInertance() const { return -1; }
+
     /// Diagnostics of the last `lossAt`, recorded into the interface history so
     /// a regression can tell "the partner needed more sweeps" from "the
     /// interface stalled". An analytic law is exact at the rate it was given,
@@ -75,6 +83,11 @@ struct BlockMeasure
     scalar nutMax = 0;        // m2/s, largest eddy viscosity in the region
     scalar wallYPlusMax = 0;  // first cell's y+, max over the wall faces
     scalar wallUTau = 0;      // m/s, area-weighted mean friction velocity
+
+    /// What the region's own momentum is worth, measured on the mesh: the
+    /// hydraulic inertance `rho*V/A^2` (kg/m4, the same quantity as the 1D
+    /// side's `rho*L/A` but taken from the geometry that holds the fluid).
+    scalar inertance = 0;
 };
 
 /// One steady incompressible duct, solved in 3D and reduced to the single number
@@ -109,6 +122,11 @@ public:
 
     scalar lossAt(scalar qMag) override;
 
+    /// `rho*V/A^2` of the region, measured on the block's own mesh: the
+    /// inertance the 1D momentum row would otherwise have to guess from the
+    /// nominal bore of the pipe standing in for this region.
+    scalar regionInertance() const override { return inertance_; }
+
     const BlockMeasure& measure() const { return measure_; }
     const polyMesh& mesh() const { return mesh_; }
     const volVectorField& U() const { return U_; }
@@ -142,6 +160,12 @@ private:
     /// inlet patch's outward normal, so every measured sign follows the mesh.
     int flowSign_ = 1;
     scalar inletArea_ = 0;
+
+    /// `rho*V/A^2` of the region, measured on the mesh (kg/m4). The formula
+    /// assumes a constant section, which `buildSections` checks rather than
+    /// trusts: a region whose planes differ in area cannot be reduced to one
+    /// inertance, and the block says so instead of reporting a wrong one.
+    scalar inertance_ = 0;
 
     /// Cross-section groups along the flow axis: cell indices sharing a centre
     /// coordinate, ordered the way the flow meets them, with the section's
@@ -179,6 +203,10 @@ struct EdgeExchange
     scalar residual = 0;
     label sweeps = 0;
     bool blockConverged = false;
+    /// The inertance the 1D momentum row carries for this edge (kg/m4), and so
+    /// the region's share of the ramp's time constant. 0 where no time level is
+    /// being solved -- every steady exchange.
+    scalar inertance = 0;
 };
 
 /// One pass of the steady interface: every coupled edge evaluated against the
@@ -263,6 +291,27 @@ struct TransientCoupledControls
     bool accelerate = false;
     label qnHistory = 8;
     scalar qnLimit = 100.0;
+
+    /// Where the detailed region's inertance comes from. Asked of the network
+    /// (false, the default) the momentum row uses the coupled pipe's own
+    /// `rho*L/A`, which is only as good as the bore the case typed in for the
+    /// region. Asked of the partner (true) every coupled edge takes the
+    /// `rho*V/A^2` its block measured on the region's actual geometry instead,
+    /// and the term stays implicit in the same row.
+    ///
+    /// The two agree exactly when the pipe's nominal bore is the region's
+    /// equal-area one, and disagree by the shape error of every other bore --
+    /// which is the point: an irregular region has no single bore to name. That
+    /// error moves the path, not the destination: the operating point carries no
+    /// inertia, so both readings relax to the same rate while their first steps
+    /// differ by the inertial split. What does NOT work is putting the region's
+    /// momentum into the interface
+    /// coefficient instead, where the partner would report
+    /// `R(q)*q + M*(q - qPrev)/dt`: the coefficient then reads `a - c/R`, and a
+    /// region whose rate is falling through a step reports a non-positive one
+    /// whenever `dt` is below its own time constant `M/R` -- which is every
+    /// transient that resolves the ramp it is iterating on.
+    bool inertiaFromPartner = false;
 };
 
 /// One interface exchange inside one time step: every coupled edge evaluated
@@ -307,17 +356,24 @@ struct TransientCoupledResult
 /// same statement has to hold at the new rates.
 ///
 /// The partner is asked for a drop at an *instant*, which is what keeps the
-/// interface stable. A time-accurate partner would report its region's
-/// inertial term `rho*L/A*(q - q_prev)/dt` inside that drop, making the
-/// coefficient the network solves for depend on the previous step's rate: the
-/// map becomes `R -> a - c/R`, whose derivative at a stiff region is far above
-/// 1, so plain Gauss-Seidel cannot converge. So the region's inertance stays on
-/// the 1D side - implicit, in the same momentum row as the rest of the network
-/// - and the partner contributes the resistance it resists at the rate it is
-/// given. The split is falsifiable: the time constant of the resulting ramp is
-/// `(M_X + M_By)/(R_X + R_By)`, so a system carrying the region's inertance
-/// twice reads there - in the case that ships, where the region holds 43% of the
-/// loop's inertance, as a 43% longer time constant.
+/// interface stable: the coefficient the network solves for then depends on
+/// nothing but the rate. A time-accurate partner would report its region's
+/// inertial term `M*(q - qPrev)/dt` inside that drop, so the coefficient would
+/// read `a - c/R` - and a region whose rate falls through a step hands the
+/// network a non-positive one whenever `dt` is below its own time constant
+/// `M/R`, which is every transient that resolves the ramp it iterates on. So the
+/// inertance stays implicit, in the same momentum row as the rest of the
+/// network, and `inertiaFromPartner` decides only where its number comes from:
+/// the coupled pipe's nominal `rho*L/A`, or the block's `rho*V/A^2` measured on
+/// the region's own mesh. When the bore is the equal-area one the two are the
+/// same number and the trajectory is identical to machine precision; otherwise
+/// they differ by exactly the error a bore carries for a region that has no
+/// bore, and that error lives in the path (the first step's inertial split, the
+/// ramp's time constant) rather than in the operating point both relax to.
+///
+/// The split is falsifiable on its own as well: the ramp's time constant is
+/// `(M_X + M_By)/(m_X R_X + m_By R_By)`, so a region whose inertance is read
+/// wrong by a shape factor ramps wrong by that factor's share of the loop.
 ///
 /// A step any edge cannot agree on is fatal: continuing would commit a state
 /// whose sides disagree, and the rest of the series would inherit it.

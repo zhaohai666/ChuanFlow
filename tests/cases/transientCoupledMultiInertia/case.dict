@@ -1,0 +1,141 @@
+# transientCoupledMultiInertia: two detailed regions in one time-stepping
+# network, and the question of where EACH region's inertia comes from.
+#
+#   Src -> A -> { X1 (3D duct) || By (1D bypass) } -> X2 (3D duct) -> B -> Snk
+#
+# tests/cases/transientCoupledMulti1d3d puts the two edges inside the time
+# stepper, and tests/cases/transientCoupledInertia makes one block state its own
+# region instead of trusting the bore of the pipe standing in for it. This case is
+# both at once: `inertias ( network partner )` runs the same two-edge, same-seed
+# problem twice, once reading each region's inertance from the 1D pipe's nominal
+# bore (rho*L/A) and once from the block's own mesh (rho*V/Area^2). What is new is
+# not the second arm - it is that the two edges disagree with the bore by DIFFERENT
+# amounts, so the attribution has to be per edge and the comparison is one
+# trajectory per edge rather than one global switch.
+#
+# The two regions are the two blocks of the multi case, unchanged:
+#   X1: 0.5 x 0.02 x 0.02 m, section 4.0e-4 m2, Volume 2.0e-4 m3
+#       bore d 0.02 -> A 3.14159e-4 m2 -> rho*L/A overstates the region by 27.3%
+#   X2: 0.4 x 0.01 x 0.03 m, section 3.0e-4 m2, Volume 1.2e-4 m3
+#       bore d 0.015 -> A 1.76715e-4 m2 -> rho*L/A overstates the region by 69.8%
+# The inscribed circle of a square section misses the corners; the inscribed
+# circle of a 3:1 rectangle misses a lot more. Same fluid, same length, and the
+# error is a property of the shape the 1D side was allowed to know about.
+#
+# X1 is the parallel branch, so its inertance sets how the switched-on rate splits
+# on the very first step and how fast the split walks over to the resistance split
+# (tau = (M_X1 + M_By)/(R_X1 + R_By)). X2 is in series, so an incompressible
+# network hands it the whole injected rate at t = dt whatever its inertia is: its
+# inertance changes only the drop it asks for on the first step (M*Q/dt). Those are
+# the two ways one number enters the momentum row, and they are on display at once.
+#
+# The inertance goes to the momentum row and nowhere else: the interface
+# coefficient stays the resistance the partner resists at the rate it is given. The
+# two arms therefore negotiate the same schedule and land on the same settled
+# per-edge resistance, and the checker can ask for exactly that - if attribution
+# had leaked into the mapping, the arms would negotiate different numbers.
+fluid { rho 800; mu 0.1; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 3.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    # the coupled edges. length/diameter are also, in the `network` arm, where
+    # each region's inertia is read from; in the `partner` arm the block's own
+    # measurement replaces rho*L/A here, one edge at a time
+    X1 { from J1; to J2; length 0.5;  diameter 0.02;
+         coupledResistance 3.75e6; }
+    By { from J1; to J2; length 1.5;  diameter 0.03; }
+
+    X2 { from J2; to J3; length 0.4;  diameter 0.015;
+         coupledResistance 1.6e7; }
+
+    B  { from J3; to Snk; length 5.0; diameter 0.1; }
+}
+
+# dt 0.05 against tau ~ 0.265 s (bore arm) / ~ 0.240 s (region arm): 12 steps is
+# a little over two time constants, so the ramp is still alive at the end and both
+# arms are read while they differ. The checker predicts the whole discrete ramp
+# from each arm's own M, so the step count is a cost choice, not a weaker claim.
+time { dt 0.05; endTime 0.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    // each block resolves its own drop to ~1e-5 of it, and the interface
+    // residual is the gap between two solvers
+    tolerance 1e-4;
+    maxSubIterations 8;
+    starts {
+        # One starting set per attribution arm, and the two sets quote the SAME
+        # coefficients, so the only difference between the trajectories is where M
+        # came from. X1 starts at its own duct value (the parallel branch is then
+        # negotiated almost at once); X2 starts three quarters of the way to its
+        # own so its drop has to be iterated inside every time level - that is the
+        # schedule both arms must share.
+        bore   { X1 3.75e6; X2 1.2e7; }
+        region { X1 3.75e6; X2 1.2e7; }
+    }
+    # one entry per starting set: the `bore` arm keeps rho*L/A, the `region` arm
+    # takes each block's own rho*V/Area^2
+    inertias ( network partner );
+}
+
+details {
+    # X1: the 0.5 x 0.02 x 0.02 m duct of the single-edge cases
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.5 0.02 0.02);
+            cells (50 20 1);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.12; max 0.49; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_transient_multi_inertia_X1.vtu;
+    }
+
+    # X2: the 0.4 x 0.01 x 0.03 m duct of the multi case, spanwise cells already
+    # reduced to 1 (both z faces are symmetry, so a straight duct is the same 2D
+    # problem either way - see the note in transientCoupledMulti1d3d).
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.4 0.01 0.03);
+            cells (40 20 1);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.15; max 0.38; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_transient_multi_inertia_X2.vtu;
+    }
+}

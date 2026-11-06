@@ -394,6 +394,19 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMulti1d3d/case.dict)
 
+# the same network and the same two blocks, with only the source of the region's
+# inertia switched: one arm pays rho*L/A from the proxy bore, the other the
+# rho*V/Area^2 the block measures on its own mesh. The two edges are mis-stated
+# by different amounts, so the checker closes each edge's momentum row with that
+# arm's number, shows the interface coefficient is unchanged by the attribution,
+# and reads the different first-step split and tau back out of the parallel branch
+add_test(
+    NAME verify.transientCoupledMultiInertia
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_inertia.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiInertia/case.dict)
+
 # the same partitioned interface with a nonlinear partner: edge X is a RANS
 # channel, so its drop-per-rate is a function of the rate the interface is
 # hunting for. One seed runs under both operators, which is what lets the

@@ -176,6 +176,21 @@ python3 tests/check_transient_coupled_multi.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMulti1d3d/case.dict"
 
+# 多边 × 区域惯量归属同台：同一张管网、同样两条边，只把两臂的惯量来源换成
+# `inertias ( network partner )`，种子逐位相同。两条边被"名义孔径"错估的幅度不同
+# （X1 +27.3%、比值 1.273240；X2 +69.8%、比值 1.697653，都 == 实截面/内切圆到 1e-12），
+# 所以一个全局修正因子做不出这两行。
+# check_transient_coupled_multi_inertia.py 断言每边每臂装上的 M == 该来源（1e-12）而块自测的
+# inertance 两臂逐位相同、界面系数两臂每步同一个数（X1 7.4e-4 / X2 1.3e-6）且 dpNetwork == R·q
+# 到 0.0 Pa（归属不进界面系数）、串联边速率不动而首步节点压降差 == ΔM·Q/dt
+# （446.497744 对 446.497745 Pa，启动账 1086.5 对 640.0 Pa）、并联边首步按各自 M 分工
+# （4.6e-12 / 5.9e-13）、τ 0.264555 对 0.240207 s 且衰减各自对上 1/(1+dt/τ)、
+# 目的地与归属无关（0.0012%）而 12 步末端仍差 +1.23%，外加块解 == 趟数 × 2。约 365 s
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiInertia/case.dict
+python3 tests/check_transient_coupled_multi_inertia.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiInertia/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict
@@ -451,7 +466,7 @@ checker 里重写一份作外部锚（旁路动量行 7e-14）。逐步的界面
 （最大在第 23 步，正压在 `tolerance 2e-4` 下面）——这个量级来自伙伴自己的通量不平衡，不是
 调出来的：稳态 ④ 说的两条地板在时间步进里一条不减，反而每步只剩 `maxSubIterations` 趟去够它。
 ⑥ 区域的惯量有两个来源：`couple{ inertias ( network partner ) }` 按 `seeds` 的臂序给（长度 1
-摊平到全部，缺省 `network`）。`network` 用耦合管自己的 `rho*L/A`——它只和 case 里敲进去的名义
+摊平到全部，缺省 `network`；多边算例同一个参数按 `starts` 的臂序给，两臂同台的实测见 §5.26）。`network` 用耦合管自己的 `rho*L/A`——它只和 case 里敲进去的名义
 孔径一样好（方渠道配内切圆多报 **27.3%**）；`partner` 让每条耦合边取它的块在区域网格上量的
 `rho*V/Area^2`。两条别改的约定：**惯量只装进 1D 的动量行，不写进界面系数**——伙伴若报
 `R(q)*q + M*(q-qPrev)/(dt*q)`，映射就成了 `R -> a - c/R`，而"接口能分辨这条爬升"的条件正是
@@ -518,7 +533,10 @@ details {
 
 **多边 + 瞬态**（`chflow-coupled-1d3d-transient-multi`）把上面两套键原样搬进时间步进：`solve{}` 换成
 `time{ dt endTime reportEvery }`，`maxOuterIterations` 换成 `maxSubIterations`（它现在是**每个时间层**
-的趟数上限，不是整趟运行的），`accelerate`/`accelerates`/`inertias` 都照旧透传。四条容易写错的约定：
+的趟数上限，不是整趟运行的），`accelerate`/`accelerates`/`inertias` 都照旧透传——`inertias`
+因此**从一开始就是逐边生效的**（归属循环先量完所有边、全过校验才装），两臂只差来源的实测见 §5.26；
+但它是每次运行一个 bool，所以"这条边用孔径、那条边用区域"在同一次运行里表达不出来。
+四条容易写错的约定：
 ① 一组 `starts{}` 必须给 `edges ()` 里**每条边**一个数，缺一个直接 fatal——半个网络被详细化等于
 两侧描述的不是同一个系统；② 采纳是全网一起的：全部边谈拢才 `net.commitStep()`，任何一条没谈拢就
 fatal 并点名最差那条边，所以**不能**把某条边的预算单独放宽；③ 每步的 `passes` 是 1 到

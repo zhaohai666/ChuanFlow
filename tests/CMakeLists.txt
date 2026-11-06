@@ -382,6 +382,18 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3dMulti/case.dict)
 
+# the same two regions, inside every time step: the parallel edge ramps on the
+# inertial split while the series edge is pinned by topology and only ever
+# negotiates its drop, so the checker closes each edge's momentum row with that
+# edge's own inertance, counts the block solves against passes times edges, and
+# reads the discrete ramp back out of the parallel branch
+add_test(
+    NAME verify.transientCoupledMulti1d3d
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMulti1d3d/case.dict)
+
 # the same partitioned interface with a nonlinear partner: edge X is a RANS
 # channel, so its drop-per-rate is a function of the rate the interface is
 # hunting for. One seed runs under both operators, which is what lets the

@@ -161,6 +161,21 @@ python3 tests/check_transient_coupled_turbulent.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient" \
     "$PWD/tests/cases/transientCoupledTurbulent/case.dict"
 
+# 瞬态多边同台：稳态多边算例的拓扑与两块网格，换成时间步进驱动（12 步 × dt 0.05）。
+# X1 在并联支里 ⇒ 速率是动量平衡的结果，首步按惯量分、再向电阻分弛豫；X2 在串联位置上 ⇒
+# 不可压网络每步把 Q 钉给它，它的界面只谈压降，但启动的账 M·Q/dt 仍在它自己的动量行里。
+# 每趟除了逐边的 R/q/dpBlock/残差，还打印 **worst 的下标**，所以"停在最差边"可从日志重算。
+# check_transient_coupled_multi.py 断言逐边逐步身份、两边各用自己的 M 闭合动量行
+# （X1 3.0e-11 / X2 1.8e-13）、串联边速率每步 == Q、界面日程（每步恰 1 趟被采纳、
+# 15 趟只有一条边超差、块解 == 趟数 × 2）、边互不借力（X2 首趟残差两组同为 0.6601）、
+# 两组初值逐边落同一点（1.0e-7）、首步纯惯量分工（4.6e-12）、爬升对上**隐式欧拉自己的**
+# `1/(1+dt/τ)` = 0.841045（实测 0.840671）而不是连续的 exp(−dt/τ)，外加两块各自的场。
+# 约 235 s（1000 + 800 单元、两组初值共 41 趟 = 82 次块解）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMulti1d3d/case.dict
+python3 tests/check_transient_coupled_multi.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMulti1d3d/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict
@@ -500,6 +515,19 @@ details {
 割线基要**从最新的 pair 往回做 Gram–Schmidt** 重建，而不是"只追加、正交化时才决定留不留"——
 单边接口所有 `dQ` 平行（秩 1），追加式会把窗口冻在第一个 pair 上（实测 14 趟 vs 11）；瞬态则
 **每个时间层重建历史**（`qn->reset()`），因为接口问题含本步的惯性项，上一步的 pair 量的是另一个映射。
+
+**多边 + 瞬态**（`chflow-coupled-1d3d-transient-multi`）把上面两套键原样搬进时间步进：`solve{}` 换成
+`time{ dt endTime reportEvery }`，`maxOuterIterations` 换成 `maxSubIterations`（它现在是**每个时间层**
+的趟数上限，不是整趟运行的），`accelerate`/`accelerates`/`inertias` 都照旧透传。四条容易写错的约定：
+① 一组 `starts{}` 必须给 `edges ()` 里**每条边**一个数，缺一个直接 fatal——半个网络被详细化等于
+两侧描述的不是同一个系统；② 采纳是全网一起的：全部边谈拢才 `net.commitStep()`，任何一条没谈拢就
+fatal 并点名最差那条边，所以**不能**把某条边的预算单独放宽；③ 每步的 `passes` 是 1 到
+`maxSubIterations`，`subPasses` 与逐趟行的条数一致，checker 靠这些行重算调度，改日志格式会同时打断
+"停在最差边"和"块解 == 趟数 × 边数"两条断言；④ 成本按**每层重谈一次**算，不是按边数——想压时间优先
+动这三处：跨对称方向的格数（两侧都是 `symmetry` 的直渠道是 2D 问题，本算例 X2 从 6 格降到 1 格，
+弦阻只移动 6.7e-5 相对）、步数（`dt` 与 τ 之比决定每常数几步，检查器若按离散闭式预测整条轨迹就不必
+等爬升衰减完）、初值组数。**别**用"提高 `tolerance`"来省时间：接受趟的残差地板由伙伴自己的分辨率给
+（本算例最差 8.531e-5 对 `tolerance 1e-4`），问得比块答得细只会多烧 SIMPLE 扫。
 
 三维 app 的网格二选一（同时给出或都不给都会直接报错）：结构化用上面的
 `block{}`；非结构用 Gmsh 导出的 **ASCII** `.msh`（2.2 或 4.1，一阶

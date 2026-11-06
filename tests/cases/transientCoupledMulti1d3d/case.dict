@@ -1,0 +1,132 @@
+# transientCoupledMulti1d3d: two 3D detailed regions inside one time-stepping
+# network. The topology and the fluids are the steady case's
+# tests/cases/coupled1d3dMulti, and the driver is what changes: an injected rate
+# switched on at t=0 instead of a steady source. X1's block mesh is verbatim
+# from that case; X2's drops its spanwise cells, which is the one place the two
+# cases no longer describe the same blocks (see the note in details.X2).
+#
+#   Src -> A -> { X1 (3D duct) || By (1D bypass) } -> X2 (3D duct) -> B -> Snk
+#
+# The two edges are asked to agree in different ways, and that is the point of
+# pairing them:
+#   * X1 is a parallel branch, so its rate is a RESULT of the momentum balance -
+#     it starts at the inertial split of the switched-on rate and ramps to the
+#     resistance split with tau = (M_X1 + M_By)/(R_X1 + R_By).
+#   * X2 is in series, so an incompressible network hands it the whole injected
+#     rate from the very first step: its interface has nothing to negotiate about
+#     the rate, only about the drop, while its own inertance pays for the sudden
+#     start in the momentum row (M_X2 * Q / dt).
+# One pass therefore solves the network once, asks both blocks for the drop at
+# the rate that pass delivers through their own edge, and stops on the WORST of
+# the two - so a block that starts far off cannot be iterated alone while its
+# neighbour reads a half state.
+#
+# Two starting sets quote a coefficient for both edges at once: one third under
+# each duct value, and the same with X1 already at its own. The pair has to land
+# on one state either way.
+fluid { rho 800; mu 0.1; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node compliance.
+# They still hold liquid with room to spare, because the injected rate has to go
+# somewhere on the very first step, when every pipe flow is still zero.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 3.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    // the coupled edges: length and diameter are the 1D side's description of
+    // the detailed region, and with `inertias ( network )` they are also where
+    // its inertia is read from (see transientCoupledInertia for that arm)
+    X1 { from J1; to J2; length 0.5;  diameter 0.02;
+         coupledResistance 3.75e6; }
+    By { from J1; to J2; length 1.5;  diameter 0.03; }
+
+    X2 { from J2; to J3; length 0.4;  diameter 0.015;
+         coupledResistance 1.6e7; }
+
+    B  { from J3; to Snk; length 5.0; diameter 0.1; }
+}
+
+# dt 0.05 against tau ~ 0.265 s for the parallel split: ~5 steps per time
+# constant. 12 steps are run, which is 2.3 time constants - the trajectory is
+# still 1.8% short of the resistance split at the end, and that is deliberate:
+# the checker predicts the whole ramp from the discrete inertial solve rather
+# than waiting for it to die away, so a step count chosen for cost cannot weaken
+# what is asserted.
+time { dt 0.05; endTime 0.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    // each block resolves its own drop to ~1e-5 of it, and the interface
+    // residual is the gap between two solvers; asking for less than the
+    // partner's resolution would only burn passes inside every step
+    tolerance 1e-4;
+    maxSubIterations 8;
+    starts {
+        // both edges start one third under their own duct value, then one edge
+        // already at it - the pair has to fall out the same trajectory either way
+        lo  { X1 1.25e6; X2 5.3e6; }
+        mix { X1 3.75e6; X2 5.3e6; }
+    }
+}
+
+details {
+    # X1: the 0.5 x 0.02 x 0.02 m duct of the single-edge cases
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.5 0.02 0.02);
+            cells (50 20 1);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.12; max 0.49; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_transient_multi_X1.vtu;
+    }
+
+    # X2: a different aspect ratio and a shorter gap, so its resistance is four
+    # times X1's and the two edges are not the same problem twice. The steady
+    # multi case gives this block 6 cells across the 0.03 m symmetry direction;
+    # here it gets 1, because both z faces are symmetry and a straight duct is
+    # the same 2D problem whatever the spanwise count - the settled resistance
+    # moves by 6.7e-5 relative, and one interface pass costs six times less.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.4 0.01 0.03);
+            cells (40 20 1);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.15; max 0.38; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_transient_multi_X2.vtu;
+    }
+}

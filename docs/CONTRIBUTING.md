@@ -14,9 +14,9 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure   # 全量回归（77 项）约 340 s ≈ 6 分钟，
-                                             # 大头：多边耦合 65 s、poiseuille 37 s、
-                                             # 瞬态耦合 43 s、稳态耦合 30 s
+ctest --test-dir build --output-on-failure -j8  # 全量回归（90 项）约 214 s ≈ 3.5 分钟，
+                                             # 大头：双边并联瞬态 377 s、profile 级映射 166 s、
+                                             # 瞬态多边 235 s（单条时间，-j8 下被并行掩盖）
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -314,6 +314,39 @@ python3 tests/check_transient_coupled_multi_both_parallel.py \
 python3 tests/check_transient_coupled_unsteady_partner.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledUnsteadyPartner/case.dict"
+
+# profile 级界面映射（稳态多边）：§5.20 的拓扑、两块网格、relax、容差 1e-4 与 12 趟预算整张照抄，
+# 但界面上交的不只是一个速率：每条边可选 profile ( flat | parabolic | power1over7 )，且 starts{}
+# 的每一臂各自命名。这一例动了内核三处：volVectorField 的 fixedValue 支持逐面覆盖表、
+# buildInletProfile 按面积分归一化使 ∫u dA = q 精确、HbyA.adoptFaceValuesFrom 让预测通量也看见
+# 这份逐面 prescribe（缺它时抛物入口的 X2 连续性地板钉在 6.46e-2、400 扫不收敛）；外停机的 settled
+# 参照由"历史最小值 1.01 倍"改为"两次扫之前"（冷启动前两个二循环会先跌破地板，热启动会从地板下方
+# 起步，历史最小值被两件事同时污染）。六臂 = 塞状 x2 起点系数 + 抛物 + 1/7 + mixed（一次运行两条边
+# 喂不同形状）+ 抛物走准 Newton。十族断言的要点：
+#   1) 速率活过映射——fluxImposed == 网络要的数（1.2e-15 相对）、与 patch 的 fluxIn 逐位相同、
+#      每个横截面通量 min/max 差 <=2e-5；
+#   2) 形状就是声明的那个——块从自己的边界面上读回 betaImposed，对 checker 独立重算的中点求和
+#      一致到 1e-9（抛物 20 面板 1.1970121617640874），flat 离 1.0 <=1.5e-15；
+#   3) 还剩多少路——塞状 X1 从 1.0245788 单调爬到平台 1.1955544，1/7 从 1.0558 走同一条路但更短，
+#      抛物入口在承载边界平面之外漂移 <=0.16%（平移不变本身就是形状被真喂进去的证据）；
+#   4) 平台是区域的——三种入口的发展 betaOut X1 相对极差 2.9e-5、X2 1.4e-6，都贴连续 Poiseuille 1.2；
+#   5) 阻力有自己的物理——对 12*mu*L_meas/(H^3*W)：抛物 -1.81%/-2.48%（壁面那一面的梯度只跨半个
+#      单元，离散性质）、塞状 +22.97%/+14.08%、1/7 +19.03%/+11.27%，且 R_flat > R_17 > R_parab；
+#      probe 窗内散射 X1 降 104x、X2 降 23x；
+#   6) 工作点因此会动——只换形状，并联分流 +8.20%（4.9905859e-4 -> 5.3998308e-4），串联边恒等于
+#      注入量（7.9e-15）；两域 Re 399~432 与 427，层流，所以臂间差异只可能是入口；
+#   7) 不变量——起始系数相差三倍落同一个 R（4.4e-5）、mixed 的 X1 与 parab 的 X1 逐位相同
+#      （dpPa 1961.8431819560024）、平谈与准 Newton 差 2.0e-7 只买到趟数（3 == 3）；
+#   8) 形状进的是预测器——抛物入口的每边地板 1.997e-3 / 3.597e-3，比塞状同一边的 4.813e-2 /
+#      5.430e-2 低 24x / 15x（§5.5 的"预测地板是 HbyA/压力通量固有失衡量"由此多一个形状依赖）。
+# 写这类判据时的坑：per-edge 地板只能按每块 SIMPLE 序列的最后一条归位（块报告在所有 SIMPLE 行之后
+# 才打印），用 len(floors) == 2*iterations 与 floorLens[slot]+1 == 块 sweeps 双向锁死；统一阈值是错
+# 的——塞状臂坐在 4.8e-2 上本来就合法，只有形状臂该到 2e-3。
+# 十族 296 条，含跑 app 的 ctest 单条 166.17 s（六臂、1500 + 3200 单元）
+./build/src/coupling/apps/chflow-coupled-1d3d-multi tests/cases/coupled1d3dProfileMap/case.dict
+python3 tests/check_coupled_1d3d_profile_map.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-multi" \
+    "$PWD/tests/cases/coupled1d3dProfileMap/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

@@ -1,0 +1,153 @@
+# coupled1d3dProfileMap: the interface hands the detailed regions a SHAPE, not
+# only a rate.
+#
+#   Src -> A -> { X1 (3D duct) || By (1D bypass) } -> X2 (3D duct) -> B -> Snk
+#
+# Same topology as coupled1d3dMulti -- X1 in the parallel position so the node
+# split decides its rate, X2 in series so it carries the whole injected rate --
+# and the same two ducts, but the rate now arrives distributed over the section:
+#
+#   flat           the plug the coupling has always written (beta = 1 exactly)
+#   parabolic      the shape a channel's own solution has (beta = 6/5 continuum)
+#   power1over7    a fuller profile than the solution (beta = 1.0159 continuum)
+#
+# The rate is the same in every arm; only its distribution changes, and the
+# distribution is what decides how far the region has to run before it is
+# developed. At this Reynolds number the entrance length is a large part of the
+# duct, so the three arms are three different pressure drops and not three
+# spellings of one number:
+#   X1: H=0.02 m between walls, W=0.02 m of symmetry sides -> Dh = 2H = 0.04 m
+#   X2: H=0.01 m between walls, W=0.03 m of symmetry sides -> Dh = 0.02 m
+#   duct (fully developed) resistances over the span the block measures -- the
+#   first to the last cell-centre plane, 0.4933 m and 0.392 m, not the full 0.5 m
+#   and 0.4 m -- which is what the parabolic arm should land on:
+#   R_X1 = 12 mu L_meas / (H^3 W) = 3.70e6,  R_X2 = 1.568e7,
+#   R_By = 128 mu L / (pi D^4) = 7.545e6, R_A = R_B = 2.037e5 Pa.s/m3
+# The arm fed the solution's own shape lands a couple of percent under those
+# (3.63e6, 1.529e7), because the wall face carries the velocity gradient over
+# only half a cell; the arm fed a plug lands above them (4.55e6, 1.789e7)
+# because its entrance region is the whole duct. At Re ~ 427 on the series edge
+# and ~ 399-432 on the parallel one, the plug's momentum-flux factor needs
+# three fifths of X1 before it stops climbing: a plug inlet costs real pressure
+# and a developed one does not.
+#
+# Six arms. The two flat ones quote starting resistances three times apart, so
+# the interface's answer is its own and not its first guess; `mixed` is the
+# statement that the shape is a per-edge choice -- one edge developed, one plug
+# -- and `parab_qn` runs the parabolic arm through the accelerated operator.
+fluid { rho 800; mu 0.1; }
+
+nodes {
+    Src {};
+    J1 {};
+    J2 {};
+    J3 {};
+    Snk { pressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 8.0e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    # the coupled edges: length and diameter describe the detailed region and
+    # are only used for the reported velocity and Reynolds number
+    X1 { from J1; to J2; length 0.5;  diameter 0.02;
+         coupledResistance 3.75e6; }
+    By { from J1; to J2; length 1.5;  diameter 0.03; }
+
+    X2 { from J2; to J3; length 0.4;  diameter 0.015;
+         coupledResistance 1.6e7; }
+
+    B  { from J3; to Snk; length 5.0; diameter 0.1; }
+}
+
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    // a developing duct is not a linear resistance, so the interface fixed point
+    // has a little more work to do than it did for the developed case
+    tolerance 1e-4;
+    maxOuterIterations 12;
+    accelerates ( 0 0 0 0 0 1 );
+    starts {
+        # Every set names a shape per edge next to its starting coefficients:
+        # absent means flat, one word means both edges, a list means one each.
+        flat_lo {
+            X1 1.25e6;  X2 5.3e6;
+            profile ( flat flat );
+        }
+        flat_high {
+            X1 1.125e7; X2 5.3e6;
+            profile ( flat flat );
+        }
+        parab {
+            X1 1.25e6;  X2 5.3e6;
+            profile parabolic;
+        }
+        p17 {
+            X1 1.25e6;  X2 5.3e6;
+            profile power1over7;
+        }
+        mixed {
+            X1 1.25e6;  X2 5.3e6;
+            profile ( parabolic flat );
+        }
+        parab_qn {
+            X1 1.25e6;  X2 5.3e6;
+            profile parabolic;
+        }
+    }
+}
+
+details {
+    # X1: the 0.5 x 0.02 x 0.02 m channel. 20 cells across the wall-bounded gap,
+    # one across the symmetry sides, so the inlet section is 20 faces and the
+    # shape is sampled where the mesh says it lives.
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.5 0.02 0.02);
+            cells (75 20 1);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.30; max 0.48; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 400; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_profile_X1.vtu;
+    }
+
+    # X2: a 10 mm gap under a 30 mm span, so its gap is half X1's and its wall
+    # confinement is the same one-axis kind -- the shape varies across the gap
+    # only, because across the symmetry sides there is nothing to vary against.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.4 0.01 0.03);
+            cells (50 16 4);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.24; max 0.38; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 400; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_profile_X2.vtu;
+    }
+}

@@ -156,6 +156,25 @@ struct BlockMeasure
     scalar inertanceProbe = 0;  // rho*V_probe/A^2, kg/m4: the inertance of the
                                 // slab the drop above is measured across, which
                                 // is what the acceleration can belong to
+
+    /// What the interface handed the inlet, and what the region's own field says
+    /// about its shape downstream of it. A rate is one number; a rate spread over
+    /// a section is a number and a shape, and the shape is what decides how far
+    /// the region has to run before it is developed. `betaImposed` describes the
+    /// condition as applied (it is the identity the mapping has to satisfy), the
+    /// stations describe what the solve did with it.
+    std::string inletShape;     // "flat" | "parabolic" | "power1over7"
+    scalar fluxImposed = 0;     // m3/s, the integral of the imposed profile over
+                                // the inlet section: the rate the shape carries
+    scalar betaImposed = 0;     // <ux^2>/<ux>^2 over the inlet faces as imposed;
+                                // 1.0 exactly for a flat profile
+    scalar momentumFluxImposedPa = 0; // rho*beta*q^2/A, Pa: the streamwise
+                                // momentum the section carries per unit area
+    scalar betaIn = 0;          // the same factor measured on the solved field at
+    scalar betaOut = 0;         // ... the first and the last cross-section
+    /// (x, beta) down the region, first and last station always present: the
+    /// shape relaxing toward the developed value, station by station.
+    std::vector<std::pair<scalar, scalar>> betaStations;
 };
 
 /// One steady incompressible duct, solved in 3D and reduced to the single number
@@ -183,7 +202,8 @@ class DetailBlock : public ICoupledElement
 public:
     DetailBlock(polyMesh mesh, scalar nu, scalar rho, const Schemes& schemes,
                 const SimpleControls& ctl, scalar probeMin, scalar probeMax,
-                const TurbulenceConfig& turb);
+                const TurbulenceConfig& turb,
+                const std::string& inletShape = "flat");
 
     DetailBlock(const DetailBlock&) = delete;
     DetailBlock& operator=(const DetailBlock&) = delete;
@@ -226,6 +246,7 @@ public:
 
 private:
     void buildSections();
+    void buildInletProfile();
     void applyBoundary(scalar qMag);
     void measure(const SimpleResult& res, scalar qMag);
 
@@ -245,6 +266,20 @@ private:
     /// inlet patch's outward normal, so every measured sign follows the mesh.
     int flowSign_ = 1;
     scalar inletArea_ = 0;
+
+    /// The shape the interface hands the inlet. `inletShape_ == "flat"` keeps the
+    /// condition the coupling has always written -- one vector over the whole
+    /// patch -- and any other shape writes a value per face instead, scaled so
+    /// that the section integral is exactly the rate the network delivered.
+    /// The weights are taken once from the mesh: they do not depend on the rate.
+    std::string inletShape_ = "flat";
+    /// The transverse axes this section is confined by no-slip walls. A profile
+    /// varies across a wall, not across a symmetry side -- varying across the
+    /// latter would ask the mesh for shear where the condition forbids it -- so
+    /// the shape is applied along these axes and flat along every other one.
+    std::vector<int> wallAxes_;
+    std::vector<label> inletFaces_;
+    std::vector<scalar> inletWeights_;   // u_f / (q/A), area-weighted mean 1
 
     /// `rho*V/A^2` of the region, measured on the mesh (kg/m4). The formula
     /// assumes a constant section, which `buildSections` checks rather than

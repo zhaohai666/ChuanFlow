@@ -184,6 +184,46 @@ std::string volVectorField::patchBcType(label patchId) const
     return bc_[static_cast<std::size_t>(patchId)].type;
 }
 
+void volVectorField::setFaceValue(label face, const Vector& value)
+{
+    const std::size_t u = static_cast<std::size_t>(face);
+    if (static_cast<label>(u) < mesh_.nInternalFaces())
+    {
+        cfFatal("volVectorField::setFaceValue: internal face " + std::to_string(face));
+    }
+    if (u >= faceValueSet_.size())
+    {
+        faceValueOverride_.resize(static_cast<std::size_t>(mesh_.nFaces()), Vector::zero());
+        faceValueSet_.resize(static_cast<std::size_t>(mesh_.nFaces()), 0);
+    }
+    faceValueOverride_[u] = value;
+    faceValueSet_[u] = 1;
+}
+
+void volVectorField::clearFaceValues()
+{
+    faceValueOverride_.clear();
+    faceValueSet_.clear();
+}
+
+void volVectorField::adoptFaceValuesFrom(const volVectorField& source)
+{
+    if (source.mesh_.nFaces() != mesh_.nFaces())
+        cfFatal("volVectorField::adoptFaceValuesFrom: fields are on different meshes");
+    for (label f = mesh_.nInternalFaces(); f < mesh_.nFaces(); ++f)
+    {
+        const std::size_t u = static_cast<std::size_t>(f);
+        if (u >= source.faceValueSet_.size() || !source.faceValueSet_[u]) continue;
+        if (u >= faceValueSet_.size())
+        {
+            faceValueOverride_.resize(static_cast<std::size_t>(mesh_.nFaces()), Vector::zero());
+            faceValueSet_.resize(static_cast<std::size_t>(mesh_.nFaces()), 0);
+        }
+        faceValueOverride_[u] = source.faceValueOverride_[u];
+        faceValueSet_[u] = 1;
+    }
+}
+
 Vector volVectorField::patchValue(label patchId) const
 {
     return bc_[static_cast<std::size_t>(patchId)].value;
@@ -211,10 +251,13 @@ void volVectorField::linearise(label face, int comp, scalar& coeff, scalar& kons
     }
     const label p = patchIdOfFace(face);
     const auto& bc = bc_[static_cast<std::size_t>(p)];
+    const std::size_t u = static_cast<std::size_t>(face);
+    const Vector value = (u < faceValueSet_.size() && faceValueSet_[u])
+                             ? faceValueOverride_[u] : bc.value;
     if (bc.type == "fixedValue")
     {
         coeff = 0;
-        konst = bc.value[comp];
+        konst = value[comp];
     }
     else if (bc.type == "fixedGradient")
     {

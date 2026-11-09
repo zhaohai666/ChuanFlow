@@ -44,7 +44,8 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
     const auto& vol = mesh.cellVolumes();
     SimpleResult result;
 
-    scalar bestContErr = std::numeric_limits<scalar>::infinity();
+    scalar contLag1 = std::numeric_limits<scalar>::infinity();
+    scalar contLag2 = std::numeric_limits<scalar>::infinity();
 
     for (int iter = 1; iter <= ctl.maxIterations; ++iter)
     {
@@ -175,6 +176,13 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
             HbyA.setPatchValue(patch, fixed ? "fixedValue" : "zeroGradient",
                                fixed ? U.patchValue(patch) : Vector::zero());
         }
+        // The prescription can be face-by-face -- an inlet carrying a profile
+        // instead of one number spread over the whole patch -- and then the
+        // response has to carry the same faces: the predictor flux is what the
+        // pressure equation is balanced against, so a flat one over a shaped
+        // boundary leaves an imbalance in the boundary column that no amount
+        // of iterating removes.
+        HbyA.adoptFaceValuesFrom(U);
 
         // ---------------- predictor flux ----------------
         // flux(HbyA) only, OpenFOAM's phiHbyA: no cell pressure gradient
@@ -359,12 +367,15 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         // continuity to have stopped growing and is only consulted once the
         // startup transient has passed.
         // momentumTol gates both branches on the velocity having settled.
-        // A warm start can begin below the floor its predictor flux settles at,
-        // and then strict monotonicity is unreachable for the rest of the sweep:
-        // the guard is against continuity that is still growing, and a percent
-        // below the best is far enough from that to catch.
-        const bool settled = contErr <= bestContErr * 1.01 + 1e-12;
-        bestContErr = std::min(bestContErr, contErr);
+        // "Stopped growing" is a statement about this sweep and the one two
+        // cycles ago, not about the best the sweep ever saw: a block restarted
+        // at a different rate begins below the floor the new problem settles
+        // at (a profiled inlet moves that floor by a factor of twenty), and a
+        // memory of that beginning refuses the stop for hundreds of sweeps
+        // after the pressure has stopped moving. Two cycles is the loop's own
+        // period, so the comparison is made phase against phase, and growth
+        // still shows up as growth.
+        const bool settled = contErr <= contLag2 * 1.01 + 1e-12;
         const bool momentumSettled = !(ctl.momentumTol > 0) || uRes <= ctl.momentumTol;
         if (momentumSettled &&
             (contErr < ctl.continuityTol ||
@@ -373,6 +384,8 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
             result.converged = true;
             break;
         }
+        contLag2 = contLag1;
+        contLag1 = contErr;
     }
 
     return result;

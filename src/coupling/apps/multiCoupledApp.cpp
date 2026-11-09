@@ -131,6 +131,7 @@ int main(int argc, char** argv)
         const Dictionary& startsDict = cd.getDict("starts");
         std::vector<std::string> startNames;
         std::vector<std::vector<double>> startRs;
+        std::vector<std::vector<std::string>> startShapes;
         for (const std::string& sname : startsDict.keys())
         {
             const Dictionary& sd = startsDict.getDict(sname);
@@ -144,6 +145,32 @@ int main(int argc, char** argv)
             }
             startNames.push_back(sname);
             startRs.push_back(std::move(rs));
+
+            // The same run also says what shape the rate arrives in. A coupled
+            // edge without a `profile` keeps the flat plug the interface has
+            // always written, so a case that names none is the case it was.
+            std::vector<std::string> shapes(edgeNames.size(), "flat");
+            if (sd.has("profile"))
+            {
+                const Dictionary::Kind kind = sd.find("profile").kind;
+                if (kind == Dictionary::Kind::word)
+                {
+                    const std::string one = sd.getWord("profile");
+                    std::fill(shapes.begin(), shapes.end(), one);
+                }
+                else if (kind == Dictionary::Kind::list)
+                {
+                    shapes = sd.getWordList("profile");
+                    if (shapes.size() != edgeNames.size())
+                        cfFatal("coupled1d3d: starts." + sname + " profile names "
+                                + std::to_string(shapes.size()) + " shapes for "
+                                + std::to_string(edgeNames.size()) + " coupled edges");
+                }
+                else
+                    cfFatal("coupled1d3d: starts." + sname + " profile must be one"
+                            " shape word or a list of them, one per coupled edge");
+            }
+            startShapes.push_back(std::move(shapes));
         }
         if (startNames.empty())
             cfFatal("coupled1d3d: couple.starts{} needs at least one set");
@@ -203,7 +230,8 @@ int main(int argc, char** argv)
             {
                 owners.push_back(std::make_unique<DetailBlock>(
                     specs[i].mesh, nu, rho, specs[i].schemes, specs[i].simple,
-                    specs[i].probeMin, specs[i].probeMax, specs[i].turb));
+                    specs[i].probeMin, specs[i].probeMax, specs[i].turb,
+                    startShapes[s][i]));
                 partners.push_back(owners.back().get());
             }
 
@@ -229,7 +257,8 @@ int main(int argc, char** argv)
                 net.pipes[static_cast<std::size_t>(edges[i])].coupledResistance =
                     startRs[s][i];
                 log::info("start ", startName, " edge ", edgeNames[i],
-                          " resistance ", num(startRs[s][i]));
+                          " resistance ", num(startRs[s][i]),
+                          " profile ", startShapes[s][i]);
             }
 
             CoupledControls runCtl = ctl;
@@ -313,7 +342,17 @@ int main(int argc, char** argv)
                           num(m.probeSpread), " dpPa ", num(m.dpPa), " turb ",
                           (m.turbModel.empty() ? std::string("laminar") : m.turbModel),
                           " nutMax ", num(m.nutMax), " wallYPlusMax ",
-                          num(m.wallYPlusMax), " wallUTau ", num(m.wallUTau));
+                          num(m.wallYPlusMax), " wallUTau ", num(m.wallUTau),
+                          " inletShape ", m.inletShape, " fluxImposed ",
+                          num(m.fluxImposed), " betaImposed ", num(m.betaImposed),
+                          " momentumFluxPa ", num(m.momentumFluxImposedPa),
+                          " betaIn ", num(m.betaIn), " betaOut ", num(m.betaOut));
+                std::ostringstream stations;
+                stations << std::setprecision(17);
+                for (const std::pair<scalar, scalar>& sb : m.betaStations)
+                    stations << " " << sb.first << " " << sb.second;
+                log::info("betaProfile ", startName, " edge ", edgeNames[i], ":",
+                          stations.str());
                 if (s + 1 == startNames.size() && !specs[i].vtk.empty())
                 {
                     VtkWriter w(owners[i]->mesh());

@@ -88,6 +88,22 @@ public:
     label patchIdOfFace(label face) const;
 
     void setPatchValue(label patchId, const std::string& bcType, const Vector& value);
+
+    /// Per-face prescribed velocity, the vector twin of the scalar `setFaceValue`
+    /// above: the patch keeps its `fixedValue` type and only this face's value
+    /// changes. This is how a boundary that carries a profile rather than one
+    /// number is written -- an inlet whose rate is distributed over the section
+    /// instead of spread flat over it.
+    void setFaceValue(label face, const Vector& value);
+    void clearFaceValues();
+
+    /// Take the source's prescribed faces, leaving this field's patch types and
+    /// every unmarked face as they are. A field that inherits the velocity's
+    /// Dirichlet datum -- the momentum response HbyA in SIMPLE and PISO -- has
+    /// to inherit the faces with it, or its boundary flux reads the patch's one
+    /// number while the equation it corrects is forced by the shape.
+    void adoptFaceValuesFrom(const volVectorField& source);
+
     std::string patchBcType(label patchId) const;
     /// prescribed value of the patch condition (zero for gradient types)
     Vector patchValue(label patchId) const;
@@ -107,6 +123,8 @@ private:
     std::string name_;
     Field<Vector> internal_;
     std::vector<BC> bc_;
+    Field<Vector> faceValueOverride_;
+    Field<char> faceValueSet_;
 };
 
 /// Face-centred flux field: phi_f = U & Sf, owner -> neighbour orientation.

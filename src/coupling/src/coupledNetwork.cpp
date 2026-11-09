@@ -226,7 +226,8 @@ private:
 DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
                          const Schemes& schemes, const SimpleControls& ctl,
                          scalar probeMin, scalar probeMax,
-                         const TurbulenceConfig& turb)
+                         const TurbulenceConfig& turb,
+                         const std::string& inletShape)
     : mesh_(std::move(mesh)),
       nu_(nu),
       rho_(rho),
@@ -235,6 +236,7 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
       probeMin_(probeMin),
       probeMax_(probeMax),
       turb_(turb),
+      inletShape_(inletShape),
       U_(mesh_, "U"),
       p_(mesh_, "p"),
       phi_(mesh_, "phi", 0.0)
@@ -286,6 +288,7 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
     flowSign_ = nrm[axis_] < 0 ? 1 : -1;
 
     buildSections();
+    buildInletProfile();
 }
 
 void DetailBlock::buildSections()
@@ -412,6 +415,116 @@ void DetailBlock::buildSections()
                     " across it has no momentum of its own");
 }
 
+void DetailBlock::buildInletProfile()
+{
+    // "flat" is the condition this coupling has always written: one vector over
+    // the whole patch. It stays that way, so a case that names no shape gets the
+    // numbers it got before any of this existed.
+    if (inletShape_ == "flat") return;
+    if (inletShape_ != "parabolic" && inletShape_ != "power1over7")
+        cfFatal("detailBlock: the inlet profile '" + inletShape_ + "' is not one"
+                " this block can write (flat, parabolic, power1over7)");
+
+    // Which transverse directions this section is confined by no-slip walls. A
+    // boundary layer grows off a wall, so a profile is a statement about the
+    // direction the walls bound; varying across a symmetry side would ask the
+    // mesh for shear where that condition forbids any.
+    const auto& patches = mesh_.patches();
+    int bounds[3][2] = {{0, 0}, {0, 0}, {0, 0}};
+    for (label patch = 0; patch < mesh_.nPatches(); ++patch)
+    {
+        const polyMesh::Patch& pd = patches[static_cast<std::size_t>(patch)];
+        if (pd.type != "wall") continue;
+        const Vector sf = patchAreaVector(mesh_, patch);
+        if (!(mag(sf) > 0)) continue;
+        int k = 0;
+        for (int c = 1; c < 3; ++c)
+            if (std::abs(sf[c]) > std::abs(sf[k])) k = c;
+        if (k == axis_) continue;
+        bounds[k][sf[k] < 0 ? 0 : 1] = 1;
+    }
+    std::vector<int> axes;
+    for (int k = 0; k < 3; ++k)
+        if (k != axis_ && bounds[k][0] && bounds[k][1]) axes.push_back(k);
+    if (axes.empty())
+        cfFatal("detailBlock: the inlet profile '" + inletShape_ + "' has no"
+                " wall-confined transverse direction to vary along, so no shape can"
+                " be written on this section");
+
+    // The shape evaluated at the inlet face centres, scaled so that its section
+    // integral is exactly the section: the rate the network delivered is then
+    // carried to the last digit and only its distribution over the section
+    // changes. Nothing here knows what the developed profile should be -- that is
+    // what the solve then has to say.
+    const polyMesh::Patch& pin = patches[static_cast<std::size_t>(inletPatch_)];
+    const auto& fc = mesh_.faceCentres();
+    const auto& sfAll = mesh_.faceSf();
+    // The section's bounds are the walls' bounds, not the outermost face
+    // centres' -- a boundary face always sits inside the wall it belongs to, so
+    // taking the face centres as the extent would put eta at +-1 on the first
+    // and last face and write a zero velocity there.
+    const Vector loBox = mesh_.minX();
+    const Vector hiBox = mesh_.maxX();
+    scalar lo[3], hi[3];
+    for (int k = 0; k < 3; ++k)
+    {
+        lo[k] = loBox[k];
+        hi[k] = hiBox[k];
+    }
+    scalar wMin = std::numeric_limits<scalar>::max();
+    for (const int k : axes)
+    {
+        if (!(hi[k] > lo[k]))
+            cfFatal("detailBlock: the inlet section has no extent along axis "
+                    + std::to_string(k) + " to spread a profile over");
+    }
+    std::vector<scalar> w(static_cast<std::size_t>(pin.size), 0.0);
+    for (std::size_t j = 0; j < static_cast<std::size_t>(pin.size); ++j)
+    {
+        const std::size_t u = static_cast<std::size_t>(pin.start) + j;
+        scalar value = 1.0;
+        for (const int k : axes)
+        {
+            const scalar mid = 0.5 * (hi[k] + lo[k]);
+            const scalar half = 0.5 * (hi[k] - lo[k]);
+            const scalar eta = (fc[u][k] - mid) / half;
+            value *= inletShape_ == "parabolic"
+                         ? (1.0 - eta * eta)
+                         : std::pow(1.0 - std::abs(eta), 1.0 / 7.0);
+        }
+        w[j] = value;
+        wMin = std::min(wMin, value);
+    }
+    if (!(wMin > 0))
+        cfFatal("detailBlock: the inlet profile '" + inletShape_ + "' writes a"
+                " zero or reversed weight on a face of this section, so the section"
+                " cannot carry the rate at all");
+
+    inletFaces_.clear();
+    inletWeights_.clear();
+    scalar sumWA = 0, sumA = 0;
+    for (std::size_t j = 0; j < static_cast<std::size_t>(pin.size); ++j)
+    {
+        const std::size_t u = static_cast<std::size_t>(pin.start) + j;
+        const scalar a = mag(sfAll[u]);
+        sumWA += w[j] * a;
+        sumA += a;
+    }
+    if (!(sumA > 0) || !(sumWA > 0))
+        cfFatal("detailBlock: the inlet section integrates to no area or no shape");
+    if (std::abs(sumA - inletArea_) > 1e-9 * inletArea_)
+        cfFatal("detailBlock: the inlet patch's face areas add to "
+                + std::to_string(sumA) + " m2 against its own area vector of "
+                + std::to_string(inletArea_) + " m2, so the section cannot be"
+                  " normalised");
+    const scalar norm = sumWA / sumA;
+    for (std::size_t j = 0; j < static_cast<std::size_t>(pin.size); ++j)
+    {
+        inletFaces_.push_back(pin.start + static_cast<label>(j));
+        inletWeights_.push_back(w[j] / norm);
+    }
+}
+
 void DetailBlock::applyBoundary(scalar qMag)
 {
     const auto& patches = mesh_.patches();
@@ -424,6 +537,15 @@ void DetailBlock::applyBoundary(scalar qMag)
         if (patch == inletPatch_)
         {
             U_.setPatchValue(patch, "fixedValue", inletU);
+            // A shape replaces the value face by face, never the condition: the
+            // patch still prescribes velocity, and `phi` below still comes from
+            // these faces, so the rate entering the region is the one the
+            // interface asked for whichever way the section is filled.
+            if (!inletWeights_.empty())
+            {
+                for (std::size_t j = 0; j < inletFaces_.size(); ++j)
+                    U_.setFaceValue(inletFaces_[j], inletU * inletWeights_[j]);
+            }
             p_.setPatchValue(patch, "zeroGradient", 0.0);
         }
         else if (patch == outletPatch_)
@@ -624,6 +746,77 @@ void DetailBlock::measure(const SimpleResult& res, scalar qMag)
     }
     measure_.uxMax = uxMax;
     measure_.uxCentre = uxCentre;
+
+    // What the interface handed the inlet, as the region received it: the
+    // section integral of the condition is the rate, and the shape factor of the
+    // same faces says how that rate sits across the section. Both are read off
+    // the boundary condition itself, so they grade the mapping rather than the
+    // flow -- and the flux identity is the statement that a shape was traded for
+    // a shape and not for a different amount of fluid.
+    {
+        const polyMesh::Patch& pin = patches[static_cast<std::size_t>(inletPatch_)];
+        const auto& sfIn = mesh_.faceSf();
+        scalar sumA = 0, sumU = 0, sumU2 = 0;
+        for (label f = pin.start; f < pin.start + pin.size; ++f)
+        {
+            const std::size_t u = static_cast<std::size_t>(f);
+            const scalar a = mag(sfIn[u]);
+            const scalar ux = dot(U_.faceValue(f), axisUnit);
+            sumA += a;
+            sumU += ux * a;
+            sumU2 += ux * ux * a;
+        }
+        measure_.fluxImposed = sumU;
+        measure_.betaImposed = std::abs(sumU) > 0
+                                   ? (sumU2 * sumA) / (sumU * sumU) : 1.0;
+        measure_.momentumFluxImposedPa =
+            rho_ * measure_.betaImposed * sumU * sumU / sumA;
+        measure_.inletShape = inletShape_;
+    }
+
+    // The same factor, measured on the field the region actually solved, station
+    // by station: the profile the inlet arrived with is not the profile that
+    // leaves, and the distance over which one becomes the other is what a single
+    // imposed rate could never say.
+    {
+        const std::size_t nSec = sections_.size();
+        const std::size_t stride = std::max<std::size_t>(1, (nSec + 15) / 16 - 1);
+        for (std::size_t k = 0; k < nSec; k += stride)
+        {
+            scalar v = 0, u1 = 0, u2 = 0;
+            for (const label c : sections_[k])
+            {
+                const std::size_t t = static_cast<std::size_t>(c);
+                const scalar ux = dot(uIn[t], axisUnit);
+                v += volumes[t];
+                u1 += ux * volumes[t];
+                u2 += ux * ux * volumes[t];
+            }
+            const scalar beta = (v > 0 && std::abs(u1) > 0)
+                                    ? (u2 * v) / (u1 * u1) : 0.0;
+            measure_.betaStations.emplace_back(sectionX_[k], beta);
+        }
+        if ((nSec - 1) % stride != 0)
+        {
+            scalar v = 0, u1 = 0, u2 = 0;
+            for (const label c : sections_[nSec - 1])
+            {
+                const std::size_t t = static_cast<std::size_t>(c);
+                const scalar ux = dot(uIn[t], axisUnit);
+                v += volumes[t];
+                u1 += ux * volumes[t];
+                u2 += ux * ux * volumes[t];
+            }
+            measure_.betaStations.emplace_back(
+                sectionX_[nSec - 1],
+                (v > 0 && std::abs(u1) > 0) ? (u2 * v) / (u1 * u1) : 0.0);
+        }
+        if (measure_.betaStations.size() < 2)
+            cfFatal("detailBlock: the region solved with fewer than two"
+                    " cross-sections to measure a shape at");
+        measure_.betaIn = measure_.betaStations.front().second;
+        measure_.betaOut = measure_.betaStations.back().second;
+    }
 
     if (turbModel_)
     {

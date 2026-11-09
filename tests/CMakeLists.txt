@@ -382,6 +382,18 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3dMulti/case.dict)
 
+# the same two regions again, but the interface now hands each inlet a SHAPE:
+# the checker integrates the profile it asked for, reads the momentum-flux factor
+# back off the boundary faces, follows it down the region to the plateau, and
+# prices the plug inlet against the Poiseuille one -- three shapes, two edges,
+# one run where they differ
+add_test(
+    NAME verify.coupled1d3dProfileMap
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_coupled_1d3d_profile_map.py
+        $<TARGET_FILE:chflow-coupled-1d3d-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3dProfileMap/case.dict)
+
 # the same two regions, inside every time step: the parallel edge ramps on the
 # inertial split while the series edge is pinned by topology and only ever
 # negotiates its drop, so the checker closes each edge's momentum row with that

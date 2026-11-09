@@ -123,6 +123,9 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
         HbyA.setPatchValue(patch, fixed ? "fixedValue" : "zeroGradient",
                            fixed ? U.patchValue(patch) : Vector::zero());
     }
+    // Same faces as the velocity: a boundary prescribed as a profile, not as
+    // one number, has to be prescribed that way to the response too.
+    HbyA.adoptFaceValuesFrom(U);
 
     const Field<scalar> rAUf = interpolateToFaces(mesh, rAU);
 

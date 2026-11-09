@@ -491,6 +491,20 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiBothParallel/case.dict)
 
+# the one axis every coupled run in architecture.md 5.25 through 5.32 left in the
+# 1D row: here the partner solves du/dt on its own mesh inside the time level, so
+# the drop it reports is no longer a function of the rate alone. The interface
+# still iterates on the friction part of it - refreshing on the whole drop is the
+# a - c/R map that loses its crossing when dt < M/R - and grades the
+# acceleration against the inertance the row installed, which is the first
+# measurable error an attribution choice can carry
+add_test(
+    NAME verify.transientCoupledUnsteadyPartner
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_unsteady_partner.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledUnsteadyPartner/case.dict)
+
 # the same partitioned interface with a nonlinear partner: edge X is a RANS
 # channel, so its drop-per-rate is a function of the rate the interface is
 # hunting for. One seed runs under both operators, which is what lets the

@@ -69,6 +69,29 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
         // relaxation is applied against the old field below, not against the
         // matrix' zero initial guess
         UEqn.schemes().relaxation = 1.0;
+        // The region's own acceleration, against the field the caller left at
+        // the previous time level. Every sweep of this iteration is the SAME
+        // step, so they all see one history: the term is a fixed matrix entry
+        // and only the pressure and the convective response move. With it the
+        // fixed point of the loop below is one implicit-Euler step, and the
+        // diagonal it adds (V/dt) is what bounds rAU -- and with it every
+        // pressure correction -- by dt.
+        if (ctl.dt > 0 || ctl.uTimeOld != nullptr)
+        {
+            if (!(ctl.dt > 0))
+                cfFatal("SIMPLE: an old velocity was supplied with no time step");
+            if (ctl.uTimeOld == nullptr)
+                cfFatal("SIMPLE: a time step was supplied with no velocity at the"
+                        " previous time level");
+            if (schemes.ddt != "Euler")
+                cfFatal("SIMPLE: the momentum equation is asked to step in time"
+                        " while schemes ddt is '" + schemes.ddt + "', not 'Euler'");
+            if (ctl.uTimeOld->size() != static_cast<std::size_t>(nC))
+                cfFatal("SIMPLE: the old velocity carries "
+                        + std::to_string(ctl.uTimeOld->size()) + " cells for a"
+                          " mesh of " + std::to_string(nC));
+            fvm::ddt(UEqn, *ctl.uTimeOld, ctl.dt);
+        }
         fvm::div(UEqn, phi.values(), schemes.div);
         if (turb) fvm::laplacianFace(UEqn, turb->nuEffFace(), schemes.laplacian, -1);
         else fvm::laplacian(UEqn, nu, schemes.laplacian, -1);

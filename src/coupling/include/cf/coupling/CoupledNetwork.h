@@ -33,6 +33,46 @@ public:
     /// Always positive: the element resists the flow, whichever way it runs.
     virtual scalar lossAt(scalar qMag) = 0;
 
+    /// Called once at the start of every time level - before its first pass and
+    /// never inside one - so a partner that carries its own history can take it
+    /// there: the field as the interface left it at the accepted level is then
+    /// the `u^n` every sweep of this level accelerates away from, no matter how
+    /// many times the level gets re-solved. `qPrev` is the committed rate
+    /// through this edge at the start of the level, so the partner does not have
+    /// to read the network to know what it is stepping from.
+    ///
+    /// The default ignores the level, which is every analytic law and every
+    /// quasi-steady block: they are asked for a drop at an *instant* and have no
+    /// history to take, and that is exactly why the interface has been able to
+    /// keep their region's momentum in its own row instead of in the coefficient
+    /// (see `solveTransientCoupled1d3d`).
+    virtual void beginTimeLevel(double dt, scalar qPrev)
+    {
+        (void)dt;
+        (void)qPrev;
+    }
+
+    /// Whether the drop the last `lossAt` reported is the answer of a momentum
+    /// balance that carries the region's own `du/dt`. The interface then splits
+    /// that drop into the friction of the rate and the acceleration of the
+    /// region's history, iterates the resistance refresh on the friction part
+    /// alone, and grades its own momentum row, `R*q + M*(q - qPrev)/dt`, against
+    /// the whole drop. Refreshing on the whole drop instead would put the
+    /// region's `M*dq/dt` into the coefficient, where the 1D row already carries
+    /// an inertance of its own, and the map the interface iterates would stop
+    /// having a positive crossing whenever the step is shorter than `M/R`.
+    ///
+    /// False - every quasi-steady partner, every analytic law, every steady
+    /// exchange - keeps the whole drop as the chord, which is what every case
+    /// until now ran.
+    virtual bool unsteadyDrop() const { return false; }
+
+    /// What the region's own acceleration was worth in the drop the last
+    /// `lossAt` reported, in Pa and signed with the acceleration: the part of
+    /// that drop that is not the friction of the rate. Zero for every
+    /// quasi-steady partner, whose whole drop is friction by construction.
+    virtual scalar lastInertialDrop() const { return 0; }
+
     /// The region's hydraulic inertance `rho*Volume/Area^2` in kg/m4 -- the same
     /// quantity the 1D side calls `rho*L/A`, measured on the geometry that
     /// actually holds the fluid. Negative means the partner states no region of
@@ -40,6 +80,10 @@ public:
     /// 1D pipe's nominal bore is the only description of the volume, so it is
     /// also the only source of the number.
     virtual scalar regionInertance() const { return -1; }
+
+    /// The same quantity over only the part of the region the reported drop is
+    /// measured across. A partner that states no region states no slab either.
+    virtual scalar probeInertance() const { return -1; }
 
     /// Diagnostics of the last `lossAt`, recorded into the interface history so
     /// a regression can tell "the partner needed more sweeps" from "the
@@ -88,6 +132,30 @@ struct BlockMeasure
     /// hydraulic inertance `rho*V/A^2` (kg/m4, the same quantity as the 1D
     /// side's `rho*L/A` but taken from the geometry that holds the fluid).
     scalar inertance = 0;
+
+    /// Unsteady partner only (`unsteady` true): the block solved a momentum
+    /// balance that carries its own `du/dt`, so its reported drop is now worth
+    /// more than the friction of the rate it was handed, and the extra is
+    /// measured rather than assumed.
+    bool unsteady = false;
+    scalar dpFrictionPa = 0;    // dpPa minus the acceleration below: what the
+                                // network is charged as a resistance
+    scalar dpInertialPa = 0;    // rho/A * sum V_c (u_x - u_x_old)/dt over the
+                                // slab the drop is measured across, signed along
+                                // the flow: the force the region's own history
+                                // asks for
+    scalar dqPrev = 0;          // m3/s between the rate just imposed and the
+                                // committed rate the level started from
+    scalar inertanceDynamic = 0; // dpInertialPa / (dqPrev/dt), kg/m4: the
+                                 // inertance the block's own acceleration is
+                                 // worth, measured from the field it solved
+    scalar betaProfile = 0;     // <u_x^2>/<u_x>^2 over the probe cross-sections,
+                                // volume-weighted: the momentum-flux correction
+                                // the flat-rate 1D picture does not see
+    scalar dtLevel = 0;         // s, the level this solve belongs to
+    scalar inertanceProbe = 0;  // rho*V_probe/A^2, kg/m4: the inertance of the
+                                // slab the drop above is measured across, which
+                                // is what the acceleration can belong to
 };
 
 /// One steady incompressible duct, solved in 3D and reduced to the single number
@@ -122,10 +190,27 @@ public:
 
     scalar lossAt(scalar qMag) override;
 
+    /// Takes the level's history when the case asks the region to carry a real
+    /// `du/dt` (`schemes{ ddt Euler; }`): the field as it stands is the previous
+    /// level's answer, and it is copied once here so that every pass of this
+    /// level - however many the interface needs - accelerates away from the same
+    /// `u^n`. A laminar-or-steady-scheme block ignores the call.
+    void beginTimeLevel(double dt, scalar qPrev) override;
+    bool unsteadyDrop() const override { return unsteady_; }
+
+    /// The acceleration the region's own field was solved against: the volume
+    /// integral of `rho*du/dt` over the slab the drop is measured across, per
+    /// unit section. Zero for a quasi-steady block, which has no history.
+    scalar lastInertialDrop() const override { return measure_.dpInertialPa; }
+
     /// `rho*V/A^2` of the region, measured on the block's own mesh: the
     /// inertance the 1D momentum row would otherwise have to guess from the
     /// nominal bore of the pipe standing in for this region.
     scalar regionInertance() const override { return inertance_; }
+
+    /// `rho*V/A^2` over the probe slab alone: the momentum of exactly the fluid
+    /// whose pressure difference `lossAt` reports.
+    scalar probeInertance() const override { return inertanceProbe_; }
 
     const BlockMeasure& measure() const { return measure_; }
     const polyMesh& mesh() const { return mesh_; }
@@ -166,6 +251,9 @@ private:
     /// trusts: a region whose planes differ in area cannot be reduced to one
     /// inertance, and the block says so instead of reporting a wrong one.
     scalar inertance_ = 0;
+    /// The same quantity over the probe slab only, `rho*V_probe/A^2`: the
+    /// inertance of the fluid whose pressure difference is actually reported.
+    scalar inertanceProbe_ = 0;
 
     /// Cross-section groups along the flow axis: cell indices sharing a centre
     /// coordinate, ordered the way the flow meets them, with the section's
@@ -180,6 +268,16 @@ private:
     volScalarField p_;
     surfaceScalarField phi_;
     BlockMeasure measure_;
+
+    /// The level the block is currently solving, and the field it accelerates
+    /// away from. `unsteady_` is the case's own statement (`schemes ddt`), read
+    /// once here, and it only becomes true at the first `beginTimeLevel`: a
+    /// block asked to step in time but driven at an instant is a contradiction
+    /// the block refuses rather than a quasi-steady answer it never claimed.
+    bool unsteady_ = false;
+    double levelDt_ = 0;
+    scalar levelQPrev_ = 0;
+    Field<Vector> UOldLevel_;
     /// Declared after the fields it references so it dies before them.
     std::unique_ptr<RansModel> turbModel_;
 };
@@ -207,6 +305,31 @@ struct EdgeExchange
     /// the region's share of the ramp's time constant. 0 where no time level is
     /// being solved -- every steady exchange.
     scalar inertance = 0;
+
+    /// Unsteady partner only: what the partner reported splits into the part the
+    /// rate's friction is worth and the part the region's acceleration is worth,
+    /// `dpFrictionPa + dpInertialPa == dpPa`, both measured on the block's own
+    /// field. `residual` is then the mismatch against the friction part, which is
+    /// what the resistance refresh and the interface accelerator iterate on; the
+    /// region's history is charged to the row, not to the coefficient, and the
+    /// disagreement between the two sides' momentum is `rowError` below.
+    bool unsteady = false;
+    scalar dpFrictionPa = 0;
+    scalar dpInertialPa = 0;
+    scalar qPrev = 0;      // the committed rate this level accelerates from
+    scalar dq = 0;         // q - qPrev, signed with the magnitudes both sides
+                           // work in
+    /// What the 1D momentum row charges for this edge at the rate the step
+    /// delivers - `resistance*q + inertance*dq/dt` - against the drop the
+    /// partner's own momentum balance reports. `rowError` is the relative
+    /// disagreement. For a quasi-steady partner it stays 0 because there is
+    /// nothing on the 3D side to compare the row against: the region's inertance
+    /// is then a convention the 1D side declares and can only be read in the
+    /// path it takes. For a partner that carries its own `du/dt` the row is a
+    /// claim the two sides are graded on, level by level, and no amount of
+    /// interface iteration changes the grade.
+    scalar rowDropPa = 0;
+    scalar rowError = 0;
 };
 
 /// One pass of the steady interface: every coupled edge evaluated against the
@@ -314,10 +437,19 @@ struct TransientCoupledControls
     bool inertiaFromPartner = false;
 
     /// The same decision made per edge, indexed exactly like the caller's
-    /// `edges`: 1 asks that edge's partner for its `rho*V/A^2`, 0 keeps that
-    /// edge on the network's own `rho*L/A`. Empty (the default) leaves every
-    /// edge to the switch above, so a run that names one source for the whole
-    /// interface reads the same as before.
+    /// `edges`: 0 keeps that edge on the network's own `rho*L/A`, 1 asks that
+    /// edge's partner for its `rho*V/A^2`, 2 asks it for the inertance of only
+    /// the slab its reported drop is measured across, `rho*V_probe/A^2`. Empty
+    /// (the default) leaves every edge to the switch above, so a run that names
+    /// one source for the whole interface reads the same as before.
+    ///
+    /// Source 2 is a different question from source 1, and it is only a question
+    /// at all once the partner carries its own `du/dt`: the drop handed to the
+    /// interface is measured between two probe sections, so the momentum that
+    /// belongs to it is the slab's, while the duct the pipe stands for is longer
+    /// than the slab by whatever the probe leaves out. A quasi-steady partner can
+    /// report both numbers but cannot say which one its drop is worth, so only a
+    /// time-accurate one can be graded on the choice.
     ///
     /// Mixing is not a cosmetic generalisation of that switch. The two sources
     /// are two different measurements of two different things, and a network
@@ -371,27 +503,37 @@ struct TransientCoupledResult
 /// every edge agrees, and the coefficients carry into the next step, where the
 /// same statement has to hold at the new rates.
 ///
-/// The partner is asked for a drop at an *instant*, which is what keeps the
-/// interface stable: the coefficient the network solves for then depends on
-/// nothing but the rate. A time-accurate partner would report its region's
-/// inertial term `M*(q - qPrev)/dt` inside that drop, so the coefficient would
-/// read `a - c/R` - and a region whose rate falls through a step hands the
-/// network a non-positive one whenever `dt` is below its own time constant
-/// `M/R`, which is every transient that resolves the ramp it iterates on. So the
-/// inertance stays implicit, in the same momentum row as the rest of the
-/// network, and `inertiaFromPartner` - or `inertiaFromPartnerPerEdge`, which
-/// makes the same decision edge by edge inside one run - decides only where its
-/// number comes from: the coupled pipe's nominal `rho*L/A`, or the block's
-/// `rho*V/A^2` measured on the region's own mesh. When the bore is the equal-area
-/// one the two are the same number and the trajectory is identical to machine
-/// precision; otherwise they differ by exactly the error a bore carries for a
-/// region that has no bore, and that error lives in the path (the first step's
-/// inertial split, the ramp's time constant) rather than in the operating point
-/// both relax to.
+/// A partner that is only asked at an *instant* - every quasi-steady block and
+/// every analytic law, which is every case until the region's own `du/dt` was
+/// wanted - reports a drop that depends on nothing but the rate, and that is what
+/// keeps the interface stable. A time-accurate partner would report its region's
+/// inertial term `M*(q - qPrev)/dt` inside that drop, so the coefficient the
+/// network solves for would read `a - c/R` - and a region whose rate falls through
+/// a step hands the network a non-positive one whenever `dt` is below its own time
+/// constant `M/R`, which is every transient that resolves the ramp it iterates on.
+/// The interface avoids the same failure from the other side: it refreshes on the
+/// friction part of what the partner reports, so the coefficient keeps depending on
+/// the rate alone, and charges the acceleration part to the momentum row, where an
+/// inertance already sits.
+///
+/// `inertiaFromPartner` - or `inertiaFromPartnerPerEdge`, which makes the same
+/// decision edge by edge inside one run - decides where that row's number comes
+/// from: the coupled pipe's nominal `rho*L/A`, the block's `rho*V/A^2` over the
+/// whole region, or the block's `rho*V_probe/A^2` over only the slab the reported
+/// drop is measured across. When the bore is the equal-area one and the source is
+/// the region's, the first two are the same number and the trajectory is identical
+/// to machine precision; otherwise they differ by exactly the error a bore carries
+/// for a region that has no bore, and for a quasi-steady partner that error lives
+/// in the path (the first step's inertial split, the ramp's time constant) rather
+/// than in the operating point both relax to.
 ///
 /// The split is falsifiable on its own as well: the ramp's time constant is
 /// `(M_X + M_By)/(m_X R_X + m_By R_By)`, so a region whose inertance is read
-/// wrong by a shape factor ramps wrong by that factor's share of the loop.
+/// wrong by a shape factor ramps wrong by that factor's share of the loop. With
+/// `schemes{ ddt Euler; }` the block also states which inertance its own
+/// acceleration was worth (`inertanceDynamic`, against the installed row), so the
+/// choice of source stops being a convention and becomes a graded claim - one no
+/// amount of interface iteration can change.
 ///
 /// A step any edge cannot agree on is fatal: continuing would commit a state
 /// whose sides disagree, and the rest of the series would inherit it.

@@ -1,0 +1,167 @@
+# transientCoupledUnsteadyPartner: the detailed regions carry their own du/dt
+# into a time-stepping interface whose two coupled edges both negotiate.
+#
+#   Src -> A -> { X1 (3D RANS duct) || X2 (3D RANS duct) } -> B -> Snk
+#
+# The topology and the meshes are transientCoupledMultiBothParallel's, unchanged,
+# on purpose: this increment adds one axis and the control has to be an arm that
+# is the old run.
+#
+# Everything the chain has built so far asks the partner for a drop at an
+# *instant*: the region is solved to a steady state at the rate the interface
+# hands over, so its reported drop is a function of the rate and nothing else.
+# That is what keeps the refreshed coefficient a crossing of two positive
+# branches, and it is why the region's own momentum has always lived in the 1D
+# row rather than in the partner. The row's number has therefore never been
+# answerable to anything: `network`, `partner` and the per-edge mix of the two
+# are three ways to write the same interface condition, and the only evidence
+# for choosing between them has been the path each one takes (architecture.md
+# 5.25 through 5.32).
+#
+# Here the block solves `du/dt` against the field the previous time level left
+# (`schemes{ ddt Euler; }`, one implicit-Euler step per level, iterated to a
+# fixed point by the same SIMPLE loop), so the drop it reports is the answer of a
+# momentum balance that carries the region's own acceleration. The interface
+# keeps iterating on the friction part of that drop -- refreshing the coefficient
+# with the whole drop is exactly the `a - c/R` map whose crossing disappears
+# whenever dt < M/R -- and charges the acceleration part to the row instead,
+# which is where an inertance already sits. That makes one quantity new and it is
+# the one this case exists to read:
+#
+#   rowError = (R*q + M_row*(q - qPrev)/dt - dpBlock) / dpBlock
+#
+# per accepted level and per edge. It is not iterable: interface iteration drives
+# the friction residual down, and this stays exactly as large as the inertance
+# the row installed is wrong. Three sources therefore get graded for the first
+# time, and the block also states, from the field it solved, what its own
+# acceleration was worth per unit rate-of-change (`inertanceDynamic`) against the
+# inertance of the slab its drop is measured across (`inertanceProbe`).
+#
+# Six arms:
+#   ctrl_steady_net_gs  the old formulation: instant-solved region, bore inertance
+#   bore_gs             same, with the region's own du/dt
+#   region_gs           du/dt + the whole region's rho*V/A^2
+#   slab_gs             du/dt + rho*V_probe/A^2, the slab the drop is measured over
+#   slab_qn             as slab_gs under the quasi-Newton map
+#   bore_qn             as bore_gs under the quasi-Newton map
+# The control arm's block dict asks for Euler and the case overrides it to
+# `steady`, so the override is exercised in both directions and the control is
+# the same computation transientCoupledMultiBothParallel's bore_gs arm performs.
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1 and J2 are incompressible ports (no bulkModulus), so the branch split
+# is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 1.2e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3; diameter 0.02; }
+
+    # The two coupled edges: branches of ONE split, both negotiated, both
+    # carrying their own acceleration. Both proxy bores are mis-stated on
+    # purpose and by different amounts, so the row that trusts the drawing is
+    # wrong by a known factor on each edge:
+    #   X1: section H*W = 2.5e-5 m2, bore 0.005 m -> rho*L/A is 1.27324x the true
+    #   X2: section H*W = 3.2e-5 m2, bore 0.0049 m -> 1.69695x
+    # The probe ranges leave part of each duct out of the measured drop, so
+    # `slab` is a third number rather than a re-statement of `partner`:
+    #   X1 probe 0.06..0.19 of 0.20 m -> slab is 0.65 of the region's inertance
+    #   X2 probe 0.04..0.11 of 0.12 m -> 0.583
+    X1 { from J1; to J2; length 0.2;  diameter 0.005;
+         coupledResistance 1.0e7; }
+    X2 { from J1; to J2; length 0.12; diameter 0.0049;
+         coupledResistance 1.5e7; }
+
+    B  { from J2; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.05 over endTime 0.6: twelve levels against a pair whose time constant is
+# ~0.2 s, so every level after the first still arrives with a rate change worth
+# paying for -- which is the only state in which an inertance claim can be
+# graded at all.
+time { dt 0.05; endTime 0.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    // both blocks resolve their own drop to ~1e-4 of it inside their declared
+    // SIMPLE budget, and the interface residual stays the gap between two
+    // solvers rather than the gap between two inertance claims
+    tolerance 2e-4;
+    // a partner that steps in time reports a friction chord the previous level
+    // never saw: at the first level the boundary layer is only just born and its
+    // wall shear is the starting (Stokes) one, so the chord carried into level 2
+    // is several times the chord level 2 needs, and the interface unwinds that
+    // over five to six exchanges. The quasi-steady control needs three.
+    maxSubIterations 10;
+    inertias    ( network network partner slab slab network );
+    ddts        ( steady  Euler   Euler  Euler Euler Euler  );
+    accelerates ( 0       0       0      0     1     1      );
+    starts {
+        ctrl_steady_net_gs { X1 1.0e7; X2 1.5e7; }
+        bore_gs            { X1 1.0e7; X2 1.5e7; }
+        region_gs          { X1 1.0e7; X2 1.5e7; }
+        slab_gs            { X1 1.0e7; X2 1.5e7; }
+        slab_qn            { X1 1.0e7; X2 1.5e7; }
+        bore_qn            { X1 1.0e7; X2 1.5e7; }
+    }
+}
+
+details {
+    # X1: the 0.2 x 0.005 x 0.005 m duct carried over unchanged, 8 cells across
+    # the gap so the first cell centre sits inside the log-law band. The block
+    # asks for its own acceleration; the control arm overrides it away.
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.06; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_unsteady_partner_X1.vtu;
+    }
+
+    # X2: a 4 mm gap under an 8 mm span, nominal circle 4.9 mm, real section
+    # 1.70x that - the worse mis-statement of the two, in parallel with X1
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.12 0.004 0.008);
+            cells (12 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.04; max 0.11; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_unsteady_partner_X2.vtu;
+    }
+}

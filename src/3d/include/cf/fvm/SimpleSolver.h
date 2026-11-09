@@ -37,6 +37,23 @@ struct SimpleControls
                             // as the solved-pressure step shrinks relative
                             // to |p| (0 = relaxP from the first sweep)
     Vector bodyForce = Vector::zero(); // acceleration (m/s2), i.e. -grad(p)/rho
+
+    /// A physical time step for the momentum equation. Zero -- every case that
+    /// has ever asked for a steady solve -- leaves the equation exactly as it
+    /// was; with it, `fvm::ddt(UEqn, *uTimeOld, dt)` joins the balance, so the
+    /// fixed point of the same iteration is one implicit-Euler step instead of
+    /// a steady state.
+    ///
+    /// `uTimeOld` is the velocity the caller left at the previous time level,
+    /// and it belongs to the *level*, not to the previous sweep: the sweeps of
+    /// one step are iterations on the same step, so they all see one history.
+    /// Putting V/dt on the diagonal bounds the response rAU = V/aDiag by dt,
+    /// which is the damping steady SIMPLE has to buy with under-relaxation.
+    /// Both halves are checked against each other rather than trusted: a step
+    /// without a scheme, or a scheme without a field, is a contradiction the
+    /// caller has to resolve.
+    scalar dt = 0;
+    const Field<Vector>* uTimeOld = nullptr;
 };
 
 struct SimpleResult

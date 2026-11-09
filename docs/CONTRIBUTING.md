@@ -290,6 +290,31 @@ python3 tests/check_transient_coupled_multi_both_parallel.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiBothParallel/case.dict"
 
+# 块内真实非定常 du/dt 进界面：§5.32 的拓扑与两个网格整张照抄，但这一例动了内核
+# （SIMPLE 动量方程可选装配 fvm::ddt(u_old, dt)；界面的刷新与准 Newton 残差改用块报压降的
+# 摩擦部分；加速度记进 1D 动量行并评分；归属新增第三本账 slab = rho*V_probe/A^2）。
+# 六臂 = 准稳态控制（ddts 把块字典的 Euler 覆盖回 steady，于是它就是上一例的 bore_gs）
+# + 三个来源 x 平谈 + 绘图/slab 各再跑一遍准 Newton。要点：
+#   1) 界面只谈弦——R*q 落在 dpFriction 上最差 1.987e-04（容差 2e-4 的 1.0 倍），离整段压降
+#      差 22x ~ 3039x 容差（最坏一次 61% 压降）：这就是"用整段压降刷新"那条 a-c/R 死路；
+#   2) 一条不可迭代的评分 rowError = (R*q + M_row*dq/dt - dpBlock)/dpBlock——沉降层（4~12）它
+#      恰等于 (M_row - M_probe)*(dq/dt)/dpBlock（绘图 0.968~1.015、区域 0.971~1.012），slab 臂
+#      同一式预测 0、实测残留 <=0.23% 压降。归属第一次有「误差」而不是「路」；
+#   3) 块给自己评分 chi = inertanceDynamic/inertanceProbe：起步层 92.8%~94.6%，第 4 层起
+#      |chi-1| <= 2.8% 且五臂同 (边,层) 之比 <1.05，第 2~3 层 >5%（那两层集总块说不了话——
+#      X2 第 2 层通量已翻负而场仍加速，是「块不是速率函数」的直接读数）；
+#   4) 首层摩擦弦是准稳态弦的 2.46~3.05 倍（起始壁面剪），第 3 层起回到 ±3.8%——代价由下一层
+#      用趟数付，maxSubIterations 因此从 6 提到 10（6 趟会让 slab_gs 第 2 层以 2.2e-3 谈不拢）；
+#   5) 目的地仍由弦决定但位置随归属变：六臂末端 X1 分流 0.400006~0.406190 对电阻分流 0.409367
+#      偏 0.78%~2.29%，三来源末端三条不同速率（两两差 >1e-9）。
+# 写这一类判据时的坑：settled 层的挑选必须显式开窗——整段 12 层取中位会把绘图与区域在 X2 上压成
+# 1.99% vs 1.96%（不可分辨）；chi 那种「两个小数之比」在 dq 趋零的层会失去意义，只能报区间不能定带。
+# 十族 378 条，含跑 app 的 ctest 单条 ~36 s（259 趟界面 / 518 次块解 / 72 层谈拢）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledUnsteadyPartner/case.dict
+python3 tests/check_transient_coupled_unsteady_partner.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledUnsteadyPartner/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict

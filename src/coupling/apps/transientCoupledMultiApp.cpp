@@ -93,6 +93,21 @@ BlockSpec loadBlockSpec(const Dictionary& dd, const char* argv0,
                      TurbulenceConfig::fromCase(dd)};
 }
 
+/// Where one coupled edge's inertance comes from, in the order the interface
+/// takes its decision: the drawing's bore, the partner's whole region, or the
+/// slab of that region whose pressure difference the partner actually reports.
+/// The last is only a different number from the second for a block that steps
+/// in time -- and only a different *claim* once one does, because a
+/// quasi-steady partner can measure both and cannot say which its drop is worth.
+int inertiaSourceIndex(const std::string& w)
+{
+    if (w == "network") return 0;
+    if (w == "partner") return 1;
+    if (w == "slab") return 2;
+    cfFatal("coupled1d3dTransient: inertia source '" + w
+            + "' is none of network, partner, slab");
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -187,10 +202,33 @@ int main(int argc, char** argv)
             else
                 inertias = w;
         }
-        for (const std::string& w : inertias)
-            if (w != "network" && w != "partner")
-                cfFatal("coupled1d3dTransient: inertias entry '" + w
-                        + "' is neither network nor partner");
+        for (const std::string& w : inertias) inertiaSourceIndex(w);
+
+        // Whether the partner carries its own acceleration, arm by arm. The
+        // blocks are built fresh for every arm, so one run can put the same
+        // mesh, the same seed and the same tolerance under a quasi-steady
+        // partner and under a time-accurate one: the only difference between
+        // those two arms is whether the region's `du/dt` was in the equation
+        // that produced its drop. Omitting the entry leaves every arm at what
+        // its own `details.<edge>.schemes{ ddt ... }` says.
+        std::vector<std::string> ddts(startNames.size(), "");
+        if (cd.has("ddts"))
+        {
+            const std::vector<std::string> w = cd.getWordList("ddts");
+            if (w.size() == 1 && startNames.size() > 1)
+                ddts.assign(startNames.size(), w[0]);
+            else if (w.size() != ddts.size())
+                cfFatal("coupled1d3dTransient: couple.ddts needs one entry per"
+                        " starting set, or exactly one for all of them (got "
+                        + std::to_string(w.size()) + " for "
+                        + std::to_string(ddts.size()) + " sets)");
+            else
+                ddts = w;
+        }
+        for (const std::string& w : ddts)
+            if (!w.empty() && w != "steady" && w != "Euler")
+                cfFatal("coupled1d3dTransient: ddts entry '" + w
+                        + "' is neither steady nor Euler");
 
         // The same decision made per edge, so one run can trust the block on the
         // edge whose region it can measure and the drawing on the edge whose
@@ -212,10 +250,7 @@ int main(int argc, char** argv)
                         cfFatal("coupled1d3dTransient: inertiaFrom." + startNames[s]
                                 + " gives no source for coupled edge '" + edgeName + "'");
                     const std::string e = sd.getWord(edgeName);
-                    if (e != "network" && e != "partner")
-                        cfFatal("coupled1d3dTransient: inertiaFrom." + startNames[s]
-                                + "." + edgeName + " '" + e
-                                + "' is neither network nor partner");
+                    inertiaSourceIndex(e);
                     w.push_back(e);
                 }
                 armEdgeInertias[s] = std::move(w);
@@ -256,10 +291,14 @@ int main(int argc, char** argv)
             // second run inherit the first one's interface history
             std::vector<std::unique_ptr<DetailBlock>> owners;
             std::vector<ICoupledElement*> partners;
+            std::vector<std::string> blockDdt;
             for (std::size_t i = 0; i < specs.size(); ++i)
             {
+                Schemes sch = specs[i].schemes;
+                if (!ddts[s].empty()) sch.ddt = ddts[s];
+                blockDdt.push_back(sch.ddt);
                 owners.push_back(std::make_unique<DetailBlock>(
-                    specs[i].mesh, nu, c.fluid.rho, specs[i].schemes, specs[i].simple,
+                    specs[i].mesh, nu, c.fluid.rho, sch, specs[i].simple,
                     specs[i].probeMin, specs[i].probeMax, specs[i].turb));
                 partners.push_back(owners.back().get());
             }
@@ -293,8 +332,15 @@ int main(int argc, char** argv)
             {
                 std::vector<int> src;
                 for (const std::string& w : edgeWords)
-                    src.push_back(w == "partner" ? 1 : 0);
+                    src.push_back(inertiaSourceIndex(w));
                 run.inertiaFromPartnerPerEdge = std::move(src);
+            }
+            else if (inertias[s] == "slab")
+            {
+                // one answer for the whole interface still travels as the
+                // per-edge decision, because the switch underneath it is a
+                // yes-or-no and the slab is a third answer
+                run.inertiaFromPartnerPerEdge = std::vector<int>(edges.size(), 2);
             }
 
             log::info("transient start ", startNames[s], ": inertia ", inertias[s],
@@ -312,6 +358,16 @@ int main(int argc, char** argv)
             for (std::size_t i = 0; i < edges.size(); ++i)
                 log::info("transient start ", startNames[s], " edge ", edgeNames[i],
                           " index ", edges[i], " resistance ", num(startRs[s][i]));
+            // What this arm's partner is going to be asked to carry: the case's
+            // own ddt word, and the two inertances its mesh measures -- the
+            // region's and that of only the slab whose pressure difference it
+            // reports. `slab` installs the second, every arm is graded on it.
+            for (std::size_t i = 0; i < edges.size(); ++i)
+                log::info("transient partner ", startNames[s], " edge ", edgeNames[i],
+                          " ddt ", blockDdt[i],
+                          " regionInertance ", num(owners[i]->regionInertance()),
+                          " probeInertance ", num(owners[i]->probeInertance()),
+                          " index ", edges[i]);
 
             const TransientCoupledResult res =
                 solveTransientCoupled1d3d(net, edges, partners, run, tc.dt, tc.endTime);
@@ -354,7 +410,20 @@ int main(int argc, char** argv)
                               " dpBlock ", num(ex.dpPa), " R ", num(ex.resistance),
                               " residual ", num(ex.residual), " sweeps ", ex.sweeps,
                               " M ", num(ex.inertance),
-                              " blockConverged ", (ex.blockConverged ? 1 : 0));
+                              " blockConverged ", (ex.blockConverged ? 1 : 0),
+                              // an unsteady partner splits its drop: the
+                              // resistance is charged with the friction half and
+                              // the row's inertance term is graded against the
+                              // other half, which is what `rowDrop`/`rowError`
+                              // report. A quasi-steady one leaves them at its
+                              // whole drop and an error of 0: there is nothing to
+                              // grade it on.
+                              " dpFriction ", num(ex.dpFrictionPa),
+                              " dpInertia ", num(ex.dpInertialPa),
+                              " qPrev ", num(ex.qPrev), " dq ", num(ex.dq),
+                              " rowDrop ", num(ex.rowDropPa),
+                              " rowError ", num(ex.rowError),
+                              " unsteady ", (ex.unsteady ? 1 : 0));
                 }
 
                 std::ostringstream nodes;
@@ -392,7 +461,19 @@ int main(int argc, char** argv)
                                                          : m.turbModel),
                           " nutMax ", num(m.nutMax),
                           " wallYPlusMax ", num(m.wallYPlusMax),
-                          " wallUTau ", num(m.wallUTau));
+                          " wallUTau ", num(m.wallUTau),
+                          // what the last solve made of its own acceleration:
+                          // the force the slab's history asks for, what that is
+                          // worth per unit rate-of-change, the inertance of the
+                          // slab it was measured over, and the profile's own
+                          // momentum-flux correction
+                          " unsteady ", (m.unsteady ? 1 : 0),
+                          " dpInertialPa ", num(m.dpInertialPa),
+                          " dpFrictionPa ", num(m.dpFrictionPa),
+                          " inertanceDynamic ", num(m.inertanceDynamic),
+                          " inertanceProbe ", num(m.inertanceProbe),
+                          " betaProfile ", num(m.betaProfile),
+                          " dtLevel ", num(m.dtLevel));
             }
 
             for (std::size_t i = 0; i < res.state.size(); ++i)

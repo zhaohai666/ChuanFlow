@@ -243,6 +243,17 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
         cfFatal("detailBlock: nu and rho must be positive");
     turb_.validate();
 
+    // Whether this region carries its own acceleration is the case's statement,
+    // not the interface's: `schemes{ ddt Euler; }` in the block's own dict. Only
+    // the two words the kernel implements are accepted, because a block that
+    // quietly ignored a third would report a quasi-steady drop and let the
+    // interface charge it to a momentum row it never solved.
+    if (schemes_.ddt == "steady") unsteady_ = false;
+    else if (schemes_.ddt == "Euler") unsteady_ = true;
+    else
+        cfFatal("detailBlock: schemes ddt is '" + schemes_.ddt
+                + "'; a detailed region understands 'steady' and 'Euler'");
+
     for (label patch = 0; patch < mesh_.nPatches(); ++patch)
     {
         const std::string& type = mesh_.patches()[static_cast<std::size_t>(patch)].type;
@@ -378,6 +389,27 @@ void DetailBlock::buildSections()
                 " " + std::to_string(volume) + " m3 of fluid across a"
                 " " + std::to_string(areaRef) + " m2 section, which is no"
                   " rho*V/A^2 for the interface to install");
+
+    // The same number over the slab the drop is actually measured across. The
+    // probe range is a statement about which part of the region the interface is
+    // charging the network for, and the momentum that belongs to that charge is
+    // the slab's, not the whole duct's: the two differ by exactly the length the
+    // probe leaves out. A block that steps in time can say which of them its own
+    // acceleration agrees with, so the difference becomes a measurement instead
+    // of a convention.
+    scalar probeVolume = 0.0;
+    for (std::size_t k = 0; k < sections_.size(); ++k)
+    {
+        if (sectionX_[k] < probeMin_ || sectionX_[k] > probeMax_) continue;
+        for (const label c : sections_[k])
+            probeVolume += mesh_.cellVolumes()[static_cast<std::size_t>(c)];
+    }
+    inertanceProbe_ = rho_ * probeVolume / (areaRef * areaRef);
+    if (!(probeVolume > 0) || !std::isfinite(inertanceProbe_))
+        cfFatal("detailBlock: the probe range [" + std::to_string(probeMin_) + ", "
+                + std::to_string(probeMax_) + "] m covers no fluid of this region"
+                  " (" + std::to_string(probeVolume) + " m3), so the drop measured"
+                    " across it has no momentum of its own");
 }
 
 void DetailBlock::applyBoundary(scalar qMag)
@@ -421,6 +453,22 @@ void DetailBlock::applyBoundary(scalar qMag)
     phi_.correctBoundaryFlux(U_);
 }
 
+void DetailBlock::beginTimeLevel(double dt, scalar qPrev)
+{
+    if (!unsteady_) return;   // the region has no history to take
+    if (!(dt > 0))
+        cfFatal("detailBlock: a time level of " + std::to_string(dt)
+                + " s was declared for a region that steps in time");
+    levelDt_ = dt;
+    levelQPrev_ = qPrev;
+    // THE level's history, taken once: every pass of this level - and every
+    // sweep inside a pass - accelerates away from this field, so re-solving the
+    // level is an iteration on one time step rather than a step along the
+    // trajectory. The field itself keeps warm-starting from the previous pass,
+    // which is what makes the level cheap to re-solve.
+    UOldLevel_ = U_.internalField();
+}
+
 scalar DetailBlock::lossAt(scalar qMag)
 {
     if (!(qMag > 0))
@@ -428,6 +476,16 @@ scalar DetailBlock::lossAt(scalar qMag)
                 " non-positive rate (" + std::to_string(qMag)
                 + " m3/s): a region's resistance carries no information at"
                   " zero flow");
+
+    if (unsteady_)
+    {
+        if (!(levelDt_ > 0))
+            cfFatal("detailBlock: this region is asked to carry its own du/dt but"
+                    " was solved at an instant: no time level was declared, so"
+                    " there is no field for it to accelerate away from");
+        ctl_.dt = levelDt_;
+        ctl_.uTimeOld = &UOldLevel_;
+    }
 
     applyBoundary(qMag);
     // Built on the rate the interface first delivers, because the model's inlet
@@ -575,6 +633,48 @@ void DetailBlock::measure(const SimpleResult& res, scalar qMag)
         measure_.nutMax = nutMax;
         measure_.wallYPlusMax = turbModel_->maxWallYPlus();
         measure_.wallUTau = turbModel_->meanFrictionVelocity();
+    }
+
+    // The region's own acceleration, measured on the slab the drop above is
+    // taken across: `rho * int du/dt dV / A` between the first and the last
+    // probe section, from the field just solved and the field the previous
+    // level left. Nothing is assumed about inertance here; what this force is
+    // worth per unit rate-of-change is then a number the 1D side's momentum row
+    // can be graded against instead of a number it declares.
+    measure_.unsteady = unsteady_;
+    measure_.inertanceProbe = inertanceProbe_;
+    if (unsteady_)
+    {
+        measure_.dtLevel = levelDt_;
+        measure_.dqPrev = qMag - levelQPrev_;
+        scalar sumV = 0, sumU = 0, sumU2 = 0, sumVdu = 0;
+        for (label c = 0; c < mesh_.nCells(); ++c)
+        {
+            const std::size_t u = static_cast<std::size_t>(c);
+            if (!inProbe[u]) continue;
+            const scalar v = volumes[u];
+            const scalar ux = dot(uIn[u], axisUnit);
+            const scalar uxo = dot(UOldLevel_[u], axisUnit);
+            sumV += v;
+            sumU += v * ux;
+            sumU2 += v * ux * ux;
+            sumVdu += v * (ux - uxo);
+        }
+        if (!(sumV > 0))
+            cfFatal("detailBlock: the probe slab holds no fluid to accelerate");
+        if (!(levelDt_ > 0))
+            cfFatal("detailBlock: measured an acceleration against a level of "
+                    + std::to_string(levelDt_) + " s");
+        measure_.dpInertialPa = rho_ * sumVdu / (levelDt_ * inletArea_);
+        measure_.dpFrictionPa = measure_.dpPa - measure_.dpInertialPa;
+        const scalar accel = measure_.dqPrev / levelDt_;
+        if (std::abs(accel) > 0)
+            measure_.inertanceDynamic = measure_.dpInertialPa / accel;
+        // <u_x^2> / <u_x>^2 over the same slab: the momentum-flux correction a
+        // flat-rate picture cannot see, measured on the profile the block
+        // actually solved. A plug profile reads 1.0.
+        if (std::abs(sumU) > 0)
+            measure_.betaProfile = (sumU2 * sumV) / (sumU * sumU);
     }
 }
 
@@ -799,26 +899,30 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
             cfFatal("coupling: transient controls name an inertia source for "
                     + std::to_string(perEdge.size()) + " edges but the interface"
                       " has " + std::to_string(edges.size()));
-        std::vector<bool> fromPartner(edges.size(), ctl.inertiaFromPartner);
-        for (std::size_t i = 0; i < perEdge.size(); ++i)
-            fromPartner[i] = perEdge[i] != 0;
+        std::vector<int> source(edges.size(), ctl.inertiaFromPartner ? 1 : 0);
+        for (std::size_t i = 0; i < perEdge.size(); ++i) source[i] = perEdge[i];
 
         std::vector<scalar> measured(edges.size(), 0.0);
         for (std::size_t i = 0; i < edges.size(); ++i)
         {
-            if (!fromPartner[i]) continue;
-            measured[i] = blocks[i]->regionInertance();
+            const std::string& name =
+                net.pipeNames()[static_cast<std::size_t>(edges[i])];
+            if (source[i] == 0) continue;
+            measured[i] = source[i] == 1 ? blocks[i]->regionInertance()
+                                         : blocks[i]->probeInertance();
             if (!(measured[i] > 0))
-                cfFatal("coupling: transient pipe '"
-                        + net.pipeNames()[static_cast<std::size_t>(edges[i])]
-                        + "' is to take its inertance from its partner, which"
-                          " measures " + std::to_string(measured[i])
-                          + " kg/m4: a partner that states no region of its own"
-                            " has nothing to install");
+                cfFatal("coupling: transient pipe '" + name + "' is to take its"
+                        " inertance from "
+                        + std::string(source[i] == 1
+                                          ? "its partner's region"
+                                          : "the slab of it the partner measures")
+                        + ", which measures " + std::to_string(measured[i])
+                        + " kg/m4: a partner that states no region has nothing to"
+                          " install");
         }
         for (std::size_t i = 0; i < edges.size(); ++i)
         {
-            if (fromPartner[i]) net.setCoupledInertia(edges[i], measured[i]);
+            if (source[i] != 0) net.setCoupledInertia(edges[i], measured[i]);
         }
     }
 
@@ -829,6 +933,20 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
         bool agreed = false;
         if (qn)
             qn->reset();
+
+        // The level's history goes to the partners before anything is solved:
+        // the committed rate is what this level accelerates away from, and a
+        // partner that carries its own `du/dt` takes the field it stands on here
+        // and only here, so no number of re-solves of this level can move it.
+        std::vector<scalar> qPrev(edges.size(), 0.0);
+        {
+            const std::vector<double> committed = net.pipeFlows();
+            for (std::size_t i = 0; i < edges.size(); ++i)
+            {
+                qPrev[i] = std::abs(committed[static_cast<std::size_t>(edges[i])]);
+                blocks[i]->beginTimeLevel(dt, qPrev[i]);
+            }
+        }
 
         // Re-solve the same step from the same committed start until every
         // partner's drop belongs to the rate the step delivers through its edge.
@@ -856,8 +974,37 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                             " evaluated at zero rate");
                 ex.dpPa = blocks[i]->lossAt(ex.q);
                 ex.inertance = net.pipeInertia(edge);
-                ex.residual = std::abs(ex.resistance * ex.q - ex.dpPa)
-                              / std::max(std::abs(ex.dpPa), 1e-300);
+                ex.unsteady = blocks[i]->unsteadyDrop();
+                ex.qPrev = qPrev[i];
+                ex.dq = ex.q - qPrev[i];
+                // What the region's momentum is worth is a claim the row makes,
+                // so it is kept out of the equation the interface iterates on:
+                // the partner's friction is what the resistance is charged with,
+                // whether or not the partner also carried an acceleration.
+                ex.dpInertialPa = ex.unsteady ? blocks[i]->lastInertialDrop() : 0.0;
+                ex.dpFrictionPa = ex.dpPa - ex.dpInertialPa;
+                const scalar chord = ex.unsteady ? ex.dpFrictionPa : ex.dpPa;
+                if (!(chord > 0))
+                    cfFatal("coupling: transient pipe '" + ex.name
+                            + "' reports a drop of " + fmt(ex.dpPa) + " Pa of which"
+                              " the acceleration of its own region is worth "
+                            + fmt(ex.dpInertialPa)
+                            + " Pa, leaving no friction for a resistance to carry:"
+                              " the inertance installed on this edge (M "
+                            + fmt(ex.inertance) + " kg/m4 over a rate change of "
+                            + fmt(ex.dq) + " m3/s in " + fmt(dt)
+                            + " s) is larger than the momentum the region itself"
+                              " can account for");
+                ex.residual = std::abs(ex.resistance * ex.q - chord)
+                              / std::max(std::abs(chord), 1e-300);
+                // The row as the 1D side writes it, against the drop as the
+                // region's own momentum balance reports it. This is the number
+                // the interface cannot iterate away, and the only one that says
+                // whether the inertance installed above belongs to this region.
+                ex.rowDropPa = ex.resistance * ex.q
+                               + ex.inertance * ex.dq / static_cast<scalar>(dt);
+                ex.rowError = ex.unsteady
+                              ? (ex.rowDropPa - ex.dpPa) / ex.dpPa : 0.0;
                 ex.sweeps = blocks[i]->lastSweeps();
                 ex.blockConverged = blocks[i]->lastConverged();
                 worst = std::max(worst, ex.residual);
@@ -877,8 +1024,9 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                 for (std::size_t i = 0; i < R.size(); ++i)
                 {
                     const EdgeExchange& ex = rec.edges[i];
+                    const scalar chord = ex.unsteady ? ex.dpFrictionPa : ex.dpPa;
                     x[i] = ex.resistance / Rseed[i];
-                    r[i] = (ex.dpPa / ex.q - ex.resistance) / Rseed[i];
+                    r[i] = (chord / ex.q - ex.resistance) / Rseed[i];
                 }
                 const std::vector<scalar> next = qn->next(x, r, ctl.relax);
                 for (std::size_t i = 0; i < R.size(); ++i)
@@ -892,7 +1040,8 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                 for (std::size_t i = 0; i < edges.size(); ++i)
                 {
                     const EdgeExchange& ex = rec.edges[i];
-                    R[i] = (1.0 - ctl.relax) * R[i] + ctl.relax * (ex.dpPa / ex.q);
+                    const scalar chord = ex.unsteady ? ex.dpFrictionPa : ex.dpPa;
+                    R[i] = (1.0 - ctl.relax) * R[i] + ctl.relax * (chord / ex.q);
                     net.setCoupledResistance(edges[i], R[i]);
                 }
             }

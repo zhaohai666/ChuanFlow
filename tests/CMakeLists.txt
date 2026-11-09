@@ -451,6 +451,21 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiMixedInertia/case.dict)
 
+# the two accounts this chain has kept separate - where a region's inertia comes
+# from, and which operator negotiates the interface - crossed: a complete 2x2 of
+# arms on one topology, both partners RANS, both bores mis-stated. The checker
+# requires the axes to be independent in both directions: the operator never
+# enters the inertance table, the chord identity and the momentum rows survive
+# quasi-Newton unchanged, and within a source pair both operators land on one
+# rate, one asymptote and one time constant - so what acceleration buys is the
+# schedule, not the physics
+add_test(
+    NAME verify.transientCoupledMultiTurbulentInertiaNewton
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent_inertia_newton.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentInertiaNewton/case.dict)
+
 # the same partitioned interface with a nonlinear partner: edge X is a RANS
 # channel, so its drop-per-rate is a function of the rate the interface is
 # hunting for. One seed runs under both operators, which is what lets the

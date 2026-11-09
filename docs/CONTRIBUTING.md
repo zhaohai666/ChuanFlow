@@ -234,6 +234,23 @@ python3 tests/check_transient_coupled_multi_mixed_inertia.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiMixedInertia/case.dict"
 
+# 湍流 × 归属 × 准 Newton 三者同台：把这条链上一直各自单独扳动的两条轴**交叉**成完整 2×2——
+# 同一张管网、同样两块 k-ω SST 伙伴、同样两个写歪的名义孔径，四臂只差
+# `inertias ( network network partner partner )` 与 `accelerates ( 0 1 0 1 )`，种子逐位相同。
+# check_transient_coupled_multi_turbulent_inertia_newton.py 从两个方向判独立：算子进不了归属的表
+# （同来源两臂装上逐位相同的 M：10185916.36 / 6363546.246 与 8000000 / 3750000 kg/m4）；界面在两种
+# 算子下仍是弦（四臂 96 个边×步 dpNetwork == R·q 到 0.0 Pa，每边行按本边那份 M 闭合 4.0e-11 /
+# 8.8e-11）；算子只买到日程（同对两臂末端速率差 3.2e-07 与 2.0e-06 相对、τ 差 8.9e-05 与 8.5e-04
+# 相对、串联首步踢出差 0.044 与 0.053 Pa，加速臂各少 1 趟）；归属照旧只管惯量账（τ 预测 −0.232% /
+# −0.247% / +0.231% / +0.158%，τ 之比 1.15115 == 惯量之比 1.15649 在两对里都成立，目的地 spread
+# 0.0119%，伙伴指数 1.6762 / 1.6763 / 1.6820 / 1.6816）；准 Newton 作用在界面整体那条被钉死的边
+# 上，残差地板 2.300e-07 → 1.670e-05 / 2.001e-05（73× / 87×）但仍在 tolerance 之内。十族 172 条，
+# app 四臂 93 s、checker 串行约 99 s（224 次块解 / 112 趟界面 / 48 个谈拢的时间层）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiTurbulentInertiaNewton/case.dict
+python3 tests/check_transient_coupled_multi_turbulent_inertia_newton.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiTurbulentInertiaNewton/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict

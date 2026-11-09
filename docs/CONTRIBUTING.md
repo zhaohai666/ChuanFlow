@@ -251,6 +251,25 @@ python3 tests/check_transient_coupled_multi_turbulent_inertia_newton.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiTurbulentInertiaNewton/case.dict"
 
+# 湍流 × 归属 × 准 Newton × 按边：三条轴同台（8 臂，内核零改动）
+# 同一张管网、同样两块 k-ω SST 伙伴、同样两个写歪的名义孔径，八臂只差 inertias、
+# accelerates ( 0 0 0 0 1 1 1 1 ) 与四张 inertiaFrom{} 表（mixX1/mixX2 两张镜像表各跑两种算子）。
+# check_transient_coupled_multi_three_axis.py 判的是「按边归属在准 Newton 下逐位存活」：装上 M 的表
+# 八臂一致（X1 10185916.36 / 8000000、X2 6363546.246 / 3750000 kg/m4），192 个边×步 dpNetwork == R·q
+# 到 0.0 Pa，每边行按本边那份 M 闭合（4.0e-11 / 8.8e-11、串联 3e-14）；同表两臂 X1 速率历史
+# QN 四对与 GS 区域对逐位相同（0.0e+00），GS 孔径对 2.9e-10，异表 4.801e-02——分离度 1.6e8x..4.8e14x；
+# 被拓扑钉死的 X2 用节点压降量（同表 1.1e-09/1.7e-09 GS、4.9e-07/7.5e-07 QN，异表 3.5e-01/5.4e-01）；
+# 两张镜像表在两条边上都分开，混法臂不是折中；tau 由做斜坡那条边的来源决定（mixX2 == bore 0.277231 /
+# 0.277255，mixX1 == region 0.240829 / 0.241034，差 4.0e-09..0.0 相对），串联首步踢差 6272.510991 /
+# 6272.502249 Pa == deltaM*Q/dt；算子只买到日程（同对末端速率差 9.702e-07 / 4.428e-06，加速臂各少 1 趟）；
+# 八臂弛豫到同一速率（渐近 spread 0.0119%）；被钉死那条边的残差地板 2.300e-07 → 1.670e-05 / 2.001e-05
+# （73x / 87x / 87x / 72x）而谈判那条分毫不动。十族 373 条，app 八臂 275 s、checker 串行 267 s
+# （448 次块解 / 224 趟界面 / 96 个谈拢的时间层）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiThreeAxis/case.dict
+python3 tests/check_transient_coupled_multi_three_axis.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiThreeAxis/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict

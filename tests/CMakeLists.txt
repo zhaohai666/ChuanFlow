@@ -466,6 +466,17 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentInertiaNewton/case.dict)
 
+# the three degrees of freedom this chain kept separate, all three present at once:
+# where each edge's region inertia comes from (per arm AND per edge) crossed with
+# which operator negotiates the interface - four tables x two maps, eight arms on
+# one topology, and the separation measured rather than inferred
+add_test(
+    NAME verify.transientCoupledMultiThreeAxis
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_three_axis.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiThreeAxis/case.dict)
+
 # the same partitioned interface with a nonlinear partner: edge X is a RANS
 # channel, so its drop-per-rate is a function of the rate the interface is
 # hunting for. One seed runs under both operators, which is what lets the

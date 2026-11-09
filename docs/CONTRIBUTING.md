@@ -14,11 +14,11 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（96 项）约 240 ~ 282 s ≈ 4 ~ 4.7 分钟（实测 258.53 s），
-                                             # 墙钟就是最慢那一条：稳态 profile 级映射 212 s；
-                                             # 其余大头（形状 x 湍流 x 瞬态 112 s、瞬态惯量归属 86 s、
-                                             # 形状 x 块内 du/dt 71 s、VOF 振荡 68 s、稳态多边 60 s）
-                                             # 在 -j8 下被并行掩盖
+ctest --test-dir build --output-on-failure -j8  # 全量回归（97 项）约 258 ~ 345 s ≈ 4.3 ~ 5.8 分钟（实测 345.36 s），
+                                             # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高）：
+                                             # 稳态 profile 级映射 255.9 s、逐边 ddt x 归属 229.2 s、
+                                             # 形状 x 逐边归属 153.4 s、形状 x 块内 du/dt 129.0 s、
+                                             # 形状 x 湍流 x 瞬态 128.9 s、瞬态惯量归属 97.7 s、VOF 振荡 83.1 s
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -673,6 +673,72 @@ python3 tests/check_transient_coupled_multi_turbulent_edge_ddt.py \
 python3 tests/check_transient_coupled_multi_turbulent_edge_ddt_inertia.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiTurbulentEdgeDdtInertia/case.dict"
+
+# 塑形入口 × 逐边两表同台（5.41）：上面那案的拓扑、两块 kOmegaSST 网格、probe、壁面函数、操作点、故意写歪的两根 proxy
+# 孔径（X1 0.005 对等效 0.0056419、X2 0.006 对 0.0063831；三本账因此是三个数：X1 1.018592e7 / 8.0e6 / 2.8e6，X2
+# 8.488264e6 / 7.5e6 / 2.187500e6 kg/m4）、dt 0.2 与 8 个时间层原封不动，唯一加的东西是 starts.<arm>.profile——逐边的
+# 入口形状列表（解析在 transientCoupledMultiApp.cpp:170-193，长度不等于耦合边数直接 cfFatal；每臂每条边生效的形状在 :433
+# 打印；内核词表 flat/parabolic/power1over7 在 coupledNetwork.cpp:423-426、写入在 :491；ddtFrom :273、inertiaFrom :303）。
+# 七臂 = 平口纯归属阶梯 {f_net, f_region, f_slab}（= 5.40 的 nn_both/pp_both/ss_both 换名，用来做跨例回归）+ 阶梯前两档
+# 塑形 {p_net, p_region} + 两个混合臂 p_mix（X1 步进+图纸+塑形，X2 准稳+slab）与 p_pin（X1 准稳+图纸，X2 步进+slab）：
+# p_pin 就是 5.39 记下的 parab_x2pin 那一格，p_mix/X2 就是 5.40 边界① 的准稳 x slab。accelerates 全 0，内核一行没改。
+# 一堵墙写在 case.dict 的注释里：slab x 步进 x 自由边一旦同时遇上塑形入口，层 1 内发散（coupledNetwork.cpp:628
+# "the detailed region reports a non-positive drop (-89.475517 Pa) at 0.000022 m3/s"），所以本案的 slab 只出现在准稳边
+# 与钉死边上——不要为了"补全矩阵"把它放到塑形的自由步进边上。
+# 要问的问题是 5.40 那两笔账单到底归谁定价：账单是 (M_装上 - M_块自己付)*dq/dt，在钉死边 dq 由拓扑给定、与轨迹无关，
+# 所以如果形状能移动它，"记了谁的惯量"和"块做了什么"就不可分；如果它不动而块的 dpInertia/dpBlock 大动，归属阶梯就只是
+# 所装 M 的性质，形状只给块那一半重新定价。
+# 十一族 158 条的要点：
+#   1) 两张表 + 形状逐边到达——112 个（层 x 边）状态各带自己那条边的三个词（96 步进 / 16 准稳），p_mix 与 p_pin 的两份
+#      表在同一条边上互相不同意；装上的 M 与来源宣布的数逐字一致，块回报同时带 regionInertance 与 probeInertance。
+#   2) 恒等式对形状免疫——rowError*dpBlock == (R*q - dpFriction) + (M*dq/dt - dpInertia) 在两种形状共 96 个步进状态全部
+#      成立，最差 9.3e-17（按那四项绝对值之和归一，p_region 层 1 X1）；dpFriction + dpInertia == dpBlock 到 1.7e-16；
+#      16 个准稳状态 rowError 恰为 0.0。
+#   3) 主判据（钉死边）——X2 层 1 账单 1903.8603 Pa 平 对 1903.4177 Pa 塑（0.023%），而块的 dpBlock 掉 21.4%（沿 8 层最大
+#      逐层相对变化 113.7%）、dpInertia 642.6188 -> 643.0614 Pa；形状能动弦差（2.47e-4 -> 2.38e-2 Pa，97x），但即使塑形
+#      也只占账单的 1.3e-5；全案最大弦差 0.6423 Pa，最小的层 1 账单 11.79 Pa（f_slab/X1）仍是它的 18x。自由边换了主语：
+#      账单跟着速率走（1.917688e-5 -> 2.014387e-5 m3/s，+5.04%；718.8665 -> 754.2383 Pa，+4.92%）。
+#   4) 阶梯对形状盲（在它削掉的比例上）——图纸 -> 区域削掉 X1 层 1 行误差 30.08% 平 / 29.30% 塑（差 0.78 pp），X2 15.57% /
+#      15.58%；平口三档逐字复现 5.40（X1 rowError 77.0836 / 53.8941 / 0.9364%，账单 718.8665 / 551.3981 / 11.7934 Pa；
+#      X2 52.1912 / 44.0637 / 0.3737% 对 1903.8603 / 1607.3812 / 13.6312 Pa），塑形 region 档逐字复现 5.39 的 parab_both
+#      （62.6559 / 56.0164%）——5.39 的 network 数就是本案的 partner 数，两案是同一臂的两种叫法。
+#   5) 准稳边吃 slab 照付不评（5.40 边界① 填上）——p_mix/X2 付 656.25 Pa 的 M*dq/dt，块报 dpInertia 0.0、评分恒 0.0，
+#      同 dq/dt 下图纸会收 2546.48 Pa，来源藏掉 74.2%；p_pin/X1 吃图纸，层 1 藏 1264.30 Pa、层 8 仍藏 35.06 Pa；准稳钉死
+#      边的隐藏账单只在层 1 出现一次（656.25 然后 0.00），因为注入以后 dq 就是 0。块的回报逐边给 dtLevel：steady 那条恰
+#      为 0 s、Euler 那条 0.2 s——形状仍然每层重写在这条看不见时间层的边上。
+#   6) 斜率律只在拓扑钉住速率的地方精确——X2 上两档归属的账单差恰为 (M_a - M_b)*dq/dt（296.4791 对 296.4791 Pa，0.0000%；
+#      1890.2276 对 1890.2291 Pa，0.0001%，0.0015 Pa 残差落在块自己那 0.0560 Pa 里）。反面：自由边同层两臂的 dq 本来就差
+#      7.74%（平）/ 8.62%（塑），拿该式预测偏 22.6%——写这种判据时先看速率是不是给定的，否则"恒等式"只是巧合。归属也进
+#      不到块里面：X2 的 dpInertia 沿 8 层在两种归属下不动到 8.1e-6 Pa（平）/ 1.8e-2 Pa（塑）。
+#   7) 局部性多了一个触发——p_mix/X1 与 p_net/X1（自己三样全同、邻居两张表都改）在层 1..5 的 15 个字段逐字相同，只在层
+#      6..8 分开（rowError 最差 3.1e-4、dpBlock 6.8e-3 Pa），而 p_net 的钉死块第一次填满 300 扫预算就在层 5：共享前缀
+#      恰好在邻居的块放弃的那一层结束（这是实测巧合，不能写成因果）。反面：只改自己的表述（p_pin/X1 对 p_net/X1，M 逐字
+#      相同）就把自由边速率动 4.681e-6 m3/s、层 1 分流 0.335731 -> 0.413742，而那本该报出 88.6217% 差额的评分在准稳边
+#      恰是 0.0。
+#   8) 墙是形状的、预算由归属定价——平口处处不碰 300（最差 17 扫），塑形只在钉死边碰（p_net/X2 层 5、p_mix/X2 层
+#      1,2,4,5,6,8、p_pin/X2 层 4,7）；同一条塑形钉死边在图纸下要 300、在区域下峰值 162。这 9 个填满预算的状态与报
+#      blockConverged 0 的 9 个完全重合（与 5.39 的 6 对 5 相反），9 个的界面残差最差 8.912e-4 仍在 1e-3 内、那一层照常
+#      走完：一致性断言要按状态集合写，而且"重合"本身在这一案是新的观测，不是从 5.39 推出来的。
+#   9) 成本由两个旋钮一起定，形状是贵的那个——趟数 26/27/30/35/37/36/17（208），SIMPLE 解恰 2x（416），每臂最差残差
+#      7.279e-4 ~ 9.555e-4；同归属下塑形比平口贵（26 -> 35、27 -> 37）。
+#  10) 斜坡由形状定尺度、由惯量定次序——tau 平口 0.6494 / 0.5932 / 0.4235 s（图纸/区域/slab），塑形 1.2824 / 1.2023 /
+#      1.0907 s，同归属下形状把松弛时间翻倍（x1.97 / x2.03）；层 1 分流平口 0.319615 / 0.346431 / 0.431868、塑形
+#      0.335731 / 0.367420 / 0.413742，终点平口 0.396201 / 0.400581 / 0.407166、塑形 0.518647 / 0.537958 / 0.518634 /
+#      0.563791。
+#  11) 伙伴仍合法、网络仍闭合——y+ 22.8~32.6、nut/nu 45.2~133.7x、Re_Dh 5365~11968、beta_out 1.020056~1.021052、每块
+#      进/出 <=2.3e-12；beta_in 平口 1.0011 档、塑形 1.1162 / 1.1012（Poiseuille 的 1.18172 被壁面函数管道自己的发展段
+#      松掉），所以任何一条臂间差异都能归到形状或归属其一。每层节点对逐边等于那一行的动量式含 M*dq/dt（1e-9），两段先导
+#      管仍是管网自己的 Churchill 11.2641281367 Pa（1e-9），Snk 恒等于参考压力。
+# 写这类判据时的坑：transient block 每臂每条边只有一行（块的最后回报），键是 name 不是层——把它当逐层表读会得到
+# KeyError；"形状不动账单"只能对钉死边断言，自由边的 dq 随轨迹变，同一句话在那里必须换成"账单跟着速率走"，否则
+# (M_a - M_b)*dq/dt 预测会偏 22.6% 而不是 0；min_bill 之类的界只能在层 1 的"步进"账单上取，全 8 层的最小值会抓到接近零
+# 的平台尾（f_net 层 8 的 0.0066 Pa）；5.40 那种"墙与未收敛报告不重合"的结论不可移植——本案两者完全重合，所以判据要
+# 写集合而不是写计数；app 头部那行 interface (...) 仍只描述第一臂，逐臂开关要读每臂自己的 transient start 行。
+# 十一族 158 条，七臂共 208 趟 / 416 次块解；单独跑整个 case 143.37 s（ctest -j8 记 153.42 s，同批负载把最慢几条彼此推高）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiTurbulentProfileInertia/case.dict
+python3 tests/check_transient_coupled_multi_turbulent_profile_inertia.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiTurbulentProfileInertia/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

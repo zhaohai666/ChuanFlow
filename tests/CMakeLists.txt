@@ -463,6 +463,19 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentEdgeDdtInertia/case.dict)
 
+# those two brackets again, now crossed with the inlet shape the interface writes
+# on the partner's faces: the bill is arithmetic in the installed M and in dq/dt,
+# so a shaped inlet reaches it only through the trajectory -- on the pinned edge,
+# where topology gives dq, shaping moves the bill 0.02% and the block's own half
+# 21%, while on the free edge the bill and the rate move together by 5% -- and the
+# one bracket shape does move is the chord, which stays tolerance-sized either way
+add_test(
+    NAME verify.transientCoupledMultiTurbulentProfileInertia
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent_profile_inertia.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentProfileInertia/case.dict)
+
 # the same two regions, inside every time step: the parallel edge ramps on the
 # inertial split while the series edge is pinned by topology and only ever
 # negotiates its drop, so the checker closes each edge's momentum row with that

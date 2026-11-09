@@ -1,0 +1,194 @@
+# transientCoupledMultiTurbulentProfileInertia: the two brackets of 5.40 on a
+# shaped inlet -- which knob moves which one.
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D pipe) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# The topology, the two meshes, the probes, the wall functions, the operating
+# point, the mis-stated proxy bores, the dt and the eight levels are 5.40's. What
+# changes is the shape the interface writes on the inlet faces: 5.40 ran eight
+# arms with flat plugs and its own boundary 2 recorded that the shape axis was
+# not crossed with attribution at all (and 5.39's boundary recorded the same for
+# `parab_x2pin`). Here every arm is parabolic except one flat control, so the
+# crossing is the whole point of the case.
+#
+# 5.40 settled the structure of the row on a stepping edge:
+#       rowError * dpBlock = (R*q - dpFriction) + (M*dq/dt - dpInertia)
+#   \_______ chord _______/   \____ attribution bill ____/
+# and found the two brackets sit three orders of magnitude apart (X1 +0.0472 Pa
+# against +718.87 Pa at level 1) and are owned by different things: the interface
+# re-linearises R every pass, so the chord bracket is tolerance-sized whatever the
+# source, while `slab` cancels the bill because its number IS the one the block
+# measured its drop over. The question this case asks is which bracket the INLET
+# SHAPE acts on -- because if shape moves only the chord, the attribution ladder
+# is a property of the declared M and of nothing else, and if it moves the bill
+# too then "whose inertance" and "what the block did" are not separable.
+#
+# Seven arms. The first three are 5.40's flat attribution ladder, kept here so the
+# ladder and the shaped rungs live in one log:
+#   f_net     -- both edges stepping, drawing bore, flat       (= 5.40's nn_both)
+#   f_region  -- ... the region's own number, flat             (= 5.40's pp_both)
+#   f_slab    -- ... the slab the drop was measured over, flat (= 5.40's ss_both)
+# The next two are the shaped rungs of the same ladder, so the source moves with
+# the shape held and the shape moves with the source held:
+#   p_net     -- shaped, both edges stepping, drawing bore
+#   p_region  -- shaped, both edges stepping, region's number
+# The last two put both per-edge tables on the SAME edge under a shaped inlet,
+# which is 5.40's es_mix/se_mix crossed with shape; p_pin is the `parab_x2pin` cell
+# 5.39 recorded as missing, now also carrying a per-edge source:
+#   p_mix     -- X1 steps on the drawing, X2 stays quasi on its slab
+#   p_pin     -- the mirror: X1 stays quasi on the drawing, X2 steps on its slab
+# X2's quasi edge in p_mix is 5.40's boundary 1 -- a quasi-steady edge charged with
+# the slab's inertance, which the tables allow (attribution is installed before the
+# time loop, so it reaches a quasi edge exactly as far as a stepping one) and which
+# no case has ever run: its row pays M*dq/dt and its grade is 0 by definition.
+# There is no shaped arm with `slab` on the stepping FREE edge, and that is a
+# measurement, not an omission: the same case written with p_slab (slab on both
+# stepping edges, shaped) stops inside level 1 with
+#   "the detailed region reports a non-positive drop (-89.475517 Pa) at 0.000022
+#    m3/s"
+# -- a source three times too small is survivable on a flat plug (f_slab runs to
+# its 30 passes) and is not survivable when the same rate arrives as a Poiseuille
+# profile. So slab is placed where its number does not drive the split.
+# `ddtFrom` and `inertiaFrom` are per-edge dicts keyed by starting-set name and the
+# shape is a per-edge list in `starts.profile`; every arm's effective scheme,
+# source AND shape are read back from the log rather than assumed from the case.
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    # 6.0e-5 m3/s, as in 5.36..5.40: the operating point at which both
+    # wall-function ducts keep their first cell centre above the y+ = 11 their log
+    # law is written for at every level and every shape.
+    feed { node Src; rate 6.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+
+    # X1 sits in the parallel position (its rate is what the split relaxes), X2 in
+    # the series position (its rate is pinned by topology to the injected flow).
+    # Both proxy bores stay deliberately short -- X1 0.005 against the exact
+    # 0.0056418958354775631, X2 0.006 against 0.00638307648642292245 -- so the
+    # drawing overstates the region by 1.273x and 1.132x and the three sources are
+    # three different numbers, which is what makes attribution visible at all.
+    X1 { from J1; to J2; length 0.2;  diameter 0.005;
+         coupledResistance 1.4e7; }
+    By { from J1; to J2; length 0.3;  diameter 0.008; }
+
+    X2 { from J2; to J3; length 0.24; diameter 0.006;
+         coupledResistance 1.36e7; }
+
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.2 s over eight levels -- 5.38/5.39/5.40's level, kept so that the only
+# variables are the two per-edge tables and the inlet shape.
+time { dt 0.2; endTime 1.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    # 1e-3 as in 5.38/5.39/5.40: the measured floor for a shaped inlet on this
+    # partner. The tolerance reads |R*q - chord| / chord, and chord on a stepping
+    # edge is the friction half, so it is blind to the installed inertance; what
+    # shape does to the tolerance is the separate record 5.39 left.
+    tolerance 1e-3;
+    maxSubIterations 12;
+    # the interface operator is not a variable here -- 5.33 crossed du/dt with
+    # quasi-Newton and 5.37 crossed shape with it. Every arm walks block GS.
+    accelerates ( 0 0 0 0 0 0 0 );
+    # per-ARM ddt word: every arm says Euler, which is also what both blocks' own
+    # schemes{ ddt } say, and the ddtFrom table below takes one edge of p_mix and
+    # one edge of p_pin back to steady. So every `steady` in this case is a table
+    # beating a block that asked for du/dt -- the direction 5.39 established.
+    ddts        ( Euler Euler Euler Euler Euler Euler Euler );
+    ddtFrom {
+        p_mix { X1 Euler;  X2 steady; }
+        p_pin { X1 steady; X2 Euler;  }
+    }
+    # per-ARM inertia source: the three flat rungs of the ladder, the two shaped
+    # rungs, then the drawing on both mixed arms -- and both mixed arms override
+    # their PINNED edge to that edge's slab below, which beats this word edge by
+    # edge. The free edge keeps the drawing in both, because it is the edge whose
+    # rate the split relaxes and a three-times-too-small M on it will not survive a
+    # shaped inlet (see the header).
+    inertias    ( network partner slab network partner network network );
+    inertiaFrom {
+        p_mix { X1 network; X2 slab; }
+        p_pin { X1 network; X2 slab; }
+    }
+    starts {
+        # Every set names a shape per edge next to its starting coefficients, and
+        # the seeds are the control arm's own secants at this rate -- the same
+        # 1.4e7 / 1.36e7 in all seven arms, so neither table nor shape can come in
+        # through the starting coefficients.
+        f_net     { X1 1.4e7; X2 1.36e7; profile ( flat flat ); }
+        f_region  { X1 1.4e7; X2 1.36e7; profile ( flat flat ); }
+        f_slab    { X1 1.4e7; X2 1.36e7; profile ( flat flat ); }
+        p_net     { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        p_region  { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        p_mix     { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        p_pin     { X1 1.4e7; X2 1.36e7; profile parabolic; }
+    }
+}
+
+details {
+    # X1: 0.2 x 0.005 x 0.005 m, 8 cells across the gap so the first cell centre
+    # sits inside the log-law band. Probe = the last 0.07 m of a 0.2 m region, so
+    # its slab inertance is 0.35 of the region's.
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.12; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_profile_inertia_X1.vtu;
+    }
+
+    # X2: a different aspect ratio -- 4 mm gap, 8 mm span -- so its resistance is
+    # not X1's scaled. Probe = the last 0.07 m of a 0.24 m region, so its slab is
+    # 0.291667 of the region's inertance.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.24 0.004 0.008);
+            cells (24 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.16; max 0.23; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 2.4e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_profile_inertia_X2.vtu;
+    }
+}

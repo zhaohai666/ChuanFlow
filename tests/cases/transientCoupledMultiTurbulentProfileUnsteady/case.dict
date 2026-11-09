@@ -1,0 +1,187 @@
+# transientCoupledMultiTurbulentProfileUnsteady: a declared inlet SHAPE handed to
+# a partner that carries its own du/dt, inside every time step.
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D pipe) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# The topology, the two meshes, the wall functions, the operating point and the
+# eight levels are 5.37's, unchanged, on purpose: that increment's own boundary 1
+# says the block still solves `ddt steady`, so the transient there is the
+# network's transient seen through a quasi-steady partner, and the entry region's
+# pressure recovery is priced entirely by the secant. 5.33 put a partner that
+# steps in time on this interface, but never handed it a shape. Those two have
+# not met, and the question their meeting answers is a specific one:
+#
+#   the drop the region reports is now a sum, dpBlock = dpFriction + dpInertia,
+#   and the interface iterates on the FIRST term only. So which term does a shape
+#   live in? If the acceleration of the region's own fluid is blind to how the
+#   inlet spread the rate, then the whole price of the shape stays on the chord
+#   the resistance is charged with, and the row's inertance claim is the same
+#   number shaped and unshaped; if it is not blind, then a shape buys part of its
+#   cost in the momentum row instead, and the attribution made in 5.33 is a
+#   function of the interface profile.
+#
+# Four of the five arms are a 2x2 table -- {flat, parabolic} x {steady, Euler} --
+# so each cell has a partner that differs in exactly one of the two axes, and the
+# fifth puts a third shape on the time-accurate side:
+#   lo_steady     -- 5.37's control: plug inlet, region solved at an instant
+#   parab_steady  -- 5.37's parabola under the same solver
+#   lo_euler      -- the plug, but the block accelerates away from the field the
+#                    previous level left (5.33's formulation, 5.37's network)
+#   parab_euler   -- the crossing this case exists for
+#   p17_euler     -- a third shape on the time-accurate partner, so "the
+#                    acceleration does not know the shape" is not one fluke
+# Both blocks ask their own dict for `ddt Euler` and the case-level `ddts`
+# overrides the first two arms back to `steady`, so the override is exercised in
+# both directions and the control arms are the computation 5.37 performs.
+#
+# Region inertia stays attributed to the network on every arm, and both proxy
+# bores are the exact equivalent diameter of their section, so the row's M is the
+# region's own rho*V/A^2 and the only new number in the row is the slab the block
+# actually measured its drop across (rho*V_probe/A^2, 0.07 m of each duct).
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    # 6.0e-5 m3/s: the same operating point as 5.36/5.37, where both wall-function
+    # ducts keep their first cell centre above the y+ = 11 their log law is
+    # written for at every level. The ramp is the network's own inertial
+    # relaxation of the parallel split, and the parallel branch arrives at its
+    # destination from zero -- which is the only state in which the block's du/dt
+    # has something to say.
+    feed { node Src; rate 6.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+
+    # The coupled edges: X1 in the parallel position (its rate is what the split
+    # relaxes), X2 in the series position (its rate is pinned by topology). Both
+    # proxy bores are the exact equivalent diameter of the block's own section,
+    # d = 2*sqrt(H*W/pi), so the 1D side's inertance is the number the block
+    # measures on its own mesh.
+    X1 { from J1; to J2; length 0.2;  diameter 0.0056418958354775631;
+         coupledResistance 1.4e7; }
+    By { from J1; to J2; length 0.3;  diameter 0.008; }
+
+    X2 { from J2; to J3; length 0.24; diameter 0.00638307648642292245;
+         coupledResistance 1.36e7; }
+
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.2 s over eight levels. The level is NOT free here, and the reason is the
+# first thing this case measured: the block's whole-region acceleration is worth
+# rho*L_region/A * dq/dt while the acceleration the interface credits to the row is
+# only the slab's rho*L_probe/A * dq/dt (the probe window is 0.07 m of a 0.2 m
+# duct), so the friction chord the interface iterates on carries the difference --
+# at this level's first step 382 Pa of it, against a true friction drop of
+# 361 Pa, i.e. the chord the resistance is charged with is more acceleration than
+# friction. At dt 0.05 the same term is four times bigger and the walk swings the
+# coefficient until one pass asks the parallel region to go SLOWER than the rate it
+# was solved at one moment ago; the region then truthfully reports a pressure rise,
+# and the kernel's "a region answers at a positive drop" guard stops the run. Four
+# ways of setting that crossing died, measured: -22.75 Pa at 1.6e-5 m3/s with the
+# bore inertance in the row, -541.94 Pa at 1.9e-5 with the slab inertance
+# installed, -50.12 Pa at 1.8e-5 at dt 0.1, and -128.13 Pa at 1.7e-5 with the
+# series edge taken out of the interface altogether; the same dt 0.05 case with the
+# coefficient refresh under-relaxed to 0.4 survives the walk but does not agree,
+# stopping after 12 passes on a residual of 1.7035e-3 against its 1e-3 tolerance.
+# At dt 0.2 the walk settles inside a few exchanges and the case runs.
+# That is a recorded wall, not a criterion: the checker asserts the run at 0.2.
+time { dt 0.2; endTime 1.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    # 1e-3 is 5.37's measured floor for a shaped inlet on this partner, and a
+    # time-accurate block reports a friction chord the previous level never saw,
+    # so the interface spends more exchanges unwinding that (5.33: five to six
+    # against three for the quasi-steady control).
+    tolerance 1e-3;
+    maxSubIterations 12;
+    # the interface operator is NOT a variable here -- 5.33 crossed du/dt with
+    # quasi-Newton and 5.37 crossed shape with it; every arm walks plain block
+    # Gauss-Seidel so the only difference between the 2x2 cells is shape and ddt.
+    accelerates ( 0 0 0 0 0 );
+    # one entry per arm: the two control arms are overridden back to `steady`
+    # even though both block dicts ask for Euler.
+    ddts        ( steady steady Euler Euler Euler );
+    starts {
+        # Every set names a shape per edge next to its starting coefficients, and
+        # the seeds are the control arm's own secants at this rate, so the only
+        # arm that starts already right is the one that has nothing else to say.
+        lo_steady    { X1 1.4e7; X2 1.36e7; profile ( flat flat ); }
+        parab_steady { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        lo_euler     { X1 1.4e7; X2 1.36e7; profile ( flat flat ); }
+        parab_euler  { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        p17_euler    { X1 1.4e7; X2 1.36e7; profile power1over7; }
+    }
+}
+
+details {
+    # X1: 0.2 x 0.005 x 0.005 m, 8 cells across the gap so the first cell centre
+    # sits inside the log-law band. The shape is spread across this wall-bounded
+    # axis only; the z sides are symmetry and have no gradient to fight.
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        # the window is the last third of the block, as in 5.37: the part that has
+        # finished undoing what the inlet asked for. It is also the slab whose
+        # du/dt the block charges to the row, so the drop and the acceleration are
+        # measured over the same fluid.
+        probe { min 0.12; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        # continuityTol 3e-3: a shaped inlet leaves the entry region to
+        # redistribute, and the block's own stop has to be tight enough that the
+        # drop it reports is a solved field rather than a transient one.
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_profile_unsteady_X1.vtu;
+    }
+
+    # X2: a different aspect ratio -- 4 mm gap, 8 mm span -- so its resistance is
+    # not X1's scaled, and long enough that the entry region of the most
+    # mismatched arm is inside the block instead of running out of it.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.24 0.004 0.008);
+            cells (24 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.16; max 0.23; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 2.4e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_profile_unsteady_X2.vtu;
+    }
+}

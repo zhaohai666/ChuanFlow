@@ -420,6 +420,19 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentProfile/case.dict)
 
+# the 2x2 the previous case leaves open: the same shaped inlet, but now the block
+# itself answers du/dt (schemes{ ddt Euler; } honoured inside the region). What is
+# settled here is which half of the interface a shape lives in -- the measured
+# inertia is the same to 0.4 pp for plug, parabola and 1/7 while the same three
+# shapes move the friction half by 15-51%, so the row's inertance claim is blind to
+# the shape and the chord it negotiates is not
+add_test(
+    NAME verify.transientCoupledMultiTurbulentProfileUnsteady
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent_profile_unsteady.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentProfileUnsteady/case.dict)
+
 # the same two regions, inside every time step: the parallel edge ramps on the
 # inertial split while the series edge is pinned by topology and only ever
 # negotiates its drop, so the checker closes each edge's momentum row with that

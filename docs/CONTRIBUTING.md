@@ -14,11 +14,11 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（97 项）约 258 ~ 345 s ≈ 4.3 ~ 5.8 分钟（实测 297.95 s），
+ctest --test-dir build --output-on-failure -j8  # 全量回归（98 项）约 258 ~ 371 s ≈ 4.3 ~ 6.2 分钟（实测 370.98 s），
                                              # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高）：
-                                             # 稳态 profile 级映射 297.9 s、形状 x 归属 x 逐层 β 账 284.2 s、
-                                             # 逐边 ddt x 归属 263.6 s、VOF 振荡 101.7 s、VOF 拟合 75.3 s、
-                                             # 瞬态 profile 级映射 74.2 s、双边都在并联 55.8 s
+                                             # 稳态 profile 级映射 279.6 s、逐边 ddt 248.3 s、
+                                             # 形状 x 归属 x 逐层 β 账 233.8 s、形状账收进行 153.9 s、
+                                             # 塑形 x 步进 / 准稳双边 127.7 + 127.3 s、VOF 振荡 88.9 s
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -776,6 +776,41 @@ python3 tests/check_transient_coupled_multi_turbulent_profile_inertia.py \
 # 十二族 169 条（5.41 的 158 条未改），七臂 208 趟 / 416 次块解（96 步进 + 16 准稳状态）、每臂最差残差与 5.41 逐字相同；
 # 单独跑整个 case 199.37 s（ctest -j8 记 284.17 s，全量 97 项 297.95 s。本机当时 load avg 7~11，而 5.41 记那对
 # 143.37 / 153.42 s 时是 4.7，同批稳态 profile 映射也从 255.9 涨到 297.9 s——这两条墙钟要按负载打折读）
+
+# 对流动量账收进 1D 那一行（5.43）：新算例 transientCoupledMultiTurbulentConvectiveRow，§5.42 的拓扑 / 两块湍流伙伴 / dt 0.2 /
+# 8 层 / 1e-3 / GS / 三张逐边表全部照抄，唯一新增的声明面是第四张逐边表 convectiveToRow { <臂> { X1 charge; X2 report; } }，
+# 四臂 c_off(report,report) / c_both(charge,charge) / c_pin(report,charge) / c_free(charge,report)。内核改的是**一对**：
+# 行侧 transient.cpp:248-:252 加 C*|x|x 与 Jacobian 2C|x|、:257-:259 把 |C|x|x| 计入 Newton scale，系数由 setCoupledConvective
+# （:429）装；界面侧 coupledNetwork.cpp:1232-:1235 令 chordPa = (unsteady ? dpFriction : dpPa) - convectiveRowPa、:1255 用它算
+# residual、:1266 把它加回 rowDropPa、:1289/:1303 让 QN 与 GS 两处刷新都读 chordPa、:1317-:1318 每层把 C = convectiveRowPa/q2
+# 装回网络。为什么要成对：界面对 R 迭代到 R*q == chord，只加行侧不改弦，就是 §5.40 那笔账单的 beta 版本（同一笔钱收两次）。
+# 要看什么：
+#   1) 惰性对照必须逐位——c_off 对 5.41 的 p_net：16 字段 x 16 状态差 0.0，且每层趟数 [3,6,5,5,4,4,4,4] 一字不差。字段全对但
+#      趟数变了，说明开关动了轨迹而不是只动了记账。
+#   2) 不收第三笔的判据是 rowDrop - (dpNetwork + M*dq/dt + rowBeta) == 0.0（64 状态，精确 0），不是某个 1e-6 的容差。
+#   3) 弦真的让出来了：内核自己的 residual 字段逐字等于 |dpNetwork - (dpFriction - rowBeta)| / chord。把这条写成判据，
+#      "重复计费"就变成一个可失败的断言而不是推理。
+#   4) 改名的价格是算得出的：R_charged/R_off == 1 - dpConv/dpFriction_off（最差 1.722e-3）。X1 涨 9.5~90.5%、X2 涨 12.5~39.3%，
+#      比例就是形状账占摩擦半区的比例——图纸那个系数不再是壁的数。
+#   5) 钉死边 vs 自由边：前者 q 逐字仍是 6.0e-5、除 R/dpNetwork/rowBeta 外最大移动 3.521e-2 Pa（那是界面停机噪声）；后者才是
+#      真轨迹（q 相对 1.423e-4、行总额 0.125 Pa 对搬走的 148.9 Pa）。By 自己吃掉剩余（层 8 差 4.427e-9）而 X1+By 恒等于注入。
+#   6) 局部性按字段集断言：c_pin/X1 对 c_off/X1、c_both/X1 对 c_free/X1 都是 17/17 逐位 0.0——邻居的声明改不了我这行。
+#   7) 新的第一堵墙在代码里：chord = dpFriction - dpConv 非正即 fatal（coupledNetwork.cpp:1235）。5.42 记下过 121.1% 那一格
+#      （准稳边的弦是割线），本案最坏 90.5% 所以没触发——写文档时别把它说成"已验证的行为"。
+# 写这类判据时的坑：①setCoupledConvective 必须和 setCoupledResistance 一样**只在不拢的那几趟**、且在逐边循环之后调用——
+#   pendingPipeFlow() 一旦 pending_ 为假就 fatal，早一步整案崩在第一个时间层。②这项**带符号**，校验只能写 isfinite，
+#   照抄阻力的 >0 会把所有塑形臂当场拒掉。③chordPa 要同时喂给 residual、QN 的 r[] 与 GS 的松弛三处；只改残差会让不动点
+#   和判据分家，表面上"收敛"了但双侧相加已经不是摩擦半区。④跨臂比较一个有符号系数时 `max/min - 1` 在全体为负时给出**负数**
+#   （比值反了），必须先取 abs——本案 parabolic 入口下 dpConv 恒负，第一次就打印出 -1.1e-06 而不是 2.4e-05。⑤逐层趟数要跟
+#   出厂序列比顺序，别在打印时用 sorted()：[3,4,4,4,4,5,5,6] 和 [3,6,5,5,4,4,4,4] 是同一个多重集，排序会把"惰性"读成一样而
+#   把真实差异藏掉。⑥脚本里别写 `re = None` 之类局部名，它会遮蔽模块 re 让后面每一次 value() 都炸。
+# 十族 35 条；四臂 35/34/35/34 趟、70/68 次块解、最坏单级 7 趟（上限 12）；单独跑整个 case 154.31 s user / 155.6 s 墙钟
+# （ctest -j8 记 153.92 s，全量 98 项 370.98 s。这批的负载比 5.41/5.42 那两批轻，所以同一条用例的墙钟从 284.17 s 回到
+#  233.81 s——四臂的本案按同批比例读作 153.92 s，判据只跑一次，不与那两批的七臂互换）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiTurbulentConvectiveRow/case.dict
+python3 tests/check_transient_coupled_multi_turbulent_convective_row.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiTurbulentConvectiveRow/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

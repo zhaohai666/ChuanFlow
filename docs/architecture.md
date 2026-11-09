@@ -3316,6 +3316,35 @@ rowError · dpBlock = (R·q − dpFriction) + (M·dq/dt − dpInertia)
 
 **本增量的边界**：① **报出 ≠ 收进**。把 `dpConv` 写进 1D 那一行动量方程需要（a）逐臂声明谁为这条边付这一项，以及（b）让块的弦半区停止重复计它——否则它就是 §5.40 那笔账单的 β 版本，一行里两处收同一笔钱。本增量两者都没做，行仍是 `R·q + M·dq/dt`。② 那一格 121% 只是**记录**，不是判据：界面照旧在 1e-3 容差内走完 8 层，没有"层内 `|dpConv|` 超过块压降多少就停"的规则。③ 为什么 `|dpConv| / pRise` 是 **0.85** 而不是 1、层 1 为什么落在 **2.08**，没有解释；两者在物理上同源于通量松弛，机制未查。④ 平口 × `slab` × 准稳边、塑形 × `slab` × 步进**自由**边（那堵 `-89.475517 Pa @ 2.2e-5 m³/s` 的墙）仍是 §5.41①② 那两格，β 账在其中只有推理、没有数。⑤ `power1over7` 入口从未与这笔账同台（本例只有 flat / parabolic）。⑥ 准 Newton（§5.41③）与双边并联拓扑（§5.41④）未测，`dpConv` 在它们下面会怎么动未知。⑦ 尾部（层 6..8）分岔、`es_mix` 那 2.9e-10 一类观测继承未查。⑧ 界面上的伙伴仍是单相不可压块，`dt 0.05` / 1.2e-4 / "花满 300 扫 ≠ `blockConverged 0`" 三堵墙仍是记录。
 
+### 5.43 对流动量账收进 1D 那一行：`rowDrop = R·q + M·dq/dt + dpConv`，而块的弦同时变成 `dpFriction − dpConv`——两侧相加仍是块那半区摩擦，所以这是一次改名而不是第二笔账，差别只从行的导数里进来（§5.42 边界① 的第二半）
+
+§5.42 把 `dpConv = rho*(betaOut - betaIn)*q|q|/A^2` 逐层逐边**报**出来了，并记下它占块自身压降从 **5.73%** 到 **121.1%**，同时把"为什么还不能直接写进行里"说清楚：那一行的阻力项 `R·q` 与块的弦是**同一个不动点**的两半——界面对 `R` 迭代，直到 `R·q` 追上块的弦。如果只把 `dpConv` 加到行上而弦照旧，同一笔钱就在一次平衡里收了两次（正是 §5.40 那笔账单的 β 版本）。所以这一增量的两半必须**同时**发生：
+
+```
+行：   rowDrop = R·q + M·dq/dt + dpConv          （dpConv 由系数 C = dpConv/q² 装上，行里写 C·|x|·x）
+弦：   chord   = dpFriction − dpConv             （界面把 R 追上的目标少掉这一项）
+```
+
+于是 `R·q + chord` 恒等于块的摩擦半区：**改名，不是新账**。但改名不是无事发生——行的导数变了：`∂(C|x|x)/∂x = 2C|x|` 进了 Jacobian、`|C·|x|·x|` 进了 Newton 的 `scale`，而弦对 `q` 线性、形状项对 `q` 二次。不动点因此只从**轨迹**里进来，这正是 `c_free`（装上自由边）与 `c_pin`（装上钉死边）分岔的地方：拓扑钉住速率的那条边，`q` 无处可去，改名就只是改名。
+
+算例 `transientCoupledMultiTurbulentConvectiveRow` 把 §5.42 的拓扑、两块湍流伙伴（X1 `kOmegaSST`、X2 RANS）、`dt 0.2`、8 层、1e-3 容差、GS、逐边 `ddtFrom` / `inertiaFrom` / `profile` 三张表全部照抄，**唯一新增的声明面是第四张逐边表** `convectiveToRow { <臂> { X1 charge|report; X2 …; } }`，四臂 = `{c_off: report/report, c_both: charge/charge, c_pin: report/charge, c_free: charge/report}`。`c_off` 是行为惰性对照（什么都没人付，就是 §5.42 的世界），`c_pin` 是改名对照，`c_free` 才是那句真实的陈述。
+
+声明面：`PipeDyn::convective`（Pa·s²/m⁶，`src/1d/include/cf/1d/Transient.h:189`）由 `TransientNetwork::setCoupledConvective`（声明 `:157`、实现 `src/1d/src/transient.cpp:429`，与 `setCoupledResistance` 同样要求该管已是耦合管，且因为这项**带符号**只查 `isfinite`）写入，动量行在 `src/1d/src/transient.cpp:248`–`:252` 收下它、`:257`–`:259` 把它计入 `scale`；界面上 `ProfileLedger::dpConvectivePa`（`src/coupling/include/cf/coupling/CoupledNetwork.h:60`）经由 `EdgeExchange::convectiveRowPa`（`:508`，报出那一侧恒 0）与新的 `chordPa`（`:466`）在 `src/coupling/src/coupledNetwork.cpp:1232`–`:1235` 分成两半，残差改用 `chordPa`（`:1255`–`:1256`）、`rowDropPa` 加回它（`:1266`）、QN 与 GS 两处刷新都读 `chordPa`（`:1289`、`:1303`），最后在 `:1317`–`:1318` 把 `C = convectiveRowPa/q²` 装回网络；开关 `TransientCoupledControls::convectiveIntoRowPerEdge` 在 `CoupledNetwork.h:660`，校验与解析在 `coupledNetwork.cpp:1133`–`:1145`（长度必须等于耦合边数，词表只有 `report`/`charge`），case 侧解析在 `src/coupling/apps/transientCoupledMultiApp.cpp:332`–`:356`，逐边生效的词打印在 `:483`–`:484`，每层的 `dpConv` 与 `rowBeta` 打印在 `:580`、`:588`。装上的次序不是随便排的：`net.pendingPipeFlow()` 一旦 `pending_` 为假就 fatal，所以这一项和 `setCoupledResistance` 一样**只谈不拢的那几趟**才装。判据是新算例的一对（case + checker），**35** 条全绿（RC=0）。
+
+* **惰性到逐位**：`c_off` 与 §5.41 的 `p_net` 在 16 个字段 × 16 个（层 × 边）状态上**差 0.0**（首层与末层各按出厂数字复核：X1 层 1 `dpBlock` 851.08258956984685、层 8 177.93872006380388），每层界面趟数 **[3, 6, 5, 5, 4, 4, 4, 4]** 一字不差，`rowBeta` 处处 0.0——一个装上去却没人读的开关改不了"一层需要几趟"。同一句话的另一种证明是 §5.42 那 **169** 条判据：本案一行判据未改，重跑仍然全绿。
+* **不收第三笔**：32 个装上状态 `rowBeta == dpConv`、32 个报出状态 `rowBeta == 0`，而全部 64 个状态上 `rowDrop − (dpNetwork + M·dq/dt + rowBeta) == 0.0`——行的总额仍然是节点对它的那纸账，只是多了一项署名。
+* **弦确实停止重复计它**：内核自己的 `residual` 字段现在**逐字等于** `|dpNetwork − (dpFriction − rowBeta)| / chord`，最坏相对弦差 **9.495e-4**（`c_both`/X1，容差 1e-3 之内）、`c_off` **7.958e-4**，绝对剩余 ≤ **0.595 Pa** 对 **148.97 Pa**（X1）与 **283.27 Pa**（X2）两本账。这不是推论，是被界面自己那条判据读出来的。
+* **改名的价格是算得出的**：`R_charged / R_off == 1 − dpConv / dpFriction_off` 在每层每条边上到 **1.722e-3**（X1）/ **2.683e-4**（X2），于是图纸那个系数不再是壁的数：X1 涨 **9.5% ~ 90.5%**、X2 涨 **12.5% ~ 39.3%**——形状账占摩擦半区的比例就是涨幅本身。
+* **钉死边上只是改名**：`q` 在 4 臂 × 8 层逐字仍是 **6.0000000000000002e-05**；`c_pin` 对 `c_off` 在这条边上只有 `R` / `dpNetwork` / `rowBeta` 三项动，其余字段最大移动 **3.521e-2 Pa**（`dpBlock`）、行总额 **4.074e-2 Pa**、`rowError` **1.054e-4**，对 283.3 Pa 的账——那是界面停机的噪声，不是账。
+* **声明只到自己那条边**：`c_pin`/X1 对 `c_off`/X1 **17/17 字段逐位 0.0**；`c_both`/X1 对 `c_free`/X1 同样 **17/17 逐位 0.0**。和 §5.35 为归属 bought 的那条可反证性同一条：邻居的声明改不了我这行的状态。
+* **自由边上这是一条真轨迹**：X1 的 `q` 相对移动最大 **1.423e-4**（层 8 **3.111440e-5** 对 **3.111883e-5**，因为行里多了一项对速率二次的项），`dpBlock` **6.052e-4**，而行的**总额**只移动 **0.125 Pa**，对搬走的 **148.9 Pa** 是 **8.4e-4**——改名买的是路径，不是账单。多出来的那份由 1D 支管自己吃掉：层 8 `By` **2.88856e-5** 对 **2.88812e-5**（差 **4.427e-9**），而 `X1 + By` 在 4 臂 × 8 层上逐字等于注入速率（最差 **6.8e-21**）。
+* **§5.40 那两只括号结构不变**：`rowError·dpBlock == (dpNetwork − chord) + (M·dq/dt − dpInertia)` 在 64 个状态上最差 **6.821e-13**，弦那半仍被容差压在 **0.5949 Pa** 以内、归属那半仍是 **754.2383 Pa**（X1）/ **1903.4177 Pa**（X2），两者相差 **2604 ~ 6664×**——把形状账搬走没有把它变成第三笔。
+* **谁付这一项，改不了这一项值多少**：`|dpConv|/q²` 跨四臂在 X1 上一致到 **2.393e-5**、X2 到 **1.008e-4** 相对，每层都成立（X1 在层 1 与层 8 之间是 **1.3613e11 ~ 1.5384e11 Pa·s²/m⁶**，X2 是 **7.7026e10 ~ 7.8687e10**，后者与 §5.42 记下的塑形系数逐字相同）；`rowError` 对 split 也不敏感（钉死边 **1.054e-4**、自由边 **1.4e-3**）。这笔账是**区域**的性质，不是那行的。
+
+**成本**：四臂、8 个时间层，`c_off` 与 `c_pin` 各 **35** 趟界面 / **70** 次块解，`c_both` 与 `c_free` 各 **34** 趟 / **68** 次——装上形状项没有让界面更贵，最坏单级 **7** 趟（`c_free` 层 2，上限 12），而 `c_free` 的层 7..8 反而从 4 趟塌到 3 趟（逐层序列 `c_off` **[3, 6, 5, 5, 4, 4, 4, 4]** 对 `c_free` **[3, 7, 5, 5, 4, 4, 3, 3]**）。
+
+**本增量的边界**：① 新的第一堵墙在代码里而不是在结果里：`chord = dpFriction − dpConv` 一旦非正就 `cfFatal`（`coupledNetwork.cpp:1235`）。§5.42 记下过 **121.1%** 那一格（准稳边、塑形、`p_pin`/X1 层 8），那种边上弦付不起形状账；本案四臂都在层流剖面的发展段上取 `dpFriction`，`dpConv` 最大只占 **90.5%**，所以这条 fatal 从未触发——它是**记录**，还没有算例把它变成判据。② 只有 `report`/`charge` 两档，没有"部分付"；`C` 每层重算，因此带轨迹，但没有把它当阻尼项处理。③ 伙伴仍是那两块单相不可压 RANS 管道，`profile` 仍是 flat / parabolic 两档，`power1over7` 未与这项同台。④ 准 Newton 与双边并联拓扑（§5.41③④ 那两格）未测；在 QN 下弦的刷新走 `chordPa`（`:1289`）这条路只被本案的 GS 臂之外验证过一次，形状账与加速算子如何相互作用未知。⑤ 尾部（层 6..8）分岔、`es_mix` 那 2.9e-10、`-89.475517 Pa @ 2.2e-5` 那堵 slab 墙、`dt 0.05` / 1.2e-4 / "花满 300 扫 ≠ `blockConverged 0`" 全部继承未查。⑥ 装了 `dpConv` 并不等于消掉 §5.40 那笔 `M·dq/dt` 双重计费——本案归属表全档 `network`，账单那半仍在括号里（**754 / 1903 Pa**）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

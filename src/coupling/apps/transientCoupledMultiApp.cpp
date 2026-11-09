@@ -322,6 +322,42 @@ int main(int argc, char** argv)
             }
         }
 
+        // Who pays for the region's own changing profile, decided edge by edge.
+        // `report` leaves the account on the log line and out of every equation,
+        // which is what every case until now did; `charge` takes it back out of
+        // the partner's friction chord and gives the network's own momentum row a
+        // term quadratic in the rate for it. An arm the table does not name
+        // reports on all its edges, so a case that says nothing solves exactly
+        // what it solved before.
+        std::vector<std::vector<int>> armEdgeConvective(startNames.size());
+        bool anyCharged = false;
+        if (cd.has("convectiveToRow"))
+        {
+            const Dictionary& toRow = cd.getDict("convectiveToRow");
+            for (std::size_t s = 0; s < startNames.size(); ++s)
+            {
+                if (!toRow.has(startNames[s])) continue;
+                const Dictionary& sd = toRow.getDict(startNames[s]);
+                std::vector<int> w;
+                for (const std::string& edgeName : edgeNames)
+                {
+                    if (!sd.has(edgeName))
+                        cfFatal("coupled1d3dTransient: convectiveToRow."
+                                + startNames[s] + " says nothing about coupled"
+                                  " edge '" + edgeName + "'");
+                    const std::string e = sd.getWord(edgeName);
+                    if (e == "report") w.push_back(0);
+                    else if (e == "charge") w.push_back(1);
+                    else
+                        cfFatal("coupled1d3dTransient: convectiveToRow."
+                                + startNames[s] + "." + edgeName + " is '" + e
+                                + "', neither report nor charge");
+                }
+                armEdgeConvective[s] = std::move(w);
+                anyCharged = true;
+            }
+        }
+
         // ---- the 3D side: one block per coupled edge ----
         const Dictionary& allDetails = caseDict.getDict("details");
         std::vector<BlockSpec> specs;
@@ -346,7 +382,8 @@ int main(int argc, char** argv)
                   "; interface ", (ctl.accelerate ? "quasi-Newton" : "plain Gauss-Seidel"),
                   "; region inertia ", inertias[0],
                   (inertias.size() > 1 ? " (arms)" : ""),
-                  (anyPerEdge ? " (per-edge on some arms)" : ""));
+                  (anyPerEdge ? " (per-edge on some arms)" : ""),
+                  (anyCharged ? " (shape charged on some edges)" : ""));
 
         for (std::size_t s = 0; s < startNames.size(); ++s)
         {
@@ -408,6 +445,11 @@ int main(int argc, char** argv)
                 // yes-or-no and the slab is a third answer
                 run.inertiaFromPartnerPerEdge = std::vector<int>(edges.size(), 2);
             }
+            // and who pays for the shape this edge's region went through. An arm
+            // the table does not name reports the account on every edge, which is
+            // the equation every case until this one solved.
+            if (!armEdgeConvective[s].empty())
+                run.convectiveIntoRowPerEdge = armEdgeConvective[s];
 
             log::info("transient start ", startNames[s], ": inertia ", inertias[s],
                       " accelerate ", (run.accelerate ? "yes" : "no"));
@@ -431,6 +473,17 @@ int main(int argc, char** argv)
             for (std::size_t i = 0; i < edges.size(); ++i)
                 log::info("transient arm ", startNames[s], " edge ", edgeNames[i],
                           " profile ", startShapes[s][i], " index ", edges[i]);
+            // and whether this arm pays the shape's own bill in its row or leaves
+            // it on the block's chord. Per edge again, because the two edges of
+            // one network can be asked differently -- the pinned one has no rate
+            // of its own to move, so a charge there is a relabeling, while the
+            // free one has to be re-split around it.
+            for (std::size_t i = 0; i < edges.size(); ++i)
+                log::info("transient arm ", startNames[s], " edge ", edgeNames[i],
+                          " convective ",
+                          (armEdgeConvective[s].empty() || armEdgeConvective[s][i] == 0)
+                              ? "report" : "charge",
+                          " index ", edges[i]);
             // What this arm's partner is going to be asked to carry: the case's
             // own ddt word, and the two inertances its mesh measures -- the
             // region's and that of only the slab whose pressure difference it
@@ -525,7 +578,14 @@ int main(int argc, char** argv)
                               // the network actually solves carries no term of it, so
                               // this is the account the 1D side still cannot state.
                               " dpConv ", num(ex.dpConvectivePa),
-                              " unsteady ", (ex.unsteady ? 1 : 0));
+                              " unsteady ", (ex.unsteady ? 1 : 0),
+                              // Whether this edge's own row carries the account
+                              // above: the whole of it where the case charged the
+                              // row, 0 where it only reports it. The chord the
+                              // resistance is iterated against has given up
+                              // exactly this number, so block and row still
+                              // describe one drop rather than two.
+                              " rowBeta ", num(ex.convectiveRowPa));
                 }
 
                 std::ostringstream nodes;

@@ -142,6 +142,23 @@ public:
     /// The inertance (Pa.s2/m3, kg/m4) pipe `k`'s momentum row actually carries.
     double pipeInertia(label k) const;
 
+    /// Charge pipe `k`'s momentum row with the momentum flux its partner region's
+    /// own changing profile asks for: `coefficient*|Q|*Q` with the coefficient in
+    /// Pa.s2/m6, so the term is worth Pa at the row's rate. Zero unbuckles the row
+    /// back to `rho*L/A*dQ/dt + R*Q` -- and, unlike the inertance swap, this one
+    /// is signed: a region that sheds momentum flux at its outlet pays the row,
+    /// one that grows it bills the row.
+    ///
+    /// Only a coupled pipe can be asked, for the same reason `setCoupledInertia`
+    /// can: a pipe with no partner has no measured profile on either of its
+    /// stations, and its own `frictionDp` already carries whatever a nominal bore
+    /// is worth. A pending step is dropped because the coefficient it was solved
+    /// with is gone.
+    void setCoupledConvective(label k, double coefficient);
+
+    /// The convective coefficient (Pa.s2/m6) pipe `k`'s momentum row carries.
+    double coupledConvectiveOf(label k) const;
+
     /// True while `pipe k` is handed to a partner model.
     bool pipeCoupled(label k) const;
 
@@ -165,6 +182,11 @@ private:
         NetworkPipe geo; // reuse the steady pipe geometry + friction law
         double qPrev = 0;
         double inertia = 0; // rho L / A, or the partner model's measurement of it
+        // rho*(betaOut - betaIn)/A^2 (Pa.s2/m6), charged by a partner region whose
+        // own profile changes shape across it. Multiplied by |Q|*Q in the row, so
+        // it is the momentum-flux imbalance of the shape, not a friction. Zero
+        // unless a coupled interface measures it and installs it.
+        double convective = 0;
         // valve schedule: K ramps geo.valveK -> kClosed over
         // [closeStart, closeEnd] and back over [openStart, openEnd];
         // negative start times disable the ramps

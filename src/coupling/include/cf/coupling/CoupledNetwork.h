@@ -51,7 +51,9 @@ struct ProfileLedger
     /// sections while its shape factor is not. It is an imbalance inside the
     /// momentum budget, not a pressure drop: the drop the block reports also
     /// carries the wall friction, and how the two compare is measured, not
-    /// identified here. No friction law of the 1D row states this term. Signed
+    /// identified here. The 1D row states it as its own term only when the case
+    /// charges it -- see `TransientCoupledControls::convectiveIntoRowPerEdge`.
+    /// Signed
     /// (positive when the region had to grow a fuller profile than the one it was
     /// handed, negative when it shed the excess) and read off the same solve as
     /// the two betas, so every time level reports the account it asked for.
@@ -442,9 +444,10 @@ struct EdgeExchange
     scalar dq = 0;         // q - qPrev, signed with the magnitudes both sides
                            // work in
     /// What the 1D momentum row charges for this edge at the rate the step
-    /// delivers - `resistance*q + inertance*dq/dt` - against the drop the
-    /// partner's own momentum balance reports. `rowError` is the relative
-    /// disagreement. For a quasi-steady partner it stays 0 because there is
+    /// delivers - `resistance*q + inertance*dq/dt`, plus this edge's shape term
+    /// `convectiveRowPa` where the case charges the row with it - against the
+    /// drop the partner's own momentum balance reports. `rowError` is the
+    /// relative disagreement. For a quasi-steady partner it stays 0 because there is
     /// nothing on the 3D side to compare the row against: the region's inertance
     /// is then a convention the 1D side declares and can only be read in the
     /// path it takes. For a partner that carries its own `du/dt` the row is a
@@ -452,6 +455,15 @@ struct EdgeExchange
     /// interface iteration changes the grade.
     scalar rowDropPa = 0;
     scalar rowError = 0;
+
+    /// The drop the coefficient this edge is iterated against is worth: the
+    /// friction half when the partner carries its own `du/dt`, its whole drop
+    /// otherwise, and on an edge whose row has taken the shape account, that
+    /// number minus it. `residual` is `|resistance*q - chordPa| / chordPa`, so
+    /// the chord and the row always add up to the same physical statement --
+    /// which is what makes moving a term from one to the other a relabeling at
+    /// a fixed rate rather than a new solve.
+    scalar chordPa = 0;
 
     /// The shape this edge's rate arrived in, and what it is worth. `betaImposed`
     /// is the declared profile read back off the inlet faces; `betaIn` and
@@ -485,9 +497,15 @@ struct EdgeExchange
     /// `rho*(betaOut - betaIn)*q|q|/A^2` for this edge's last solve: the
     /// momentum-flux imbalance the region's own profile change asks for, at a
     /// rate both its sections agree on. Signed -- see `ProfileLedger`.
-    /// Reported, not collected: the 1D row's momentum equation still answers for
-    /// `R*q + M*dq/dt` and knows nothing of it.
+    /// Whether the row pays it is the case's decision, edge by edge: where the
+    /// case only reports it this number is on the line and in no equation, and
+    /// where the case charges the row `chordPa` has already given it up, so the
+    /// two together still add up to what the block measured.
     scalar dpConvectivePa = 0;
+    /// The part of `dpConvectivePa` this edge's 1D momentum row actually
+    /// carries: the whole number where the case charges the row, 0 where it only
+    /// reports it. `rowDropPa` contains it, `chordPa` does not.
+    scalar convectiveRowPa = 0;
 };
 
 /// One pass of the steady interface: every coupled edge evaluated against the
@@ -618,6 +636,28 @@ struct TransientCoupledControls
     /// is falsifiable per edge, because each edge's momentum row then answers to
     /// its own source while its neighbour's choice is free to disagree.
     std::vector<int> inertiaFromPartnerPerEdge;
+
+    /// Which edges charge their own 1D momentum row with the shape account,
+    /// indexed exactly like the caller's `edges`: 1 moves
+    /// `rho*(betaOut - betaIn)*q|q|/A^2` out of the partner's friction chord and
+    /// into the row as its own term, 0 leaves the row answering for
+    /// `R*q + M*dq/dt` alone -- the behaviour every case until now relied on.
+    /// Empty (the default) is all zeros.
+    ///
+    /// This is a split of one statement, not an extra burden on it: a charged
+    /// edge's chord is reduced by the same number its row gains, so at the rate
+    /// the step delivers the two edges' `rowDrop` agree, and what differs is the
+    /// *derivative* the network solves with -- the chord stays linear in the
+    /// rate while the row's new term is quadratic. On a rate the network pins
+    /// from outside, that difference cannot be reached, and the charge is
+    /// therefore a relabeling that can be graded as one; on a rate the network
+    /// chooses, it is a different trajectory.
+    ///
+    /// One edge cannot be charged while the chord keeps paying for it, so a
+    /// charged edge whose friction does not survive the reduction is a fatal,
+    /// not a silent fallback: the case asked the block for a momentum flux the
+    /// region's wall cannot account for.
+    std::vector<int> convectiveIntoRowPerEdge;
 };
 
 /// One interface exchange inside one time step: every coupled edge evaluated

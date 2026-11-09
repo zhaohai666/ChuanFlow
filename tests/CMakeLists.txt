@@ -572,6 +572,22 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentInertiaNewton/case.dict)
 
+# the second half of that account: the region's changing profile stops being a
+# number the block reports and becomes a term the 1D row solves for. The case
+# declares it per edge and per arm, so the same run holds the control (nothing
+# charged, which must reproduce 5.41's p_net state for state and pass for pass),
+# the relabeling control (charged on the pinned edge, where the rate cannot move
+# and only the split of one bill changes), and the real statement (charged on the
+# free edge, where the row now carries a term quadratic in the rate). The chord
+# gives up exactly what the row takes on, so the interface's own residual moves
+# with the declaration - the check that nothing is billed twice.
+add_test(
+    NAME verify.transientCoupledMultiTurbulentConvectiveRow
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent_convective_row.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentConvectiveRow/case.dict)
+
 # the three degrees of freedom this chain kept separate, all three present at once:
 # where each edge's region inertia comes from (per arm AND per edge) crossed with
 # which operator negotiates the interface - four tables x two maps, eight arms on

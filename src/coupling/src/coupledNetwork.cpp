@@ -1122,6 +1122,30 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
         }
     }
 
+    // Which edges' rows pay for their own region's changing profile. Checked
+    // here, once, so a case that names a source for a number of edges the
+    // interface does not have fails before it has solved anything. Nothing is
+    // installed yet: every row starts on the shape account it was given by the
+    // pass before, and the first pass of the first step reports the account
+    // without charging it, exactly as the run that never asks does.
+    std::vector<int> charge(edges.size(), 0);
+    {
+        const std::vector<int>& perEdge = ctl.convectiveIntoRowPerEdge;
+        if (!perEdge.empty() && perEdge.size() != edges.size())
+            cfFatal("coupling: transient controls name a shape charge for "
+                    + std::to_string(perEdge.size()) + " edges but the interface"
+                      " has " + std::to_string(edges.size()));
+        for (std::size_t i = 0; i < perEdge.size(); ++i)
+        {
+            if (perEdge[i] != 0 && perEdge[i] != 1)
+                cfFatal("coupling: transient edge " + std::to_string(i)
+                        + " is asked to charge its row with "
+                        + std::to_string(perEdge[i])
+                        + ", which is neither report (0) nor charge (1)");
+            charge[i] = perEdge[i];
+        }
+    }
+
     for (std::size_t s = 0; s < nSteps; ++s)
     {
         TransientCoupledStep step;
@@ -1179,37 +1203,13 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                 // whether or not the partner also carried an acceleration.
                 ex.dpInertialPa = ex.unsteady ? blocks[i]->lastInertialDrop() : 0.0;
                 ex.dpFrictionPa = ex.dpPa - ex.dpInertialPa;
-                const scalar chord = ex.unsteady ? ex.dpFrictionPa : ex.dpPa;
-                if (!(chord > 0))
-                    cfFatal("coupling: transient pipe '" + ex.name
-                            + "' reports a drop of " + fmt(ex.dpPa) + " Pa of which"
-                              " the acceleration of its own region is worth "
-                            + fmt(ex.dpInertialPa)
-                            + " Pa, leaving no friction for a resistance to carry:"
-                              " the inertance installed on this edge (M "
-                            + fmt(ex.inertance) + " kg/m4 over a rate change of "
-                            + fmt(ex.dq) + " m3/s in " + fmt(dt)
-                            + " s) is larger than the momentum the region itself"
-                              " can account for");
-                ex.residual = std::abs(ex.resistance * ex.q - chord)
-                              / std::max(std::abs(chord), 1e-300);
-                // The row as the 1D side writes it, against the drop as the
-                // region's own momentum balance reports it. This is the number
-                // the interface cannot iterate away, and the only one that says
-                // whether the inertance installed above belongs to this region.
-                ex.rowDropPa = ex.resistance * ex.q
-                               + ex.inertance * ex.dq / static_cast<scalar>(dt);
-                ex.rowError = ex.unsteady
-                              ? (ex.rowDropPa - ex.dpPa) / ex.dpPa : 0.0;
-                ex.sweeps = blocks[i]->lastSweeps();
-                ex.blockConverged = blocks[i]->lastConverged();
                 // The shape is part of what this level asked for, so it is read
                 // back level by level rather than once at the end of the run: the
                 // inlet is the declared profile, the outlet is the region's own,
                 // and which way the two differ says whether the region had to grow
-                // the profile or shed the excess. Nothing here charges that
-                // difference to the drop -- the row below still reports the drop
-                // the block measured, whatever arrived.
+                // the profile or shed the excess. It is read before the chord
+                // because on an edge whose row pays for it, the difference is not
+                // the block's alone to carry any more.
                 const ProfileLedger ledger = blocks[i]->profileLedger();
                 ex.inletShape = ledger.shape;
                 ex.fluxImposed = ledger.fluxImposed;
@@ -1224,6 +1224,50 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                 ex.pRisePa = ledger.pRisePa;
                 ex.pRiseX = ledger.pRiseX;
                 ex.dpConvectivePa = ledger.dpConvectivePa;
+                // Who pays for it is the case's decision, taken per edge, and it
+                // is stated once for both sides of it: the row's new term and the
+                // part of the block's friction the resistance gives up are the
+                // same number. An edge that was only asked to report it leaves
+                // the account where it was -- on the line, in no equation.
+                ex.convectiveRowPa = charge[i] ? ex.dpConvectivePa : 0.0;
+                const scalar base = ex.unsteady ? ex.dpFrictionPa : ex.dpPa;
+                ex.chordPa = base - ex.convectiveRowPa;
+                if (charge[i] && !(ex.chordPa > 0))
+                    cfFatal("coupling: transient pipe '" + ex.name + "' has "
+                            + fmt(base) + " Pa for its resistance to carry, of"
+                              " which its own region's changing profile is worth "
+                            + fmt(ex.dpConvectivePa)
+                            + " Pa: charging this edge's row with the shape account"
+                              " would leave " + fmt(ex.chordPa)
+                              + " Pa for the wall, so the friction this region"
+                                " reports cannot pay for the profile it reports");
+                if (!(ex.chordPa > 0))
+                    cfFatal("coupling: transient pipe '" + ex.name
+                            + "' reports a drop of " + fmt(ex.dpPa) + " Pa of which"
+                              " the acceleration of its own region is worth "
+                            + fmt(ex.dpInertialPa)
+                            + " Pa, leaving no friction for a resistance to carry:"
+                              " the inertance installed on this edge (M "
+                            + fmt(ex.inertance) + " kg/m4 over a rate change of "
+                            + fmt(ex.dq) + " m3/s in " + fmt(dt)
+                            + " s) is larger than the momentum the region itself"
+                              " can account for");
+                ex.residual = std::abs(ex.resistance * ex.q - ex.chordPa)
+                              / std::max(std::abs(ex.chordPa), 1e-300);
+                // The row as the 1D side writes it, against the drop as the
+                // region's own momentum balance reports it. This is the number
+                // the interface cannot iterate away, and the only one that says
+                // whether the inertance installed above belongs to this region.
+                // The shape term belongs here too, because the chord it came from
+                // stopped carrying it: split the account between the two sides or
+                // not, the row answers for the same statement either way.
+                ex.rowDropPa = ex.resistance * ex.q
+                               + ex.inertance * ex.dq / static_cast<scalar>(dt)
+                               + ex.convectiveRowPa;
+                ex.rowError = ex.unsteady
+                              ? (ex.rowDropPa - ex.dpPa) / ex.dpPa : 0.0;
+                ex.sweeps = blocks[i]->lastSweeps();
+                ex.blockConverged = blocks[i]->lastConverged();
                 worst = std::max(worst, ex.residual);
                 rec.edges.push_back(ex);
             }
@@ -1241,9 +1285,8 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                 for (std::size_t i = 0; i < R.size(); ++i)
                 {
                     const EdgeExchange& ex = rec.edges[i];
-                    const scalar chord = ex.unsteady ? ex.dpFrictionPa : ex.dpPa;
                     x[i] = ex.resistance / Rseed[i];
-                    r[i] = (chord / ex.q - ex.resistance) / Rseed[i];
+                    r[i] = (ex.chordPa / ex.q - ex.resistance) / Rseed[i];
                 }
                 const std::vector<scalar> next = qn->next(x, r, ctl.relax);
                 for (std::size_t i = 0; i < R.size(); ++i)
@@ -1257,10 +1300,22 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                 for (std::size_t i = 0; i < edges.size(); ++i)
                 {
                     const EdgeExchange& ex = rec.edges[i];
-                    const scalar chord = ex.unsteady ? ex.dpFrictionPa : ex.dpPa;
-                    R[i] = (1.0 - ctl.relax) * R[i] + ctl.relax * (chord / ex.q);
+                    R[i] = (1.0 - ctl.relax) * R[i] + ctl.relax * (ex.chordPa / ex.q);
                     net.setCoupledResistance(edges[i], R[i]);
                 }
+            }
+
+            // and the row's shape term is installed with it, reduced to the
+            // coefficient the row multiplies by |Q|*Q: the two refreshes come
+            // from the same solve, so an edge that was told to charge its row
+            // never has its account paid twice, once by the chord and once by
+            // the row. An edge that was told only to report it is installed
+            // with 0, which is the term the row has been carrying all along.
+            for (std::size_t i = 0; i < edges.size(); ++i)
+            {
+                const EdgeExchange& ex = rec.edges[i];
+                net.setCoupledConvective(
+                    edges[i], ex.convectiveRowPa / (ex.q * ex.q));
             }
         }
 

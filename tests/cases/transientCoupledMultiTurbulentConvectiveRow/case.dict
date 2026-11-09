@@ -1,0 +1,174 @@
+# transientCoupledMultiTurbulentConvectiveRow: the shape account moves from the
+# block's chord into the network's own momentum row -- and is not charged twice.
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D pipe) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# The topology, the two meshes, the probes, the wall functions, the operating
+# point, the mis-stated proxy bores, the dt and the eight levels are 5.41's and
+# 5.42's, and every arm here is shaped on both edges with both edges stepping on
+# the drawing's own rho*L/A -- 5.41's `p_net` rung. The single variable is who
+# pays for the region's changing profile.
+#
+# 5.42 put that bill on every line of the log and in no equation:
+#       dpConv = rho*(betaOut - betaIn)*q|q|/A^2
+# printed while the row the network solves stayed
+#       rowDrop = R*q + M*dq/dt
+# with R iterating against the block's whole friction half, chord and all. This
+# case moves the term: an edge told to `charge` gets a row of
+#       rowDrop = R*q + M*dq/dt + dpConv
+# and a chord of
+#       chord   = dpFriction - dpConv
+# so the two halves add up to the same statement they did before. A charged edge
+# is therefore not a network asked to hold more -- it is the same momentum
+# budget with the shape term written where the 1D side can differentiate it: the
+# chord stays linear in the rate while the row's new term is quadratic, and the
+# derivative the network solves with is the only thing that can move.
+#
+# Four arms, one per placement of the charge:
+#   c_off  -- report on both edges: the row 5.41 and 5.42 solved, unchanged
+#   c_both -- charge on both edges
+#   c_pin  -- charge on X2 only, the edge whose rate the topology pins
+#   c_free -- charge on X1 only, the edge whose rate the split relaxes
+# `c_off` is the behaviour-inertness control: with nothing charged, the kernel
+# must reproduce 5.41's `p_net` state for state, including the interface's pass
+# counts. `c_pin` is the relabeling control: at a rate the network is not allowed
+# to change, a term moved from one side of the row to the other cannot be
+# reached. `c_free` is where the charge is a real statement, because that edge's
+# rate is the solution of the row it just changed.
+#
+# The tables are read back out of the log rather than assumed from the case: every
+# arm's per-edge `convective report|charge` line, and every level's `rowBeta` --
+# the number the row actually carries, 0 on an edge that only reports.
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    # 6.0e-5 m3/s, as in 5.36..5.42: the operating point at which both
+    # wall-function ducts keep their first cell centre above the y+ = 11 their log
+    # law is written for at every level and every shape.
+    feed { node Src; rate 6.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+
+    # X1 sits in the parallel position (its rate is what the split relaxes), X2 in
+    # the series position (its rate is pinned by topology to the injected flow).
+    # Both proxy bores stay deliberately short -- X1 0.005 against the exact
+    # 0.0056418958354775631, X2 0.006 against 0.00638307648642292245 -- so the
+    # drawing overstates the region by 1.273x and 1.132x and the row's own inert
+    # term is not the one the block measured.
+    X1 { from J1; to J2; length 0.2;  diameter 0.005;
+         coupledResistance 1.4e7; }
+    By { from J1; to J2; length 0.3;  diameter 0.008; }
+
+    X2 { from J2; to J3; length 0.24; diameter 0.006;
+         coupledResistance 1.36e7; }
+
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.2 s over eight levels -- 5.38..5.42's level, kept so that the only
+# variable is who pays for the shape.
+time { dt 0.2; endTime 1.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    # 1e-3 as in 5.38..5.42. On a charged edge the tolerance now reads
+    # |R*q - (dpFriction - dpConv)| / (dpFriction - dpConv): the same relative
+    # statement about the same total, with the shape half taken out of the
+    # denominator, so a charge can change how many passes a level needs.
+    tolerance 1e-3;
+    maxSubIterations 12;
+    # the interface operator is not a variable here -- 5.33 crossed du/dt with
+    # quasi-Newton and 5.37 crossed shape with it. Every arm walks block GS.
+    accelerates ( 0 0 0 0 );
+    # every edge of every arm steps: a partner that carries its own du/dt is the
+    # only one whose momentum budget has a shape half to move, because a
+    # quasi-steady one reports a drop with no friction half to take it out of.
+    ddts        ( Euler Euler Euler Euler );
+    # and every edge of every arm keeps the drawing's rho*L/A, so the inertial
+    # attribution of 5.40/5.41 is held still while the shape account moves.
+    inertias    ( network network network network );
+    starts {
+        # one seed per arm, identical in all four: 1.4e7 / 1.36e7, the control's
+        # own secants at this rate, so the charge cannot come in through the
+        # starting coefficients, and parabolic on every edge.
+        c_off  { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        c_both { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        c_pin  { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        c_free { X1 1.4e7; X2 1.36e7; profile parabolic; }
+    }
+    # The axis of this case: per arm and per edge, does the row pay for the
+    # region's own changing profile or does the block's chord keep paying for it?
+    # `report` is what every case until 5.43 does and is also what an arm the
+    # table does not name gets; `charge` moves the number out of the chord.
+    convectiveToRow {
+        c_off  { X1 report; X2 report; }
+        c_both { X1 charge; X2 charge; }
+        c_pin  { X1 report; X2 charge; }
+        c_free { X1 charge; X2 report; }
+    }
+}
+
+details {
+    # X1: 0.2 x 0.005 x 0.005 m, 8 cells across the gap so the first cell centre
+    # sits inside the log-law band. Probe = the last 0.07 m of a 0.2 m region, so
+    # its slab inertance is 0.35 of the region's.
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.12; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_convective_row_X1.vtu;
+    }
+
+    # X2: a different aspect ratio -- 4 mm gap, 8 mm span -- so its resistance is
+    # not X1's scaled. Probe = the last 0.07 m of a 0.24 m region, so its slab is
+    # 0.291667 of the region's inertance.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.24 0.004 0.008);
+            cells (24 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.16; max 0.23; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 2.4e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_convective_row_X2.vtu;
+    }
+}

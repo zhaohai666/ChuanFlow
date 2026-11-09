@@ -237,15 +237,26 @@ double TransientNetwork::solveStep(double dt)
             const double ar = pipeArea(pd.geo.diameter);
             const double vd = kv[k] * fluid_.rho * std::abs(x[k]) * x[k]
                             / (2.0 * ar * ar);
-            r[k] = pd.inertia / dt * (x[k] - pd.qPrev) - dp + grav + fr + vd;
+            // The same shape of term as the valve's, and the same kind of
+            // statement: a partner region whose profile is fuller at one
+            // station than at the other owes its momentum budget
+            // `rho*(betaOut - betaIn)*|Q|*Q/A^2`, which is a momentum-flux
+            // imbalance rather than a wall force, so it scales with Q^2 where
+            // the resistance the interface installs scales with Q. Charging it
+            // here is what lets the chord stop carrying it; zero leaves the row
+            // exactly the equation it was before.
+            const double cc = pd.convective * std::abs(x[k]) * x[k];
+            r[k] = pd.inertia / dt * (x[k] - pd.qPrev) - dp + grav + fr + vd + cc;
             J[k][k] = pd.inertia / dt + slope
-                    + kv[k] * fluid_.rho * std::abs(x[k]) / (ar * ar);
+                    + kv[k] * fluid_.rho * std::abs(x[k]) / (ar * ar)
+                    + 2.0 * pd.convective * std::abs(x[k]);
             const NodeDyn& nf = nodes_[static_cast<std::size_t>(pd.geo.from)];
             const NodeDyn& nb = nodes_[static_cast<std::size_t>(pd.geo.to)];
             if (!nf.fixed) J[k][nP + static_cast<std::size_t>(nf.unk)] -= 1.0;
             if (!nb.fixed) J[k][nP + static_cast<std::size_t>(nb.unk)] += 1.0;
             const double scale = pd.inertia / dt * std::max(std::abs(x[k]), std::abs(pd.qPrev))
-                               + std::abs(dp) + std::abs(fr) + std::abs(vd) + 1.0;
+                               + std::abs(dp) + std::abs(fr) + std::abs(vd)
+                               + std::abs(cc) + 1.0;
             maxRel = std::max(maxRel, std::abs(r[k]) / scale);
         }
 
@@ -413,6 +424,33 @@ void TransientNetwork::setCoupledInertia(label k, double inertia)
                   " take");
     pd.inertia = inertia;
     pending_ = false;
+}
+
+void TransientNetwork::setCoupledConvective(label k, double coefficient)
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    // Signed on purpose: a region whose outlet section is fuller than its inlet
+    // one bills the row, a region that sheds momentum flux pays it. So the only
+    // thing that cannot be a coefficient is a number that is not a number.
+    if (!std::isfinite(coefficient))
+        cfFatal("transient: a partner region's convective coefficient must be a"
+                " finite rho*(betaOut-betaIn)/A^2; got "
+                + std::to_string(coefficient) + " (kg/m6)");
+    PipeDyn& pd = pipes_[static_cast<std::size_t>(k)];
+    if (pd.geo.coupledResistance <= 0)
+        cfFatal("transient: pipe '" + pipeNames_[static_cast<std::size_t>(k)]
+                + "' has no partner model, so it has no measured profile change to"
+                  " charge its row with");
+    pd.convective = coefficient;
+    pending_ = false;
+}
+
+double TransientNetwork::coupledConvectiveOf(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].convective;
 }
 
 void TransientNetwork::setCoupledResistance(label k, double resistance)

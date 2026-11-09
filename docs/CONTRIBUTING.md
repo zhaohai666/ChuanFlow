@@ -14,7 +14,7 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（95 项）约 240 ~ 282 s ≈ 4 ~ 4.7 分钟（两次实测），
+ctest --test-dir build --output-on-failure -j8  # 全量回归（96 项）约 240 ~ 282 s ≈ 4 ~ 4.7 分钟（实测 258.53 s），
                                              # 墙钟就是最慢那一条：稳态 profile 级映射 212 s；
                                              # 其余大头（形状 x 湍流 x 瞬态 112 s、瞬态惯量归属 86 s、
                                              # 形状 x 块内 du/dt 71 s、VOF 振荡 68 s、稳态多边 60 s）
@@ -606,6 +606,73 @@ python3 tests/check_transient_coupled_multi_turbulent_profile_unsteady.py \
 python3 tests/check_transient_coupled_multi_turbulent_edge_ddt.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiTurbulentEdgeDdt/case.dict"
+
+# 逐边 ddt × 逐边惯量归属同台（5.40）：上面那案的拓扑、两块 kOmegaSST 网格、probe、壁面函数、操作点、dt 0.2 与 8 个
+# 时间层原封不动，唯一改动是把两根耦合管各自的图纸孔径故意写歪——X1 写 0.005（该截面等效直径 0.0056418958）、X2 写
+# 0.006（等效 0.0063830765）。5.39 用的是精确等效孔径，于是 rho*L/A（图纸）与 rho*V/A^2（区域）本来就是同一个数，
+# 归属那张表在任何结果里都看不见；写歪以后三本账成为三个数（X1 1.0186e7 / 8.0e6 / 2.8e6，X2 8.4883e6 / 7.5e6 /
+# 2.1875e6 kg/m4，图纸把区域高估 1.273x 与 1.132x，slab 是区域的长度分数 0.350000 与 0.291667）。八臂 = 两边准稳
+# {图纸, 区域} + 两边步进 {图纸, 区域, slab} + 5.39 的混合臂（es_nnn，处处图纸）+ 两个新格 es_mix / se_mix：同在
+# X1 步进、X2 准稳，但步进那条边改吃 slab，两臂互为镜像——逐臂开关说不出「X1 是 Euler+slab 且 X2 是 steady+network」
+# 这种话，所以这两张表必须能各自点名同一条边。accelerates 全 0、tolerance 1e-3，惯量归属在时间循环之前安装
+# （coupledNetwork.cpp:1092），所以它对准稳边同样生效。内核一行没改，两张表都是既成机制（ddtFrom 解析在
+# transientCoupledMultiApp.cpp:273、inertiaFrom 在 :303，非法词或缺边直接 cfFatal）。
+# 要问的问题是内核那一行到底在数什么：rowDrop = R*q + M*dq/dt、rowError = (rowDrop - dpPa)/dpPa
+# （coupledNetwork.cpp:1160/:1201，准稳边恰为 0，:1202），所以步进边上恒有
+#   rowError * dpBlock = (R*q - dpFriction) + (M*dq/dt - dpInertia)
+# 左边第一项是界面从不迭代的弦差（chord = unsteady ? dpFrictionPa : dpPa，:1182），第二项才是「这条边的惯量记在谁
+# 账上」的账单——slab 只消掉后者。
+# 十族 203 条的要点：
+#   1) 两张表到达同一条边——128 个（层 x 边）状态各带自己那条边的两个词（72 步进 / 56 准稳，混合臂里两种坐在同一层），
+#      es_mix 与 se_mix 的两份表在同一条边上互相不同意；装上行的 M 与该来源自己宣布的数到 1e-14 一致，块的回报同时带
+#      inertance（区域）与 inertanceProbe（slab），所以接口装的是伙伴能核对的数。
+#   2) 主判据：双重计费确实是那两项之和且逐边成立——72 个步进状态全部满足上面的恒等式，最差 6.4e-17（按该式四项绝对
+#      值之和归一，es_mix 层 1 X1）；半区仍逐块切到 2.2e-16，56 个准稳状态的惯性半区与 rowError 恰为 0。层 1 两项不是
+#      一个量级：X1 弦差 +0.0472 / +0.1015 / +0.6006 Pa 对账单 +718.87 / +551.40 / +11.79 Pa（15236x / 5430x / 20x），
+#      X2 弦差 <=2.5e-4 Pa 对 +1903.86 / +1607.38 / +13.63 Pa；到平台顺序翻转（ss_both 层 8 X1：-0.3224 对 +0.0066）——
+#      能被来源移掉的只有第二项。
+#   3) 阶梯单调且第二项就是图纸多收的那笔——层 1 rowError X1 77.0836% -> 53.8941% -> 0.9364%、X2 52.1912% -> 44.0637%
+#      -> 0.3737%，slab 消掉图纸账单的 98.36% / 99.28%；(M_图纸 - M_slab)*dq/dt 预测 708.19 / 1890.23 Pa 对实测 +718.87
+#      / +1903.86，差额是块自己的 dpInertia。钉死边阶梯的绝对价更高（1903.9 对 718.9），因为它的 dq/dt 就是整步。
+#   4) 归属只挪行侧那半——层 1 X2 的 dpInertia 三种归属下同为 642.6188 Pa（最差 1.1e-8 相对）；更强的形式是两次归属之差
+#      恰为 (M_a - M_b)*dq/dt（296.4791 对 296.4791，4.3e-8 相对；1593.7496 对 1593.7500，2.7e-7；1890.2286 对 1890.2291，
+#      2.4e-7），那点残差（1.3e-5 / 4.3e-4 / 4.5e-4 Pa）恰好被块自己两项之差吸收——所以 rowError 对装上的 M 线性，斜率
+#      是该层的 dq/dt。反面：块的惯性半区是 M_slab*dq/dt 的 96.02 ~ 97.92%（9 个层 1 状态）——slab 是对的板、错的 du/dt。
+#   5) 消掉之后剩下的正是界面本来在追的数——装 slab 的 24 个（层 3 起 x 步进）状态 |rowError| 最大 9.646e-4，低于停机
+#      容差 1e-3，自由边还在同层残差 1.73x 内；图纸的自由边同层到 1.176e-1（容差 118x、自身残差 153.2x）——这项界面
+#      既迭代不掉、容差也没要求它迭代。
+#   6) 准稳边照付却一分不评——nn_steady 层 1 X1 装上 1165.3 Pa 的 M*dq/dt 对一块报 310.8 Pa 且无加速度的区域（评分会是
+#      375%），rowError 打印 0.0；整个准稳族 56 状态都是几百到上千帕对恒零评分。
+#   7) 两条局部性定律不是同一条——es_nnn/X1 == nn_both/X1、se_mix/X1 == nn_steady/X1 均 15 字段 x 8 层逐位 0.0（后者
+#      邻居同时改了两张表）：表述跨边可交换。但 es_mix/X1 对 ss_both/X1（该边同表述同来源、只邻居不同）只 2/15 逐位，
+#      速率差 7.41e-15（2.9e-10 相对）、压降差 4.54e-7 Pa：归属不可交换，因为装上的 M 是全局线性系统的一项。同一律在
+#      准稳侧：三条准稳钉死边相对 nn_steady/X2 差 2.232e-4 ~ 5.900e-4 Pa（对 1538.4）。而评分为 0 不等于来源无所谓：
+#      nn_steady 与 pp_steady 的自由边速率差 9.18%、压降差 50.5 Pa，rowError 是同一个 0.0；es_mix/X1 与 es_nnn/X1 同边
+#      只差来源，速率差 6.735e-6 m3/s（28.3%）。钉死边压降沿阶梯不动（4.4e-8 相对）而 rowError 跨 51.8 个百分点。
+#   8) 斜坡跟着自由边的两张表且单调——层 1 分流 slab 0.431868 > 区域 0.346431 > 图纸 0.319615（步进）、准稳侧 0.419889
+#      > 0.381355；tau 0.2997 / 0.6014 / 0.6134 s（slab->图纸 2.0x），准稳 0.4329 / 0.4773 s 是管网自己的惯性松弛。三个
+#      混合臂与「自由边同表述同来源」的对照逐位相同（0.319615/0.6134、0.431868/0.2997、0.381355/0.4773）——表没点名的
+#      那条边把分流改变 0.0。去处仍聚（0.396201 ~ 0.407166）：归属在层 1 分开注入量的 11.2%、层 8 只剩 1.1%，平台散布
+#      是容差不是来源选的物理。
+#   9) 成本由自由边定且单调——趟数 16/16/26/27/30/26/30/16（187），SIMPLE 解恰 2x（374），最差扫数 15~17、无一碰 300
+#      预算、blockConverged 全 1、最坏残差 1.861e-5 ~ 9.668e-4。准稳 16 -> 图纸 26 -> 区域 27 -> slab 30；se_mix（步进的
+#      那条是钉死边）只花 16 趟，与完全准稳的臂同价。
+#  10) 伙伴仍合法、网络仍闭合——y+ 22.8~32.6、nut/nu 45.2~74.9x、Re_Dh 5215~10938、beta_out 1.020947~1.021052、每块
+#      进/出 <=2.6e-16，且八臂全部 flat 入口（下面任何差异都不是形状效应）；每层节点对逐边等于那一行动量式含惯量项
+#      （1e-9）而不是块的压降，所以案件命名的那本账进了网络采纳的压力场；先导段 Churchill 11.264128 Pa 到 1e-9，层 1
+#      行与区域最大 disagreement 2546 Pa、两项都有界。
+# 写这类判据时的坑：恒等式两边是相消的量，归一标度必须取式子里四项的绝对值之和，不能取左右任一侧——pp_both 层 8 X2 的
+# 两个括号相差三个数量级却几乎抵消（|lhs| ~1.5e-4 Pa、绝对误差 6e-14），按 max(|弦差|,|账单|) 归一会得到 3.99e-10 的
+# 「假违规」；「线性于 M」这类定律要用括号差而不是 rowError 差来写，(rowError_a - rowError_b)*dpBlock_a 里混进了
+# rowError_b*dpBlock 的变化，残差要由块自己那两项之差界定；「低于容差」不能对钉死边断言——ss_both 的钉死边残差本身是
+# 5.66e-8，比值 1495x 毫无内容，只能对自由边断言比值、对全部状态断言绝对界；准稳边的评分是定义出来的 0（:1202），所以
+# 任何「归属改不改结果」的准稳判据都必须读轨迹本身而不是读 rowError；本案的三本账要真的成为三个数，孔径必须先写歪，
+# 5.39 那种精确等效孔径下归属是测不出来的。
+# 十族 203 条，八臂共 187 趟 / 374 次块解；单独跑整个 case 约 28 s（ctest -j8 记 34.58 s）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiTurbulentEdgeDdtInertia/case.dict
+python3 tests/check_transient_coupled_multi_turbulent_edge_ddt_inertia.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiTurbulentEdgeDdtInertia/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

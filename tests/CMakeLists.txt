@@ -450,6 +450,19 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentEdgeDdt/case.dict)
 
+# the same two regions with BOTH per-edge tables declared at once, on bores typed
+# short of their sections so the three inertance sources are three different
+# numbers: the row's error then splits into the chord gap the interface never
+# iterates plus the bill for whose inertance was installed, edge by edge, and the
+# crossing says which of the two the source can remove -- and the grade cannot see
+# the second bracket at all on a quasi edge, where it is paid anyway
+add_test(
+    NAME verify.transientCoupledMultiTurbulentEdgeDdtInertia
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent_edge_ddt_inertia.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentEdgeDdtInertia/case.dict)
+
 # the same two regions, inside every time step: the parallel edge ramps on the
 # inertial split while the series edge is pinned by topology and only ever
 # negotiates its drop, so the checker closes each edge's momentum row with that

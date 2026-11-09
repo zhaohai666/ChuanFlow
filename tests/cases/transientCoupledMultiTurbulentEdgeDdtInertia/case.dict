@@ -1,0 +1,189 @@
+# transientCoupledMultiTurbulentEdgeDdtInertia: one time level, two per-edge
+# tables at once -- which formulation each coupled EDGE is negotiated under, and
+# whose inertance each EDGE is charged with.
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D pipe) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# The topology, the two meshes, the probes, the wall functions, the operating
+# point, the dt and the eight levels are 5.39's. What changes is one number per
+# coupled pipe: the proxy bore in the DRAWING. 5.39 gave each proxy pipe the
+# exact equivalent diameter of its block's section, so the drawing's inertance
+# (rho*L/A_proxy) and the region's own (rho*V/A^2 = rho*L/A for a constant-area
+# region) were the same number, and `inertiaFrom` could not be seen in any
+# result. Here both bores are typed short -- X1 0.005 against the exact
+# 0.0056418958354775631, X2 0.006 against the exact 0.00638307648642292245 --
+# so the drawing overstates the region's inertance by 1.273x and 1.132x and the
+# three sources are three different numbers.
+#
+# That is what makes the question 5.39's boundary 1 left open answerable:
+#
+#   the row is charged R*q + M*dq/dt and graded against the block's own drop
+#   (coupledNetwork.cpp:1201), so on a stepping edge
+#       rowError * dpBlock = (R*q - dpFriction) + (M*dq/dt - dpInertia)
+#   the first bracket being the chord gap the interface never iterates and the
+#   second the bill for whose inertance was installed. Does that split hold
+#   edge by edge, with the two tables crossed -- and does `slab`, the source
+#   whose number IS the one the block measured its drop over, cancel the second
+#   bracket and leave the row's error as nothing but the un-iterated chord gap?
+#
+# Eight arms. The first two are the crossing 5.39 could not grade: a quasi-
+# steady edge has rowError 0 BY DEFINITION (coupledNetwork.cpp:1202), so they
+# show what attribution does to the trajectory when the grade cannot see it.
+#   nn_steady   -- both edges quasi-steady, drawing bore on both
+#   pp_steady   -- the same arm with the region's own inertance on both
+# The next three are the pure attribution ladder on a fully stepping interface:
+#   nn_both     -- both edges time-accurate, drawing bore
+#   pp_both     -- ... region
+#   ss_both     -- ... slab (the one the block measured its drop over)
+# The last three put the two tables on the SAME edge, which is the cell neither
+# 5.39 (attribution fixed to the network, and bores made equal anyway) nor 5.31
+# (both blocks `ddt steady`, so no edge carried a du/dt at all) ever reached:
+#   es_nnn  -- X1 steps, X2 quasi; drawing bore everywhere. 5.39's mixed arm
+#   es_mix  -- the same, with X1's inertance taken from its slab instead
+#   se_mix  -- the mirror: X2 steps on its slab, X1 stays quasi on the drawing
+# `ddtFrom` and `inertiaFrom` are both per-edge dicts keyed by starting-set name,
+# and the arms that need no mixing declare nothing and keep the per-arm words.
+# Both blocks still say `schemes { ddt Euler; }`, so every `steady` in this case
+# is a table beating the block, and every arm's effective per-edge scheme and
+# per-edge source are read back from the log rather than assumed from the case.
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    # 6.0e-5 m3/s, as in 5.36..5.39: the operating point at which both
+    # wall-function ducts keep their first cell centre above the y+ = 11 their log
+    # law is written for at every level.
+    feed { node Src; rate 6.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+
+    # X1 sits in the parallel position (its rate is what the split relaxes), X2 in
+    # the series position (its rate is pinned by topology to the injected flow).
+    # BOTH proxy bores are deliberately NOT the equivalent diameter of the
+    # section they stand in for, so rho*L/A_proxy is larger than the region's own
+    # rho*L/A by 1.273x (X1) and 1.132x (X2) and the attribution choice is a
+    # choice between three different numbers.
+    X1 { from J1; to J2; length 0.2;  diameter 0.005;
+         coupledResistance 1.4e7; }
+    By { from J1; to J2; length 0.3;  diameter 0.008; }
+
+    X2 { from J2; to J3; length 0.24; diameter 0.006;
+         coupledResistance 1.36e7; }
+
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.2 s over eight levels -- 5.38/5.39's level, kept so that the only
+# variables are the two per-edge tables. The recorded walls are theirs too: at
+# dt 0.05 the parallel region is asked to go slower than the rate it was solved
+# at one level ago, and a source three times too small is a claim the row has
+# never been asked to pay.
+time { dt 0.2; endTime 1.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    # 1e-3 as in 5.38/5.39: the measured floor for this partner. Note what the
+    # tolerance does NOT contain: `residual` is |R*q - chord| / chord
+    # (coupledNetwork.cpp:1194) and chord is the block's friction half, so the
+    # interface's stop is blind to which inertance was installed. Attribution
+    # moves the row and the trajectory, not the criterion.
+    tolerance 1e-3;
+    maxSubIterations 12;
+    # the interface operator is not a variable here -- 5.31 crossed attribution
+    # with quasi-Newton already. Every arm walks plain block Gauss-Seidel.
+    accelerates ( 0 0 0 0 0 0 0 0 );
+    # per-ARM ddt word: arms 3-5 step on both edges, arms 6-8 say Euler for the
+    # arm and the ddtFrom table takes the pinned edge back to steady. Arms 1-2
+    # say steady and beat the block's own Euler.
+    ddts        ( steady steady Euler Euler Euler Euler Euler Euler );
+    ddtFrom {
+        es_nnn { X1 Euler;  X2 steady; }
+        es_mix { X1 Euler;  X2 steady; }
+        se_mix { X1 steady; X2 Euler;  }
+    }
+    # per-ARM inertia source. `network` everywhere except the two ladder arms
+    # that need the region or the slab on both edges; es_mix/se_mix declare a
+    # per-edge table below, which beats this word edge by edge.
+    inertias    ( network partner network partner slab network network network );
+    inertiaFrom {
+        es_mix { X1 slab;    X2 network; }
+        se_mix { X1 network; X2 slab;    }
+    }
+    starts {
+        # The seeds are the same control-arm secants 5.39 used: the two tables
+        # are the only difference between the arms, so the starting coefficients
+        # cannot be one of them.
+        nn_steady { X1 1.4e7; X2 1.36e7; }
+        pp_steady { X1 1.4e7; X2 1.36e7; }
+        nn_both   { X1 1.4e7; X2 1.36e7; }
+        pp_both   { X1 1.4e7; X2 1.36e7; }
+        ss_both   { X1 1.4e7; X2 1.36e7; }
+        es_nnn    { X1 1.4e7; X2 1.36e7; }
+        es_mix    { X1 1.4e7; X2 1.36e7; }
+        se_mix    { X1 1.4e7; X2 1.36e7; }
+    }
+}
+
+details {
+    # X1: 0.2 x 0.005 x 0.005 m, 8 cells across the gap so the first cell centre
+    # sits inside the log-law band. Probe = the last 0.07 m of a 0.2 m region, so
+    # its slab inertance is 0.35 of the region's.
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.12; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_edge_ddt_inertia_X1.vtu;
+    }
+
+    # X2: a different aspect ratio -- 4 mm gap, 8 mm span -- so its resistance is
+    # not X1's scaled. Probe = the last 0.07 m of a 0.24 m region, so its slab is
+    # 0.291667 of the region's inertance.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.24 0.004 0.008);
+            cells (24 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.16; max 0.23; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 2.4e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_edge_ddt_inertia_X2.vtu;
+    }
+}

@@ -1,0 +1,136 @@
+# transientCoupledMultiTurbulentInertia: the same two RANS detailed regions
+# inside one time-stepping network, with the SOURCE of each region's inertia
+# now the only difference between the two arms.
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D bypass) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# transientCoupledMultiTurbulent1d3d put all three ingredients on the table at
+# once but deliberately removed one degree of freedom: both proxy bores were the
+# exact equivalent diameter of their block's section, so `network` and `partner`
+# named the same inertance and attribution could not have been measured there.
+# transientCoupledMultiInertia measured attribution on two edges, but with two
+# laminar ducts. What neither covers is the superposition: a NON-equivalent bore under a
+# partner whose resistance is a function of the rate.
+#
+# This case mis-states both bores on purpose, and by different amounts:
+#   X1: section H*W = 2.5e-5 m2, bore 0.005 m -> rho*L/A is 1.27324x the true one
+#   X2: section H*W = 3.2e-5 m2, bore 0.0049 m -> 1.69695x (a 2:1 rectangle is
+#       mis-stated worse than a 1:1 one, §5.24's point, now on a RANS edge)
+# so a single global correction factor cannot reproduce both arms' ramps.
+#
+# The question the checker answers is whether partner nonlinearity and inertia
+# attribution stay the two separate accounts §5.23/§5.26 each described:
+#   * the interface is still a chord - dpNetwork == R*Q with R the drop-per-rate
+#     the block reports at the rate it was given, attribution notwithstanding;
+#   * the parallel ramp's time constant is (M_X1 + M_By) over the SUM OF SLOPES
+#     m_X*R_X + m_By*R_By, so changing M moves tau without touching m;
+#   * the destination - the resistive split of the two settled chords - does not
+#     contain M at all, so both arms end on the same state by construction;
+#   * the series edge is still pinned to the injected rate, and its first step
+#     still pays M*Q/dt out of whichever inertance the arm installed.
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 1.2e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+
+    // The coupled edges. Both bores are the nominal circle a drawing would
+    // carry, not the region's equivalent section: in the `network` arm the 1D
+    // side pays rho*L/(pi d^2/4), which overstates the region's rho*L/(H*W) by
+    // 1.27324 (X1) and 1.69695 (X2). The `partner` arm takes the inertance the
+    // block measures on its own mesh instead.
+    X1 { from J1; to J2; length 0.2;  diameter 0.005;
+         coupledResistance 1.0e7; }
+    By { from J1; to J2; length 0.3;  diameter 0.008; }
+
+    X2 { from J2; to J3; length 0.12; diameter 0.0049;
+         coupledResistance 1.5e7; }
+
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.05 against a parallel-branch time constant of ~0.2-0.25 s: 12 steps is
+# ~2.6 constants, so the trajectory is still a fraction short of the resistive
+# split at the end. That is deliberate - the checker predicts the whole ramp from
+# the discrete inertial solve, so the difference the two arms' M makes is still
+# being paid for at the last step instead of having relaxed away.
+time { dt 0.05; endTime 0.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    // both blocks resolve their own drop to ~1e-4 of it inside their declared
+    // SIMPLE budget, and the interface residual is the gap between two solvers
+    tolerance 2e-4;
+    maxSubIterations 6;
+    // one arm per inertia source, both plain block Gauss-Seidel: the only thing
+    // allowed to differ between the arms is where the region's mass comes from
+    inertias ( network partner );
+    starts {
+        bore   { X1 1.0e7; X2 1.5e7; }
+        region { X1 1.0e7; X2 1.5e7; }
+    }
+}
+
+details {
+    # X1: the 0.2 x 0.005 x 0.005 m duct of transientCoupledMultiTurbulent1d3d,
+    # 8 cells across the gap so the first cell centre sits inside the log-law band
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.06; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_multi_turbulent_inertia_X1.vtu;
+    }
+
+    # X2: a 4 mm gap under an 8 mm span, so its nominal circle is 4.9 mm and the
+    # real section is 1.70x that - the worse mis-statement of the two
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.12 0.004 0.008);
+            cells (12 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.04; max 0.11; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_multi_turbulent_inertia_X2.vtu;
+    }
+}

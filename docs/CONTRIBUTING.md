@@ -204,6 +204,21 @@ python3 tests/check_transient_coupled_multi_turbulent.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiTurbulent1d3d/case.dict"
 
+# 湍流 × 区域惯量归属同台：把上一算例中和掉的那格自由度放回去，并且放歪——两根代理管都写成
+# 图纸上的名义圆且歪得不同（X1 1.273240×、X2 1.696946×），于是 `network` 与 `partner` 装进
+# 动量行的是两个真的不同的数，而不存在一个全局修正因子能同时复现两臂。两臂只差
+# `inertias ( network partner )`、种子逐位相同、都不加速。
+# check_transient_coupled_multi_turbulent_inertia.py 断言归属只挪惯量账：两臂 24 个边×步上
+# dpNetwork == R·q 仍到 0.0 Pa；每边行用本臂那份 M 闭合（4.0e-11 / 8.8e-11）；τ 是
+# (M_X1+M_By)/斜率和，孔径臂 0.277231 s 对预测 −0.232%、区域臂 0.240829 s 对 +0.231%，弦式两臂
+# 都读高 63.5%；τ 之比 1.15115 == 惯量之比 1.15649（−0.46%）；目的地不含 M（渐近速率差 0.0113%，
+# 末端速率却差 1.492%）；串联边两臂逐位相同（1.4e-20）而首步踢出该臂的 M·Q/dt（差值 == ΔM·Q/dt）；
+# 伙伴指数两臂读出同一条律（1.6762 / 1.6820）。约 45 s 串行（ctest -j8 下 142 s；114 次块解 / 57 趟）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiTurbulentInertia/case.dict
+python3 tests/check_transient_coupled_multi_turbulent_inertia.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiTurbulentInertia/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict

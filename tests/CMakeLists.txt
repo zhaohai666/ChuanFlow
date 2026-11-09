@@ -421,6 +421,22 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulent1d3d/case.dict)
 
+# the same two RANS edges, with the attribution degree of freedom the case above
+# neutralised put back on the table: both proxy bores are mis-stated, by
+# different amounts, so the bore arm and the region arm install genuinely
+# different inertances under a partner whose resistance moves with the rate. The
+# checker keeps the two accounts apart - the interface stays a chord at either
+# inertance, the ramp's time constant is (M_X1+M_By) over the sum of SLOPES so M
+# moves tau without touching m, the resistive destination holds no M at all, and
+# the pinned series edge is bit-identical across arms while its first-step kick
+# is that arm's M*Q/dt
+add_test(
+    NAME verify.transientCoupledMultiTurbulentInertia
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent_inertia.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentInertia/case.dict)
+
 # the same partitioned interface with a nonlinear partner: edge X is a RANS
 # channel, so its drop-per-rate is a function of the rate the interface is
 # hunting for. One seed runs under both operators, which is what lets the

@@ -201,6 +201,12 @@ struct BlockMeasure
     /// (x, beta) down the region, first and last station always present: the
     /// shape relaxing toward the developed value, station by station.
     std::vector<std::pair<scalar, scalar>> betaStations;
+    /// (x, p) on the same stations as above, Pa: the shape's price. In a
+    /// constant-area duct the wall shear can only pull the pressure down, so a
+    /// station pair whose pressure rises while the one above falls is the entry
+    /// region returning part of the drop -- which is what an inlet that is
+    /// fuller than the region's own developed profile can do.
+    std::vector<std::pair<scalar, scalar>> pressureStations;
 };
 
 /// One steady incompressible duct, solved in 3D and reduced to the single number

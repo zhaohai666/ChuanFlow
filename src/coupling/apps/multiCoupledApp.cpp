@@ -353,6 +353,12 @@ int main(int argc, char** argv)
                     stations << " " << sb.first << " " << sb.second;
                 log::info("betaProfile ", startName, " edge ", edgeNames[i], ":",
                           stations.str());
+                std::ostringstream pStations;
+                pStations << std::setprecision(17);
+                for (const std::pair<scalar, scalar>& sp : m.pressureStations)
+                    pStations << " " << sp.first << " " << sp.second;
+                log::info("pressureProfile ", startName, " edge ", edgeNames[i],
+                          ":", pStations.str());
                 if (s + 1 == startNames.size() && !specs[i].vtk.empty())
                 {
                     VtkWriter w(owners[i]->mesh());

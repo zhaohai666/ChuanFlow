@@ -1,0 +1,175 @@
+# coupled1d3dTurbulentProfile: the interface hands a SHAPE to a partner that is
+# not a duct law -- a wall-function RANS channel.
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D pipe) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# The topology is coupled1d3dProfileMap's and the two blocks are the turbulent
+# ones of transientCoupledMultiTurbulent1d3d, so nothing here is new except that
+# the two axes meet for the first time: 5.34/5.35 put a shape on a LAMINAR partner,
+# whose developed profile is the continuum Poiseuille one with a momentum-flux
+# factor of 6/5, and 5.22/5.23 put a nonlinear partner on the interface with a
+# plug inlet. Against a laminar duct a declared shape is judged by how far the
+# region still has to climb to reach 1.2 -- the fuller the inlet, the less of the
+# entrance region is being paid for, and the arms order R_flat > R_17 > R_parab.
+# A turbulent channel develops to something else entirely: a flat core with thin
+# wall layers, whose factor is barely above 1. So the parabolic inlet that was the
+# cheapest possible start against a laminar duct is the most wrong start against
+# this one, and a wrong start is not free: the momentum flux the region was handed
+# has to come DOWN, and in a constant-area duct a falling momentum flux gives
+# static pressure back. The entry region then pays part of the drop off rather
+# than charging for it, and what the block reports as its resistance stops being
+# its friction. That is what this case measures, and it is why the ordering of
+# 5.34 belongs to the developed profile a region happens to have, not to shapes.
+#
+# The rate is the same in every arm and only its distribution changes: X2 is in
+# series so the incompressible network hands it the whole injected rate, and X1 is
+# a parallel branch whose share is a result of the momentum balance. With RANS on
+# both edges the coefficient the interface settles is a secant through a power law,
+# not a constant, so each arm has to agree its own operating point.
+#
+# The operating point is half the rate 5.22 quotes for this topology, and that is
+# a measured constraint rather than a taste: at 1.2e-4 m3/s the plug arm and the
+# 1/7 arm still converge -- 7 and 6 interface passes -- but the parabolic arm dies
+# inside its FIRST pass, in the series block, which carries the whole 1.2e-4
+# across a 4 mm gap at 3.75 m/s. That block's continuity residual goes 15.6 ->
+# 1.9e48 (dp 7.4e92) by sweep 40 and the field is non-finite at sweep 47. Dropping
+# relaxP from 0.3 to 0.1 leaves the first 32 sweeps of the parallel block bit for
+# bit the same -- aP is min(relaxP, max(pRelaxStart, 0.15*pScale/pStep)), so both
+# values agree while that expression sits at or below 0.1 -- and kills the run at
+# the same sweep 47; asking the same shaped inlet of a laminar partner instead
+# kills the parallel block even earlier, at sweep 8. None of this is a failure of
+# this case; it is where 5.36's boundary sits.
+#
+# Five arms, same seeds throughout so the only difference allowed between them is
+# the declared shape (and, for the last, the interface operator):
+#   lo    -- the control: the plug the interface has always written
+#   parab -- Poiseuille-shaped inlet on both edges, i.e. the shape that was the
+#            cheapest start against a laminar duct and is the most wrong here
+#   p17   -- the 1/7 power law, the shape the laminar cases used as the对照 for
+#            being nearly full and therefore nearly free
+#   mixed -- parabolic on X1, flat on X2: the shape is still a per-edge choice
+#   parab_qn -- the parabolic arm through the accelerated interface
+fluid { rho 1000; mu 1.0e-3; }
+
+# The steady network's own port statement, as in coupled1d3dProfileMap: every
+# node is unknown pressure and Snk holds the reference, so the injected rate is
+# what fixes the operating point.
+nodes {
+    Src  {};
+    J1   {};
+    J2   {};
+    J3   {};
+    Snk  { pressure 1.0e6; }
+}
+
+sources {
+    # 6.0e-5 m3/s: X2 carries all of it at a plug speed of 1.875 m/s across its
+    # 4 mm gap (Re_bulk ~1.5e4 on Dh = 2H) and X1 carries whatever the divider
+    # gives it near a plug of 1 m/s across its 5 mm gap. Both blocks land their
+    # first cell centre above the y+ = 11 the log law of the wall functions is
+    # written for, so neither side of the interface gets to read a chord as if it
+    # were a constant.
+    feed { node Src; rate 6.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+
+    # The coupled edges. Each proxy bore is the exact equivalent diameter of its
+    # block's own section, d = 2*sqrt(H*W/pi), so the 1D side's inertance is the
+    # same number the block measures on its own mesh: attribution is deliberately
+    # NOT a variable here.
+    X1 { from J1; to J2; length 0.2;  diameter 0.0056418958354775631;
+         coupledResistance 1.4e7; }
+    By { from J1; to J2; length 0.3;  diameter 0.008; }
+
+    X2 { from J2; to J3; length 0.24; diameter 0.00638307648642292245;
+         coupledResistance 1.36e7; }
+
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    # the interface residual is the gap between two solvers, and on the arm whose
+    # inlet fights the region the block never reaches its own 3e-3: it hits its
+    # 300-sweep budget on every pass and its reported drop still moves 0.1%
+    # between them (719.4..720.2 Pa at a rate pinned by topology). 1e-3 is that
+    # measured floor, not a wish; the same reason made 5.22 choose 1e-3.
+    tolerance 1e-3;
+    maxOuterIterations 12;
+    accelerates ( 0 0 0 0 1 );
+    starts {
+        # Every set names a shape per edge next to its starting coefficients:
+        # absent means flat, one word means both edges, a list means one each.
+        # The seeds are the control arm's own secants, so the only arm that starts
+        # already right is the one that has nothing else to say.
+        lo        { X1 1.4e7; X2 1.36e7; profile ( flat flat ); }
+        parab     { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        p17       { X1 1.4e7; X2 1.36e7; profile power1over7; }
+        mixed     { X1 1.4e7; X2 1.36e7; profile ( parabolic flat ); }
+        parab_qn  { X1 1.4e7; X2 1.36e7; profile parabolic; }
+    }
+}
+
+details {
+    # X1: 0.2 x 0.005 x 0.005 m, 8 cells across the gap so the first cell centre
+    # sits inside the log-law band. The shape is spread across this wall-bounded
+    # axis only; the z sides are symmetry and have no gradient to fight.
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        # the window is the last third of the block: on the control arm the entry
+        # region is long gone by x = 0.12 m, and on the shaped arms it is the part
+        # that has finished undoing what the inlet asked for
+        probe { min 0.12; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        # continuityTol 3e-3: a shaped inlet leaves the entry region to
+        # redistribute, and the block's own stop has to be tight enough that the
+        # drop it reports is a solved field rather than a transient one.
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_turbulent_profile_X1.vtu;
+    }
+
+    # X2: a different aspect ratio -- 4 mm gap, 8 mm span -- so its resistance is
+    # not X1's scaled, and long enough that the entry region of the most
+    # mismatched arm is inside the block instead of running out of it. Both faces
+    # normal to z are symmetry, so the spanwise count only costs cells.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.24 0.004 0.008);
+            cells (24 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.16; max 0.23; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 2.4e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_turbulent_profile_X2.vtu;
+    }
+}

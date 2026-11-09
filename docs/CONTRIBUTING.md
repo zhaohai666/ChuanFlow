@@ -14,10 +14,10 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（91 项）约 212 s ≈ 3.5 分钟，
-                                             # 墙钟就是最慢那一条：稳态 profile 级映射 212 s；
-                                             # 其余大头（瞬态惯量归属 93 s、VOF 振荡 73 s、
-                                             # 稳态多边 64 s、瞬态 profile 级映射 64 s）
+ctest --test-dir build --output-on-failure -j8  # 全量回归（92 项）约 202 s ≈ 3.4 分钟，
+                                             # 墙钟就是最慢那一条：稳态 profile 级映射 202 s；
+                                             # 其余大头（瞬态惯量归属 86 s、VOF 振荡 71 s、
+                                             # 稳态多边 60 s、瞬态 profile 级映射 59 s）
                                              # 在 -j8 下被并行掩盖
 ```
 
@@ -381,6 +381,48 @@ python3 tests/check_coupled_1d3d_profile_map.py \
 python3 tests/check_transient_coupled_profile_map.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledProfileMap/case.dict"
+
+# profile 级界面映射 × 湍流伙伴（稳态多边）：§5.20 的拓扑 + §5.27 的两条 kOmegaSST 渠道（X2 由 0.12
+# 加长到 0.24 m，好让抛物形的入口段落进块里），驱动 6.0e-5 m3/s 进水（Re_bulk 4879~10000、y+ 21.3~32.6），
+# 块侧 simple maxIterations 300 / continuityTol 3e-3，界面 tolerance 1e-3（不是 1e-4，理由见下面第 9 条）。
+# 动的是内核一处新工具：BlockMeasure 多一列 pressureStations——压强报在**与 beta 同一组**截面上
+# （CoupledNetwork.h:209、coupledNetwork.cpp:798、multiCoupledApp.cpp:358）。五臂 = lo + 抛物 + 1/7 +
+# mixed（X1 抛物、X2 塞状）+ 抛物走准 Newton。十族断言的要点：
+#   1) 声明与伙伴无关——fluxImposed == 网络要的数（1.0e-12）、betaImposed 对 8 面板中点求和回到 1e-9
+#      （抛物 1.181719848566793、1/7 1.0103203595676944）、离连续极限 <=2%；
+#   2) 平台属于区域——十个「臂x边」的 betaOut 落在 1.020266~1.021045（极差 7.79e-4），离层流 duct 的
+#      6/5 差 14.9%。这一条是整个增量的支点：形状的价格不能从层流那一版换算；
+#   3) 判据是符号不是满度——十对里 5 过满 / 5 欠满（层流那版抛物是欠满的），过满者 beta 沿程单调降、
+#      欠满者单调升，升的还包括 1/7 的第一个内部截面（交进去 1.01032、读回 1.01384）；
+#   4) 账用压强付——等截面 duct 里壁面剪切只能往下拉，所以 parab X1 从 171.39 Pa **升**到 391.10 Pa
+#      （x=0.045，+219.7）再降回 15.53 就是入口段在还账；lo/p17 四条曲线逐站不升；
+#   5) 摩擦没动、割线动了——probeSlope 对模型自己的壁面平衡 2*rho*u_tau^2/H 落在 0.943~1.107（十对全测），
+#      而 dpPa 对「同一平衡铺满整条 L」的外推：塞状 1.0118/1.0104、1/7 0.9800/0.9835、抛物 0.2835/0.5370。
+#      抛物 X1 还回的 393.96 Pa 是 rho*(beta_in-beta_out)*U^2 = 225.7 Pa 的 1.75x（X2 2.19x），剩下那
+#      一份是入口段壁面剪切低于发展值，本例只记差额不拆开；
+#   6) 工作点跟着割线走——并联分流 +54.4%（抛物）/ +3.32%（1/7），串联边 X2 每臂恒等于注入量（1e-12），
+#      J1 衡算 1.2e-12，旁路 1D 管以自己的 Churchill 弦闭合，J3 五臂同值（<1e-6 Pa）；
+#   7) 逐边归属与算子各自仍然成立——mixed X1 与 parab X1 分流差 7.5e-13、压降差 1.3e-4（那一份是块的
+#      扫数 29 对 32）；mixed X2 回到 lo X2（1.5e-7）；GS 与准 Newton 差 4.2e-4 / 3.0e-4，只买到趟数；
+#   8) 壁面函数仍然合法——y+ 21.3~32.6（>11 未进尾迹区）、nut/nu 46~146x，否则「形状之间可比」不成立；
+#   9) 容差有实测地板——抛物 X2 每趟花满 300 扫（blockConverged 0），在被拓扑钉死的速率下逐趟报的
+#      dpBlock 在 719.35~720.30 Pa 之间摆（1.3e-3 相对），所以 1e-3 是伙伴分辨率的下界，不是愿望。
+#      另有一堵墙：**1.2e-4 下塞状臂和 1/7 臂照样收敛（7 / 6 趟），只有抛物臂死在第 1 趟**——串联块 X2 把
+#      整个 1.2e-4 推进 4 mm 缝隙（3.75 m/s），残差第 40 扫到 1.9e48、第 47 扫场非有限；同一次运行的并联块
+#      X1 只是花满 300 扫停在 0.0163498。relaxP 0.3->0.1 前 32 扫逐位不变（aP = min(relaxP, max(pRelaxStart,
+#      0.15*pScale/pStep))，simpleSolver.cpp:308）、此后 X1 提前在 101 扫停下但死因不变；model laminar 死在
+#      并联块第 8 扫，所以不是旋钮问题；横向 8->16 加密后 13 次块解全部花满 300 扫、残差在 0.059~1.5 之间摆，
+#      界面把 X1 推到 1.13e-4 时块报出**负的**压降 -0.4367 Pa 而停机。
+# 写这类判据时的坑：betaImposed 与 betaIn 是两件事（前者取边界面、后者取第一个内部截面），过满/欠满的
+# 分支只能按两者之差判、不能按声明的形状判——同一份 parabolic 在层流与湍流两版里落在符号的两边；每米
+# 压降的独立锚点必须取模型自己报的 u_tau（2*rho*u_tau^2/H，只算那两面 y 向壁，z 向是 symmetry 不承载
+# 剪切），拿 duct 律去套就把要检验的东西当成检验工具；外推压降要用 wslope*L 而不是 wslope*(末站-首站)，
+# 否则块两端各半个单元的那段入口/出口会被抹进摩擦里。
+# 十族 272 条，五臂共 27 趟 / 54 次块解；单独跑整个 case 29.7 s
+./build/src/coupling/apps/chflow-coupled-1d3d-multi tests/cases/coupled1d3dTurbulentProfile/case.dict
+python3 tests/check_coupled_1d3d_turbulent_profile.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-multi" \
+    "$PWD/tests/cases/coupled1d3dTurbulentProfile/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

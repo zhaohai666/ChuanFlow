@@ -795,6 +795,7 @@ void DetailBlock::measure(const SimpleResult& res, scalar qMag)
             const scalar beta = (v > 0 && std::abs(u1) > 0)
                                     ? (u2 * v) / (u1 * u1) : 0.0;
             measure_.betaStations.emplace_back(sectionX_[k], beta);
+            measure_.pressureStations.emplace_back(sectionX_[k], pPa[k]);
         }
         if ((nSec - 1) % stride != 0)
         {
@@ -810,6 +811,8 @@ void DetailBlock::measure(const SimpleResult& res, scalar qMag)
             measure_.betaStations.emplace_back(
                 sectionX_[nSec - 1],
                 (v > 0 && std::abs(u1) > 0) ? (u2 * v) / (u1 * u1) : 0.0);
+            measure_.pressureStations.emplace_back(sectionX_[nSec - 1],
+                                                   pPa[nSec - 1]);
         }
         if (measure_.betaStations.size() < 2)
             cfFatal("detailBlock: the region solved with fewer than two"

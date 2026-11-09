@@ -394,6 +394,18 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3dProfileMap/case.dict)
 
+# the same interface against a partner that is not a duct law: two kOmegaSST
+# wall-function ducts, so the checker can watch the region develop to its OWN
+# momentum-flux factor rather than the continuum 6/5, read the sign of
+# (beta_in - beta_out) off the pressure stations, and price each shape against
+# the wall balance 2*rho*u_tau^2/H instead of against Poiseuille
+add_test(
+    NAME verify.coupled1d3dTurbulentProfile
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_coupled_1d3d_turbulent_profile.py
+        $<TARGET_FILE:chflow-coupled-1d3d-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3dTurbulentProfile/case.dict)
+
 # the same two regions, inside every time step: the parallel edge ramps on the
 # inertial split while the series edge is pinned by topology and only ever
 # negotiates its drop, so the checker closes each edge's momentum row with that

@@ -219,6 +219,21 @@ python3 tests/check_transient_coupled_multi_turbulent_inertia.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiTurbulentInertia/case.dict"
 
+# 按边混合惯量归属：同一张管网、同样两块 RANS 伙伴、同样两个写歪的名义孔径，但把"这条边的
+# 惯量从谁那儿取"从**臂**交到**边**——`couple{ inertias ( network partner network ) }` 之外再加
+# `couple{ inertiaFrom{ mixed{ X1 partner; X2 network; } } }`，三臂种子逐位相同、都不加速。
+# check_transient_coupled_multi_mixed_inertia.py 判的是"per-edge 表 = 两次整体选择的叠加，不是
+# 第三种读法"：mixed 的 X1 全部 12 步与 region 臂逐位相同、X2 的首步节点压降与 bore 臂同一个数
+# （17910.892818 Pa 对 region 臂 11638.381827 Pa，差 == ΔM·Q/dt）；界面仍是弦（三臂 36 个边×步
+# dpNetwork == R·q 到 0.0 Pa）；每边动量行用本边那份 M 闭合（4.0e-11 / 8.8e-11 / 8.8e-11 并联、
+# 2.8e-14 / 3.1e-14 / 3.1e-14 串联）；τ 跟着会爬那条边（mixed 0.240829 s == region 臂，逐位）；
+# 目的地与来源无关（渐近速率差 0.0113%）；伙伴指数三臂同一条律（1.6762 / 1.6820 / 1.6820）；
+# 日程 30 / 27 / 27 趟、块解 == 趟数 × 2、`worst` 下标 84 趟全 0。十族 132 条，约 147 s 串行
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiMixedInertia/case.dict
+python3 tests/check_transient_coupled_multi_mixed_inertia.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiMixedInertia/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict
@@ -505,6 +520,10 @@ checker 里重写一份作外部锚（旁路动量行 7e-14）。逐步的界面
 **实际带**的那个数（`EdgeExchange::inertance`，不在解时间层时为 0），块摘要的 `inertance` 是块
 自测的那个——`tests/check_transient_coupled_inertia.py` 就是拿这两行分别对撞 `rho*L/A` 与
 `rho*V/A^2` 的独立算式来验归属的（推导与实测表见 architecture.md §5.24）。
+同一个决定还可以**逐边**给：`couple{ inertiaFrom{ <arm>{ <edge> network|partner; } } }` 是一张按
+`starts`/`edges` 双重索引的表，缺席的边退回该臂的 `inertias` 那一项，于是**一次运行**里一条边的动量
+行吃块测的 `ρV/A²`、另一条吃图纸的 `ρL/A`（表长不等于边数、或某条边点名了块却没区域可报，都在装载
+之前 fatal；实测与逐边可分性见 architecture.md §5.29）。
 
 **多边分区耦合**（`chflow-coupled-1d3d-multi`）把 `edge`/`seeds`/`detail` 三个单数键换成
 复数：`couple{ edges (…) starts{} }` 列出被详细化的所有管名与"一整组初值"，`details{}` 按
@@ -561,9 +580,10 @@ details {
 
 **多边 + 瞬态**（`chflow-coupled-1d3d-transient-multi`）把上面两套键原样搬进时间步进：`solve{}` 换成
 `time{ dt endTime reportEvery }`，`maxOuterIterations` 换成 `maxSubIterations`（它现在是**每个时间层**
-的趟数上限，不是整趟运行的），`accelerate`/`accelerates`/`inertias` 都照旧透传——`inertias`
+的趟数上限，不是整趟运行的），`accelerate`/`accelerates`/`inertias`/`inertiaFrom` 都照旧透传——`inertias`
 因此**从一开始就是逐边生效的**（归属循环先量完所有边、全过校验才装），两臂只差来源的实测见 §5.26；
-但它是每次运行一个 bool，所以"这条边用孔径、那条边用区域"在同一次运行里表达不出来。
+但它是每次运行（臂）一个整体选择，所以"这条边用孔径、那条边用区域"在同一次运行里要交给
+`couple{ inertiaFrom{ <arm>{ <edge> network|partner; } } }`——按臂、按边的表，实测见 §5.29。
 四条容易写错的约定：
 ① 一组 `starts{}` 必须给 `edges ()` 里**每条边**一个数，缺一个直接 fatal——半个网络被详细化等于
 两侧描述的不是同一个系统；② 采纳是全网一起的：全部边谈拢才 `net.commitStep()`，任何一条没谈拢就

@@ -781,20 +781,32 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
     if (ctl.accelerate)
         qn = std::make_unique<InterfaceQuasiNewton>(ctl.qnHistory, ctl.qnLimit);
 
-    // Where the detailed region's inertance comes from. A partner that measures
-    // its own hands the number to the network's momentum row, which keeps it
-    // implicit exactly as the pipe's own rho*L/A was kept - the one way a
-    // detailed region can state its momentum without putting it into the
+    // Where the detailed region's inertance comes from - per edge if the caller
+    // says so, otherwise one answer for the whole interface. A partner that
+    // measures its own hands the number to the network's momentum row, which
+    // keeps it implicit exactly as the pipe's own rho*L/A was kept - the one way
+    // a detailed region can state its momentum without putting it into the
     // interface coefficient, where a rate falling through the step would turn it
     // negative. The measurement is a property of the mesh, so it is taken once
-    // before any step is solved, and every edge is checked before any of them is
-    // installed: a partner that states no region must not leave the network
-    // half-declared.
-    if (ctl.inertiaFromPartner)
+    // before any step is solved, and every edge that is asked for is checked
+    // before any of them is installed: a partner that states no region must not
+    // leave the network half-declared, and an edge the caller did not name a
+    // source for keeps the drawing's number rather than inheriting its
+    // neighbour's.
     {
+        const std::vector<int>& perEdge = ctl.inertiaFromPartnerPerEdge;
+        if (!perEdge.empty() && perEdge.size() != edges.size())
+            cfFatal("coupling: transient controls name an inertia source for "
+                    + std::to_string(perEdge.size()) + " edges but the interface"
+                      " has " + std::to_string(edges.size()));
+        std::vector<bool> fromPartner(edges.size(), ctl.inertiaFromPartner);
+        for (std::size_t i = 0; i < perEdge.size(); ++i)
+            fromPartner[i] = perEdge[i] != 0;
+
         std::vector<scalar> measured(edges.size(), 0.0);
         for (std::size_t i = 0; i < edges.size(); ++i)
         {
+            if (!fromPartner[i]) continue;
             measured[i] = blocks[i]->regionInertance();
             if (!(measured[i] > 0))
                 cfFatal("coupling: transient pipe '"
@@ -805,7 +817,9 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                             " has nothing to install");
         }
         for (std::size_t i = 0; i < edges.size(); ++i)
-            net.setCoupledInertia(edges[i], measured[i]);
+        {
+            if (fromPartner[i]) net.setCoupledInertia(edges[i], measured[i]);
+        }
     }
 
     for (std::size_t s = 0; s < nSteps; ++s)

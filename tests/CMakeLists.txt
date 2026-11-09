@@ -437,6 +437,20 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentInertia/case.dict)
 
+# the same two RANS edges and the same two mis-stated bores, with the choice of
+# inertance source moved from the interface to the edge: `couple.inertiaFrom`
+# gives one arm X1 from its block's mesh and X2 from its drawing's bore inside a
+# single run. The checker requires that decision to be exactly separable - the
+# mixed arm's X1 states are bit-identical to the region arm's and its X2 pays the
+# bore arm's first-step kick - so a per-edge table is a sum of two whole-interface
+# runs, not a third reading of the interface
+add_test(
+    NAME verify.transientCoupledMultiMixedInertia
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_mixed_inertia.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiMixedInertia/case.dict)
+
 # the same partitioned interface with a nonlinear partner: edge X is a RANS
 # channel, so its drop-per-rate is a function of the rate the interface is
 # hunting for. One seed runs under both operators, which is what lets the

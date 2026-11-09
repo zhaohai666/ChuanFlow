@@ -312,6 +312,22 @@ struct TransientCoupledControls
     /// whenever `dt` is below its own time constant `M/R` -- which is every
     /// transient that resolves the ramp it is iterating on.
     bool inertiaFromPartner = false;
+
+    /// The same decision made per edge, indexed exactly like the caller's
+    /// `edges`: 1 asks that edge's partner for its `rho*V/A^2`, 0 keeps that
+    /// edge on the network's own `rho*L/A`. Empty (the default) leaves every
+    /// edge to the switch above, so a run that names one source for the whole
+    /// interface reads the same as before.
+    ///
+    /// Mixing is not a cosmetic generalisation of that switch. The two sources
+    /// are two different measurements of two different things, and a network
+    /// whose edges are described by drawings of uneven quality is the normal
+    /// industrial case: one region is a machined duct the block can measure, the
+    /// next is a drawing whose nominal bore the case typed in. Per-edge is what
+    /// lets one run say "trust the block here, trust the drawing there" - and it
+    /// is falsifiable per edge, because each edge's momentum row then answers to
+    /// its own source while its neighbour's choice is free to disagree.
+    std::vector<int> inertiaFromPartnerPerEdge;
 };
 
 /// One interface exchange inside one time step: every coupled edge evaluated
@@ -363,13 +379,15 @@ struct TransientCoupledResult
 /// network a non-positive one whenever `dt` is below its own time constant
 /// `M/R`, which is every transient that resolves the ramp it iterates on. So the
 /// inertance stays implicit, in the same momentum row as the rest of the
-/// network, and `inertiaFromPartner` decides only where its number comes from:
-/// the coupled pipe's nominal `rho*L/A`, or the block's `rho*V/A^2` measured on
-/// the region's own mesh. When the bore is the equal-area one the two are the
-/// same number and the trajectory is identical to machine precision; otherwise
-/// they differ by exactly the error a bore carries for a region that has no
-/// bore, and that error lives in the path (the first step's inertial split, the
-/// ramp's time constant) rather than in the operating point both relax to.
+/// network, and `inertiaFromPartner` - or `inertiaFromPartnerPerEdge`, which
+/// makes the same decision edge by edge inside one run - decides only where its
+/// number comes from: the coupled pipe's nominal `rho*L/A`, or the block's
+/// `rho*V/A^2` measured on the region's own mesh. When the bore is the equal-area
+/// one the two are the same number and the trajectory is identical to machine
+/// precision; otherwise they differ by exactly the error a bore carries for a
+/// region that has no bore, and that error lives in the path (the first step's
+/// inertial split, the ramp's time constant) rather than in the operating point
+/// both relax to.
 ///
 /// The split is falsifiable on its own as well: the ramp's time constant is
 /// `(M_X + M_By)/(m_X R_X + m_By R_By)`, so a region whose inertance is read

@@ -192,6 +192,37 @@ int main(int argc, char** argv)
                 cfFatal("coupled1d3dTransient: inertias entry '" + w
                         + "' is neither network nor partner");
 
+        // The same decision made per edge, so one run can trust the block on the
+        // edge whose region it can measure and the drawing on the edge whose
+        // bore was typed in. Only the runs that need mixing declare anything;
+        // the rest keep answering to the per-arm switch above, unchanged.
+        std::vector<std::vector<std::string>> armEdgeInertias(startNames.size());
+        bool anyPerEdge = false;
+        if (cd.has("inertiaFrom"))
+        {
+            const Dictionary& from = cd.getDict("inertiaFrom");
+            for (std::size_t s = 0; s < startNames.size(); ++s)
+            {
+                if (!from.has(startNames[s])) continue;
+                const Dictionary& sd = from.getDict(startNames[s]);
+                std::vector<std::string> w;
+                for (const std::string& edgeName : edgeNames)
+                {
+                    if (!sd.has(edgeName))
+                        cfFatal("coupled1d3dTransient: inertiaFrom." + startNames[s]
+                                + " gives no source for coupled edge '" + edgeName + "'");
+                    const std::string e = sd.getWord(edgeName);
+                    if (e != "network" && e != "partner")
+                        cfFatal("coupled1d3dTransient: inertiaFrom." + startNames[s]
+                                + "." + edgeName + " '" + e
+                                + "' is neither network nor partner");
+                    w.push_back(e);
+                }
+                armEdgeInertias[s] = std::move(w);
+                anyPerEdge = true;
+            }
+        }
+
         // ---- the 3D side: one block per coupled edge ----
         const Dictionary& allDetails = caseDict.getDict("details");
         std::vector<BlockSpec> specs;
@@ -215,7 +246,8 @@ int main(int argc, char** argv)
                   "; dt ", num(tc.dt), " endTime ", num(tc.endTime),
                   "; interface ", (ctl.accelerate ? "quasi-Newton" : "plain Gauss-Seidel"),
                   "; region inertia ", inertias[0],
-                  (inertias.size() > 1 ? " (arms)" : ""));
+                  (inertias.size() > 1 ? " (arms)" : ""),
+                  (anyPerEdge ? " (per-edge on some arms)" : ""));
 
         for (std::size_t s = 0; s < startNames.size(); ++s)
         {
@@ -256,9 +288,27 @@ int main(int argc, char** argv)
             TransientCoupledControls run = ctl;
             run.accelerate = accelerates[s];
             run.inertiaFromPartner = (inertias[s] == "partner");
+            const std::vector<std::string>& edgeWords = armEdgeInertias[s];
+            if (!edgeWords.empty())
+            {
+                std::vector<int> src;
+                for (const std::string& w : edgeWords)
+                    src.push_back(w == "partner" ? 1 : 0);
+                run.inertiaFromPartnerPerEdge = std::move(src);
+            }
 
             log::info("transient start ", startNames[s], ": inertia ", inertias[s],
                       " accelerate ", (run.accelerate ? "yes" : "no"));
+            // Which source each edge of this arm actually ends up using - the
+            // arm's own switch when the case names no table for it, the table's
+            // entry when it does. `transient arm` rather than `transient start`
+            // because this line is per edge, and the runs' readers split the log
+            // into arms on the `transient start <name>: inertia ...` header.
+            for (std::size_t i = 0; i < edges.size(); ++i)
+                log::info("transient arm ", startNames[s], " edge ", edgeNames[i],
+                          " inertia ",
+                          (edgeWords.empty() ? inertias[s] : edgeWords[i]),
+                          " index ", edges[i]);
             for (std::size_t i = 0; i < edges.size(); ++i)
                 log::info("transient start ", startNames[s], " edge ", edgeNames[i],
                           " index ", edges[i], " resistance ", num(startRs[s][i]));

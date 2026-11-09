@@ -180,6 +180,37 @@ TransientCase transientBranched(double qIn, double edgeSeed)
     return c;
 }
 
+/// The same statement with two detailed regions instead of one:
+/// Src -> A -> { X1 || By } -> X2 -> B -> Snk, where X1 sits in the parallel
+/// loop (its rate is what the interface negotiates) and X2 is in series with it
+/// (topology pins its rate to the injection, so only its node drop is free).
+/// That difference is what makes the pair useful for attribution: one edge's
+/// inertance moves the ramp, the other's moves only the starting kick.
+TransientCase transientTwoEdge(double qIn)
+{
+    TransientCase c;
+    c.fluid = FluidProperties{800.0, 0.1};
+    TransientNodeConfig src, j1, j2, j3, snk;
+    src.name = "Src"; j1.name = "J1"; j2.name = "J2"; j3.name = "J3";
+    snk.name = "Snk"; snk.pressureFixed = true; snk.pressure = 1.0e5;
+    for (TransientNodeConfig* n : {&src, &j1, &j2, &j3})
+    {
+        n->volume = 1.0;
+        n->liquidFraction = 0.5;
+    }
+    c.nodes = {src, j1, j2, j3, snk};
+    c.pipes = {coupledPipe("A", "Src", "J1", 10.0, 1.0e6),
+               coupledPipe("X1", "J1", "J2", 10.0, 1.0e6),
+               coupledPipe("By", "J1", "J2", 1.0, 1.0e6),
+               coupledPipe("X2", "J2", "J3", 10.0, 1.0e6),
+               coupledPipe("B", "J3", "Snk", 10.0, 1.0e6)};
+    TransientSource feed;
+    feed.nodeName = "Src";
+    feed.rate = qIn;
+    c.sources = {feed};
+    return c;
+}
+
 } // namespace
 
 int main()
@@ -715,26 +746,7 @@ int main()
     // ---- transient: two edges, one branch and one series, per step ----
     {
         const double qIn = 0.02, dt = 0.15, endTime = 0.6;
-        TransientCase c;
-        c.fluid = FluidProperties{800.0, 0.1};
-        TransientNodeConfig src, j1, j2, j3, snk;
-        src.name = "Src"; j1.name = "J1"; j2.name = "J2"; j3.name = "J3";
-        snk.name = "Snk"; snk.pressureFixed = true; snk.pressure = 1.0e5;
-        for (TransientNodeConfig* n : {&src, &j1, &j2, &j3})
-        {
-            n->volume = 1.0;
-            n->liquidFraction = 0.5;
-        }
-        c.nodes = {src, j1, j2, j3, snk};
-        c.pipes = {coupledPipe("A", "Src", "J1", 10.0, 1.0e6),
-                   coupledPipe("X1", "J1", "J2", 10.0, 1.0e6),
-                   coupledPipe("By", "J1", "J2", 1.0, 1.0e6),
-                   coupledPipe("X2", "J2", "J3", 10.0, 1.0e6),
-                   coupledPipe("B", "J3", "Snk", 10.0, 1.0e6)};
-        TransientSource feed;
-        feed.nodeName = "Src";
-        feed.rate = qIn;
-        c.sources = {feed};
+        const TransientCase c = transientTwoEdge(qIn);
 
         TransientNetwork net(c);
         const label e1 = 1, e2 = 3;
@@ -806,6 +818,132 @@ int main()
         CHECK(stopped, "an unagreed multi-edge step is fatal instead of committed");
         CHECK(what.find("X1") != std::string::npos, "the message names the worst edge");
         CHECK(stuckNet.time() == 0.0, "a fatal interface leaves the clock at its start");
+    }
+
+    // ---- transient: the inertance source decided edge by edge, in one run ----
+    {
+        const double qIn = 0.02, dt = 0.15, endTime = 0.6;
+        const TransientCase c = transientTwoEdge(qIn);
+        const label e1 = 1, e2 = 3;
+        const double section = 0.25 * M_PI * 0.05 * 0.05;
+        const double mBore = 800.0 * 10.0 / section;
+        const double mBranch = 0.6 * mBore, mSeries = 1.5 * mBore;
+
+        // a partner that measures its own region, differently from the bore
+        class MeasuredElement : public AnalyticElement
+        {
+        public:
+            MeasuredElement(double r0, double m) : AnalyticElement(r0, 0.0), m_(m) {}
+            double regionInertance() const override { return m_; }
+
+        private:
+            double m_;
+        };
+
+        TransientNetwork netBore(c), netPart(c), netMix(c);
+        coupling::TransientCoupledResult bore, part, mix;
+
+        auto run = [&](TransientNetwork& net, const std::vector<int>& perEdge,
+                       coupling::TransientCoupledResult& out)
+        {
+            MeasuredElement b1(4.0e6, mBranch), b2(2.0e6, mSeries);
+            coupling::TransientCoupledControls ctl;
+            ctl.tolerance = 1e-12;
+            ctl.inertiaFromPartnerPerEdge = perEdge;
+            out = coupling::solveTransientCoupled1d3d(net, {e1, e2}, {&b1, &b2},
+                                                      ctl, dt, endTime);
+        };
+        run(netBore, {0, 0}, bore);
+        run(netPart, {1, 1}, part);
+        run(netMix, {1, 0}, mix);
+
+        bool installed = true, followsBranch = true, followsSeries = true;
+        bool branchDiffers = false, seriesDiffers = false;
+        for (std::size_t n = 0; n < mix.steps.size(); ++n)
+        {
+            const coupling::TransientCoupledStep& m = mix.steps[n];
+            const coupling::TransientCoupledStep& p = part.steps[n];
+            const coupling::TransientCoupledStep& b = bore.steps[n];
+            installed = installed
+                && relNear(m.edges[0].inertance, mBranch, 1e-15)
+                && relNear(m.edges[1].inertance, mBore, 1e-15);
+            // the edge given to its partner is that whole-interface run's edge,
+            // and the edge left to the drawing is the other one's
+            followsBranch = followsBranch
+                && relNear(m.edges[0].q, p.edges[0].q, 1e-12)
+                && relNear(m.edges[0].resistance, p.edges[0].resistance, 1e-12);
+            followsSeries = followsSeries
+                && relNear(m.edges[1].q, b.edges[1].q, 1e-12)
+                && relNear(m.edges[1].resistance, b.edges[1].resistance, 1e-12);
+            branchDiffers = branchDiffers || !relNear(m.edges[0].q, b.edges[0].q, 1e-6);
+            seriesDiffers = seriesDiffers
+                || !relNear(m.pressure[2] - m.pressure[3],
+                            p.pressure[2] - p.pressure[3], 1e-6);
+        }
+        CHECK(installed,
+              "one momentum system carries two sources: the negotiated edge its"
+              " partner measured, the series edge the drawing's bore");
+        CHECK(followsBranch && followsSeries,
+              "and each edge is the corresponding whole-interface run's edge to the"
+              " last digits - mixing is a sum of two decisions, not a third reading");
+        CHECK(branchDiffers && seriesDiffers,
+              "the mixed run is neither whole-interface run: the edge it reshaped"
+              " ramps elsewhere, the edge it left alone kicks elsewhere");
+        CHECK(relNear(netMix.pipeInertia(e1), mBranch, 1e-15)
+                  && relNear(netMix.pipeInertia(e2), mBore, 1e-15),
+              "the network ends carrying exactly what each edge was given");
+
+        // the starting kick is per edge too: the series edge's node drop is the
+        // drawing's number even though its neighbour was measured
+        const double kickBore = mBore * qIn / dt, kickPart = mSeries * qIn / dt;
+        const double dpMix = mix.steps[0].pressure[2] - mix.steps[0].pressure[3];
+        const double dpBore = bore.steps[0].pressure[2] - bore.steps[0].pressure[3];
+        const double dpPart = part.steps[0].pressure[2] - part.steps[0].pressure[3];
+        CHECK(std::abs(dpMix - dpBore) <= 1e-9 * std::abs(dpBore)
+                  && relNear(dpPart - dpBore, kickPart - kickBore, 1e-9),
+              "the series edge pays its OWN source at the sudden start: the mixed run"
+              " equals the bore run while the partner run differs by dM*Q/dt");
+
+        // a table that does not name every edge is refused, not half applied
+        {
+            TransientNetwork net(c);
+            MeasuredElement b1(4.0e6, mBranch), b2(2.0e6, mSeries);
+            coupling::TransientCoupledControls half;
+            half.tolerance = 1e-12;
+            half.inertiaFromPartnerPerEdge = {1};
+            bool refused = false;
+            try
+            {
+                coupling::solveTransientCoupled1d3d(net, {e1, e2}, {&b1, &b2}, half,
+                                                    dt, endTime);
+            }
+            catch (const Error&) { refused = true; }
+            CHECK(refused, "a per-edge table with one entry for two edges is fatal");
+        }
+
+        // an edge the table asks a silent partner about stops the whole install,
+        // including the edge that would have kept the drawing's number
+        {
+            TransientNetwork net(c);
+            AnalyticElement silent(4.0e6, 0.0);          // states no region
+            MeasuredElement measured(2.0e6, mSeries);    // would have, but is not asked
+            coupling::TransientCoupledControls asks;
+            asks.tolerance = 1e-12;
+            asks.inertiaFromPartnerPerEdge = {1, 0};
+            bool refused = false;
+            try
+            {
+                coupling::solveTransientCoupled1d3d(net, {e1, e2}, {&silent, &measured},
+                                                    asks, dt, endTime);
+            }
+            catch (const Error&) { refused = true; }
+            CHECK(refused,
+                  "asking one edge's partner for a region it does not state is fatal");
+            CHECK(net.pipeInertia(e1) == mBore && net.pipeInertia(e2) == mBore
+                      && net.time() == 0.0,
+                  "and nothing is installed: the run that refuses leaves every edge on"
+                  " the number the case typed");
+        }
     }
 
     // ---- Aitken on one edge: what a near-1 interface map costs the plain loop ----

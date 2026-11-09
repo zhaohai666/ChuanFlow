@@ -1849,8 +1849,9 @@ B = 1/(1 + dt·S/M),   τ_eff = dt/ln(1 + dt·S/M),   M = M_X + M_By
 所以 §5.23 边界①那条"没有相位滞后"一字未改。③ 归属只有 network / partner 两种，`partner` +
 湍流伙伴目前只在单元里覆盖；`partner` 同时挂两条边的**瞬态算例**已在 §5.26——两条边被名义孔径
 错估的幅度不同（+27.3% 对 +69.8%），所以那不是把一个数复制两遍。**按边混合**归属（一条
-`network`、一条 `partner`）仍表达不出来：`inertiaFromPartner` 每次运行一个 bool
-（src/coupling/include/cf/coupling/CoupledNetwork.h:314）。④ 已发布的
+`network`、一条 `partner`）当时还表达不出来——`inertiaFromPartner` 每次运行一个 bool
+（src/coupling/include/cf/coupling/CoupledNetwork.h:314），**已由 §5.29 补上**：同一张动量系统里
+X1 吃块测、X2 吃图纸，且逐边严格可分。④ 已发布的
 `transientCoupled1d3d` 仍用缺省的 `network`，所以它记录的 τ 0.2631 s 带着这 27.3%——现在它是
 **可量的**（区域自测给 0.2396 s），但没有顺手改那个算例：那会重写 §5.19 整张实测表。
 
@@ -2011,7 +2012,9 @@ X1 3684657.459 对 3685402.007、X2 15590640.83 对 15590640.75，对平面 Pois
 
 **本增量的边界**：① 一个**按臂**的归属意味着两臂只能整体二选一：`inertiaFromPartner` 是每次运行
 一个 bool（src/coupling/include/cf/coupling/CoupledNetwork.h:314），"X1 用孔径、X2 用区域"在**同一趟**
-里表达不出来——两臂同台是本增量能给出的最接近的观测。② 归属仍是**每边一个标量**，等截面假设与
+里表达不出来——两臂同台是本增量能给出的最接近的观测。该边界**已由 §5.29 补上**：`couple.inertiaFrom`
+把同一个决定交到每条边手上，一条 `network`、一条 `partner`，一张动量系统里同时装上两个来源，
+且逐边严格可分（被交出去的那条边与整体 `partner` 臂逐位相同，没交出去的那条与整体 `network` 臂相同）。② 归属仍是**每边一个标量**，等截面假设与
 动量修正系数 β 一字未改（§5.24 边界①）。③ 湍流 + 多边 + 瞬态三者同台已由 **§5.27** 补上（同一拓扑、两块 k-ω SST 伙伴）；
 那里为了把变量剩一个，用等效孔径把归属**中和**了，湍流 × 归属的叠加仍未测。
 ④ 伙伴仍准稳态，块内没有 `du/dt`。⑤ `tolerance` 仍全网一个数。
@@ -2227,11 +2230,84 @@ checker 十族 135 条全过，串行跑完两臂约 45 s（ctest `-j 8` 下 142
 **本增量的边界**：① 伙伴仍**准稳态**，块内没有 `du/dt`（§5.23 边界①）；归属说的是这块区域的
 质量记在谁账上，不是块内多了一时间层。② 界面仍是**每边一个标量电阻**，剖面/`nut`/法向应力
 到场到场未做（§5.21 边界②）。③ 归属仍是**每次运行一个全局选择**，只是这次两臂选了不同的值来
-对照；按边混合（同一臂里 X1 用块测、X2 用孔径）仍未做——`inertiaFromPartner` 只有一个 bool。
+对照；按边混合（同一臂里 X1 用块测、X2 用孔径）**已由 §5.29 补上**——`inertiaFromPartnerPerEdge`
+让一张表在同一趟里两种来源并存，并且逐边可分。
 ④ 湍流 × 归属只测了"一并联 + 一串联"，且两臂都不加速；湍流 × 归属 × 准 Newton 三者同台、以及
 两边都在并联位置（`worst` 会换手）未测。⑤ `tolerance` 与日程仍全网一个数：30 趟里 16 趟
 （区域臂 27 里 13）是早已谈拢的串联边陪着刷的。⑥ 本算例故意把孔径写错来制造归属的差别，
 这不等于推荐这么建模——它测的是"错了以后，哪些结论仍然只对惯量敏感"。
+
+### 5.29 按边混合惯量归属：一次运行里两个来源同时装上——每条边只回答自己那份（§5.28 的两块 RANS 伙伴 × 新的一格 `couple.inertiaFrom`，本增量动了 3 个 `src/` 文件）
+
+§5.28 的边界③原话："归属仍是**每次运行一个全局选择**……按边混合（同一臂里 X1 用块测、X2
+用孔径）仍未做——`inertiaFromPartner` 只有一个 bool"。一个 bool 不够，是因为区域描述的**质量
+天生不齐**：一块是机加工渠道，块能在它自己的网格上量出截面；下一块是图纸上有人敲进去的名义
+圆，谁也没法从它"量"出一个数。整网二选一要么把量得到的扔掉、要么把猜的当真，而这两种都不是
+工程上想回答的问题。内核其实早就按边写：安装块逐边向 `blocks[i]` 要 `regionInertance()`、逐边
+`setCoupledInertia`（src/coupling/src/coupledNetwork.cpp:796），缺的只是"每边可以不同意"这一格
+控制。所以本增量**动了 3 个 `src/` 文件**，且只动这一格：`TransientCoupledControls` 加
+`inertiaFromPartnerPerEdge`（src/coupling/include/cf/coupling/CoupledNetwork.h:330）、安装块把原来
+的 bool 降级成**默认值**、表逐边覆盖它（仍是先全部检查再全部安装）、app 解析 `couple.inertiaFrom`
+并把每臂每边的选择逐条打进日志（src/coupling/apps/transientCoupledMultiApp.cpp:201）。界面循环、
+准 Newton、伙伴接口、块内求解一字未改。
+
+逐边选择是**按臂**的一张表，所以"整体二选一"的两次运行仍是参照物：
+
+```
+Src -> A -> { X1 (3D k-ω SST) || By (1D) } -> X2 (3D k-ω SST) -> B -> Snk
+couple { edges ( X1 X2 ); inertias ( network partner network );
+         inertiaFrom { mixed { X1 partner; X2 network; } }
+         starts { bore { X1 1e7; X2 1.5e7 }  region { 同 }  mixed { 同 } } }
+```
+
+| 装的 `M`（kg/m⁴）| X1 | X2 | X1 的来源 | X2 的来源 |
+|---|---|---|---|---|
+| `bore`（都吃图纸）| 10185916.36 | 6363546.246 | network | network |
+| `region`（都吃网格）| 8000000 | 3750000 | partner | partner |
+| `mixed`（一边一个）| **8000000** | **6363546.246** | **partner** | **network** |
+
+三臂种子逐位相同、都不加速，块自测值三臂**逐位相同**（8000000 / 3750000 == `ρL/(H·W)`），
+两条边被孔径错估的幅度仍不同（1.273240× / 1.696946×）。于是 mixed 那一行**本身就是一张表里
+装着两个来源**，checker 十族 132 条断言全部围绕"这一格是不是严格按边兑现"来判：
+
+* **叠加，不是平均**：mixed 的 X1 在**全部 12 步**上与 region 臂的 X1 **逐位相同**（速率、系数、
+  块报压降、残差），而它的 X2 **不是** region 臂的 X2——被换掉的那条边跟着换，没被换的那条形同
+  复制。反过来 mixed 的 X1 与 bore 臂不同：首步 5.09933e-05 对 4.52323e-05 m³/s（差注入速率的
+  **4.80%**）。
+* **界面仍是弦**：三臂各 24 个边×步上 `dpNetwork == R·q` 最差 **0.0 Pa**（不管这一边的 M 从哪来、
+  孔径写错多少）。每边的动量行用**本边那份** `M` 闭合：并联 4.0e-11 / 8.8e-11 / 8.8e-11、串联
+  2.8e-14 / 3.1e-14 / 3.1e-14（bore / region / mixed）；一维侧照旧对发表的 Churchill 弦
+  7.8e-14 / 7.2e-14 / 7.2e-14，两条 lead 2.0e-16。
+* **启动的账按边走**：串联边首步节点压降 bore **17910.892818 Pa**（= 摩阻 2638.3818 + `M·Q/dt`
+  15272.5110）、region **11638.381827 Pa**（= 2638.3818 + 9000.0000）、mixed **17910.892818 Pa**
+  ——与 bore 臂**同一个数**，因为它那一条边被交给了图纸；与 region 之差 6272.510991 Pa 恰等于
+  `ΔM·Q/dt`。
+* **斜坡也按边走**：拟合 τ bore 0.277231 s、region 0.240829 s、mixed **0.240829 s（与 region
+  逐位相同）**——做斜坡的是 X1 那条边，它拿到哪个来源就按哪个弛豫，X2 的选择对斜坡**完全不可见**。
+  预测仍是 `(M_X1 + M_By) / 斜率和`：0.276586（−0.232%）/ 0.241385（+0.231%）/ 0.241385（+0.231%）；
+  τ 之比 1.15115 对惯量之比 1.15649（−0.46%）。伙伴的律不被归属碰：X1 的指数 1.6762 / 1.6820 /
+  1.6820。**目的地不含 `M`**：三臂渐近速率 4.9789e-05 / 4.97833e-05 / 4.97833e-05 m³/s（差 0.0113%），
+  末端速率却仍差 0.620%。
+* **日程也按边走**：bore 30 趟（18 趟超差）、region 27（15）、mixed **27（15）与 region 完全同**——
+  它谈的是同一个 X1，就花同样的趟数；`worst` 下标三臂全部 84 趟都是 0；块解 168 == 趟数 × 2；
+  每步最多 4 趟（预算 6 从未尽用）；最差被采纳残差 1.617e-4 / 1.369e-4 / 1.369e-4（容差 2e-4）。
+* **单元侧另有一条与 RANS 无关的判据**（`coupling_tests`）：同一个两条边的线性瞬态接口，
+  `inertiaFromPartnerPerEdge = {1, 0}` 与 `{1,1}`、`{0,0}` 两次整体运行逐边对照——被改的那条边
+  跟着 `{1,1}`（1e-12），没改的那条跟着 `{0,0}`，于是混合运行**既不是**任何一个整体选择；首步串联
+  边节点压降 == `{0,0}` 那份，与 `{1,1}` 差 `ΔM·Q/dt` 到 1e-9。表少给一条边是 fatal；被问的那块
+  不报区域也是 fatal，且**一条都不装**——每条边仍停在图纸的 `ρL/A`、时钟仍为 0。
+
+**成本**：168 次块解 / 84 趟界面 / 36 个谈拢的时间层（三臂，两臂 24 个的时间照旧 ×1.5）。
+checker 十族 132 条全过，串行约 147 s（ctest `-j 8` 下 194 s）；逐边选择对每条臂都打进日志
+（`transient arm <臂> edge <边> inertia <来源>`），
+用 `transient arm` 而不是 `transient start` 开头，因为后者是各 checker 用来切臂的表头。
+
+**本增量的边界**：① 表是**每臂一张**，跨臂比较才有参照；单臂运行时它就是唯一的选择，没有第二
+条腿可对照。② "两个来源"仍是**两个整体选择按边分配**；同一条边内部同时吃网格与图纸（比如把
+区域切成两块伙伴）没有做，那需要块报一个分布而不是一个数。③ 伙伴仍**准稳态**（§5.23 边界①）。
+④ 界面仍是**每边一个标量电阻**（§5.21 边界②）。⑤ 湍流 × 归属 × **准 Newton** 三者同台仍未测。
+⑥ app 头部的 `region inertia <词>` 行仍只描述第一臂，per-edge 时要靠逐边日志行读——头部那一行
+如何同时如实描述三臂仍未解决（§5.26 边界里就记过）。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
@@ -2282,7 +2358,7 @@ checker 十族 135 条全过，串行跑完两臂约 45 s（ctest `-j 8` 下 142
 | 3D 区域约化成管网的一个阻力系数（system-couple 的"black box 压降"端） | `cf::coupling::ICoupledElement::lossAt(qMag)` + 生产实现 `DetailBlock`（SIMPLE 块 + `BlockMeasure` 自测：压降、进出通量、逐截面平面通量、探针梯度） |
 | 1D 侧承载 3D 区域的边界条件（`fanPressure`/`porousJump` 一类压降模型） | `NetworkPipe::coupledResistance`（正的 `R` 时 `pipeLossAt` 短路成 `R·Q`，与本管摩阻/重位/阀泵互斥，见 4 与 5.18）；瞬态侧 `TransientPipeConfig::coupledResistance` 只替换本管摩阻，重位与区域惯量留在 1D |
 | OLGA / Fluent 的**瞬态** embedded detailed section（每个时间层内再把界面上迭代一次） | `cf::coupling::solveTransientCoupled1d3d`（`TransientCoupledControls{ maxSubIterations relax tolerance }` + 逐步 `TransientCoupledStep`，见 5.19） |
-| Fluent 的**多** detailed section（一张管网同时挂 N 个 3D 区），以及它们在**时间层内**的版本 | 两个入口都收 `const std::vector<label>& edges` + `std::vector<ICoupledElement*> blocks`：一趟一次网络解、所有伙伴对同一次解求值、系数一起刷新、停止条件取最差边（`couple{ edges ( ... ) starts{ name{ <edge> R; } } }` + `details{ <edge>{ ... } }`，稳态见 5.20、瞬态见 5.25——同一个内核循环，只是后者在每个 `n·dt` 上重谈一次，全部边谈拢才 `commitStep`；每条边的区域惯量来源仍按**臂**整体二选一（`couple{ inertias ( network partner ) }`，5.24 的单边与 5.26 的多边）；两条边都交给 RANS 伙伴、两个接口算子在同一张管网上同台（逐块 `turbulence{}` + `couple{ accelerates ( 0 1 ) }`，5.27） |
+| Fluent 的**多** detailed section（一张管网同时挂 N 个 3D 区），以及它们在**时间层内**的版本 | 两个入口都收 `const std::vector<label>& edges` + `std::vector<ICoupledElement*> blocks`：一趟一次网络解、所有伙伴对同一次解求值、系数一起刷新、停止条件取最差边（`couple{ edges ( ... ) starts{ name{ <edge> R; } } }` + `details{ <edge>{ ... } }`，稳态见 5.20、瞬态见 5.25——同一个内核循环，只是后者在每个 `n·dt` 上重谈一次，全部边谈拢才 `commitStep`；每条边的区域惯量来源按**臂**整体二选一（`couple{ inertias ( network partner ) }`，5.24 的单边与 5.26 的多边），或**按边**给（`couple{ inertiaFrom{ arm{ edge network|partner; } } }`——同一趟里一条吃块测网格、一条吃图纸孔径，5.29）；两条边都交给 RANS 伙伴、两个接口算子在同一张管网上同台（逐块 `turbulence{}` + `couple{ accelerates ( 0 1 ) }`，5.27） |
 | 时间层内"已解出但尚未采纳"的状态（分区接口要在同一层重解） | `TransientNetwork::solveStep` / `commitStep` / `pendingPipeFlow` / `pendingPressure`（`setCoupledResistance` 即作废挂起步，见 5.19） |
 
 ## 7. 测试体系
@@ -2651,6 +2727,25 @@ checker 十族 135 条全过，串行跑完两臂约 45 s（ctest `-j 8` 下 142
     每块场独立闭合（`y+` 41.2 / 41.7 与 58.4、`ν_t/ν` 85.7 / 86.8 与 96.8、`Re` 19665 / 19963 与 30000、
     `|dp/dx|·H/2 == ρu_τ²` +0.32% / +0.36% 与 +6.48%）。代价 114 次块解 / 57 趟 / 24 个谈拢的时间层，
     约 45 s（串行）。
+  - `transientCoupledMultiMixedInertia`（§5.29：§5.28 的两块 RANS 伙伴与两个写歪的名义孔径，但归属
+    从**臂**交到**边**——`couple{ inertias ( network partner network ); inertiaFrom{ mixed{ X1 partner;
+    X2 network; } } }`，三臂 `bore / region / mixed` 只差那张表，种子逐位相同、都不加速，12 步 × dt
+    0.05）：十族断言全绿（132 条）——mixed 那一行**同时装两个来源**（X1 8000000 吃块测、X2
+    6363546.246 吃图纸，1e-9）而块自测值三臂逐位相同（8000000 / 3750000 == `ρL/(H·W)`）、**叠加不是
+    平均**（mixed 的 X1 全部 12 步与 region 臂逐位相同：速率/系数/块报压降/残差；它的 X2 不是；mixed
+    的 X1 首步 5.09933e-05 对 bore 臂 4.52323e-05 m³/s，差注入速率 4.80%）、`dpNetwork == R·q` 三臂
+    36 个边×步最差 **0.0 Pa**、每边行用**本边**那份 `M` 闭合（并联 4.0e-11 / 8.8e-11 / 8.8e-11，串联
+    2.8e-14 / 3.1e-14 / 3.1e-14；对发表的 Churchill 弦 7.8e-14 / 7.2e-14 / 7.2e-14、lead 2.0e-16）、
+    启动的账按边走（串联边首步节点压降 bore 17910.892818 对 region 11638.381827 Pa，mixed **== bore**
+    那份，与 region 之差 6272.510991 Pa == `ΔM·Q/dt`，各自闭合到 2.2e-15）、τ 跟着会爬那条边（bore
+    0.277231 / region 0.240829 / mixed **0.240829 s 与 region 逐位相同**），预测 `(M_X1+M_By)/斜率和`
+    0.276586（−0.232%）对 0.241385（+0.231%）、τ 之比 1.15115 对惯量之比 1.15649、伙伴指数三臂同一条
+    律（1.6762 / 1.6820 / 1.6820 ⇒ 归属不动 `m`）、目的地不含 `M`（渐近速率 4.9789e-05 / 4.97833e-05 /
+    4.97833e-05，差 0.0113%）而末端速率仍差 0.620%、日程 30 / 27 / **27**（与 region 同趟数，因为它谈
+    的是同一个 X1）且超差 18 / 15 / 15、`worst` 下标三臂 84 趟全 0、块解 == 趟数 × 2（168）、预算 6 从未
+    尽用（4 / 4 / 4）、最差被采纳残差 1.617e-4 / 1.369e-4 / 1.369e-4、每块场独立闭合（`y+` 41.2 / 41.7
+    与 58.4、`Re` 19665 / 19963 与 30000、`|dp/dx|·H/2 == ρu_τ²` +0.32% / +0.36% 与 +6.48%）。代价
+    168 次块解 / 84 趟界面 / 36 个谈拢的时间层，串行约 147 s（ctest `-j 8` 下 194 s）。
 - `tests/python/test_bindings.py`（CTest `python.bindings`）：Python 绑定
   构建/求解/读结果与闭式解对比、异常翻译、case.dict 往返；瞬态侧校验
   罐排气 RC 包络、逐步 `TransientNetwork.step` 与批量 `run_transient`

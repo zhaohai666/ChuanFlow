@@ -1,0 +1,137 @@
+# transientCoupledMultiMixedInertia: one run, two detailed regions, and the
+# source of each region's inertia decided PER EDGE.
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D bypass) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# transientCoupledMultiTurbulentInertia compared two whole-interface choices:
+# one arm took both regions' inertance from the proxy bore, the next from the
+# blocks' own meshes. That is the shape of the question when every region is
+# described equally well. The industrial case is not equal like that: one
+# interface is a machined duct a block can measure, the next is a drawing whose
+# nominal bore somebody typed in, and a run that has to answer for both cannot
+# be told to average them or to pick one law for the whole network. So the
+# choice moves from `couple.inertias` (one source per run) to
+# `couple.inertiaFrom` (one source per edge, per run), and the third arm here
+# uses it.
+#
+# Both bores are still mis-stated, by different amounts, so the two sources name
+# genuinely different numbers and the mixing has consequences:
+#   X1: section H*W = 2.5e-5 m2, bore 0.005 m -> rho*L/A is 1.273240x the true one
+#   X2: section H*W = 3.2e-5 m2, bore 0.0049 m -> 1.696946x
+#
+#   bore   - both edges on the drawing  (inertias network)
+#   region - both edges on the meshes   (inertias partner)
+#   mixed  - X1 on its block, X2 on its bore (inertiaFrom.mixed)
+#
+# The mixed arm is not a compromise between the other two, and the checker
+# refuses to treat it as one: it has to reproduce the REGION arm's parallel ramp
+# (X1's own row, X1's own inertance) while paying the BORE arm's first-step kick
+# on the series edge (X2's own row, X2's own inertance). Each edge answers to its
+# own source and the neighbour's choice is free to disagree - which is exactly
+# what the per-edge table is for, and what a single number could not express.
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 1.2e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+
+    # The coupled edges. Neither bore is the region's equivalent diameter: the
+    # `network` source and the `partner` source are two different numbers on
+    # both edges, and the mixed arm picks one per edge.
+    X1 { from J1; to J2; length 0.2;  diameter 0.005;
+         coupledResistance 1.0e7; }
+    By { from J1; to J2; length 0.3;  diameter 0.008; }
+
+    X2 { from J2; to J3; length 0.12; diameter 0.0049;
+         coupledResistance 1.5e7; }
+
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.05 against a parallel-branch time constant of ~0.24-0.28 s: 12 steps is
+# 2.2-2.5 constants, so the ramp is still being paid for at the last step and the
+# inertance each edge was given is still visible in the trajectory.
+time { dt 0.05; endTime 0.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    # both blocks resolve their own drop to ~1e-4 of it inside their declared
+    # SIMPLE budget, and the interface residual is the gap between two solvers
+    tolerance 2e-4;
+    maxSubIterations 6;
+    # the first two arms state one source for the whole interface; the third is
+    # overridden edge by edge below, and all three are plain block Gauss-Seidel
+    inertias ( network partner network );
+    inertiaFrom {
+        mixed { X1 partner; X2 network; }
+    }
+    starts {
+        bore   { X1 1.0e7; X2 1.5e7; }
+        region { X1 1.0e7; X2 1.5e7; }
+        mixed  { X1 1.0e7; X2 1.5e7; }
+    }
+}
+
+details {
+    # X1: the 0.2 x 0.005 x 0.005 m duct, 8 cells across the gap so the first
+    # cell centre sits inside the log-law band
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.06; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_multi_mixed_inertia_X1.vtu;
+    }
+
+    # X2: a 4 mm gap under an 8 mm span, so its nominal circle understates the
+    # section by the larger factor of the two
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.12 0.004 0.008);
+            cells (12 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.04; max 0.11; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_multi_mixed_inertia_X2.vtu;
+    }
+}

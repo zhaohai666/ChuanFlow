@@ -406,6 +406,18 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMulti1d3d/case.dict)
 
+# the shape question again, now that it is asked inside a time level: five arms
+# hand the two edges the same rate in a different shape, and the checker counts
+# 60 levels x 2 edges of shape statements, separates what the inlet was given
+# from what the region's own planes read, and shows the destination the parallel
+# branch relaxes to -- and the tau it relaxes with -- both move with the shape
+add_test(
+    NAME verify.transientCoupledProfileMap
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_profile_map.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledProfileMap/case.dict)
+
 # the same network and the same two blocks, with only the source of the region's
 # inertia switched: one arm pays rho*L/A from the proxy bore, the other the
 # rho*V/Area^2 the block measures on its own mesh. The two edges are mis-stated

@@ -1200,6 +1200,20 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                               ? (ex.rowDropPa - ex.dpPa) / ex.dpPa : 0.0;
                 ex.sweeps = blocks[i]->lastSweeps();
                 ex.blockConverged = blocks[i]->lastConverged();
+                // The shape is part of what this level asked for, so it is read
+                // back level by level rather than once at the end of the run: the
+                // inlet is the declared profile, the outlet is the region's own,
+                // and which way the two differ says whether the region had to grow
+                // the profile or shed the excess. Nothing here charges that
+                // difference to the drop -- the row below still reports the drop
+                // the block measured, whatever arrived.
+                const ProfileLedger ledger = blocks[i]->profileLedger();
+                ex.inletShape = ledger.shape;
+                ex.fluxImposed = ledger.fluxImposed;
+                ex.betaImposed = ledger.betaImposed;
+                ex.betaIn = ledger.betaIn;
+                ex.betaOut = ledger.betaOut;
+                ex.inletArea = ledger.inletArea;
                 worst = std::max(worst, ex.residual);
                 rec.edges.push_back(ex);
             }

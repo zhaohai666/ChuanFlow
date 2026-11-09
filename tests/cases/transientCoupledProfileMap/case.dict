@@ -1,0 +1,142 @@
+# transientCoupledProfileMap: the interface hands the regions a SHAPE inside
+# every time step, not only at the start of a steady run.
+#
+#   Src -> A -> { X1 (3D duct) || By (1D bypass) } -> X2 (3D duct) -> B -> Snk
+#
+# Same topology as transientCoupledMulti1d3d, same driver (a rate switched on at
+# t=0), and the same two duct geometries coupled1d3dProfileMap feeds -- on a
+# coarser mesh along the duct, because a shape axis is five arms and twelve
+# levels here -- so this is the steady shape result moved inside a ramp, where a
+# shape has two things to say instead of one. It still decides how far the region
+# has to run before it is developed, and therefore what its resistance is worth;
+# and because the resistance is what the parallel split relaxes TO, and one of
+# the two numbers in the ramp's time constant tau = (M_X1 + M_By)/(R_X1 + R_By),
+# the shape also decides how FAST the split settles. Nothing before this case
+# could say which shape a region was being given at any level.
+#
+# The rate is the same in every arm and every level (Q is pinned by topology for
+# X2, and is a result of the balance for X1); only its distribution changes. Two
+# things then have to come out per level, and the arms are set up so they are
+# different numbers rather than different spellings of one number:
+#   X1: H=0.02 m between walls, W=0.02 m of symmetry sides -> Dh = 2H = 0.04 m
+#   X2: H=0.01 m between walls, W=0.03 m of symmetry sides -> Dh = 2H = 0.02 m
+#   duct (fully developed) resistances, which a Poiseuille inlet should land on:
+#   R_X1 = 12 mu L / (H^3 W) = 3.75e6,  R_X2 = 1.6e7,
+#   R_By = 128 mu L / (pi D^4) = 7.545e6
+# With Q = 3.0e-4 m3/s the plug speed the interface ends at is 0.484 m/s in X1 on
+# the flat arm and 0.498 on the parabolic one, and 1.00 m/s in X2 in both, so Re
+# on the hydraulic diameter is ~155-160 throughout, and the entrance region is a
+# large part of each duct: the flat arm's first cross-section still reads a shape
+# factor of 1.096 against the 1.1956 its last one carries, while the parabolic
+# arm reads 1.203 there and 1.1956 at the outlet.
+#
+# Five arms. `lo` is the control: the interface writes the plug it has always
+# written, and its seeds are the ones transientCoupledMulti1d3d quotes.
+# `parab` and `p17` hand both edges a fuller profile, `mixed` is the statement
+# that the shape is a per-edge choice inside one time step as much as outside
+# one, and `parab_qn` runs the parabolic arm through the accelerated operator so
+# the shape axis and the operator axis stay separable.
+fluid { rho 800; mu 0.1; }
+
+# Incompressible ports, as in the case this one is the shaped twin of: the
+# branch split is a result of the momentum balance and not of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    # ten times the rate of the un-shaped transient multi case, which is what
+    # keeps the entrance region inside the duct instead of near its inlet
+    feed { node Src; rate 3.0e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    X1 { from J1; to J2; length 0.5;  diameter 0.02;
+         coupledResistance 3.75e6; }
+    By { from J1; to J2; length 1.5;  diameter 0.03; }
+
+    X2 { from J2; to J3; length 0.4;  diameter 0.015;
+         coupledResistance 1.6e7; }
+
+    B  { from J3; to Snk; length 5.0; diameter 0.1; }
+}
+
+# dt 0.05 against the split's own time constant, which the arms do not share:
+# tau = (M_X1 + M_By)/(R_X1 + R_By) is 0.258 s on the flat control and 0.267 s on
+# the parabolic one, because R_X1 is what the interface settled on in that arm
+# (3.964e6 and 3.598e6). Twelve steps are 2.3 of either, so the ramp is still
+# moving at the end -- 1.5% short of its destination on the flat control and 2.0%
+# on the parabolic one, and that is deliberate: the checker predicts the whole
+# ramp from the discrete inertial solve rather than waiting for it to die away.
+time { dt 0.05; endTime 0.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    tolerance 1e-4;
+    maxSubIterations 8;
+    starts {
+        lo  { X1 1.25e6; X2 5.3e6;  profile ( flat flat ); }
+        parab { X1 1.25e6; X2 5.3e6; profile parabolic; }
+        p17   { X1 1.25e6; X2 5.3e6; profile power1over7; }
+        mixed { X1 1.25e6; X2 5.3e6; profile ( parabolic flat ); }
+        // the same shaped arm, run through the accelerated interface: the shape
+        // is then the only thing that moved the answer, and the operator only
+        // bought the schedule
+        parab_qn { X1 1.25e6; X2 5.3e6; profile parabolic; }
+    }
+    accelerates ( 0 0 0 0 1 );
+}
+
+details {
+    # X1: the 0.5 x 0.02 x 0.02 m duct, coarsened along the duct to 30 planes so
+    # a shape axis costs an order of magnitude less than it would have
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.5 0.02 0.02);
+            cells (30 20 1);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.12; max 0.49; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_transient_profile_X1.vtu;
+    }
+
+    # X2: the shorter gap and the wider span of the steady shape case, 25 planes
+    # along 0.4 m. The shape is only ever spread across the wall-bounded axis,
+    # so the one spanwise cell between two symmetry faces is not a compromise.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.4 0.01 0.03);
+            cells (25 20 1);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.15; max 0.38; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_transient_profile_X2.vtu;
+    }
+}

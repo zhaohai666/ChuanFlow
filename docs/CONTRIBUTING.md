@@ -14,9 +14,11 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（90 项）约 214 s ≈ 3.5 分钟，
-                                             # 大头：双边并联瞬态 377 s、profile 级映射 166 s、
-                                             # 瞬态多边 235 s（单条时间，-j8 下被并行掩盖）
+ctest --test-dir build --output-on-failure -j8  # 全量回归（91 项）约 212 s ≈ 3.5 分钟，
+                                             # 墙钟就是最慢那一条：稳态 profile 级映射 212 s；
+                                             # 其余大头（瞬态惯量归属 93 s、VOF 振荡 73 s、
+                                             # 稳态多边 64 s、瞬态 profile 级映射 64 s）
+                                             # 在 -j8 下被并行掩盖
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -347,6 +349,38 @@ python3 tests/check_transient_coupled_unsteady_partner.py \
 python3 tests/check_coupled_1d3d_profile_map.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-multi" \
     "$PWD/tests/cases/coupled1d3dProfileMap/case.dict"
+
+# profile 级界面映射（瞬态多边）：§5.25 的拓扑、驱动、12 步 × dt 0.05、容差 1e-4 与 8 趟预算整张
+# 照抄，两条 duct 的几何也是上一例那两块（沿管向更粗：30x20x1 与 25x20x1），只是界面上每层都重交一次
+# 形状。动的是耦合侧：瞬态 app 解析 profile（与稳态逐字同款，一个词=两边同形状、一个列表=逐边）、
+# DetailBlock::profileLedger() 把形状台账交给 EdgeExchange，于是 transient step n: edge i 每层带
+# inletShape/fluxImposed/betaImposed/betaIn/betaOut（fluxImposed 是界面写下的那个条件自己的面积分，
+# 它等于该层 q 就是把"交了形状"和"交了另一份流体"分开的那条判据）。稳态那条路径直接读 measure()，没动。
+# 五臂 = lo（两边塞状，对照）+ 抛物 + 1/7 + mixed（X1 抛物、X2 塞状）+ 抛物走准 Newton，全部用未加
+# 形状那一版引用的同一对起点系数（X1 1.25e6 / X2 5.3e6，各低于自己 duct 值三分之一）。
+# 十族 131 条断言的要点：
+#   1) 形状是逐层的声明——5 臂 x 12 层 x 2 边 = 120 条边状态每条都报出自己那层的形状；
+#   2) 速率活过映射，逐层都活——fluxImposed == 该层 q 最差 6.66e-16，betaImposed 每层回到该形状的
+#      解析锚点（1 / 1.197012161764087 / 1.013430581098372）到 1.44e-15 且第 1 层 == 第 12 层；
+#   3) 交进去的形状 != 区域内读到的形状——betaIn/betaOut 取**首末 cell 截面**而不是边界面，所以
+#      塞状也读 1.09592（对 betaImposed 1）；抛物以 1.19701 到达、首截面 1.20274，是被往下修；
+#   4) 两端不对称——末截面五臂极差 X1 6.86e-6 / X2 1.01e-8，首截面分开 0.107 / 0.077；
+#   5) 去处与快慢同时随形状动——X1 分流末端 +0.4868% / +2.7647%，而 tau 里的 R_X1 就是这个落定的数，
+#      于是 0.258135 s -> 0.266619 s（+3.29%）；每臂轨迹对上自己的离散惯量解 1/(1+dt/tau)；
+#   6) 逐边到逐位——mixed 的 X1 与 parab 的 X1 逐位相同（X1/By 是电流分配器，下游动不了它），mixed
+#      的 X2 跟着 lo 到 2.58e-6 而不是 0，其因由是界面在容差处停下、每层热启动取决于此前花了几趟；
+#   7) 准 Newton 在此容差下什么都没买到（与平谈同样 17 趟），形状与算子两轴仍可分。
+# 写这类判据时的坑：形状是否"还在发展"不能按**声明**分支（flat 之外还有 1/7：它到达 1.0134 却从
+# 1.1213 起步，同样在爬），只能拿该形状的解析锚点和区域自己的平台比；"首截面极差 >=0.1"这种带子是
+# 从 X1 抄来的，X2 短、只有 0.077，正确的陈述是"首截面极差 >> 末截面极差"（这里 15566x / 7.6e6x）；
+# 抛物臂的每米压降散布在 X1 塌 65x 而在 X2 只塌 1.22x，所以承担结论的是"每块自己的窗宽对自己的压降
+# <=0.053%"，不是散布之比。
+# 十族 131 条，五臂共 101 趟 / 202 次块解 / 60 个谈拢的时间层；单独跑整个 case 35.5 s，
+# 在 -j8 的 ctest 里两次分别记 41.65 s 与 63.64 s（同批负载决定，墙钟由最慢那条决定）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledProfileMap/case.dict
+python3 tests/check_transient_coupled_profile_map.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledProfileMap/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

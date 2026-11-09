@@ -151,6 +151,7 @@ int main(int argc, char** argv)
         const Dictionary& startsDict = cd.getDict("starts");
         std::vector<std::string> startNames;
         std::vector<std::vector<double>> startRs;
+        std::vector<std::vector<std::string>> startShapes;
         for (const std::string& sname : startsDict.keys())
         {
             const Dictionary& sd = startsDict.getDict(sname);
@@ -164,6 +165,36 @@ int main(int argc, char** argv)
             }
             startNames.push_back(sname);
             startRs.push_back(std::move(rs));
+
+            // The same arm also says what shape its rate arrives in, exactly as
+            // on the steady side. An edge without a `profile` keeps the flat plug
+            // the interface has always written, so a transient case that names
+            // none is the case it was -- and inside a time step the shape is not
+            // a one-off: every pass of every level re-writes the inlet faces.
+            std::vector<std::string> shapes(edgeNames.size(), "flat");
+            if (sd.has("profile"))
+            {
+                const Dictionary::Kind kind = sd.find("profile").kind;
+                if (kind == Dictionary::Kind::word)
+                {
+                    const std::string one = sd.getWord("profile");
+                    std::fill(shapes.begin(), shapes.end(), one);
+                }
+                else if (kind == Dictionary::Kind::list)
+                {
+                    shapes = sd.getWordList("profile");
+                    if (shapes.size() != edgeNames.size())
+                        cfFatal("coupled1d3dTransient: starts." + sname
+                                + " profile names " + std::to_string(shapes.size())
+                                + " shapes for "
+                                + std::to_string(edgeNames.size()) + " coupled edges");
+                }
+                else
+                    cfFatal("coupled1d3dTransient: starts." + sname + " profile must"
+                            " be one shape word or a list of them, one per coupled"
+                            " edge");
+            }
+            startShapes.push_back(std::move(shapes));
         }
         if (startNames.empty())
             cfFatal("coupled1d3dTransient: couple.starts{} needs at least one set");
@@ -299,7 +330,8 @@ int main(int argc, char** argv)
                 blockDdt.push_back(sch.ddt);
                 owners.push_back(std::make_unique<DetailBlock>(
                     specs[i].mesh, nu, c.fluid.rho, sch, specs[i].simple,
-                    specs[i].probeMin, specs[i].probeMax, specs[i].turb));
+                    specs[i].probeMin, specs[i].probeMax, specs[i].turb,
+                    startShapes[s][i]));
                 partners.push_back(owners.back().get());
             }
 
@@ -358,6 +390,13 @@ int main(int argc, char** argv)
             for (std::size_t i = 0; i < edges.size(); ++i)
                 log::info("transient start ", startNames[s], " edge ", edgeNames[i],
                           " index ", edges[i], " resistance ", num(startRs[s][i]));
+            // and what shape this arm's rate arrives in on each edge. Per edge,
+            // because the interface asks each region separately, and per arm,
+            // because one case can hand the same mesh a plug in one of its
+            // starting sets and a Poiseuille profile in another.
+            for (std::size_t i = 0; i < edges.size(); ++i)
+                log::info("transient arm ", startNames[s], " edge ", edgeNames[i],
+                          " profile ", startShapes[s][i], " index ", edges[i]);
             // What this arm's partner is going to be asked to carry: the case's
             // own ddt word, and the two inertances its mesh measures -- the
             // region's and that of only the slab whose pressure difference it
@@ -423,6 +462,20 @@ int main(int argc, char** argv)
                               " qPrev ", num(ex.qPrev), " dq ", num(ex.dq),
                               " rowDrop ", num(ex.rowDropPa),
                               " rowError ", num(ex.rowError),
+                              // the shape travels with the rate at this level,
+                              // not with the run: what was asked for, what the
+                              // inlet plane of the solved field reads, and what
+                              // its outlet reads. `fluxImposed` is the section
+                              // integral of the condition the inlet really got,
+                              // so it equals this level's `q` however the rate
+                              // was spread. A plug that has not finished
+                              // developing shows up here as betaOut above
+                              // betaIn, level after level.
+                              " inletShape ", ex.inletShape,
+                              " fluxImposed ", num(ex.fluxImposed),
+                              " betaImposed ", num(ex.betaImposed),
+                              " betaIn ", num(ex.betaIn), " betaOut ", num(ex.betaOut),
+                              " inletArea ", num(ex.inletArea),
                               " unsteady ", (ex.unsteady ? 1 : 0));
                 }
 
@@ -473,7 +526,22 @@ int main(int argc, char** argv)
                           " inertanceDynamic ", num(m.inertanceDynamic),
                           " inertanceProbe ", num(m.inertanceProbe),
                           " betaProfile ", num(m.betaProfile),
+                          // the same shape ledger the steady multi-edge app
+                          // prints, now for the last level the run accepted: what
+                          // was handed over, as a rate and as a distribution, and
+                          // what the region's own field ended up carrying
+                          " inletShape ", m.inletShape, " fluxImposed ",
+                          num(m.fluxImposed), " betaImposed ", num(m.betaImposed),
+                          " momentumFluxPa ", num(m.momentumFluxImposedPa),
+                          " betaIn ", num(m.betaIn), " betaOut ", num(m.betaOut),
                           " dtLevel ", num(m.dtLevel));
+                std::ostringstream betas;
+                betas << std::setprecision(17);
+                for (const std::pair<scalar, scalar>& sb : m.betaStations)
+                    betas << " " << sb.first << " " << sb.second;
+                if (!m.betaStations.empty())
+                    log::info("transient betaProfile ", startNames[s], " edge ",
+                              edgeNames[i], ":", betas.str());
             }
 
             for (std::size_t i = 0; i < res.state.size(); ++i)

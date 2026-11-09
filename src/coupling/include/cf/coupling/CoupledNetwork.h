@@ -19,6 +19,26 @@ namespace cf
 namespace coupling
 {
 
+/// What an element's inlet carries beyond the number of cubic metres per second
+/// it was asked for: the shape the interface declared, that rate read back as
+/// the section integral of the condition the element actually got, the
+/// momentum-flux factor `<ux^2>/<ux>^2` off the same faces, and the same factor
+/// measured on the solved field at the first and last cross-section of the span
+/// whose drop the element reports. An analytic pipe law has no section to
+/// distribute over and answers with the defaults. A block the case left `flat`
+/// answers 1 for `betaImposed` -- a plug is a plug -- but not for the other two:
+/// its own field is already fuller than the plug at its first cross-section and
+/// fuller still at its last (1.0959 then 1.1956 on the transient profile case).
+struct ProfileLedger
+{
+    std::string shape = "flat";
+    scalar fluxImposed = 0;
+    scalar betaImposed = 1;
+    scalar betaIn = 1;
+    scalar betaOut = 1;
+    scalar inletArea = 0;
+};
+
 /// The partner model behind a coupled 1D element (`NetworkPipe::coupledResistance`):
 /// it states the pressure drop of a region at a given volume rate, and knows
 /// nothing about the network. Purely virtual so the interface itself can be
@@ -91,6 +111,12 @@ public:
     /// so the defaults say one cost-free, converged evaluation.
     virtual label lastSweeps() const { return 0; }
     virtual bool lastConverged() const { return true; }
+
+    /// What the element's inlet was handed besides the rate, as the element
+    /// itself measures it. The default is the flat distribution: an analytic law
+    /// has no section to distribute over, and a block the case left unnamed
+    /// spreads its rate evenly across the inlet faces it wrote.
+    virtual ProfileLedger profileLedger() const { return {}; }
 };
 
 /// What the last solve of a `DetailBlock` produced. Every number is measured on
@@ -240,6 +266,22 @@ public:
     label lastSweeps() const override { return measure_.sweeps; }
     bool lastConverged() const override { return measure_.converged; }
 
+    /// The shape this block was handed, the rate and the factor read back off
+    /// the inlet faces it wrote, and the factor its own field carries at the two
+    /// ends of the span whose drop it reports -- all straight out of the last
+    /// measure.
+    ProfileLedger profileLedger() const override
+    {
+        ProfileLedger ledger;
+        ledger.shape = measure_.inletShape;
+        ledger.fluxImposed = measure_.fluxImposed;
+        ledger.betaImposed = measure_.betaImposed;
+        ledger.betaIn = measure_.betaIn;
+        ledger.betaOut = measure_.betaOut;
+        ledger.inletArea = measure_.inletArea;
+        return ledger;
+    }
+
     /// The eddy-viscosity model the block solves with, or null when it is
     /// laminar. Lives as long as the block, and holds references to its fields.
     const RansModel* turbulence() const { return turbModel_.get(); }
@@ -365,6 +407,28 @@ struct EdgeExchange
     /// interface iteration changes the grade.
     scalar rowDropPa = 0;
     scalar rowError = 0;
+
+    /// The shape this edge's rate arrived in, and what it is worth. `betaImposed`
+    /// is the declared profile read back off the inlet faces; `betaIn` and
+    /// `betaOut` are the same factor measured on the solved field at the first
+    /// and last cross-section the block reports between. A plug inlet arrives
+    /// short of the region's own profile and the two numbers differ in one
+    /// direction, a Poiseuille inlet arrives fuller than the span it is handed
+    /// and they differ in the other -- so the pair says which way the region had
+    /// to move, which is more than a single imposed rate can say. What that
+    /// movement is worth in the reported drop is not measured here; the only
+    /// shape quantity priced by a number this interface solves is the imposed
+    /// one, `rho*betaImposed*q^2/A`. An edge the case left flat reads 1 for
+    /// `betaImposed` everywhere.
+    /// `fluxImposed` is the section integral the inlet condition really carries,
+    /// so it equals `q` whenever a shape was traded for a shape and not for a
+    /// different amount of fluid.
+    std::string inletShape = "flat";
+    scalar fluxImposed = 0;
+    scalar betaImposed = 1;
+    scalar betaIn = 1;
+    scalar betaOut = 1;
+    scalar inletArea = 0;
 };
 
 /// One pass of the steady interface: every coupled edge evaluated against the

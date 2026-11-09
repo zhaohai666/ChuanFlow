@@ -518,6 +518,13 @@ int main(int argc, char** argv)
                               // region's own shape -- nil on a plug, and here on the
                               // level that asked for it rather than once per arm.
                               " pRisePa ", num(ex.pRisePa), " pRiseX ", num(ex.pRiseX),
+                              // What the region's own profile changing shape is
+                              // worth at this level: rho*(betaOut - betaIn)*q|q|/A^2,
+                              // the difference of the two momentum fluxes its last
+                              // solve reported, signed the way that pair is. The row
+                              // the network actually solves carries no term of it, so
+                              // this is the account the 1D side still cannot state.
+                              " dpConv ", num(ex.dpConvectivePa),
                               " unsteady ", (ex.unsteady ? 1 : 0));
                 }
 

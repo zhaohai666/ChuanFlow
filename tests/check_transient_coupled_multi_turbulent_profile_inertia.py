@@ -55,10 +55,21 @@ What it settles, all measured:
      the pinned edge, and the interface still finishes every one of them inside its
      own tolerance, so 'filled the budget' stays a record and not a stop rule
   6. the locality asymmetry of 5.40 survives the shape with a new trigger: p_mix's
-     free edge is bit-identical to p_net's free edge in all 15 fields for levels
-     1..5 and separates only from level 6 -- the level after p_net's pinned block
-     first fills its sweep budget -- while an edge that changes its OWN scheme row
-     (p_pin/X1, quasi, against p_net/X1) moves 23% at the first step
+     free edge is bit-identical to p_net's free edge in all 16 fields -- including
+     the convective account -- for levels 1..5 and separates only from level 6 --
+     the level after p_net's pinned block first fills its sweep budget -- while an
+     edge that changes its OWN scheme row (p_pin/X1, quasi, against p_net/X1) moves
+     23% at the first step
+  7. the account the row still cannot state: every one of the 112 states prints
+     dpConv = rho*(betaOut - betaIn)*q|q|/A^2, the convective momentum-flux
+     imbalance the region owes its own changing profile -- sign set by the shape
+     (48 flat states positive, 64 shaped negative), size set by the rate (dpConv/q^2
+     is table-blind: the three flat arms agree to 5.7e-8 on the pinned edge and to
+     under 8% on the free, where the rate itself spans 35%), 4.06x larger shaped
+     than flat, up to 121% of the block's own drop on p_pin/X1 level 8, and at most
+     17% of -- sometimes the opposite sign to -- the 5.40 attribution bill. The row
+     is still exactly R*q + M*dq/dt on every stepping state: the number is on every
+     line and in no equation
 
 usage: check_transient_coupled_multi_turbulent_profile_inertia.py <solver> <case>
 """
@@ -132,7 +143,7 @@ PASSES = {"f_net": 26, "f_region": 27, "f_slab": 30, "p_net": 35, "p_region": 37
           "p_mix": 36, "p_pin": 17}
 FIELDS = ("q", "dpBlock", "dpNetwork", "R", "residual", "M", "dpFriction",
           "dpInertia", "qPrev", "dq", "rowDrop", "rowError", "betaIn", "betaOut",
-          "pRisePa")
+          "pRisePa", "dpConv")
 BETA_PLATEAU = (1.0195, 1.0215)
 
 
@@ -659,6 +670,183 @@ def main():
                 f"{a}: the parallel branch closes -- X1 carries {q1:.6e} m3/s at the "
                 f"last level of the injected {Q_IN:.1e}, and the node pair it shares "
                 f"with the bypass holds {pair:.4f} Pa")
+    # ============ 12. the account the row still cannot state: what the region's
+    # own changing profile is worth, level by level, edge by edge
+    dev = 0.0
+    for a in ARMS:
+        for n in NAME:
+            i = NAME.index(n)
+            for k in range(1, N_STEPS + 1):
+                ln = E(a, k, i)
+                q = value(ln, "q")
+                aa = value(ln, "inletArea")
+                want = RHO * (value(ln, "betaOut") - value(ln, "betaIn")) \
+                    * abs(q) * q / (aa * aa)
+                got = value(ln, "dpConv")
+                if want != 0.0:
+                    dev = max(dev, abs(got / want - 1.0))
+                else:
+                    dev = max(dev, abs(got - want))
+    require(dev < 1e-13,
+            f"every one of the 112 (level x edge) states reports dpConv == "
+            f"rho*(betaOut - betaIn)*q|q|/A^2 built from its OWN beta pair, rate and "
+            f"section area -- worst relative deviation {dev:.2e}. The number is the "
+            "difference of two momentum fluxes at the same rate through the same area, "
+            "so it is the shape alone, and the interface neither asks for it nor pays it")
+
+    pos = [(a, n, k) for a in FLAT for n in NAME for k in range(1, N_STEPS + 1)
+           if value(E(a, k, NAME.index(n)), "dpConv") > 0.0]
+    neg = [(a, n, k) for a in SHAPED for n in NAME for k in range(1, N_STEPS + 1)
+           if value(E(a, k, NAME.index(n)), "dpConv") < 0.0]
+    require(len(pos) == len(FLAT) * 2 * N_STEPS and len(neg) == len(SHAPED) * 2 * N_STEPS,
+            f"the sign follows the shape on every state: all {len(pos)} flat states are "
+            f"POSITIVE (the region had to grow a fuller profile than the plug it was "
+            f"handed, beta_out {value(E('f_net', 8, 0), 'betaOut'):.4f} above beta_in "
+            f"{value(E('f_net', 8, 0), 'betaIn'):.4f}) and all {len(neg)} shaped states "
+            f"NEGATIVE (it sheds the Poiseuille excess, "
+            f"{value(E('p_net', 8, 0), 'betaIn'):.4f} down to "
+            f"{value(E('p_net', 8, 0), 'betaOut'):.4f}) -- 112 states, no exception")
+
+    fr = {(a, n, k): abs(value(E(a, k, NAME.index(n)), "dpConv"))
+          / value(E(a, k, NAME.index(n)), "dpBlock")
+          for a in ARMS for n in NAME for k in range(1, N_STEPS + 1)}
+    flat_max = max((((a, n, k), v) for (a, n, k), v in fr.items() if a in FLAT),
+                   key=lambda item: item[1])
+    (wa, wn, wk), wv = flat_max
+    require(flat_max[1] < 0.06,
+            f"on a plug inlet the account is small: worst flat share of the block's own "
+            f"drop {wv * 100:.2f}% ({wa}/{wn} level {wk}, "
+            f"{value(E(wa, wk, NAME.index(wn)), 'dpConv'):.3f} Pa of "
+            f"{value(E(wa, wk, NAME.index(wn)), 'dpBlock'):.2f} Pa)")
+    pin8 = fr[("p_pin", "X1", 8)]
+    require(pin8 > 1.0 and fr[("p_net", "X2", 8)] > 0.39,
+            f"shaped, the same account outruns the drop it lives inside: p_pin/X1 level 8 "
+            f"charges {value(E('p_pin', 8, 0), 'dpConv'):.3f} Pa against a block reporting "
+            f"{value(E('p_pin', 8, 0), 'dpBlock'):.2f} Pa -- {pin8 * 100:.1f}% of the whole "
+            f"drop the interface is told to reproduce -- while p_net/X2 at the plateau is "
+            f"{fr[('p_net', 'X2', 8)] * 100:.1f}%. The row's friction law has no term that "
+            "answers for it, in either direction")
+
+    per_q = {(a, n, k): value(E(a, k, NAME.index(n)), "dpConv")
+             / value(E(a, k, NAME.index(n)), "q") ** 2
+             for a in ARMS for n in NAME for k in range(1, N_STEPS + 1)}
+    pin_spread = max(max(per_q[(a, "X2", k)] for a in FLAT)
+                     / min(per_q[(a, "X2", k)] for a in FLAT) - 1.0
+                     for k in range(1, N_STEPS + 1))
+    m_ratio = M_DRAW["X1"] / M_SLAB["X1"]
+    pin8 = " / ".join(f"{per_q[(a, 'X2', 8)]:.4e}" for a in FLAT)
+    dpin_l1 = " / ".join(f"{value(E(a, 1, 1), 'dpInertia'):.4f}" for a in FLAT)
+    require(pin_spread < 1e-5,
+            f"on the pinned edge the account is the same number under all three tables: "
+            f"across the flat arms dpConv/q^2 agrees to {pin_spread:.1e} relative over all "
+            f"eight levels (X2 level 8: {pin8} Pa.s2/m6) -- and so does the block's own "
+            f"dpInertia ({dpin_l1} Pa at level 1) -- although the inertances that table "
+            f"installs on that edge span {m_ratio:.2f}x")
+    coeff_spread = [max(per_q[(a, "X1", k)] for a in FLAT)
+                    / min(per_q[(a, "X1", k)] for a in FLAT) - 1.0
+                    for k in range(1, N_STEPS + 1)]
+    rate_spread = [max(value(E(a, k, 0), "q") for a in FLAT)
+                   / min(value(E(a, k, 0), "q") for a in FLAT) - 1.0
+                   for k in range(1, N_STEPS + 1)]
+    acct_spread = [max(value(E(a, k, 0), "dpConv") for a in FLAT)
+                   / min(value(E(a, k, 0), "dpConv") for a in FLAT) - 1.0
+                   for k in range(1, N_STEPS + 1)]
+    require(max(coeff_spread) < 0.08
+            and all(coeff_spread[k] < rate_spread[k] for k in range(N_STEPS))
+            and all(coeff_spread[k + 1] < coeff_spread[k] * 1.02 for k in range(N_STEPS - 1))
+            and coeff_spread[-1] < coeff_spread[0] / 8,
+            f"on the free edge the SAME coefficient is table-blind too, and the trajectory "
+            f"is the only way in: dpConv itself spans {acct_spread[0] * 100:.1f}% at level 1 "
+            f"(7.632 / 9.157 / 15.044 Pa), but the rate itself spans {rate_spread[0] * 100:.1f}% "
+            f"there, and after dividing by q^2 the residue is {coeff_spread[0] * 100:.2f}% "
+            f"-- smaller than the rate spread at every one of the eight levels, and itself "
+            f"collapsing monotonically {coeff_spread[0] * 100:.2f}% -> "
+            f"{coeff_spread[-1] * 100:.2f}% as the three arms' trajectories converge")
+    ratio_flat_shaped = abs(per_q[("p_net", "X2", 8)]) / per_q[("f_net", "X2", 8)]
+    require(ratio_flat_shaped > 3.5,
+            f"while the SAME ratio across shapes is {ratio_flat_shaped:.2f}x "
+            f"({per_q[('f_net', 'X2', 8)]:.4e} flat against {abs(per_q[('p_net', 'X2', 8)]):.4e} "
+            "shaped Pa.s2/m6) -- so the knob that moves this account is the inlet profile, "
+            "the one thing the case added")
+
+    rise = [(a, n, k, value(E(a, k, NAME.index(n)), "dpConv"),
+             value(E(a, k, NAME.index(n)), "pRisePa"))
+            for a in SHAPED for n in NAME for k in range(2, N_STEPS + 1)
+            if value(E(a, k, NAME.index(n)), "pRisePa") > 50.0]
+    rr = [abs(c / pr) for _, _, _, c, pr in rise]
+    plateau = [abs(value(E(a, k, 1), "dpConv") / value(E(a, k, 1), "pRisePa"))
+               for a in SHAPED for k in (4, 5, 6, 7, 8)]
+    l1 = abs(value(E("p_net", 1, 1), "dpConv") / value(E("p_net", 1, 1), "pRisePa"))
+    require(len(rise) > 20 and min(rr) > 0.8 and max(rr) < 1.35,
+            f"where the region really hands pressure BACK, the account is the same order "
+            f"as the handing but never equal to it: {len(rise)} shaped states from level 2 "
+            f"on with a rise above 50 Pa give |dpConv|/pRise in [{min(rr):.4f}, "
+            f"{max(rr):.4f}], and on the X2 plateau (levels 4-8, all four shaped arms) it "
+            f"holds to [{min(plateau):.5f}, {max(plateau):.5f}] -- p_net/X2 "
+            f"{value(E('p_net', 8, 1), 'dpConv'):.2f} Pa against a rise of "
+            f"{value(E('p_net', 8, 1), 'pRisePa'):.2f} Pa. Level 1 sits outside the band at "
+            f"{l1:.4f} (the rise has not developed yet, "
+            f"{value(E('p_net', 1, 1), 'pRisePa'):.2f} Pa against "
+            f"{value(E('p_net', 1, 1), 'dpConv'):.2f} Pa), and the flat states report "
+            "pRise exactly 0.0 while still owing a positive account "
+            f"({value(E('f_net', 8, 1), 'dpConv'):.3f} Pa), "
+            "so the rise is one symptom of the imbalance rather than its amount")
+
+    flat_rise = {value(E(a, k, NAME.index(n)), "pRisePa") for a in FLAT
+                 for n in NAME for k in range(1, N_STEPS + 1)}
+    require(flat_rise == {0.0},
+            f"every flat state's measured rise is exactly 0.0 Pa ({len(flat_rise)} value"
+            f"{'s' if len(flat_rise) != 1 else ''} in the set) while its convective account "
+            f"is positive on all {len(pos)} of them -- the region owes the imbalance even "
+            "when its station pressures never go up")
+
+    gaps = []
+    zeroed = []
+    for a in ARMS:
+        for n in NAME:
+            i = NAME.index(n)
+            for k in range(1, N_STEPS + 1):
+                ln = E(a, k, i)
+                if int(value(ln, "unsteady")) == 0:
+                    continue
+                gap = value(ln, "rowDrop") - value(ln, "dpBlock")
+                c = value(ln, "dpConv")
+                if abs(gap) > 100.0:
+                    gaps.append((a, n, k, c / gap, gap, c))
+                if abs(gap) < 0.01 and abs(c) > 50.0:
+                    zeroed.append((a, n, k, gap, c))
+    gr = [g[3] for g in gaps]
+    zf = [z for z in zeroed if z[0] in FLAT]
+    zs = [z for z in zeroed if z[0] not in FLAT]
+    require(len(gaps) >= 8 and max(abs(r) for r in gr) < 0.2
+            and all((r < 0.0) == (g[0] in SHAPED) for g, r in zip(gaps, gr))
+            and len(zeroed) >= 8,
+            f"the row's disagreement is not this account either: over the {len(gaps)} "
+            f"stepping states whose bill exceeds 100 Pa -- all of them level 1 -- dpConv is "
+            f"at most {max(abs(r) for r in gr) * 100:.1f}% of it (f_net/X1 level 1: "
+            f"{value(E('f_net', 1, 0), 'dpConv'):.3f} Pa against a "
+            f"{value(E('f_net', 1, 0), 'rowDrop') - value(E('f_net', 1, 0), 'dpBlock'):.2f} Pa "
+            f"gap), and on the shaped arms it carries the OPPOSITE sign to the bill, so "
+            "charging the row the convective term would leave at least four fifths of the "
+            "5.38/5.40 double-billing and on those edges enlarge it. Meanwhile "
+            f"{len(zeroed)} stepping states report a bill that has already vanished "
+            f"(|rowDrop - dpBlock| < 0.01 Pa) while still owing a real account: {len(zf)} "
+            f"of them are the flat X2 plateau at {zf[-1][4]:+.2f} Pa and {len(zs)} shaped "
+            f"({', '.join(f'{a}/{n} level {k} at {c:+.2f} Pa' for a, n, k, g, c in zs)})"
+            ": two different quantities. This is "
+            "what the row still does not know -- the number is on every line and in no "
+            "equation")
+    require(all(int(value(E(a, k, NAME.index(n)), "unsteady")) == 0
+                or abs(value(E(a, k, NAME.index(n)), "rowDrop")
+                        - (value(E(a, k, NAME.index(n)), "R")
+                           * value(E(a, k, NAME.index(n)), "q")
+                           + value(E(a, k, NAME.index(n)), "M")
+                           * value(E(a, k, NAME.index(n)), "dq") / DT)) < 1e-6
+                for a in ARMS for n in NAME for k in range(1, N_STEPS + 1)),
+                "the row as written is R*q + M*dq/dt on every stepping state -- dpConv is "
+                "reported beside it, not inside it, so the 1D momentum equation is still "
+                "shape-blind and this increment leaves it that way")
+
     print(f"\n{'PASS' if not fails else 'FAIL'}: {len(fails)} failure(s)")
     if fails:
         for f in fails:

@@ -45,6 +45,17 @@ struct ProfileLedger
     /// reports the rise it asked for rather than the one the last level left.
     scalar pRisePa = 0;
     scalar pRiseX = 0;
+    /// What this region's own changing profile is worth in Pa:
+    /// `rho*(betaOut - betaIn)*q|q|/A^2` -- the difference of the two momentum
+    /// fluxes through a constant-area region whose rate is the same at both
+    /// sections while its shape factor is not. It is an imbalance inside the
+    /// momentum budget, not a pressure drop: the drop the block reports also
+    /// carries the wall friction, and how the two compare is measured, not
+    /// identified here. No friction law of the 1D row states this term. Signed
+    /// (positive when the region had to grow a fuller profile than the one it was
+    /// handed, negative when it shed the excess) and read off the same solve as
+    /// the two betas, so every time level reports the account it asked for.
+    scalar dpConvectivePa = 0;
 };
 
 /// The partner model behind a coupled 1D element (`NetworkPipe::coupledResistance`):
@@ -293,6 +304,17 @@ public:
         ledger.betaIn = measure_.betaIn;
         ledger.betaOut = measure_.betaOut;
         ledger.inletArea = measure_.inletArea;
+        // What the region's own changing profile is worth in Pa: both sections
+        // carry the same rate through the same area, so the two momentum fluxes
+        // differ only by the shape factor -- positive when the region had to grow
+        // a fuller profile than the one it was handed, negative when it shed the
+        // excess. Reported, never collected: no term of the 1D row answers for it.
+        const scalar qLedger = measure_.fluxImposed;
+        if (measure_.inletArea > 0)
+            ledger.dpConvectivePa =
+                rho_ * (measure_.betaOut - measure_.betaIn)
+                * (qLedger >= 0 ? qLedger * qLedger : -qLedger * qLedger)
+                / (measure_.inletArea * measure_.inletArea);
         const std::vector<std::pair<scalar, scalar>>& ps = measure_.pressureStations;
         if (!ps.empty())
         {
@@ -460,6 +482,12 @@ struct EdgeExchange
     scalar inletArea = 0;
     scalar pRisePa = 0;
     scalar pRiseX = 0;
+    /// `rho*(betaOut - betaIn)*q|q|/A^2` for this edge's last solve: the
+    /// momentum-flux imbalance the region's own profile change asks for, at a
+    /// rate both its sections agree on. Signed -- see `ProfileLedger`.
+    /// Reported, not collected: the 1D row's momentum equation still answers for
+    /// `R*q + M*dq/dt` and knows nothing of it.
+    scalar dpConvectivePa = 0;
 };
 
 /// One pass of the steady interface: every coupled edge evaluated against the

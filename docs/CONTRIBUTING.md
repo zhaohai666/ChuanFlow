@@ -14,11 +14,11 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（97 项）约 258 ~ 345 s ≈ 4.3 ~ 5.8 分钟（实测 345.36 s），
+ctest --test-dir build --output-on-failure -j8  # 全量回归（97 项）约 258 ~ 345 s ≈ 4.3 ~ 5.8 分钟（实测 297.95 s），
                                              # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高）：
-                                             # 稳态 profile 级映射 255.9 s、逐边 ddt x 归属 229.2 s、
-                                             # 形状 x 逐边归属 153.4 s、形状 x 块内 du/dt 129.0 s、
-                                             # 形状 x 湍流 x 瞬态 128.9 s、瞬态惯量归属 97.7 s、VOF 振荡 83.1 s
+                                             # 稳态 profile 级映射 297.9 s、形状 x 归属 x 逐层 β 账 284.2 s、
+                                             # 逐边 ddt x 归属 263.6 s、VOF 振荡 101.7 s、VOF 拟合 75.3 s、
+                                             # 瞬态 profile 级映射 74.2 s、双边都在并联 55.8 s
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -739,6 +739,43 @@ python3 tests/check_transient_coupled_multi_turbulent_edge_ddt_inertia.py \
 python3 tests/check_transient_coupled_multi_turbulent_profile_inertia.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiTurbulentProfileInertia/case.dict"
+
+# 对流动量账逐层报出（5.42）：**同一个 case、同一份 checker**，没有新增算例也没有新增 case 关键字。内核只做一件事——
+# 在块的 profile 台账里用同一次求解的 betaIn / betaOut、该层速率与实测入口面积做一个减法
+# rho*(betaOut-betaIn)*q|q|/A2（CoupledNetwork.h:314-:319，字段 :58 / :490），经 coupledNetwork.cpp:1226 交给边界，
+# 打印成 transient step 行里 pRiseX 之后、unsteady 之前的 dpConv（transientCoupledMultiApp.cpp:527）。
+# coupledNetwork.cpp:1200 的 rowDrop = R*q + M*dq/dt、弦的取法、rowError 的定义一处未改——5.41 那 158 条判据一条没改就
+# 全绿，就是这件事的实测形式（第 12 族新增 11 条，共 169 条）。要看什么：
+#   1) 恒等与符号——112 个状态 dpConv == rho*(betaOut-betaIn)*q|q|/A2 到 1.44e-15；48 个平口全正、64 个塑形全负，
+#      没有例外。符号就是 betaOut-betaIn 的符号，所以这一族的第一条判据同时也是"形状"与"账"之间最硬的那道锁。
+#   2) 它有多大——平口 f_net X1 7.632 -> 17.924 Pa、X2 57.615 -> 69.844 Pa（X2 那三个平口臂一致到 5.7e-8，X1 在层 1
+#      是 7.632 / 9.157 / 15.044）；塑形 p_net X1 -55.239 -> -148.974、X2 -277.295 -> -283.272 Pa。占块自报压降：
+#      平口最坏 5.73%（f_slab/X1 层 3 的 19.715 Pa 对 344.36 Pa）、p_net/X2 平台 39.3%、p_pin/X1 层 8 121.1%
+#      （-179.391 Pa 对 148.15 Pa，那条是准稳边不是钉死边）。
+#   3) 归属那张表进不来，但断言不能瞎选——钉死边三档平口的 dpConv/q2 八层一致到 5.7e-8（块的 dpInertia 也同为
+#      642.6188 Pa）而那张表在该边装的惯量差 3.64x；自由边要断言的是"除掉 q2 之后"：dpConv 本身差 97.1%（层 1
+#      7.632 / 9.157 / 15.044 Pa）而速率本身差 35.1%，系数差只有 7.96% 且逐层塌到 0.69%。
+#   4) 形状一动它就是 4.06x（1.9401e10 -> 7.8687e10 Pa.s2/m6）——与 5.41"形状不动账单"正好互补：账单跟着 dq/dt，
+#      这笔账跟着 beta 差与速率。
+#   5) 与 pRise 同号同量级不等值——|dpConv|/pRise 在 56 个层 >=2、回升 >50 Pa 的塑形状态上是 0.8475~1.2989，X2 平台
+#      （层 4..8 x 四个塑形臂）0.84760~0.85110；层 1 是 2.0786（回升才 133.40 Pa 而对账 -277.29 Pa）。平口处处
+#      pRise 恰 0.0 而账不为 0（+69.844 Pa）。
+#   6) 它不是 5.40 那笔双重计费——过滤条件必须是账单的量级而不是"账单非零"：dpConv/gap 在 |gap|>1 Pa 的集合上会炸到
+#      +-3568%（slab 档把账单压到 0.005 Pa 而账仍 69.8 Pa）。按 |gap|>100 Pa 筛出 9 个层 1 状态，dpConv 至多占 17.3%，
+#      且在塑形臂上符号与账单相反；另有 16 个步进状态账单已消失（<0.01 Pa）却仍各欠 69.84 Pa（平口 X2 平台 15 个）到
+#      283.27 Pa（塑形 p_region/X2 层 7 那 1 个）——注意这个集合是按"步进"筛的，把准稳边算进来是 17 个。
+#   7) 准稳边同样欠——p_mix/X2 每层 -283.670 ~ -283.783 Pa 而 unsteady 0、rowError 恰 0.0；p_pin/X1 -90.637 ->
+#      -179.391 Pa。块的行不装惯性项的地方，这笔账照样在。
+#   8) 行仍是那一行——96 个步进状态 rowDrop == R*q + M*dq/dt 到 1e-6；把 dpConv 加进 5.41 局部性那条的字段集（15 -> 16）
+#      之后，p_mix/X1 对 p_net/X1 的层 1..5 仍逐位相同：新字段不引入新的非局部。
+# 写这类判据时的坑：dpConv/q2 的散布与 (betaOut-betaIn) 的散布按构造恒等（它就是恒等式本身），所以"表不动系数"要断言
+# 的是同一批状态跨臂的一致性与"系数散布 < 该层速率散布、且逐层塌"，不是那两个散布相等；pRise 那条必须把层 1 排除在带外
+# 并单独报它的 2.0786，否则 min/max 带会被起始层拉宽到失去意义；"报出 != 收进"要落在判据里就是 rowDrop 那条 1e-6，
+# 否则读者会以为行已经认识 beta；跨臂找"最坏那一格"时别写 `max((key, value) for ...)`——元组比较先看 key，它会返回字典序
+# 最后的臂（本案是 f_slab/X2/层 8 的 4.54%）而不是最大比值（真值是 f_slab/X1 层 3 的 5.73%），必须写 `key=lambda kv: kv[1]`。
+# 十二族 169 条（5.41 的 158 条未改），七臂 208 趟 / 416 次块解（96 步进 + 16 准稳状态）、每臂最差残差与 5.41 逐字相同；
+# 单独跑整个 case 199.37 s（ctest -j8 记 284.17 s，全量 97 项 297.95 s。本机当时 load avg 7~11，而 5.41 记那对
+# 143.37 / 153.42 s 时是 4.7，同批稳态 profile 映射也从 255.9 涨到 297.9 s——这两条墙钟要按负载打折读）
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

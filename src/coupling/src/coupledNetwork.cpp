@@ -1223,6 +1223,7 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                 // with the rest of the ledger, so the level keeps its own rise.
                 ex.pRisePa = ledger.pRisePa;
                 ex.pRiseX = ledger.pRiseX;
+                ex.dpConvectivePa = ledger.dpConvectivePa;
                 worst = std::max(worst, ex.residual);
                 rec.edges.push_back(ex);
             }

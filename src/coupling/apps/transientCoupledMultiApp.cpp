@@ -476,6 +476,14 @@ int main(int argc, char** argv)
                               " betaImposed ", num(ex.betaImposed),
                               " betaIn ", num(ex.betaIn), " betaOut ", num(ex.betaOut),
                               " inletArea ", num(ex.inletArea),
+                              // How much of this level's drop its own solve handed
+                              // back: the highest station pressure of that same
+                              // field above its first station. A constant-area duct
+                              // can only pull pressure down, so a positive rise is
+                              // the inlet's excess momentum flux relaxing toward the
+                              // region's own shape -- nil on a plug, and here on the
+                              // level that asked for it rather than once per arm.
+                              " pRisePa ", num(ex.pRisePa), " pRiseX ", num(ex.pRiseX),
                               " unsteady ", (ex.unsteady ? 1 : 0));
                 }
 
@@ -542,6 +550,17 @@ int main(int argc, char** argv)
                 if (!m.betaStations.empty())
                     log::info("transient betaProfile ", startNames[s], " edge ",
                               edgeNames[i], ":", betas.str());
+                // the same stations, now carrying pressure: the entry region's
+                // bill for the shape it was handed, as a curve instead of the
+                // single `pRisePa` number above. Reported for the last level the
+                // run accepted, exactly as the beta sequence is.
+                std::ostringstream pStations;
+                pStations << std::setprecision(17);
+                for (const std::pair<scalar, scalar>& sp : m.pressureStations)
+                    pStations << " " << sp.first << " " << sp.second;
+                if (!m.pressureStations.empty())
+                    log::info("transient pressureProfile ", startNames[s], " edge ",
+                              edgeNames[i], ":", pStations.str());
             }
 
             for (std::size_t i = 0; i < res.state.size(); ++i)

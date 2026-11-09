@@ -37,6 +37,14 @@ struct ProfileLedger
     scalar betaIn = 1;
     scalar betaOut = 1;
     scalar inletArea = 0;
+    /// How far above its own first station the highest pressure station of this
+    /// solve sits, in Pa, and where along the region that happens. A constant-area
+    /// duct can only pull its pressure down, so a positive rise is the entry region
+    /// handing part of the drop back -- the price of an inlet fuller than the
+    /// region's own profile. Read off the solve it belongs to, so a time level
+    /// reports the rise it asked for rather than the one the last level left.
+    scalar pRisePa = 0;
+    scalar pRiseX = 0;
 };
 
 /// The partner model behind a coupled 1D element (`NetworkPipe::coupledResistance`):
@@ -285,6 +293,15 @@ public:
         ledger.betaIn = measure_.betaIn;
         ledger.betaOut = measure_.betaOut;
         ledger.inletArea = measure_.inletArea;
+        const std::vector<std::pair<scalar, scalar>>& ps = measure_.pressureStations;
+        if (!ps.empty())
+        {
+            std::size_t kMax = 0;
+            for (std::size_t k = 1; k < ps.size(); ++k)
+                if (ps[k].second > ps[kMax].second) kMax = k;
+            ledger.pRisePa = ps[kMax].second - ps[0].second;
+            ledger.pRiseX = ps[kMax].first;
+        }
         return ledger;
     }
 
@@ -429,12 +446,20 @@ struct EdgeExchange
     /// `fluxImposed` is the section integral the inlet condition really carries,
     /// so it equals `q` whenever a shape was traded for a shape and not for a
     /// different amount of fluid.
+    /// `pRisePa` is what that trade costs the reported drop directly: the highest
+    /// station pressure of the same solve above its own first station, at `pRiseX`.
+    /// In a constant-area duct the wall can only pull pressure down, so a rise is
+    /// the entry region returning part of it, and it appears on the level that
+    /// asked for the full inlet -- which is the one thing a run-end measurement
+    /// cannot tell apart.
     std::string inletShape = "flat";
     scalar fluxImposed = 0;
     scalar betaImposed = 1;
     scalar betaIn = 1;
     scalar betaOut = 1;
     scalar inletArea = 0;
+    scalar pRisePa = 0;
+    scalar pRiseX = 0;
 };
 
 /// One pass of the steady interface: every coupled edge evaluated against the

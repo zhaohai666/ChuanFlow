@@ -1217,6 +1217,12 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                 ex.betaIn = ledger.betaIn;
                 ex.betaOut = ledger.betaOut;
                 ex.inletArea = ledger.inletArea;
+                // The same solve's pressure stations, reduced to the one number
+                // that says whether the inlet was fuller than the region: the
+                // height of the highest station above the first. Captured here,
+                // with the rest of the ledger, so the level keeps its own rise.
+                ex.pRisePa = ledger.pRisePa;
+                ex.pRiseX = ledger.pRiseX;
                 worst = std::max(worst, ex.residual);
                 rec.edges.push_back(ex);
             }

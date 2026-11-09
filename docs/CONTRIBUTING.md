@@ -14,10 +14,10 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（92 项）约 202 s ≈ 3.4 分钟，
-                                             # 墙钟就是最慢那一条：稳态 profile 级映射 202 s；
-                                             # 其余大头（瞬态惯量归属 86 s、VOF 振荡 71 s、
-                                             # 稳态多边 60 s、瞬态 profile 级映射 59 s）
+ctest --test-dir build --output-on-failure -j8  # 全量回归（93 项）约 209 s ≈ 3.5 分钟，
+                                             # 墙钟就是最慢那一条：稳态 profile 级映射 209 s；
+                                             # 其余大头（瞬态惯量归属 89 s、VOF 振荡 73 s、
+                                             # 形状 x 湍流 x 瞬态 70 s、稳态多边 63 s）
                                              # 在 -j8 下被并行掩盖
 ```
 
@@ -423,6 +423,60 @@ python3 tests/check_transient_coupled_profile_map.py \
 python3 tests/check_coupled_1d3d_turbulent_profile.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-multi" \
     "$PWD/tests/cases/coupled1d3dTurbulentProfile/case.dict"
+
+# 形状 × 湍流伙伴 × 瞬态三者同台（5.37）：§5.36 的两条 kOmegaSST 渠道原封不动搬进时间层内
+# （X1 20x8x2 over 0.2x0.005x0.005、X2 24x8x2 over 0.24x0.004x0.008，intensity 0.05 / relaxation 0.7），
+# 拓扑是 §5.34/5.35 的那张 Src -> A -> {X1 || By} -> X2 -> B -> Snk，驱动 6.0e-5 m3/s 恒定注入
+# （斜坡 = 管网自己对并联分流的惯性弛豫，不是时间表源），time dt 0.05 / endTime 0.4 -> 8 层，
+# 块侧 sdt steady + simple 300/3e-3，界面 tolerance 1e-3 / maxSubIterations 12 / accelerates (0 0 0 0 1)。
+# 动的是内核一处：§5.36 那个「压强报在与 beta 同一组截面上」的工具多了一条**时间轴**——
+# pressureStations 的归约（最高站压强减首站 = pRisePa，以及它在哪一站 = pRiseX）现在发生在
+# profileLedger() 里（CoupledNetwork.h:296），随每层每边的 EdgeExchange 一起交出去
+# （coupledNetwork.cpp:1224、transientCoupledMultiApp.cpp:486）。此前 app 是在整臂跑完后再读一次块
+# 的测量，于是「入口段还压」只有臂末那一条曲线；现在层 n 报的是层 n 那次解自己的还压，80 个
+# （层 x 边）状态各自的高峰可断言。五臂 = lo + 抛物 + 1/7 + mixed（X1 抛物、X2 塞状）+ 抛物走准 Newton。
+# 十一族 652 条的要点：
+#   1) 符号律逐层成立，不是端点巧合——80 个状态的 betaOut 全在 (1.02, 1.0213)（实测
+#      1.02027438~1.02105813，比层流 duct 的 6/5 低 14.9%）；入口比平台满的恰好 40 个、差的恰好 40 个，
+#      且与 pRisePa > 0 的那 40 个**是同一批**，没有一个状态骑在边界上；
+#   2) 仪器不造上升量——pRisePa 为 0 的状态报的站就是区域第一站（0.005 m，单调下降曲线的最大值即起点），
+#      非 0 的永远在同一站（X1 0.045 m、X2 0.035 m）；末层的 pRisePa/pRiseX 与该次求解自己的压强表逐位相符；
+#   3) 还的就是动量那一笔且逐层——抛物 X1 上升是 rho*(beta_in-beta_out)*U^2 的 0.9888~0.9980
+#      （136.19 预测对 134.66 实测），X2 落在 1.1748~1.1754；比值不随斜坡漂。上升量对速率的指数 2.1659
+#      （101.7514 -> 134.6606 Pa，速率只涨 1.1381x），parab/mixed/parab_qn 三臂给同一个数；被钉死的
+#      X2 坐在一个比值上到 6.3e-4（层 1 与层 8 都是 333.4297 Pa）；
+#   4) 形状仍是逐边声明且每层重交——80 个状态的 inletShape 与该臂所名一致，betaImposed 对 8 面板重算到
+#      1.1e-15、跨 8 层散布 <=9.4e-16，fluxImposed 对截面积分最差 6.66e-16（形状用形状买，不是别的流体）；
+#   5) 形状不进 1D 动量行——rowDrop == dpNetwork + M*dq/dt 在 5 臂 x 8 层逐位成立，M 就是 rho*L/A
+#      （8e+06 / 7.5e+06），归属这根轴本例固定在管网侧；dpInertia 恒 0、dpFriction 恒等于伙伴报的全量；
+#   6) 首层是纯惯性分流——M_By/(M_X1+M_By) = 0.427275，实测 lo 0.424732 / parab 0.438354 /
+#      p17 0.426449（±3% 内），次序仍是抛物 > 1/7 > 塞状；
+#   7) tau 第一次被形状按**倍数**改掉——lo 0.3869 s / parab 0.7942 s（比 2.0531）/ p17 0.3897 s
+#      （+0.72%，即抛物那份移动的 0.7%）；§5.35 对层流 duct 只移动 3.29%，因为那里的割线本来就贴着落定
+#      斜率，这里 X1 落定割线被改到 3.1x。教材式 (M_X1+M_By)/(R_X1+R_By) 给 0.5823/1.2163/0.6160 s，
+#      绝对值一律高估 1.5053~1.5807x，但抛物/塞状的**比值** 2.0887 对实测 2.0531 只差 1.2%；
+#   8) 可分性在时间里保持——parab 与 mixed 的并联边 7 字段 x 8 层逐位相同（0.0）；mixed 的串联边就是 lo 的
+#      （速率/压降相对差 <5e-5、pRisePa 恒 0）；串联边速率在 40 个（臂 x 层）状态上都是注入量（<=1e-11）；
+#      parab 与 parab_qn 差 <1e-4，算子改路径不改物理；
+#   9) 时间表与那堵墙——五臂 16/17/13/17/18 趟、SIMPLE 解次数恰为 2x 趟数、最坏残差
+#      2.673e-06~6.040e-04 全在 1e-3 内；唯一不在自己门上停机的是**抛物形的串联块**（parab 8 层里 4 层、
+#      parab_qn 6 层花满 300 扫，且花满与 blockConverged 0 同一批），同一钉死速率上塞状/1/7 只花 7 扫、
+#      塑形并联边 24 扫；mixed 的串联边是平的所以即使邻居抛物也快——墙属于「喂给钉死速率的形状」，不属于
+#      串联拓扑。网络握着速率，所以未收敛伙伴表现为摆动的压降而不是失败，这就是容差 1e-3 的理由；
+#  10) 壁面函数仍然合法——y+ 21.4~32.6、nut/nu 47~134x、Re_Dh 4966~10000，发展窗 dp/dx 对模型自己的
+#      壁面剪力 2*rho*u_tau^2/H 闭合到 -5.7%~+10.1%，每块入口进/出口出 <=5.2e-12；
+#  11) 价格仍在割线里——末层 X2 塞状 1538.4003 / 1/7 1428.4563 / 抛物 719.9844 Pa（形状占 53.2% 的压降，
+#      而这条边的速率从未变过）；抛物 X1 报 138.11 Pa 对发展外推 389.47 Pa = 0.3546，缺的 251.35 Pa 是
+#      动量项 136.19 Pa 的 1.85x（X2 0.5368 / 2.19x）；塞状与 1/7 报自己 fully-developed 身的 0.9801~1.0124。
+# 写这类判据时的坑：凡是「两臂之比」的断言都要先确认分母不会是 0——平入口的 pRisePa 按定义恒为 0，
+# 拿它做相对差会 ZeroDivisionError，而恒 0 本身就是那条边该断言的东西（改用绝对差 + == 0）；
+# 一个物理量的**区间**不要写死成单一实测值（同一次运行的 8 层给 0.9888~0.9980），断言要落在区间上；
+# 逐层序列的衰减比只在斜坡中段是干净的几何级数，末端几层被界面容差截住，取前 6 层拟合、并断言散布 <5%。
+# 十一族 652 条，五臂共 81 趟 / 162 次块解；单独跑整个 case 64.5 s
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiTurbulentProfile/case.dict
+python3 tests/check_transient_coupled_multi_turbulent_profile.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiTurbulentProfile/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

@@ -406,6 +406,20 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3dTurbulentProfile/case.dict)
 
+# the last of the three axes put together: a SHAPE handed across the interface, a
+# wall-function partner that answers with its own beta, and a time level. The
+# steady sign law -- beta_in above beta_out means the entry region GIVES back
+# static pressure -- is now required at every accepted level, so the recovery is a
+# curve in time (pRisePa per level) and not only a station list; and the shape is
+# charged against the ramp itself, where a parabolic inlet doubles the inertial
+# time constant while the laminar partner of the previous case moved it by 3%
+add_test(
+    NAME verify.transientCoupledMultiTurbulentProfile
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent_profile.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentProfile/case.dict)
+
 # the same two regions, inside every time step: the parallel edge ramps on the
 # inertial split while the series edge is pinned by topology and only ever
 # negotiates its drop, so the checker closes each edge's momentum row with that

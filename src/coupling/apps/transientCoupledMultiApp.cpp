@@ -261,6 +261,39 @@ int main(int argc, char** argv)
                 cfFatal("coupled1d3dTransient: ddts entry '" + w
                         + "' is neither steady nor Euler");
 
+        // `steady` or `Euler` per EDGE, so one time level can put its free rate
+        // under a partner that carries its own `du/dt` and its pinned rate under
+        // one that does not. That is the cell the per-arm switch above cannot
+        // reach, and it is the one the interface itself does not care about:
+        // `chord` is taken block by block, so a mixed arm negotiates two
+        // different formulations in the same pass. Only the arms that need mixing
+        // declare a table; the rest keep the per-arm word, and the per-arm word
+        // keeps whatever the block's own `schemes{ ddt }` says.
+        std::vector<std::vector<std::string>> armEdgeDdt(startNames.size());
+        if (cd.has("ddtFrom"))
+        {
+            const Dictionary& from = cd.getDict("ddtFrom");
+            for (std::size_t s = 0; s < startNames.size(); ++s)
+            {
+                if (!from.has(startNames[s])) continue;
+                const Dictionary& sd = from.getDict(startNames[s]);
+                std::vector<std::string> w;
+                for (const std::string& edgeName : edgeNames)
+                {
+                    if (!sd.has(edgeName))
+                        cfFatal("coupled1d3dTransient: ddtFrom." + startNames[s]
+                                + " gives no scheme for coupled edge '" + edgeName + "'");
+                    const std::string e = sd.getWord(edgeName);
+                    if (e != "steady" && e != "Euler")
+                        cfFatal("coupled1d3dTransient: ddtFrom." + startNames[s] + "."
+                                + edgeName + " is '" + e
+                                + "', neither steady nor Euler");
+                    w.push_back(e);
+                }
+                armEdgeDdt[s] = std::move(w);
+            }
+        }
+
         // The same decision made per edge, so one run can trust the block on the
         // edge whose region it can measure and the drawing on the edge whose
         // bore was typed in. Only the runs that need mixing declare anything;
@@ -327,6 +360,7 @@ int main(int argc, char** argv)
             {
                 Schemes sch = specs[i].schemes;
                 if (!ddts[s].empty()) sch.ddt = ddts[s];
+                if (!armEdgeDdt[s].empty()) sch.ddt = armEdgeDdt[s][i];
                 blockDdt.push_back(sch.ddt);
                 owners.push_back(std::make_unique<DetailBlock>(
                     specs[i].mesh, nu, c.fluid.rho, sch, specs[i].simple,

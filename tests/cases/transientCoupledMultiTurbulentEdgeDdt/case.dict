@@ -1,0 +1,187 @@
+# transientCoupledMultiTurbulentEdgeDdt: one time level, two formulations --
+# the edge whose rate is free answers du/dt and the edge whose rate is pinned
+# answers a chord, or the other way round.
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D pipe) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# The topology, the two meshes, the wall functions, the operating point, the dt
+# and the eight levels are 5.38's, unchanged, on purpose. 5.38's own boundary 1
+# says why this case exists: `ddts` is a PER-ARM table, so within one run every
+# coupled edge is asked to step or to be quasi-steady together. That leaves the
+# formulation axis un-crossed against the edge, and the question the crossing
+# answers is one no per-arm arm can ask:
+#
+#   the interface already reads `chord` block by block (coupledNetwork.cpp:1182),
+#   so a mixed arm negotiates two DIFFERENT formulations in the same pass -- one
+#   edge's resistance is charged with a friction half and the other's with its
+#   whole drop. Does the split then behave as the sum of its edges, or does the
+#   level develop a character of its own that neither all-steady nor all-Euler
+#   has?
+#
+# Two of the arms are the new cells and they are mirrors of each other, so
+# the answer is not "stepping the parallel edge happens to be the one that
+# matters":
+#   lo_steady    -- both edges quasi-steady: 5.38's control
+#   lo_both      -- both edges time-accurate: 5.38's crossing, reached here by the
+#                   per-arm switch instead of a per-edge table
+#   lo_x1free    -- the edge whose rate RELAXES steps, the pinned one does not
+#   lo_x2pin     -- the mirror: the pinned edge steps, the free one does not
+# and the shaped family is the same three rows with parabolic inlets, so the
+# mixed arm's edges can be compared against controls that hold its SHAPE fixed:
+#   parab_steady -- both edges quasi-steady, shaped
+#   parab_both   -- both edges time-accurate, shaped
+#   parab_x1free -- the shaped mixed arm: 5.38's crossing, now on a per-edge table
+# Both block dicts ask `schemes { ddt Euler; }`, so the arms that come out mixed
+# are mixed by the per-edge table BEATING the per-arm word and the block's own
+# declaration, and `lo_steady` is the per-arm word beating the block. Both
+# override directions are walked, and the effective per-edge scheme -- not the
+# declaration -- is what the `transient partner ... ddt` line prints.
+#
+# Region inertia stays attributed to the network on every arm, and both proxy
+# bores are the exact equivalent diameter of their section, so each edge's row
+# inertance is the number that edge's block measures on its own mesh.
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    # 6.0e-5 m3/s, as in 5.36/5.37/5.38: the operating point at which both
+    # wall-function ducts keep their first cell centre above the y+ = 11 their log
+    # law is written for at every level. The ramp is the network's own inertial
+    # relaxation of the parallel split, and the parallel branch arrives at its
+    # destination from zero -- the only state in which a block's du/dt has
+    # something to say.
+    feed { node Src; rate 6.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+
+    # X1 sits in the parallel position (its rate is what the split relaxes), X2 in
+    # the series position (its rate is pinned by topology to the injected flow).
+    # Both proxy bores are the exact equivalent diameter of the block's own
+    # section, d = 2*sqrt(H*W/pi).
+    X1 { from J1; to J2; length 0.2;  diameter 0.0056418958354775631;
+         coupledResistance 1.4e7; }
+    By { from J1; to J2; length 0.3;  diameter 0.008; }
+
+    X2 { from J2; to J3; length 0.24; diameter 0.00638307648642292245;
+         coupledResistance 1.36e7; }
+
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.2 s over eight levels -- 5.38's level, kept so that the only variable in
+# this case is which EDGE is allowed to accelerate. The recorded wall that level
+# stands on is 5.38's: at dt 0.05 the whole-region acceleration the block reports
+# and the slab acceleration the interface credits differ by more than the friction
+# chord can absorb, and the parallel region gets asked to go slower than the rate
+# it was solved at one level ago.
+time { dt 0.2; endTime 1.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    # 1e-3 as in 5.37/5.38: the measured floor for a shaped inlet on this partner.
+    tolerance 1e-3;
+    maxSubIterations 12;
+    # the interface operator is not a variable here either -- 5.33 crossed du/dt
+    # with quasi-Newton and 5.37 shape with it; every arm walks plain block
+    # Gauss-Seidel so the only difference between the two mirror arms is which edge
+    # the table names.
+    accelerates ( 0 0 0 0 0 0 0 );
+    # the per-ARM word. Arms 3, 4 and 7 say Euler and the per-edge table below
+    # takes one of the two edges back to steady, which is the direction the kernel
+    # has never been exercised in; arm 1 says steady and beats the block's own
+    # Euler, which is the direction 5.38 already walked.
+    ddts        ( steady Euler Euler Euler steady Euler Euler );
+    # the per-EDGE table, one dict per arm that needs mixing. Absent arms keep the
+    # per-arm word, so lo_steady and lo_both are what ddts alone says -- and
+    # lo_both is 5.38's lo_euler recomputed here without a table at all. The two
+    # flat controls and the two shaped ones are deliberately NOT in the table:
+    # every mixed arm has, on each of its edges, a control that agrees with it on
+    # that edge's scheme AND on that edge's shape.
+    ddtFrom {
+        lo_x1free    { X1 Euler;  X2 steady; }
+        lo_x2pin     { X1 steady; X2 Euler;  }
+        parab_x1free { X1 Euler;  X2 steady; }
+    }
+    starts {
+        # Every set names a shape per edge next to its starting coefficients, and
+        # the seeds are the control arm's own secants at this rate.
+        lo_steady    { X1 1.4e7; X2 1.36e7; profile ( flat flat ); }
+        lo_both      { X1 1.4e7; X2 1.36e7; profile ( flat flat ); }
+        lo_x1free    { X1 1.4e7; X2 1.36e7; profile ( flat flat ); }
+        lo_x2pin     { X1 1.4e7; X2 1.36e7; profile ( flat flat ); }
+        parab_steady { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        parab_both   { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        parab_x1free { X1 1.4e7; X2 1.36e7; profile parabolic; }
+    }
+}
+
+details {
+    # X1: 0.2 x 0.005 x 0.005 m, 8 cells across the gap so the first cell centre
+    # sits inside the log-law band. The shape is spread across this wall-bounded
+    # axis only; the z sides are symmetry and have no gradient to fight.
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        # the window is the last third of the block, as in 5.37/5.38: the part that
+        # has finished undoing what the inlet asked for, and the slab whose du/dt
+        # the block charges to the row, so drop and acceleration are measured over
+        # the same fluid.
+        probe { min 0.12; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        # continuityTol 3e-3: a shaped inlet leaves the entry region to
+        # redistribute, and the block's own stop has to be tight enough that the
+        # drop it reports is a solved field rather than a transient one.
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_edge_ddt_X1.vtu;
+    }
+
+    # X2: a different aspect ratio -- 4 mm gap, 8 mm span -- so its resistance is
+    # not X1's scaled, and long enough that the entry region of the most
+    # mismatched arm is inside the block instead of running out of it.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.24 0.004 0.008);
+            cells (24 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.16; max 0.23; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 2.4e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_edge_ddt_X2.vtu;
+    }
+}

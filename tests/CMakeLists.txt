@@ -433,6 +433,23 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentProfileUnsteady/case.dict)
 
+# the boundary the previous case's own per-arm table leaves open: `ddts` answers
+# for every coupled edge at once, so within one run both edges are asked to step
+# or to be quasi-steady together. A per-edge table crosses the formulation axis
+# against the edge - one time level holds two different interface readings, one
+# edge's resistance charged with a friction half and the other's with its whole
+# drop - and the two mirror arms say which edge the mix acts on. What is settled
+# here is separability: the edge left alone is the control's computation to
+# exactly 0.0 (flat and shaped alike) and the ramp follows its free edge, while
+# what the mix changes is only which half the interface stops on, where the
+# double count lives, and the price the negotiation ends on
+add_test(
+    NAME verify.transientCoupledMultiTurbulentEdgeDdt
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent_edge_ddt.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentEdgeDdt/case.dict)
+
 # the same two regions, inside every time step: the parallel edge ramps on the
 # inertial split while the series edge is pinned by topology and only ever
 # negotiates its drop, so the checker closes each edge's momentum row with that

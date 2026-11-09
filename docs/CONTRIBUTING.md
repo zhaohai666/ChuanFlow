@@ -270,6 +270,26 @@ python3 tests/check_transient_coupled_multi_three_axis.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiThreeAxis/case.dict"
 
+# 两条耦合边都在并联位置：八臂按边表换拓扑重跑（4 张表 × 2 个算子，内核零改动）
+# 只改拓扑（Src -> A -> { X1 || X2 } -> B -> Snk，无旁管）与两个名义孔径，inertias /
+# inertiaFrom{} / accelerates / starts / 容差 2e-4 / 6 趟预算整张照抄上一例。于是接口里有两个
+# 都要谈的速率，三件事第一次可测：
+#   1) worst 下标换手——279 趟逐趟等于两残差 argmax，边 1 当最差 4~13 次（上一例 224 趟全 0）；
+#   2) 一个节点压降对两份动量行——同一个 J1-J2 各按本边那份 M 闭合（1.1e-10 / 7.6e-11），
+#      从外面重算每层分流 q_e=(dp+M_e q_prev/dt)/(R_e+M_e/dt)、sum q_e=Q_IN 到 4.7e-12，
+#      任一边换错账立刻偏 0.047~0.108（10 个数量级）；
+#   3) 斜坡 τ 现在由 M_X1+M_X2 这一份分子排序——四张表 1.65495e7/1.43635e7/1.39359e7/1.175e7 kg/m4
+#      对 τ 0.29115/0.25287/0.25075/0.21374 s，两算子内严格单调、τ 比 == 分子比到 3.40%，
+#      两条混合表严格夹在两张整表之间（上一例混合臂 τ 与同源整表差 4e-9，因为只有一条边做斜坡）。
+# 目的地仍不含惯量：八臂 0.409319~0.409364（spread 0.0206%）== 本臂两边幂律（X1 1.6601~1.6861、
+# X2 1.6703~1.6842）的电阻分流 ≤0.070%；单一指数穿 12 层偏离 ≤0.258% 行程。「没有乘客」：八对
+# 地板比 0.044~25.6 且方向不一致（5/8 平谈更差），最差地板 ≤ 容差 21.1%——对照上一例被钉死那条边
+# 的单向 73x~87x。十族 332 条，含跑 app 的 ctest 单条 377.5 s（279 趟界面 / 558 次块解 / 96 层谈拢）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiBothParallel/case.dict
+python3 tests/check_transient_coupled_multi_both_parallel.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiBothParallel/case.dict"
+
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientBlowdown/case.dict

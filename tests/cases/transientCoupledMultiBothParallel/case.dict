@@ -1,0 +1,168 @@
+# transientCoupledMultiBothParallel: two RANS detailed regions that BOTH sit in
+# the parallel position of one time-stepping network.
+#
+#   Src -> A -> { X1 (3D RANS duct) || X2 (3D RANS duct) } -> B -> Snk
+#
+# Every coupled run in this chain up to here has had one edge that negotiates a
+# rate and one whose rate is pinned by the series position
+# (transientCoupledMultiThreeAxis: X1 || By, then X2 in series). That asymmetry
+# is what let §5.31 read per-edge attribution two different ways - a rate on the
+# negotiating edge, a node drop on the pinned one - and it is also what produced
+# the one unexplained number left there: quasi-Newton refreshes the interface as
+# a whole, so the edge that never needed to talk to anybody rides along with a
+# residual floor 73x to 87x above the plain loop's.
+#
+# Here both coupled edges are free branches of the same split, so neither is a
+# passenger. Three consequences are testable that no earlier run can test:
+#
+#   1. the residual's `worst` edge can hand over between the two edges. If it
+#      never did even with both edges live, the schedule would be driven by
+#      something other than who is furthest from its chord.
+#   2. the ramp now has BOTH inertances in its numerator. The analytic
+#        tau = (M_X1 + M_X2) / (m_X1*R_X1 + m_X2*R_X2)
+#      is the right SHAPE but overshoots the measured relaxation rate by a
+#      stable 1.479x to 1.533x (measured 32.4% to 34.8% faster), the same for
+#      all four tables and both operators - it looks like the 1..6 inner passes
+#      of one time level being their own discrete map, not like the attribution
+#      tables, and the mechanism is not settled here. So the claim the checker
+#      makes is the one the formula actually supports: tau RATIOS equal the
+#      ratios of M_X1 + M_X2, measured to 3.4% worst case. Four tables therefore give four
+#      DIFFERENT ramps, strictly ordered by their sum, and the mixed tables land
+#      BETWEEN the two whole-interface ones instead of copying one of them (which
+#      is what §5.31 found on the pinned topology). The two rows' inertances add;
+#      nothing else about them mixes.
+#   3. the destination still holds no inertance at all - the split of two settled
+#      chords - so eight arms end on one state and only the road there moves.
+#
+# The two proxy bores are mis-stated on purpose, by different amounts, exactly as
+# in transientCoupledMultiThreeAxis:
+#   X1: section H*W = 2.5e-5 m2, bore 0.005 m -> rho*L/A is 1.27324x the true one
+#   X2: section H*W = 3.2e-5 m2, bore 0.0049 m -> 1.69695x
+# so no single correction factor reproduces all four ramps, and a per-edge source
+# is the only way the numerator can be assembled.
+#
+# The third axis is kept because it is what the pinned edge made ugly last time:
+# each table runs under plain block Gauss-Seidel and under the quasi-Newton map,
+# same seeds, same blocks, same tolerance, same sub-iteration budget.
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1 and J2 are incompressible ports (no bulkModulus), so the branch split
+# is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 1.2e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3; diameter 0.02; }
+
+    // The coupled edges: two branches of ONE split, both of them negotiated.
+    // Both bores are the nominal circle a drawing would carry, not the region's
+    // equivalent section, so the `network` source pays rho*L/(pi d^2/4) - 1.27324
+    // (X1) and 1.69695 (X2) times the region's own rho*L/(H*W). The `partner`
+    // source takes what the block measures on its own mesh.
+    X1 { from J1; to J2; length 0.2;  diameter 0.005;
+         coupledResistance 1.0e7; }
+    X2 { from J1; to J2; length 0.12; diameter 0.0049;
+         coupledResistance 1.5e7; }
+
+    B  { from J2; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.05 over endTime 0.6: twelve levels, and the pair's time constant is
+# ~0.2 s, so the trajectory is still a fraction short of the resistive split at
+# the end. Deliberate - the checker predicts the whole ramp from the discrete
+# inertial solve, so what each table's M is worth is still being paid for at the
+# last step instead of having relaxed away.
+time { dt 0.05; endTime 0.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    // both blocks resolve their own drop to ~1e-4 of it inside their declared
+    // SIMPLE budget, and the interface residual is the gap between two solvers
+    tolerance 2e-4;
+    maxSubIterations 6;
+    // four inertia tables (whole bore, whole region, X1 from the region with X2
+    // from the drawing, and the mirror) each run once with the plain loop and
+    // once with the quasi-Newton map: eight arms, and the only thing that
+    // changes from transientCoupledMultiThreeAxis is which node pair each edge
+    // sits across.
+    inertias ( network partner network network
+               network partner network network );
+    accelerates ( 0 0 0 0 1 1 1 1 );
+    inertiaFrom {
+        mixX1_gs  { X1 partner; X2 network; }
+        mixX2_gs  { X1 network;  X2 partner; }
+        mixX1_qn  { X1 partner; X2 network; }
+        mixX2_qn  { X1 network;  X2 partner; }
+    }
+    starts {
+        bore_gs     { X1 1.0e7; X2 1.5e7; }
+        region_gs   { X1 1.0e7; X2 1.5e7; }
+        mixX1_gs    { X1 1.0e7; X2 1.5e7; }
+        mixX2_gs    { X1 1.0e7; X2 1.5e7; }
+        bore_qn     { X1 1.0e7; X2 1.5e7; }
+        region_qn   { X1 1.0e7; X2 1.5e7; }
+        mixX1_qn    { X1 1.0e7; X2 1.5e7; }
+        mixX2_qn    { X1 1.0e7; X2 1.5e7; }
+    }
+}
+
+details {
+    # X1: the 0.2 x 0.005 x 0.005 m duct carried over unchanged from
+    # transientCoupledMultiThreeAxis, 8 cells across the gap so the first cell
+    # centre sits inside the log-law band
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.06; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_multi_both_parallel_X1.vtu;
+    }
+
+    # X2: a 4 mm gap under an 8 mm span, nominal circle 4.9 mm, real section
+    # 1.70x that - the worse mis-statement of the two, now in parallel with X1
+    # instead of downstream of it
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.12 0.004 0.008);
+            cells (12 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.04; max 0.11; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_multi_both_parallel_X2.vtu;
+    }
+}

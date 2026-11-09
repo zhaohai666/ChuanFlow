@@ -477,6 +477,20 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiThreeAxis/case.dict)
 
+# the topology every earlier coupled run (architecture.md 5.25 through 5.31)
+# could not put two negotiating rates into: both coupled edges sit between the
+# same node pair, so the interface has no passenger.
+# The worst-residual index hands over between them, one node drop has to close
+# against two momentum rows carrying two different inertances, and the four
+# attribution tables now set the ramp itself - a strictly ordered ladder of four
+# time constants whose ratios are the sums M_X1 + M_X2
+add_test(
+    NAME verify.transientCoupledMultiBothParallel
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_both_parallel.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiBothParallel/case.dict)
+
 # the same partitioned interface with a nonlinear partner: edge X is a RANS
 # channel, so its drop-per-rate is a function of the rate the interface is
 # hunting for. One seed runs under both operators, which is what lets the

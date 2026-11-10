@@ -1,0 +1,136 @@
+// transientYieldValveNodeRelease: the yield wall's static branch (5.49), a
+// valve timetable (M2's `valveClose` / `valveOpen`, 5.52) and a *free* node --
+// the three-way cell 5.50 left as its boundary (4) and 5.52 as its own (2).
+//
+// 5.52 could only say "a timetable never reaches the static branch", and the
+// reason was arithmetic: on a desktop of fixed-pressure nodes the drive a pipe
+// is offered is a number in the case file, `drivePa` contains no K
+// (transient.cpp:52-:56), and the valve term itself vanishes with the rate. So
+// nothing a schedule says can move a held pipe -- or the step it is released
+// on, because with both ends pinned that step does not exist.
+//
+// Give one end of the held pipe a node whose pressure the solve has to find and
+// the drive becomes a *network* quantity. The row per pair here is
+//
+//     rho L/A (Q_h - Q_h^prev)/dt = (pA - pF) - dp_wall(Q_h) - Kh rho|Q_h|Q_h/(2A^2)
+//     rho L/A (Q_b - Q_b^prev)/dt = (pF - pB) - R Q_b  - Kb(t) rho|Q_b|Q_b/(2A^2)
+//     V/BC (pF - pF^prev) = Q_h - Q_b
+//
+// with `Kb(t) = valveKAt(t + dt)` on the *neighbour*, and while the wall holds,
+// Q_h enters the node row as the forced zero (transient.cpp:356-:362 drops the
+// held row's own columns but not the node row's entries in its column). So the
+// question flips: not "can a K stop a yielded pipe" but "whose timetable owns
+// the release step".
+//
+// Nine pairs, one free node each, all starting held: tau_0 = 2.0 gives every
+// yielded pipe the same 4 tau_0 L / d = 8000 Pa, every node starts at 2.5e4 Pa
+// against A = 3.0e4 and B = 2.0e4, so the drive on offer is 5000 Pa and the
+// headroom is 3000 Pa. The neighbour is what differs.
+//
+//   * `K0` no valve at all -- the reference drain: the Newtonian bleed empties
+//     the node toward B and the wall lets go on a step the case file never
+//     mentions.
+//   * `K3` / `K6` / `K8`, a frozen valve of 5e3 / 1e6 / 1e8 on the bleed --
+//     the release step moves with K and, at 1e8, moves past the end of the run:
+//     a timetable nobody timed can hold a pipe for longer than the case lasts.
+//   * `R1` / `R2`, one closedK of 1e8 with the same 0.1 s ramp, started at
+//     0.2 s and at 1.0 s -- the only difference is whether the ramp arrives
+//     before or after the network lets go, which is 5.52's family 2 turned
+//     around: there the schedule set the step, here it decides whether there is
+//     one.
+//   * `W` -- the bleed sealed from the start and reopened at 2.0 s. This is the
+//     counter-case to 5.52's family 3: a schedule *can* wake what the wall
+//     holds, provided it is written on somebody else's row.
+//   * `O` / `OW` -- the identical frozen valve and the identical full
+//     close/reopen timetable moved onto the *held* pipe's own row, with a plain
+//     bleed next door. Both release on `K0`'s step: on a network desktop a
+//     schedule on the held row is as invisible as it was on the pinned one,
+//     which is the half of 5.52 that did not depend on the desktop -- and the
+//     other half, that a released pipe does pay its own valve, is why the two
+//     traces then part.
+//
+// The release is one-way and not by accident: once the wall has let go, the only
+// flow that could push the node back over the release pressure is the yielded
+// pipe's own, and that flow goes to zero exactly *at* that pressure. The long
+// file (`case_long.dict`, same physics, endTime 30 s) is what separates "held
+// for the whole 4 s window" from "held", and `case_steady.dict` is the state the
+// marched pairs are heading for with every valve frozen at its end-of-schedule K.
+//
+// verified by tests/check_transient_yield_valve_node_release.py
+// (ctest verify.transientYieldValveNodeRelease).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+    // compliance V/BC = 1e-9 m3/Pa for every node: with the bleed's own
+    // resistance 128 mu L/(pi d^4) that is a node relaxation time of 0.509 s, so
+    // the drain that decides the release is well inside the 4 s window.
+    Fk0 { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fk3 { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fk6 { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fk8 { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fr1 { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fr2 { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fw  { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fo  { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fow { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+}
+
+pipes
+{
+    // --- the reference: nothing but the node drains toward the threshold ----
+    HeldK0 { from A; to Fk0; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedK0 { from Fk0; to B; length 20; diameter 0.02; }
+
+    // --- a frozen valve on the *neighbour*, three decades apart -------------
+    HeldK3 { from A; to Fk3; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedK3 { from Fk3; to B; length 20; diameter 0.02; valve 5.0e3; }
+
+    HeldK6 { from A; to Fk6; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedK6 { from Fk6; to B; length 20; diameter 0.02; valve 1.0e6; }
+
+    HeldK8 { from A; to Fk8; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedK8 { from Fk8; to B; length 20; diameter 0.02; valve 1.0e8; }
+
+    // --- one closedK, one ramp length, two arrival times -------------------
+    HeldR1 { from A; to Fr1; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedR1 { from Fr1; to B; length 20; diameter 0.02; valve 0;
+              valveClose { start 0.2; end 0.3; closedK 1.0e8; } }
+
+    HeldR2 { from A; to Fr2; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedR2 { from Fr2; to B; length 20; diameter 0.02; valve 0;
+              valveClose { start 1.0; end 1.1; closedK 1.0e8; } }
+
+    // --- a neighbour that is sealed and then reopened: the wake -------------
+    HeldW { from A; to Fw; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedW { from Fw; to B; length 20; diameter 0.02; valve 0;
+             valveClose { start 0.0; end 0.002; closedK 1.0e8; }
+             valveOpen { start 2.0; end 2.1; } }
+
+    // --- the same two prescriptions, moved onto the held pipe's own row -----
+    HeldO { from A; to Fo; length 20; diameter 0.02; yieldStress 2.0;
+            valve 1.0e8; }
+    BleedO { from Fo; to B; length 20; diameter 0.02; }
+
+    HeldOW { from A; to Fow; length 20; diameter 0.02; yieldStress 2.0; valve 0;
+             valveClose { start 0.0; end 0.002; closedK 1.0e8; }
+             valveOpen { start 2.0; end 2.1; } }
+    BleedOW { from Fow; to B; length 20; diameter 0.02; }
+}
+
+time
+{
+    // dt small against both clocks in the file (the node's 0.509 s relaxation
+    // and the pipe row's 0.106 s), endTime long against the node and short
+    // against the K = 1e8 drain -- which is the point of case_long.dict.
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

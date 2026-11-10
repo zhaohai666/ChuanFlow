@@ -1,0 +1,80 @@
+// transientYieldValveNodeRelease / case_steady: the same nine pairs, solved by
+// the steady network kernel with every valve frozen at the K its schedule holds
+// at the end of the marched run.
+//
+// The transient file makes claims about *paths*; this file is the state each
+// path is heading for, which is what lets the checker say that the pairs the 4 s
+// window never released are not held by physics but by the calendar. The steady
+// kernel has no latch and no memory: it only asks whether the wall law plus the
+// valve can pay the drop the topology offers, and a K = 1e8 bleed still passes a
+// trickle at any node pressure above B, so the yielded pipe upstream of it is
+// offered a drive above 4 tau_0 L / d and flows -- at 1e-7 or 1e-8 m3/s, but not
+// at zero. The pairs that report exactly zero here are the ones the wall really
+// holds at the settled pressure, and there are none.
+//
+// verified by tests/check_transient_yield_valve_node_release.py
+// (ctest verify.transientYieldValveNodeRelease).
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+    Fk0 {}; Fk3 {}; Fk6 {}; Fk8 {}; Fr1 {}; Fr2 {}; Fw {}; Fo {}; Fow {};
+}
+
+pipes
+{
+    HeldK0 { from A; to Fk0; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedK0 { from Fk0; to B; length 20; diameter 0.02; }
+
+    HeldK3 { from A; to Fk3; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedK3 { from Fk3; to B; length 20; diameter 0.02; valve 5.0e3; }
+
+    HeldK6 { from A; to Fk6; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedK6 { from Fk6; to B; length 20; diameter 0.02; valve 1.0e6; }
+
+    HeldK8 { from A; to Fk8; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedK8 { from Fk8; to B; length 20; diameter 0.02; valve 1.0e8; }
+
+    // both ramps end closed, so both freeze at closedK
+    HeldR1 { from A; to Fr1; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedR1 { from Fr1; to B; length 20; diameter 0.02; valve 1.0e8; }
+
+    HeldR2 { from A; to Fr2; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedR2 { from Fr2; to B; length 20; diameter 0.02; valve 1.0e8; }
+
+    // reopened at 2.1 s, so frozen open
+    HeldW { from A; to Fw; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedW { from Fw; to B; length 20; diameter 0.02; }
+
+    HeldO { from A; to Fo; length 20; diameter 0.02; yieldStress 2.0;
+            valve 1.0e8; }
+    BleedO { from Fo; to B; length 20; diameter 0.02; }
+
+    HeldOW { from A; to Fow; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedOW { from Fow; to B; length 20; diameter 0.02; }
+}
+
+sources
+{
+    // A and B are the fixed-pressure nodes, so these only set the residual's
+    // rate scale; they change no flow in any pipe.
+    feed { node A; rate 6.0e-5; }
+    take { node B; rate -6.0e-5; }
+}
+
+solve
+{
+    maxIter 200;
+    tol 1e-12;
+}

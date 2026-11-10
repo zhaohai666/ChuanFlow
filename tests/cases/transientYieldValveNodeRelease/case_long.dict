@@ -1,0 +1,48 @@
+// transientYieldValveNodeRelease / case_long: the two pairs the 4 s window never
+// released, marched for 30 s.
+//
+// `BleedK8`'s frozen K = 1e8 and `BleedR1`'s ramp to the same closedK both stop
+// the drain long enough that the node never reaches the pressure which would
+// hand the yielded pipe its 4 tau_0 L / d = 8000 Pa -- in case.dict both print
+// the token `0` in all 2001 states. That is a statement about the calendar, not
+// about the wall, and the only honest way to say which of the two it is to run
+// the clock out: the valve's own drop at a trickle is what sets the timescale,
+// sqrt(drive / (K rho / 2 A^2)) / (V/BC), and for K = 1e8 that is tens of
+// seconds, not hundreds of milliseconds as it is for K = 0.
+//
+// So this file is the same two pairs with `endTime 30` and `reportEvery 5`. The
+// checker reads the release step out of it, and reads the settled rate out of
+// the same topology in the steady kernel, which has no latch to wait for.
+//
+// verified by tests/check_transient_yield_valve_node_release.py
+// (ctest verify.transientYieldValveNodeRelease).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+    Fk8 { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fr1 { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+}
+
+pipes
+{
+    HeldK8 { from A; to Fk8; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedK8 { from Fk8; to B; length 20; diameter 0.02; valve 1.0e8; }
+
+    HeldR1 { from A; to Fr1; length 20; diameter 0.02; yieldStress 2.0; }
+    BleedR1 { from Fr1; to B; length 20; diameter 0.02; valve 0;
+              valveClose { start 0.2; end 0.3; closedK 1.0e8; } }
+}
+
+time
+{
+    dt 0.002;
+    endTime 30.0;
+    reportEvery 5;
+}

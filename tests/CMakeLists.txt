@@ -859,6 +859,46 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValveSchedule/case.dict)
 
+# 5.53 the free node between them: the yield wall's static branch, a valve
+# timetable and a node pressure the solve has to find -- the cell 5.50 put in its
+# boundary 4 and 5.52 in its own boundary 2, which needed no kernel change, only
+# a case file that stops pinning both ends. Nine pairs, each a held yielded pipe
+# into a floating node and a Newtonian bleed out of it. The drive the latch
+# compares against is now whatever the network says, so a *neighbour's* schedule
+# owns the release: the step goes 253 / 299 / 1830 for K = 0 / 5e3 / 1e6 on the
+# bleed and a 1e8 valve pushes it past the end of the run, a ramp that lands
+# before the drain gets there cancels it and one that lands after is invisible
+# until the sampled t + dt steps inside it, and a neighbour that seals and then
+# reopens wakes the wall at step 1290 -- 0.578 s after the schedule first moved
+# anything, because the network, not the valve, is what reaches the node. On the
+# held pipe's own row the same two prescriptions release on K0's step with an
+# identical node history and cost rate only from the first moving state. The wall
+# answers one number: all 7 releases happen at 21990.9 - 21999.2 Pa against
+# pA - 4 tau_0 L/d = 22000 Pa across three decades of K and two schedules, and
+# none re-latches -- the three pairs whose neighbour seals after the release peak
+# at 21980.9 - 21983.0 Pa and the steady kernel settles those same nodes at
+# 20450.6 - 21634.2 Pa, all below it. All 9 x 2001
+# states of the 4 s run and both pairs of a 30 s run (15000 marched steps)
+# reproduce this file's own copy of the two rows, the node row and the sampled K
+# (worst 1.51e-09 relative, 1.10e-16 absolute), and every floating node closes to
+# the solver's own 1e-11 exit criterion -- a held pipe enters continuity as the
+# forced zero it prints. Against the steady kernel the nine settled rates are this
+# file's bisection to 2.0e-8 with dp_h + dp_b = 1e4 Pa to 4e-9, dpValve = K rho
+# Q^2/(2 A^2) to 2.4e-12, the three all-open placements on one rate and the four
+# placements of one 1e8 on another within 1.1e-8 -- while the node the valve sits
+# opposite splits by exactly that valve's 1603.08 Pa drop. Held for 4 s is the
+# calendar: the same pairs trickle at 6.1015e-08 m3/s with no latch in the way,
+# the 30 s march hands R1 back at t = 24.25 s (entry drive 7999.48 over 8000) and
+# K8 is still 304.35 Pa short at 30 s with its node falling monotonically at
+# 102.55 Pa/s, which is that drain's own rate over the node's compliance
+add_test(
+    NAME verify.transientYieldValveNodeRelease
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_valve_node_release.py
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValveNodeRelease/case.dict)
+
 
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation

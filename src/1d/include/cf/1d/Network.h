@@ -155,6 +155,33 @@ struct SteadyControls
     double relax = 1.0;  // Newton damping
 };
 
+/// The published laminar-turbulent transition locus of a yielded pipe. Wilson &
+/// Thomas (Can. J. Chem. Eng. 84:520, 2006) show that for a Bingham plastic the
+/// condition at transition depends on the Hedstrom number alone,
+///     He = tau_0 d^2 rho / mu^2,      Re_B = rho |v| d / mu,
+/// with Re_B,t = 2100 at low He, 80 He^0.40 in the mid band (their Trel form is
+/// 80 He^-0.10) and 25 He^0.5 above He = 1e5, where
+///     Trel = V / (tau_0/rho)^0.5 = Re_B / He^0.5
+/// is an identity, not a correlation. `band` is which of the three printed
+/// ranges the pipe's He falls in (0: He <= 1700, 1: <= 1e5, 2: above), and stays
+/// -1 for any pipe whose law is not Bingham's -- a Herschel-Bulkley pipe
+/// declares no plastic viscosity, so neither He nor Re_B is a statement about
+/// it. `dpAtTransition` is what makes the locus usable: it is the drop the
+/// pipe's OWN wall law (5.46/5.47) asks for at the locus rate, i.e. how far the
+/// injection end has to move before the laminar statement stops being the
+/// one that applies. Nothing here re-prices the friction.
+struct YieldedTransition
+{
+    int band = -1;
+    double hedstrom = 0;            // He
+    double rePlastic = 0;           // Re_B at the solved rate
+    double reTransition = 0;        // Re_B,t(He)
+    double rateAtTransition = 0;    // m3/s corresponding to Re_B,t
+    double dpAtTransition = 0;      // Pa the wall law asks at that rate
+    double relTransitionSpeed = 0;  // Trel = V_t / (tau_0/rho)^0.5
+    bool pastLaminarLimit = false;  // the solved rate is past the locus
+};
+
 struct PipeFlowResult
 {
     std::string name;
@@ -170,6 +197,7 @@ struct PipeFlowResult
     double reynolds = 0;
     double frictionFactor = 0;
     double conductance = 0; // dQ/d(dpTotal), s
+    YieldedTransition transition; // the locus, for a Bingham pipe only
     double holdup = 0;      // two-phase: outlet liquid volume fraction
     int regime = -1;        // two-phase: Beggs-Brill regime of the last
                             // segment (0 segregated, 1 transition,
@@ -201,6 +229,13 @@ double churchillFriction(double reynolds, double relativeRoughness);
 /// a third set of assertions nobody could reconcile.
 double pipeFrictionPa(const NetworkPipe& pipe, const FluidProperties& fluid,
                       double q);
+
+/// The transition locus of one yielded pipe at a rate magnitude |q| (see
+/// YieldedTransition). Reported, never charged: the friction a yielded pipe
+/// resists is still its laminar wall law, because the published turbulent-yield
+/// closure is not landed yet.
+YieldedTransition yieldedTransitionOf(const NetworkPipe& pipe,
+                                      const FluidProperties& fluid, double q);
 
 /// Signed flow through one pipe for a given total pressure difference
 /// dp = p(from) - p(to). Q/dpTotal conductance via central differencing.

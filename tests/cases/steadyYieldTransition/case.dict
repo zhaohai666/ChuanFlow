@@ -1,0 +1,87 @@
+// steadyYieldTransition/case.dict: where a yielded pipe sits against the
+// published laminar-turbulent locus. Wilson & Thomas, Can. J. Chem. Eng. 84:520
+// (2006) show that for a Bingham plastic the condition at transition depends on
+// the Hedstrom number alone, He = tau_0 d^2 rho / mu^2, and give it as
+// Re_B,t = 2100 at low He, 80 He^0.40 for 1700 < He < 1e5 and 25 He^0.5 above
+// 1e5, with Re_B = rho v d / mu the plastic Reynolds number and
+// Trel = V / (tau_0/rho)^0.5 = Re_B / He^0.5 an identity.
+//
+// This case does NOT price turbulence: the friction a yielded pipe resists is
+// still its laminar wall law (5.46/5.47), because the published turbulent-yield
+// closure could not be transcribed with its constants intact. What is landed is
+// the pipe's own side of the question -- the rate the locus sits at and the drop
+// THIS pipe's wall law asks for there -- so a network can say how much room is
+// left before the statement it is making stops being the one that applies.
+//
+// Five drops (N1 200 / N2 500 / N3 5000 / N4 3e4 / N5 1.5e5 Pa over B) times the
+// He families, so the same geometry appears once below and once past its own
+// locus, and the locus values themselves must not move between the two. The He
+// targets are the published parameter set of Csizmadia & Toth (2013) Table 1
+// (D = 0.1 m, rho = 1370 kg/m3, tau_y = 1 Pa, mu_B = 2e-2 Pa.s -> He = 3.425e4)
+// scaled by tau_0 at fixed d, plus the two band boundaries straddled digit by
+// digit. T3/T4 carry tau_0 far above any laboratory mud on purpose: they are
+// numerical probes of the He^0.5 band, not fluids.
+//
+// verified by tests/check_steady_yield_transition.py
+// (ctest verify.steadyYieldTransition).
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 1370; mu 0.02;
+}
+
+nodes
+{
+    B  { pressure 0.0;     }
+    N1 { pressure 2.0e2;   }
+    N2 { pressure 5.0e2;   }
+    N3 { pressure 5.0e3;   }
+    N4 { pressure 3.0e4;   }
+    N5 { pressure 1.5e5;   }
+}
+
+pipes
+{
+    // --- He = 3.425e2 and 3.425e4 (band 0 / band 1), Csizmadia Table 1 ------
+    Small01      { from N1; to B; length 20; diameter 0.1; yieldStress 0.01; }
+    Small05      { from N2; to B; length 20; diameter 0.1; yieldStress 0.01; }
+    TableHe04    { from N2; to B; length 20; diameter 0.1; yieldStress 1.0;  }
+    TableHe04Run { from N3; to B; length 20; diameter 0.1; yieldStress 1.0;  }
+
+    // --- the band 0 / band 1 boundary, straddled at He = 1700 ---------------
+    // tau_0 * rho = 1700 at d = mu = 0.02, so He = 1700 exactly to 4 digits
+    Edge1700Under { from N5; to B; length 20; diameter 0.02; yieldStress 1.2400; }
+    Edge1700Over  { from N5; to B; length 20; diameter 0.02; yieldStress 1.2420; }
+    Edge1700Flat  { from N4; to B; length 20; diameter 0.02; yieldStress 1.2409; }
+
+    // --- the band 1 / band 2 boundary at He = 1e5 (d = 0.1 -> He = 34250 tau0)
+    Edge1e5Under { from N5; to B; length 20; diameter 0.1; yieldStress 2.9197; }
+    Edge1e5Over  { from N5; to B; length 20; diameter 0.1; yieldStress 2.9203; }
+
+    // --- the He^0.5 band, three decades apart -------------------------------
+    BigHe06      { from N4; to B; length 20; diameter 0.1; yieldStress 100.0;  }
+    BigHe06Run   { from N5; to B; length 20; diameter 0.1; yieldStress 100.0;  }
+    BigHe08      { from N5; to B; length 20; diameter 0.1; yieldStress 1.0e4;  }
+    BigHe10      { from N5; to B; length 20; diameter 0.1; yieldStress 1.0e6;  }
+
+    // --- small-bore band 0, below and past its own 2100 ---------------------
+    Bore02       { from N1; to B; length 20; diameter 0.02; yieldStress 0.0002; }
+    Bore02Run    { from N4; to B; length 20; diameter 0.02; yieldStress 0.0002; }
+    Bore02Newt   { from N1; to B; length 20; diameter 0.02; }
+
+    // --- controls: the locus is Bingham's statement, so these get no report --
+    NewtRef      { from N3; to B; length 20; diameter 0.1; }
+    HbRef        { from N3; to B; length 20; diameter 0.1;
+                   yieldStress 1.0; flowIndex 0.5; consistency 0.02; }
+}
+
+solve
+{
+    maxIter 200;
+    tol 1e-12;
+}

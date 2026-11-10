@@ -399,6 +399,46 @@ double pipeFrictionPa(const NetworkPipe& pipe, const FluidProperties& fluid,
     return (f * pipe.length / pipe.diameter) * fluid.rho * v * v / 2.0;
 }
 
+/// Where a yielded pipe sits against the published laminar-turbulent locus.
+/// Nothing here is charged to the pipe: the locus is read off the grouping the
+/// literature uses (He, and the plastic Reynolds number Re_B built on the
+/// fluid's own mu -- which is exactly why a Herschel-Bulkley pipe gets no
+/// report, its law contains no plastic viscosity at all), and the one number
+/// that IS the pipe's own physics is `dpAtTransition`, the drop the wall law
+/// already shipped in 5.46/5.47 asks for at the locus rate. The three band
+/// constants and their He ranges are as printed in Wilson & Thomas (2006);
+/// their Eq (17), the fit that bridges 2100 down into the low-He range, could
+/// not be transcribed from the source layout, so band 0 is the flat 2100 the
+/// paper itself calls the engineering value.
+YieldedTransition yieldedTransitionOf(const NetworkPipe& pipe,
+                                      const FluidProperties& fluid, double q)
+{
+    YieldedTransition t;
+    if (!(pipe.yieldStress > 0) || pipe.flowIndex > 0) return t;
+
+    const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
+    t.hedstrom = pipe.yieldStress * pipe.diameter * pipe.diameter * fluid.rho
+               / (fluid.mu * fluid.mu);
+    t.rePlastic = fluid.rho * (std::abs(q) / area) * pipe.diameter / fluid.mu;
+
+    if (t.hedstrom <= 1700.0)       { t.band = 0; t.reTransition = 2100.0; }
+    else if (t.hedstrom <= 1.0e5)   { t.band = 1; t.reTransition = 80.0
+                                                       * std::pow(t.hedstrom, 0.40); }
+    else                            { t.band = 2; t.reTransition = 25.0
+                                                       * std::sqrt(t.hedstrom); }
+
+    // the rate that number is a velocity of, and the drop this pipe's own law
+    // asks for there -- the same parentheses the momentum row uses, so the
+    // locus and the friction cannot drift apart
+    t.rateAtTransition = t.reTransition * fluid.mu * area
+                       / (fluid.rho * pipe.diameter);
+    t.dpAtTransition = pipeFrictionPa(pipe, fluid, t.rateAtTransition);
+    t.relTransitionSpeed = (t.rateAtTransition / area)
+                         * std::sqrt(fluid.rho / pipe.yieldStress);
+    t.pastLaminarLimit = t.rePlastic > t.reTransition;
+    return t;
+}
+
 label OneDNetwork::addNode(const std::string& name)
 {
     for (label i = 0; i < static_cast<label>(nodeNames.size()); ++i)
@@ -458,6 +498,7 @@ void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     out.flowRate = r.velocity * pipeArea(pipe);
     out.reynolds = r.reynolds;
     out.frictionFactor = r.friction;
+    out.transition = yieldedTransitionOf(pipe, fluid, std::abs(out.flowRate));
 
     // conductance dQ/d(dpTotal) by central difference on the monotone law;
     // floor/replace with the laminar slope if the quotient degenerates

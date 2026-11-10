@@ -14,14 +14,16 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（105 项）约 258 ~ 736 s ≈ 4.3 ~ 12.3 分钟（实测 736.20 s，105/105 绿），
+ctest --test-dir build --output-on-failure -j8  # 全量回归（106 项）约 258 ~ 939 s ≈ 4.3 ~ 15.7 分钟（实测 939.07 s，106/106 绿），
                                              # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高；本轮各用例时间之和
-                                             # 5630.04 s，五条最重的耦合用例合计 2890.55 s，占 51.3%）：
-                                             # 形状账 x 归属账 703.04 s、稳态 profile 级映射 651.63 s、
-                                             # 多边 x 惯量归属 568.21 s、逐边 ddt 513.22 s、对流动量账收进行 454.45 s、
-                                             # VOF 振荡 167.29 s；非牛顿那几格里跨过这个量级的只有瞬态静止支那一条：
+                                             # 7071.13 s，五条最重的耦合用例合计 3563.00 s，占 50.4%）：
+                                             # 形状账 x 归属账 883.38 s、稳态 profile 级映射 814.83 s、
+                                             # 多边 x 惯量归属 696.74 s、逐边 ddt 622.67 s、对流动量账收进行 545.38 s、
+                                             # VOF 振荡 218.64 s；非牛顿那几格里跨过这个量级的只有瞬态静止支那一条：
                                              # 稳态 HB 0.34 s、瞬态幂律 7.18 s、瞬态屈服 x 阀 8.51 s（单独跑 5.0 s）、
-                                             # 瞬态屈服静止支 338.38 s——最后一条贵的不是求解器（5 次 app 调用共 0.31 s），
+                                             # 稳态转捩 locus 0.29 s（本轮最便宜的 verify 用例：locus 是纯读出，一次 app 调用、
+                                             # 零步进、零重解网格）、
+                                             # 瞬态屈服静止支 382.92 s——最后一条贵的不是求解器（5 次 app 调用共 0.31 s），
                                              # 是 checker 把 10 x 2001 步的带支递推在**速率空间**自己重解了一遍；
                                              # 5.50 把同一种重解改写到**壁应力空间**（单调，一次二分），于是同规模的
                                              # 14 x 2001 全轨迹复现只剩 8.51 s
@@ -1088,6 +1090,38 @@ python3 tests/check_transient_yield_valve.py \
     "$PWD/build/src/1d/apps/chflow-1d-transient" \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/transientYieldValve/case.dict"
+
+# 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
+# （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增
+# yieldedTransitionOf（network.cpp:413）+ PipeFlowResult::transition，solvePipeFlow 逐管填一次（:501），
+# app 打 He / ReB / ReBt / Qt / dpQt / Vrelt / band + past/belowTransition。这一格只报 locus、**不重定价摩阻**：
+# Wilson & Thomas 2006 的湍流摩擦律（Eq 15/16，含 beta = tau_w/tau_0 的括号与 11.6/chi 钝化项）在无 poppler 的
+# stdlib 抽取下上下标位置丢失，两篇原文抽出来的形式互相差一个 beta^0.5，且按抽出的写法 beta->无穷时 11.6/chi
+# 发散、退不回牛顿极限——未确认的转写不进内核。要看什么：
+#   1) locus 属于**流体和几何**而不属于状态：判据要打在"同几何孪生管在压差相差最多 750 倍时六个 locus 量逐位
+#      相同（0.000e+00）"上，而不是打在"locus 等于某个数"上——后者对手写常数也通过，只有前者会在 locus 被从速率
+#      反算时分开。被静态阈值顶住（Q 0）的管必须照样报出全套 locus，这是这条性质最锋利的一支。
+#   2) dp_t 是**这根管自己的壁律**：把 Q_t 送回 5.46 的 Buckingham 括号重解 tw 再乘 4L/d（checker 自己二分 200 步），
+#      不是相关式；同时断言 dp_t > 4 tau_0 L/d——只写"> 阈值"会让"转捩就是离开庭"这个错读法通过。
+#   3) 判决要**三个入口交叉**：pastLaminarLimit == (Q > Qt) == (ReB > ReBt) == (dp > dpQt) 逐管，且案里必须有管真的
+#      跨在两侧（实测 7 past / 8 below）；全侧一致的案证不了比较本身。
+#   4) "读 locus 没碰任何一笔账"要**两条都断**：速率仍是所问压差在层流屈服律下的根（实测最差 3.2e-12），且
+#      f Re_B g(xi) = 64 在**超出自己 locus 151 倍**的管上仍成立（3.4e-12）。第二条是留给下一格的：湍流摩擦闭包
+#      落地那天它必须变红，所以这批断言要一起改掉，而不是到时候删掉。
+#   5) 两个带的接缝是**量出来的向下台阶**（He=1e5 处 -1.17%、He=1700 处 -25.3%）。别写成"分段函数连续"，也别顺手
+#      平滑——论文跨接缝用的 Eq (17) 常数没转写。注意方向：我第一版假设高带在中带上方，实测相反，跑一次再写判据。
+#   6) 分组层面的反面：牛顿管与 HB 管**不打** He，所以判据断"token 缺失"而不是"值为 0"；HB 行打印的 Re 是表观数
+#      8 rho v^2 / tau_w，与塑性数 rho v d / mu 不是一回事。
+# 写这类判据时的坑：①app 用 setprecision(12) 打印，**所有"逐字"判据的下限就是打印舍入**（三族分别撞在
+#   3.04e-12 / 2.14e-12 / 2.12e-12），把门写成 1e-13 会得到一屏假红；上限取 2e-11 并在消息里说明下限是打印。
+#   ②checker 的 run() 用 cwd=CASE_DIR，参数必须传**绝对路径**，否则 FileNotFoundError。③不要用位置解析 pipe 行：
+#   带 locus 的行多出八个 token，按 key 扫描。
+# 七族 60 条；ctest -j8 记 **0.29 s**（Test #80）——全表最便宜的一格，因为 locus 是纯读出：一次 app 调用、零步进、
+# 零重解网格；既有测试一字未改。
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyYieldTransition/case.dict
+python3 tests/check_steady_yield_transition.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyYieldTransition/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

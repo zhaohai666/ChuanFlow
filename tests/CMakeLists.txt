@@ -812,6 +812,26 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValve/case.dict)
 
+# 5.51 the published laminar-turbulent locus of a yielded pipe, read off the
+# pipe's own wall law. The turbulent-yield FRICTION closure could not be
+# transcribed with its constants intact, so nothing is re-priced here: what
+# lands is He, Re_B, the three published bands of Re_B,t(He), and the one number
+# that is the pipe's own physics -- the drop dp_t its 5.46/5.47 law asks for at
+# the locus rate. Asserted as geometry + fluid rather than state (twins at
+# different drops bit-identical), against the bands' own fits, through the
+# identity Trel = Re_B,t / He^0.5 (which forces Trel = 25 across the He^0.5
+# band and 80 He^-0.10 in the mid band), and inert on the answer (every rate
+# still the exact root of the asked drop, f Re_B g = 64 past the locus, the
+# tau_0 -> 0 pipe on its Newtonian twin times the bracket's own factor). The two
+# band joins are measured, not smoothed: 1e5 steps down 1.17%, 1700 steps down
+# 25.3% because the paper's bridging Eq (17) is unread
+add_test(
+    NAME verify.steadyYieldTransition
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_yield_transition.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyYieldTransition/case.dict)
+
 # distributed two-fluid kernel: Godunov shock/fan kinematics, steady
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation

@@ -64,6 +64,19 @@ int main(int argc, char** argv)
             line += " dp " + num(f.dpTotal);
             if (f.dpValve != 0) line += " dpValve " + num(f.dpValve);
             if (f.dpPump != 0) line += " dpPump " + num(f.dpPump);
+            if (f.transition.band >= 0)
+            {
+                line += " He " + num(f.transition.hedstrom)
+                      + " ReB " + num(f.transition.rePlastic)
+                      + " ReBt " + num(f.transition.reTransition)
+                      + " Qt " + num(f.transition.rateAtTransition)
+                      + " dpQt " + num(f.transition.dpAtTransition)
+                      + " Vrelt " + num(f.transition.relTransitionSpeed)
+                      + " band "
+                      + num(static_cast<double>(f.transition.band))
+                      + (f.transition.pastLaminarLimit ? " pastTransition"
+                                                       : " belowTransition");
+            }
             log::info(line);
         }
 

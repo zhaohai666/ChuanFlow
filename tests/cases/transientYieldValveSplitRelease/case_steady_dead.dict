@@ -1,0 +1,77 @@
+// transientYieldValveSplitRelease / case_steady_dead: the three arms that have
+// no steady balance at all -- `d` (8000 in, 8000 out), `f` (8000 in, 6000 out)
+// and `m` (wall in, Newtonian mid, wall out, both nodes free). Each is a supply
+// wall whose ceiling `pA - 4 tau_0 L / d` = 22000 Pa sits below a drain wall
+// whose floor `pB + 4 tau_0 L / d` = 28000 (d), 26000 (f), 26000 (m) Pa: no node
+// pressure pays both walls, so the only steady rate any of them can report is
+// zero.
+//
+// The transient run does not agree with that, and both answers are right. Arm `d`
+// does sit still (Fd prints 27000.0 Pa in all 2001 states, and the node row is
+// literally `0 = 0`), but arms `f` and `m` keep flowing to the end of the run --
+// Ef at 6303.12 Pa of drive and Em at 6520.43 against their 6000 Pa threshold --
+// because a march only approaches a floor, it never has to land on it. Steady
+// asks for the landing point; the march reports the approach.
+//
+// What this file is for is the shape of the rank deficiency. With nothing to pay
+// for, `0 = 0` is an EXACT solution: the banner reads `iterations=0 residual=0
+// (converged)` -- Newton stops at its first look -- and the four free nodes print
+// the solver's own starting value 25000 = (pA + pB) / 2, which is the midpoint
+// the guess puts every one of the six yielded rows at dp 5000 Pa, inside the
+// threshold each of them needs to move. A dead band is a SET of steady solutions,
+// and only the march knows which element of it it parked in: it left Fd at 27000,
+// Ff at 26303.12 and Fm2 at 26520.43 Pa, all above the band steady prints as one
+// point.
+//
+// The failure is also LOCAL, which is the other half of the claim: these seven
+// rows and four nodes print token for token the same here and in the seven-arm
+// file (case_steady.dict) -- Sd/Ed/Sf/Ef/Sm/Em at dp 5000 Pa, Mm at 0, the four
+// nodes at the guess -- so the four flowing arms do not change what the
+// undetermined ones report, and read the other way it is those two arms that DO
+// flow (a and z) that keep the seven-arm banner from converging, not these
+// three that print nothing.
+//
+// verified by tests/check_transient_yield_valve_split_release.py
+// (ctest verify.transientYieldValveSplitRelease).
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+    Fd {}; Ff {}; Fm1 {}; Fm2 {};
+}
+
+pipes
+{
+    Sd { from A; to Fd; length 20; diameter 0.02; yieldStress 2.0; }
+    Ed { from Fd; to B; length 20; diameter 0.02; yieldStress 2.0; }
+
+    Sf { from A; to Ff; length 20; diameter 0.02; yieldStress 2.0; }
+    Ef { from Ff; to B; length 20; diameter 0.02; yieldStress 1.5; }
+
+    Sm { from A; to Fm1; length 20; diameter 0.02; yieldStress 2.0; }
+    Mm { from Fm1; to Fm2; length 20; diameter 0.02; }
+    Em { from Fm2; to B; length 20; diameter 0.02; yieldStress 1.5; }
+}
+
+sources
+{
+    feed { node A; rate 6.0e-5; }
+    take { node B; rate -6.0e-5; }
+}
+
+solve
+{
+    maxIter 200;
+    tol 1e-12;
+}

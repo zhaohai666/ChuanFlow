@@ -1,0 +1,84 @@
+// transientYieldValveSplitRelease / case_steady_slow: case_steady.dict with its
+// iteration budget raised from 200 to 50000 and nothing else changed -- the
+// same 19 pipes, the same 8 free nodes, the same frozen K 0, the same tolerance
+// 1e-12.
+//
+// case_steady.dict stops at 200 iterations and calls itself NOT converged. This
+// file says which of the two readings of that banner is true: an arm whose
+// settled state puts a wall a few hundred Pa inside its own threshold is not
+// unsolvable, it is solved *slowly* -- the bracket's slope near the rest point
+// is what makes the steps small. Measured, the two stalling nodes move with the
+// budget (Fa 21898.4842293 -> 21379.7317257, Fz 24010.3279118 -> 24000.0401192)
+// while the two decided ones print their token unchanged (Fb 20450.6031388, Fc
+// 20272.1671679) and the four undetermined ones still print 25000. The relative
+// residual falls 0.0321364485 -> 2.6336e-11, still 26x above the file's own
+// tol 1e-12 -- which is exactly what the banner compares
+// (src/1d/src/network.cpp:689) -- so it reads NOT converged again and the
+// honest claim is a RATE, not an arrival.
+//
+// Fa 21379.7317257 is the steady landing point 5.54 published for this arm; the
+// marched run of this same topology ends at 21375.816193 Pa, 3.9 Pa away -- the
+// memory, which steady has no way to express.
+//
+// verified by tests/check_transient_yield_valve_split_release.py
+// (ctest verify.transientYieldValveSplitRelease).
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+    Fa {}; Fb {}; Fc {}; Fd {}; Ff {}; Fz {}; Fm1 {}; Fm2 {};
+}
+
+pipes
+{
+    Sa { from A; to Fa; length 20; diameter 0.02; yieldStress 2.0; }
+    Wa { from A; to Fa; length 20; diameter 0.02; yieldStress 1.5; }
+    Da { from Fa; to B; length 20; diameter 0.02; }
+
+    Sb { from A; to Fb; length 20; diameter 0.02; yieldStress 2.0; }
+    Wb { from Fb; to B; length 20; diameter 0.02; yieldStress 1.5; }
+    Db { from Fb; to B; length 20; diameter 0.02; }
+
+    Sc { from A; to Fc; length 20; diameter 0.02; yieldStress 2.0; }
+    Dc { from Fc; to B; length 20; diameter 0.02; }
+    Nc { from Fc; to B; length 20; diameter 0.02; }
+
+    Sd { from A; to Fd; length 20; diameter 0.02; yieldStress 2.0; }
+    Ed { from Fd; to B; length 20; diameter 0.02; yieldStress 2.0; }
+
+    Sf { from A; to Ff; length 20; diameter 0.02; yieldStress 2.0; }
+    Ef { from Ff; to B; length 20; diameter 0.02; yieldStress 1.5; }
+
+    Sz { from A; to Fz; length 20; diameter 0.02; yieldStress 2.0; }
+    Wz { from Fz; to B; length 20; diameter 0.02; yieldStress 1.5; }
+    Tz { from Fz; to B; length 20; diameter 0.02; yieldStress 1.0; }
+
+    Sm { from A; to Fm1; length 20; diameter 0.02; yieldStress 2.0; }
+    Mm { from Fm1; to Fm2; length 20; diameter 0.02; }
+    Em { from Fm2; to B; length 20; diameter 0.02; yieldStress 1.5; }
+}
+
+sources
+{
+    // A and B are the fixed-pressure nodes, so these only set the residual's
+    // rate scale; they change no flow in any pipe.
+    feed { node A; rate 6.0e-5; }
+    take { node B; rate -6.0e-5; }
+}
+
+solve
+{
+    maxIter 50000;
+    tol 1e-12;
+}

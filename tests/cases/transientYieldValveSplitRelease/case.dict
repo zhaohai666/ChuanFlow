@@ -1,0 +1,144 @@
+// transientYieldValveSplitRelease: the branch on the OTHER side of the node.
+//
+// 5.54 put two yielded walls into one free node and got the latch to run both
+// ways, and its own boundary list said the rest was untested: the split (one
+// pipe in, two out) and a node whose neighbours are free on both sides. This
+// file is that cell, and the first thing it does is put a yield wall on the
+// OUTFLOW side -- in 5.46 through 5.54 every yielded pipe in a transient
+// network ran from the fixed high-pressure source into a free node, so the
+// drive the latch compares had one end pinned by construction. Here the wall's
+// drive is `pF - pB`, the free node is the *upstream* end, and nothing else in
+// the kernel knows the difference: holdsStatic takes the absolute value of
+// drivePa (transient.cpp:40-:43, :52-:56), frictionDp copies the drive's sign
+// at Q = 0 (:72-:81), and the node row sums whatever the topology hands it
+// (transient.cpp:395-:416).
+//
+// The rows per arm:
+//
+//   rho L/A (Qw - Qw')/dt = (pA - pF) - 4 L tw_w/d - Kw rho|Qw|Qw/(2A^2)
+//   rho L/A (Qe - Qe')/dt = (pF - pB) - 4 L tw_e/d - Ke rho|Qe|Qe/(2A^2)
+//   rho L/A (Qd - Qd')/dt = (pF - pB) - R Qd - Kd(t) rho|Qd|Qd/(2A^2)
+//   V/BC (pF - pF')        = sum_in Q - sum_out Q
+//
+// Why the direction is not a cosmetic change: an inflow wall can only RAISE its
+// node, and the pressure it stops raising at is its own release pressure
+// pA - 4 tau_0 L / d -- a ceiling it approaches from below, which is the reason
+// 5.53 called the release one-way and the reason 5.54 needed a *second* wall to
+// break through it. An outflow wall does the mirror image: it only LOWERS the
+// node, and it stops at pB + 4 tau_0 L / d -- a FLOOR approached from above. So
+// the same arm `a` of 5.54, turned around, should give the same two-way latch
+// for the inverted reason -- and the run says what that reason is, because it is
+// NOT "two drain walls". The three flips that do not come from the schedule are
+// Sa (8000, inflow side) re-latched by Wa (6000), Wz (6000, drain side) re-
+// latched by Tz (4000), and Wb (6000, drain side) re-latched by the Newtonian
+// drain Db (threshold 0): a wall is re-latched iff another row on the SAME side
+// of its node carries a strictly SMALLER threshold, wall or Newtonian. Arm `b`
+// therefore gets its second direction from the valve row, not from a second
+// wall -- which is the sentence that makes it the split arm rather than a
+// repeat of 5.54.
+//
+//   * `a` -- 8000 + 6000 in, one scheduled drain out: 5.54's two-way arm
+//     re-run here as the in-file control for `b`.
+//   * `b` -- 8000 in, 6000 + a scheduled drain out: the same schedule and the
+//     same wall, branched on the outflow side.
+//   * `c` -- 8000 in, two Newtonian drains out (one scheduled): the split
+//     without a second wall, so the node's degree is 3 while only one pipe can
+//     be held. Branching alone is what 5.54's boundary blamed; this arm is the
+//     arm that says it was the *side*.
+//   * `d` -- 8000 in, 8000 out: the dead band. The node starts inside the band
+//     (27000 is below the drain's floor 28000 and above the inflow ceiling
+//     22000), so both walls hold from the first step, nothing flows, so nothing
+//     can move the node, so the latch condition keeps holding: Fd prints
+//     27000.0 in every one of the 2001 states. This is a fixed point of the
+//     whole solve rather than of one row.
+//   * `f` -- 8000 in, 6000 out: the floor arm. The node starts ABOVE the
+//     drain's floor, so Ef owns it and settles 26303.12 Pa -- 303.12 Pa above
+//     pB + 6000 -- while Sf, which would need the node below 22000 to flow at
+//     all, is held in every decided state and never wakes.
+//   * `z` -- 8000 in, 6000 + 4000 out: the inverted ceiling. The 4000 drain
+//     pulls the node below the 6000 drain's floor, so the 6000 drain is
+//     re-latched by its weaker neighbour on the way down.
+//   * `m` -- a wall in, a *mid* scheduled row, a wall out, with BOTH node
+//     pressures free: the tee whose ends are not pinned. The schedule now sits
+//     on a row that appears in two node rows at once.
+//
+// Every free node starts at 2.7e4 Pa against A = 3.0e4 and B = 2.0e4, so an
+// inflow wall sees 3000 Pa (held against 8000) and a drain wall sees 7000 Pa --
+// held against 8000, flowing against 6000 and 4000. The scheduled drain is the
+// same close 0.8 -> 1.0 s to closedK = 1e8, reopen 2.5 -> 2.7 s used in 5.52 /
+// 5.53 / 5.54.
+//
+// verified by tests/check_transient_yield_valve_split_release.py
+// (ctest verify.transientYieldValveSplitRelease).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+    Fa { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fb { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fc { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fd { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Ff { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fz { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fm1 { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fm2 { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+}
+
+pipes
+{
+    // --- `a`: 5.54's two-way latch, branched on the inflow side ------------
+    Sa { from A; to Fa; length 20; diameter 0.02; yieldStress 2.0; }
+    Wa { from A; to Fa; length 20; diameter 0.02; yieldStress 1.5; }
+    Da { from Fa; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+
+    // --- `b`: the same schedule and the same walls, branched on the outflow
+    //     side ---------------------------------------------------------------
+    Sb { from A; to Fb; length 20; diameter 0.02; yieldStress 2.0; }
+    Wb { from Fb; to B; length 20; diameter 0.02; yieldStress 1.5; }
+    Db { from Fb; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+
+    // --- `c`: the split without a second wall -------------------------------
+    Sc { from A; to Fc; length 20; diameter 0.02; yieldStress 2.0; }
+    Dc { from Fc; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+    Nc { from Fc; to B; length 20; diameter 0.02; }
+
+    // --- `d`: the dead band, both walls held from the first step ------------
+    Sd { from A; to Fd; length 20; diameter 0.02; yieldStress 2.0; }
+    Ed { from Fd; to B; length 20; diameter 0.02; yieldStress 2.0; }
+
+    // --- `f`: the floor arm -------------------------------------------------
+    Sf { from A; to Ff; length 20; diameter 0.02; yieldStress 2.0; }
+    Ef { from Ff; to B; length 20; diameter 0.02; yieldStress 1.5; }
+
+    // --- `z`: two drain walls, the weaker one owns the floor ----------------
+    Sz { from A; to Fz; length 20; diameter 0.02; yieldStress 2.0; }
+    Wz { from Fz; to B; length 20; diameter 0.02; yieldStress 1.5; }
+    Tz { from Fz; to B; length 20; diameter 0.02; yieldStress 1.0; }
+
+    // --- `m`: both node pressures free, the schedule on the mid row ---------
+    Sm { from A; to Fm1; length 20; diameter 0.02; yieldStress 2.0; }
+    Mm { from Fm1; to Fm2; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+    Em { from Fm2; to B; length 20; diameter 0.02; yieldStress 1.5; }
+}
+
+time
+{
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

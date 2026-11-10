@@ -14,11 +14,11 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（109 项）约 258 ~ 939 s ≈ 4.3 ~ 15.7 分钟（本轮实测 346.29 s，109/109 绿），
+ctest --test-dir build --output-on-failure -j8  # 全量回归（110 项）约 258 ~ 939 s ≈ 4.3 ~ 15.7 分钟（本轮实测 351.57 s，110/110 绿），
                                              # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高；本轮各用例时间之和
-                                             # 2670.55 s，五条最重的耦合用例合计 1349.81 s，占 50.5%）：
-                                             # 形状账 x 归属账 334.52 s、稳态 profile 级映射 287.65 s、
-                                             # 多边 x 惯量归属 269.30 s、逐边 ddt 243.89 s、对流动量账收进行 214.45 s、
+                                             # 2738.93 s，五条最重的耦合用例合计 1361.50 s，占 49.7%）：
+                                             # 形状账 x 归属账 338.06 s、稳态 profile 级映射 289.60 s、
+                                             # 多边 x 惯量归属 271.01 s、逐边 ddt 245.87 s、对流动量账收进行 216.96 s、
                                              # VOF 振荡 76.92 s；非牛顿那几格里跨过这个量级的只有瞬态静止支那一条：
                                              # 稳态 HB 0.21 s、瞬态幂律 3.74 s、瞬态屈服 x 阀 5.75 s、
                                              # 稳态转捩 locus 0.10 s（本轮最便宜的 verify 用例：locus 是纯读出，一次 app 调用、
@@ -1228,6 +1228,53 @@ python3 tests/check_transient_yield_valve_branch_release.py \
     "$PWD/build/src/1d/apps/chflow-1d-transient" \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/transientYieldValveBranchRelease/case.dict"
+
+# 屈服壁第一次挂在节点的流出侧（5.55）：新算例 transientYieldValveSplitRelease，五个 case 文件——主桌面
+# 10 节点 / 19 根管 / 七个臂（`a` 保留 5.54 的两进一出作对照；`b`/`c`/`z` 一根进两根出；`d`/`f` 一进一出
+# 且两侧都是壁、其中出侧那根才是本案的新格；`m` 一根带日程的行同时挂在两个自由节点上），14 根屈服壁 + 5 根牛顿行；泄放壁的 drive 是
+# `pF - pB`，节点起点 2.7e4 对 pA 3.0e4 / pB 2.0e4，所以同一根 8000 Pa 的壁在入侧看到 3000（睡）、
+# 在出侧看到 7000（也睡），而 6000/4000 的壁一开局就在流：第一次决策 9 睡 5 醒。case_long.dict 只留
+# b/f/z、重开推到 15.0→15.2 s、endTime 18.0；case_steady.dict 同拓扑全部阀冻结在 K=0；
+# case_steady_dead.dict 只留死带三臂；case_steady_slow.dict 是 7 臂把 maxIter 换成 50000。
+# **内核一字未改**：holdsStatic 取 drive 绝对值（transient.cpp:40–:43）、drivePa 只是拓扑顺序
+# （:52–:56）、Q=0 时 frictionDp 抄 drive 符号（:72–:81）、节点行照度数求和（:395–:416）。要看什么：
+#   1) 镜像不是改名：入流壁的极限是天花板 `pA - 4τ_0L/d`（从下方逼近），泄放壁的是地板
+#      `pB + 4τ_0L/d`（从上方逼近）。"有几根从 held 出发"因此本身就是一个读数（本案 9/14），别按 5.54 的
+#      "全从 held 出发"照抄——`Tz`（4000）从第 2 个状态起就在流。
+#   2) 重锁律的正确陈述是"**同一侧**、阈值**严格更小**的另一行"，载体可以是壁**也可以是一根牛顿行**：
+#      本案预测 `Sa`←`Wa`、`Wz`←`Tz`、`Wb`←`Db` 三根，trace 命中三根，其余 11 根无载体、零重锁。写成
+#      "同一节点有两根壁"会在臂 b 红；丢掉"同一侧"会在臂 c 红（节点度数 3，但 `Sc` 是唯一供给者，
+#      第 173 步醒一次后再没睡回去）。
+#   3) 单步穿越是一类翻、不是全部：`Sa`/`Wz` 重锁时 drive 在阈值下 3.10/1.73 Pa，`Wb` 却在 **99.04 Pa**
+#      之下才被锁——牛顿行在 drive 已退回墙内之后还在减速液柱。把"|drive-阈值| < 一步"写成全域断言会红。
+#   4) 地板"到不到"要有第二个时钟加收缩因子：18 s 里 `Ff` 475.39→82.54、`Fz` 585.51→60.44 Pa，臂 z 每千步
+#      收缩 0.43708→0.73507（处处 <1）。只断 min() > 地板是"还没到"，断因子才是"到不了"。
+#   5) 死带要按**整个解**判而不是按行：臂 d 两行都 hold 时节点行退化成 `0 = 0`，`Fd` 全程同一个 token
+#      27000.0 Pa、旗标 2000 个全是 1。这类臂在稳态内核里是 `iterations=0 residual=0 (converged)` 且节点
+#      打印求解器自己的猜测 25000——**那是秩亏不是失败**，所以 banner 不能当唯一判据。
+#   6) 秩亏的**局部性**要用两个文件证：那 7 行 + 4 个节点在 7 臂与 3 臂文件里逐 token 相同，才敢说 7 臂
+#      文件的不收敛来自**会流的两臂**（残差 0.0321364485 × 6e-5 = 1.928187e-06 m³/s 正是臂 a 的节点失配）。
+#   7) 换 maxIter 时分开断"会动的行 / 不动的行 / 未定的行"：`Fa` 21898.4842→21379.7317、`Fz`→24000.0401
+#      随预算走，`Fb`/`Fc` 逐 token 不变，`Fd`/`Ff`/`Fm*` 恒 25000；且 50000 步后残差 2.6336e-11 仍高于
+#      tol 1e-12（banner 比的就是它，network.cpp:689）——这是**速率**不是拒绝，措辞要跟着数走。
+#   8) march 与 steady 对同一臂可以给相反的真值：`Ef`/`Em` 在 march 末态 drive 6303.12/6520.43 对 6000
+#      仍在流，steady 把它们归零（因为 steady 要落点、march 只逼近地板）。别把 steady 的 0 读成瞬态的 bug。
+#   9) 守恒门写成求解器的一个末位：8 个节点行 × 2000 步只用打印 token 闭合到 4.961e-14 m³/s，即
+#      1e-7 Pa × V/BC/dt = 5.0e-14 的一个单位；相对失配只长到 1.889e-03 且只在 `Fm1` 第 2 步（行两侧
+#      都是 8e-12 量级），所以要按**绝对**门判、把相对门单列一条。
+#  10) `t = 0` 那一列的旗标全打印 0（还没决定），"旗标开着却打印 0"的三行恰是三根壁各自的钳步
+#      （`Sa` 506、`Wb` 82、`Wz` 192，都在自己重锁的前一个状态）。事件扫描从 i=2 起，否则初始列会被读成
+#      一次翻，14 根壁会多出 14 次假翻转。
+# 十一族 70 条；ctest -j8 记 **49.10 s**（Test #84；单独跑 **32.02 s**，其中 case_steady_slow.dict 那趟
+# 50000 次迭代就占 22.1 s，成本在逐状态 38019 个速率的壁应力空间二分与节点定点）；既有测试一字未改。
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientYieldValveSplitRelease/case.dict
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientYieldValveSplitRelease/case_long.dict
+./build/src/1d/apps/chflow-1d-steady tests/cases/transientYieldValveSplitRelease/case_steady.dict
+./build/src/1d/apps/chflow-1d-steady tests/cases/transientYieldValveSplitRelease/case_steady_slow.dict
+python3 tests/check_transient_yield_valve_split_release.py \
+    "$PWD/build/src/1d/apps/chflow-1d-transient" \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/transientYieldValveSplitRelease/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

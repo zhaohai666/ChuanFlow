@@ -940,6 +940,33 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValveBranchRelease/case.dict)
 
+# the same latch seen from the OTHER side of the node: 7 arms, 14 yielded walls
+# and 19 pipes marched 2001 + 9001 states, where a drain wall's drive is
+# `pF - pB` and the free node is the upstream end. 8 flips (5 wakes, 3
+# re-latches) and the re-latching law is measured, not assumed -- Sa by Wa
+# (8000 by 6000, inflow side), Wz by Tz and Wb by the NEWTONIAN drain Db (both
+# outflow side): a wall is re-latched iff a row on the same side of its node has
+# a strictly smaller threshold, and the 11 walls with no such carrier never
+# re-latch. The floors are approached and never reached: Ff 303.12 Pa above
+# pB + 6000 at 4 s and still 82.54 Pa at 18 s, Fz 292.22 -> 60.44 Pa, arm z's
+# per-thousand-step shrink 0.43708 -> 0.73507. The dead band is a fixed point of
+# the WHOLE solve -- Fd prints 27000.0 in all 2001 states -- and steady says the
+# same arm has an EXACT solution (iterations=0 residual=0, converged) at four
+# nodes that are the solver's own guess 25000; the seven rows and four nodes are
+# token-identical in the 7-arm and 3-arm files, so what keeps Newton from
+# converging there (iterations=200, residual 0.0321364485 = arm a's node
+# imbalance at the sources' 6e-5 scale) is the two arms that flow, and at
+# maxIter 50000 Fa creeps to 21379.7317 Pa with residual 2.6336e-11 -- a rate,
+# not a refusal. Every node row closes on the printed tokens alone to
+# 4.961e-14 m3/s, under one unit of the last printed pressure digit
+add_test(
+    NAME verify.transientYieldValveSplitRelease
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_valve_split_release.py
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValveSplitRelease/case.dict)
+
 
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation

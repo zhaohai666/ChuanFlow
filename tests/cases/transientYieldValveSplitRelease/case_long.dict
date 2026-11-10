@@ -1,0 +1,67 @@
+// transientYieldValveSplitRelease / case_long: the three arms whose node is
+// owned by a drain wall -- `b` (8000 in, 6000 + a scheduled Newtonian out),
+// `f` (8000 in, 6000 out) and `z` (8000 in, 6000 + 4000 out) -- run to 18 s
+// with the one valve's reopen moved to 15.0 -> 15.2 s.
+//
+// The 4 s file says which drain wall goes to sleep and at what step. This file
+// asks the calendar question the same topology leaves open: a drain wall that
+// is still flowing falls toward its own floor pB + 4 tau_0 L / d with nothing
+// to drag it under, and the latch needs the rate to be *exactly* zero, not
+// small. So the honest form of "does more clock make `f` behave like `b`" is
+// the gap between the node and the floor, measured per thousand steps -- if the
+// gap shrinks by a factor below one per thousand steps it is an asymptote and
+// the answer is no wall, however long the run.
+//
+// Reopening `b`'s drain at 15 s is the other half: the wall that 4 s put to
+// sleep at step 83 has a neighbour that starts taking flow again 14 s later.
+//
+// The run answers both. Over 9001 states Ef and Tz never report a held flag
+// (their neighbours Sz and Sf stay held throughout), and the node-to-floor gaps
+// at steps 1000 -> 9000 go 475.39 -> 82.54 Pa for `f` and 585.51 -> 60.44 Pa
+// for `z`: monotone down, never zero. Per thousand steps the shrink factor is
+// 0.547 -> 0.762 (`f`) and 0.437 -> 0.735 (`z`) -- below one everywhere, but an
+// asymptote rather than a crossing. The three flips land on the same steps as
+// in the 4 s file (Wb 83, Wz 193, Sb 317) and stay asleep, and opening Db again
+// at 15.0 s leaves Wb held through state 9000: the seal is what pulled the node
+// under the floor, so the reopen only lets it fall further.
+//
+// verified by tests/check_transient_yield_valve_split_release.py
+// (ctest verify.transientYieldValveSplitRelease).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+    Fb { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Ff { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fz { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+}
+
+pipes
+{
+    Sb { from A; to Fb; length 20; diameter 0.02; yieldStress 2.0; }
+    Wb { from Fb; to B; length 20; diameter 0.02; yieldStress 1.5; }
+    Db { from Fb; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 15.0; end 15.2; } }
+
+    Sf { from A; to Ff; length 20; diameter 0.02; yieldStress 2.0; }
+    Ef { from Ff; to B; length 20; diameter 0.02; yieldStress 1.5; }
+
+    Sz { from A; to Fz; length 20; diameter 0.02; yieldStress 2.0; }
+    Wz { from Fz; to B; length 20; diameter 0.02; yieldStress 1.5; }
+    Tz { from Fz; to B; length 20; diameter 0.02; yieldStress 1.0; }
+}
+
+time
+{
+    dt 0.002;
+    endTime 18.0;
+    reportEvery 1;
+}

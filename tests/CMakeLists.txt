@@ -359,13 +359,35 @@ add_test(
 # than a Churchill number, Q/Q_Hagen-Poiseuille == g(xi), the wall stress that no
 # tau_0 moves, the dead branch through the network Newton (a yielded series pair
 # lands the free node exactly on its symmetric pressure, a stuck one empties the
-# line), and the three parse-time refusals
+# line), and the parse-time refusals -- of which the one that refused a yield
+# stress together with a flow index is lifted again by 5.47, and is now asserted
+# as a solved state rather than a refusal
 add_test(
     NAME verify.steadyBinghamYield
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_bingham_yield.py
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyBinghamYield/case.dict)
+
+# 5.47 Herschel-Bulkley in the same network -- tau = tau_0 + K gdot^n, the branch
+# 5.46 refused. One closed form is the laminar profile integral,
+# Q = pi R^3 tw^-3 K^(-1/n) n D^(1+1/n) [tau0^2/(n+1) + 2 tau0 D/(2n+1) +
+# D^2/(3n+1)] with D = tw - tau0, which is Buckingham at n = 1 and the exact
+# power law of 5.45 at tau0 = 0. That second limit is also what fixes 5.45's
+# laminar constant: it carried the turbulent-collapse K (3n+1)/(4n) where the
+# profile needs K ((3n+1)/(4n))^n, 25% of rate at n = 0.5 and exactly nothing at
+# n = 1, which is why its own PowN1-vs-Newt control never saw it. The checker
+# reads the closed form at two drops and on a series pair, re-derives it by
+# quadrature rather than term by term, checks both limits against the branches
+# that shipped them, keeps the threshold geometric (dp_static does not know n),
+# and accounts for the 1e-9 slack on the two softest landings as the solver's own
+# rate bracket rather than as a looser law
+add_test(
+    NAME verify.steadyHerschelBulkley
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_herschel_bulkley.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyHerschelBulkley/case.dict)
 
 # black-oil Beggs-Brill gathering network: balance, holdup/regime sanity and
 # a dry-oil GOR sensitivity twin

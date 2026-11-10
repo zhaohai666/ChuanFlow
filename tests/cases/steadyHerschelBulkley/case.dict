@@ -1,0 +1,99 @@
+# 5.47 Herschel-Bulkley 第一次进稳态管网：5.46 拒收的那一支现在有自己的闭式
+#
+# tau = tau0 + K gdot^n 的圆管层流速率是剖面直接积分，逐项可积（不是拟合）：
+#   Q = pi R^3 tw^-3 K^(-1/n) n D^(1+1/n)
+#       [ tau0^2/(n+1) + 2 tau0 D/(2n+1) + D^2/(3n+1) ],  tw = dp d/(4L), D = tw - tau0
+# 这一个式子包含前两格：
+#   n = 1, K = mu  ->  Buckingham 的 [1 - (4/3)xi + (1/3)xi^4]（5.46，逐位相同）
+#   tau0 = 0        ->  pi R^3 n/(3n+1) (tw/K)^(1/n)，即 5.45 想写的那个精确幂律解
+# 第二行就是本案顺手量出来的那件事：5.45 当时把 Metzner-Reed 常数写成
+# K' = K (3n+1)/(4n)（一次方），而剖面要的是 K' = K ((3n+1)/(4n))^n。两者只差
+# (4n/(3n+1))^(1-1/n) 这个因子——n = 0.5 处速率差 25%。本案把这条差写成判据
+# （HbTiny 走屈服支、HbZero 走广义 Re 支，同一个 (n, K)），5.45 的算例同时改成
+# 打在剖面积分上。
+#
+# 阈值仍然是几何的，与 n 无关：dpStatic = 4 tau0 L / d。落地的形状随 n 变
+# （Q ~ D^(1+1/n)：n=1 是平方，n=0.5 是立方），5.46 那两条软着陆陈述在这里是
+# 同一个式子在 n=1 的特例。
+#
+# 屈服且带指数的管没有材料黏度（mu 不进它的律），所以报出的 Re 是表观数
+#   Re = rho v d / (tw d / 8v) = 8 rho v^2 / tw
+# 于是 f * Re == 64 是两个报出数之间的恒等式；真正的判据压在 tw 的闭式上。
+#
+# 本案的数：rho 850, mu 0.1, d 0.02, L 20, 两端定压 dp = 1.0e4（第二份 2.0e4）。
+# 于是平行组每根 tw = 2.5 Pa：
+#   HbThin  n=0.5 K=1.0 tau0=0.5 -> D=2.0
+#   HbThin2 n=0.5 K=1.0 tau0=2.0 -> D=0.5（同 n，阈值抬高：速率掉一个量级）
+#   HbThick n=1.3 K=0.02 tau0=1.0 -> D=1.5（剪切增稠与稀化反面同台）
+#   HbNear  n=0.7 K=2.0 tau0=2.4 -> dpStatic = 9600 < 1.0e4，仍在流
+#   HbStuck n=0.7 K=2.0 tau0=2.6 -> dpStatic = 1.04e4 > dp：死分支，q 恰为 0
+#   HbN1    n=1.0 K=0.1 tau0=1.0 与 Bing（不写 flowIndex，5.46 的支）同一根律
+#   HbZero  n=0.5 K=1.0 不写 yieldStress -> 广义 Re 支；HbTiny 同参数 tau0=1e-9
+# 串接对 A-C-B 两条全同 HB 管，自由节点应落在 2.5e4，各拿 5000 Pa（tw=1.25 >
+# tau0=1.0，仍流）；驱动差翻倍那份里两条都退到 D=1.25。
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+    C {};
+}
+
+pipes
+{
+    # --- 平行组：两端定压，每根管的 dp 恰为 1.0e4 Pa -------------------------
+    HbN1    { from A; to B; length 20; diameter 0.02;
+              flowIndex 1.0; consistency 0.1; yieldStress 1.0; }
+    Bing    { from A; to B; length 20; diameter 0.02; yieldStress 1.0; }
+    HbThin  { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.5; consistency 1.0; yieldStress 0.5; }
+    HbThin2 { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.5; consistency 1.0; yieldStress 2.0; }
+    HbThick { from A; to B; length 20; diameter 0.02;
+              flowIndex 1.3; consistency 0.02; yieldStress 1.0; }
+    HbNear  { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.7; consistency 2.0; yieldStress 2.4; }
+    HbStuck { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.7; consistency 2.0; yieldStress 2.6; }
+    HbD2x   { from A; to B; length 20; diameter 0.04;
+              flowIndex 0.5; consistency 1.0; yieldStress 0.5; }
+
+    # --- 同一个 (n, K)，阈值取 0 与取到极小：两条不同的支 -------------------
+    HbZero  { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.5; consistency 1.0; }
+    HbTiny  { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.5; consistency 1.0; yieldStress 1.0e-9; }
+
+    # --- 串接：自由节点 C 分压 -----------------------------------------------
+    HbS1    { from A; to C; length 20; diameter 0.02;
+              flowIndex 0.7; consistency 2.0; yieldStress 1.0; }
+    HbS2    { from C; to B; length 20; diameter 0.02;
+              flowIndex 0.7; consistency 2.0; yieldStress 1.0; }
+
+    # --- 不流变的新顿对照（同一张网格里的第 0 号陈述）----------------------
+    Newt    { from A; to B; length 20; diameter 0.02; }
+}
+
+sources
+{
+    # A / B 都是定压节点，这两项只用来给残差定 qScale
+    feed { node A; rate 6.0e-5; }
+    take { node B; rate -6.0e-5; }
+}
+
+solve
+{
+    maxIter 60;
+    tol 1e-12;
+}

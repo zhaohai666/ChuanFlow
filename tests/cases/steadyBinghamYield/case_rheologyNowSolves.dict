@@ -1,0 +1,14 @@
+// 5.46 拒绝过这一行：屈服应力 + 幂律指数 = Herschel-Bulkley，而本案只解 Bingham
+// 的那条单调括号（F(tw) = tw - 4 tau0/3 + tau0^4/(3 tw^3) - B），n != 1 时括号里的
+// 幂次换了，需要自己的解。5.47 把那个解补上了——剖面积分的闭式，对 tw 单调，
+// 所以这里保留同一个声明，只是它现在必须真的解出一个正流量。
+// 具体数值由 tests/check_steady_herschel_bulkley.py 负责；本文件只记录“拒绝已被解除”。
+// verified by tests/check_steady_bingham_yield.py (ctest verify.steadyBinghamYield).
+fluid { rho 850; mu 0.1; }
+nodes { A { pressure 3.0e4; } B { pressure 2.0e4; } }
+pipes
+{
+    Bad { from A; to B; length 20; diameter 0.02;
+          yieldStress 1.0; flowIndex 0.5; consistency 2.0; }
+}
+solve { maxIter 20; tol 1e-10; }

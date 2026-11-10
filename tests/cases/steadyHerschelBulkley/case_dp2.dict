@@ -1,0 +1,75 @@
+# 5.47 的第二份：驱动差翻倍（A 4.0e4 / B 2.0e4，每根管 dp = 2.0e4 Pa）
+#
+# 同一张图、同一批管，只改 A 的压力。这一份管三件事：
+#   1) tw 从 2.5 Pa 抬到 5.0 Pa，HbStuck（dpStatic = 1.04e4）从此**流起来**——
+#      死分支判的是被问到的压差，不是管本身的属性；同一根管的 Q 在两份文件里
+#      从恰为 0 变成非零，这是 5.46 那条陈述在 n != 1 上的复现；
+#   2) 屈服闭式在第二个 dp 上再打一次（两个驱动差各一次，共 12 个状态）；
+#   3) 串接对的自由节点仍然落在正中间（对称性与驱动无关）。
+# 判据在两份上同时成立才算数，所以这里没有新的物理陈述，只有同一句话的第二次读数。
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.1;
+}
+
+nodes
+{
+    A { pressure 4.0e4; }
+    B { pressure 2.0e4; }
+    C {};
+}
+
+pipes
+{
+    # --- 平行组：两端定压，每根管的 dp 恰为 1.0e4 Pa -------------------------
+    HbN1    { from A; to B; length 20; diameter 0.02;
+              flowIndex 1.0; consistency 0.1; yieldStress 1.0; }
+    Bing    { from A; to B; length 20; diameter 0.02; yieldStress 1.0; }
+    HbThin  { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.5; consistency 1.0; yieldStress 0.5; }
+    HbThin2 { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.5; consistency 1.0; yieldStress 2.0; }
+    HbThick { from A; to B; length 20; diameter 0.02;
+              flowIndex 1.3; consistency 0.02; yieldStress 1.0; }
+    HbNear  { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.7; consistency 2.0; yieldStress 2.4; }
+    HbStuck { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.7; consistency 2.0; yieldStress 2.6; }
+    HbD2x   { from A; to B; length 20; diameter 0.04;
+              flowIndex 0.5; consistency 1.0; yieldStress 0.5; }
+
+    # --- 同一个 (n, K)，阈值取 0 与取到极小：两条不同的支 -------------------
+    HbZero  { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.5; consistency 1.0; }
+    HbTiny  { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.5; consistency 1.0; yieldStress 1.0e-9; }
+
+    # --- 串接：自由节点 C 分压 -----------------------------------------------
+    HbS1    { from A; to C; length 20; diameter 0.02;
+              flowIndex 0.7; consistency 2.0; yieldStress 1.0; }
+    HbS2    { from C; to B; length 20; diameter 0.02;
+              flowIndex 0.7; consistency 2.0; yieldStress 1.0; }
+
+    # --- 不流变的新顿对照（同一张网格里的第 0 号陈述）----------------------
+    Newt    { from A; to B; length 20; diameter 0.02; }
+}
+
+sources
+{
+    # A / B 都是定压节点，这两项只用来给残差定 qScale
+    feed { node A; rate 6.0e-5; }
+    take { node B; rate -6.0e-5; }
+}
+
+solve
+{
+    maxIter 60;
+    tol 1e-12;
+}

@@ -5,7 +5,7 @@ against the exact laminar closed form rather than against a correlation.
 The kernel makes one substitution -- the Metzner-Reed generalized Reynolds
 number in place of rho*u*d/mu inside the same Churchill call:
 
-    Re_MR = rho u^(2-n) d^n / (K' 8^(n-1)),   K' = K (3n+1)/(4n)
+    Re_MR = rho u^(2-n) d^n / (K' 8^(n-1)),   K' = K ((3n+1)/(4n))^n
 
 and the claim is that Churchill's laminar branch f = 64/Re then *is* the
 solution for tau = K gdot^n, not an approximation of it:
@@ -100,25 +100,32 @@ def parse(stdout):
 
 
 def q_closed_form(dp, length, diam, n, k):
-    """Exact laminar discharge of a power-law fluid in a circular pipe; at
-    n = 1, k = mu this is 128 mu L Q = pi d^4 dp."""
+    """Exact laminar discharge of a power-law fluid in a circular pipe, from
+    the integrated profile: with tau_w = dp d/(4L),
+        Q = pi R^3 n/(3n+1) (tau_w/K)^(1/n)
+    which at n = 1, k = mu is 128 mu L Q = pi d^4 dp. The Metzner-Reed
+    constant with the exponent 1 on (3n+1)/(4n) -- the turbulent-collapse
+    convention -- is what 5.45 originally checked against; the profile
+    integral is the exact one and the two differ by (4n/(3n+1))^(1-1/n),
+    25% in the rate at n = 0.5 (measured in 5.47)."""
     if n == 0.0:
         return math.pi * diam ** 4 * dp / (128.0 * MU * length)
-    return (math.pi * diam ** 3 / 32.0) * (
-        n * dp * diam / ((3.0 * n + 1.0) * k * length)) ** (1.0 / n)
+    tau_w = dp * diam / (4.0 * length)
+    return (math.pi * diam ** 3 / 8.0) * n / (3.0 * n + 1.0) * (tau_w / k) ** (1.0 / n)
 
 
 def re_mr(u, diam, n, k):
     if n == 0.0:
         return RHO * u * diam / MU
-    kp = k * (3.0 * n + 1.0) / (4.0 * n)
+    kp = k * ((3.0 * n + 1.0) / (4.0 * n)) ** n
     return RHO * u ** (2.0 - n) * diam ** n / (kp * 8.0 ** (n - 1.0))
 
 
 def kp_of(name):
-    """K' = K(3n+1)/4n, the consistency the generalized number is written with."""
+    """K' = K((3n+1)/4n)^n, the consistency the generalized number is written
+    with: Rabinowitsch's wall rate cubed... rather, taken to the n."""
     n, k = PIPES[name][2], PIPES[name][3]
-    return k * (3.0 * n + 1.0) / (4.0 * n)
+    return k * ((3.0 * n + 1.0) / (4.0 * n)) ** n
 
 
 def rel(a, b):
@@ -191,11 +198,13 @@ require(worst_re < 1000.0,
 worst_re_calc = max(rel(B[n]["Re"], re_mr(B[n]["v"], PIPES[n][1], PIPES[n][2],
                                           PIPES[n][3]))
                     for n in PIPES)
-require(worst_re_calc < 1e-12,
-        f"the reported Re is the Metzner-Reed number itself, to "
-        f"{worst_re_calc:.3e} -- the log says which Reynolds number was used,"
-        f" and it is the generalized one (K' = K(3n+1)/4n), not the Newtonian"
-        f" one with a relabelled viscosity")
+require(worst_re_calc < 1e-11,
+        f"the reported Re is the generalized number itself, to "
+        f"{worst_re_calc:.3e} (the twelve printed digits floor any such "
+        f"comparison near 5e-13, and pow() of the corrected constant adds a "
+        f"couple of them) -- the log says which Reynolds number was used, and "
+        f"it is the generalized one (K' = K((3n+1)/4n)^n), not the Newtonian "
+        f"one with a relabelled viscosity")
 
 # --- 5. the three structural exponents ---------------------------------------
 ratio_d_newt = B["D2xNewt"]["Q"] / B["Newt"]["Q"]

@@ -27,7 +27,7 @@ Nine families of judgement:
   6. the yield multiplies the Newtonian rate by exactly g(xi)
   7. the wall stress is still geometry: tw does not contain tau_0
   8. the dead branch through the network Newton, plus the inverse problem
-  9. the three parse-time refusals
+  9. the two parse-time refusals that are still refusals, and the one 5.47 lifted
 """
 
 import math
@@ -339,15 +339,20 @@ require(V["Yf"]["Q"] == -V["Yr"]["Q"] and V["Yf"]["dp"] == -V["Yr"]["dp"],
         f" negative of the forward one -- the dead branch is decided on the"
         f" sign of the chosen direction, not by luck in the forward case")
 
-# --- 9. refusals -------------------------------------------------------------
-r1 = run(f"{CASE_DIR}/case_rejectRheology.dict")
+# --- 9. refusals, and the one that has been lifted --------------------------
+r1 = run(f"{CASE_DIR}/case_rheologyNowSolves.dict")
+Y1 = parse(r1.stdout, {"Bad"})
+require(r1.returncode == 0 and Y1["Bad"]["Q"] > 0.0
+        and Y1["Bad"]["dp"] == DP_BASE,
+        f"the refusal this case used to carry is lifted by 5.47, and the"
+        f" declaration is unchanged: a threshold together with an index and a"
+        f" consistency now solves to {Y1['Bad']['Q']:.6g} m3/s across the full"
+        f" {DP_BASE:.0f} Pa instead of being refused at parse time -- at n != 1"
+        f" the bracket is no longer Buckingham's cubic but the profile integral,"
+        f" which is monotone in tw for every n, so the case has its own inverted"
+        f" law. What that number *is* belongs to 5.47's checker, not here")
 r2 = run(f"{CASE_DIR}/case_rejectCoupled.dict")
 r3 = run(f"{CASE_DIR}/case_rejectNegative.dict")
-require(r1.returncode != 0 and "herschel" in (r1.stdout + r1.stderr).lower(),
-        "a yield stress together with a flow index is refused as"
-        " Herschel-Bulkley rather than quietly solved as Bingham: at n != 1 the"
-        " inverted bracket is not Buckingham's cubic in 1/tw and needs its own"
-        " monotone form")
 require(r2.returncode != 0 and "coupled" in (r2.stdout + r2.stderr).lower(),
         "a coupled element that also declares a yield stress is refused: its"
         " loss already is the partner model's statement, so there is no wall"

@@ -70,20 +70,48 @@ double pumpHeadOf(const NetworkPipe& p, double q)
     return std::max(h, 0.0);
 }
 
-/// Metzner-Reed generalized Reynolds number: the Newtonian rho u d / mu when
-/// the pipe declares no rheology, and rho u^(2-n) d^n / (K' 8^(n-1)) with
-/// K' = K(3n+1)/(4n) otherwise. At n = 1, K = mu the second expression is the
-/// first one term for term (4/4 = 1 exactly, 8^0 = 1 exactly, x^1 = x exactly,
-/// and the multiplications are in the same order), which is what makes a
-/// declared-but-Newtonian pipe a bit-identical control rather than a new
-/// number.
+/// The Reynolds number a rheology is reported with.
+///
+/// Newtonian (nothing declared): rho u d / mu. Yielded with an index: the
+/// apparent number 8 rho u^2 / tau_w, because no material viscosity enters the
+/// law (see yieldedWallStress). Otherwise the Metzner-Reed form
+///     Re_MR = rho u^(2-n) d^n / (K' 8^(n-1))
+/// with the consistency corrected by the wall shear rate rather than by the
+/// apparent one, K' = K ((3n+1)/(4n))^n. That exponent is the whole point:
+/// Rabinowitsch's wall rate is gamma_w = (3n+1)/(4n) . 8u/d, so the stress the
+/// profile actually holds is tau_w = K gamma_w^n = K' (8u/d)^n, and only with
+/// that K' does Churchill's laminar line f = 64/Re read back as 8 tau_w /
+/// (rho u^2), i.e. as the integrated velocity profile rather than as a
+/// correlation of it. The textbook constant K (3n+1)/(4n) - the exponent-1
+/// version - collapses turbulent data onto the Newtonian Moody line but sits
+/// ((3n+1)/(4n))^(1-1/n) off the laminar solution, which at n = 0.5 is 25% in
+/// the rate; 5.47 measured that gap from the profile integral and this line is
+/// the correction. At n = 1 the factor is 1/1 = 1 exactly, so a
+/// declared-but-Newtonian pipe is still bit-identical to an undeclared one.
+///
+/// A yielded pipe with an index (Herschel-Bulkley) has no material viscosity at
+/// all - mu does not enter its law - so the only Reynolds number that can be
+/// reported is the apparent one: mu_app = tau_w d / (8 u), read off the wall
+/// stress the fluid actually holds at this rate. With that number and the exact
+/// f = 8 tau_w / (rho u^2) the product f * Re is 64 by definition, so the
+/// assertion that leans on is the closed form for tau_w, not this identity.
+double yieldedWallStress(const NetworkPipe& pipe, const FluidProperties& fluid,
+                         double q);
+
 double generalizedReynolds(const NetworkPipe& pipe, const FluidProperties& fluid,
                            double speed)
 {
+    if (pipe.flowIndex > 0 && pipe.yieldStress > 0)
+    {
+        const double tw = yieldedWallStress(pipe, fluid,
+                                           speed * pipeArea(pipe));
+        return 8.0 * fluid.rho * speed * speed / tw;
+    }
     if (!(pipe.flowIndex > 0))
         return fluid.rho * speed * pipe.diameter / fluid.mu;
     const double n = pipe.flowIndex;
-    const double kp = pipe.consistency * (3.0 * n + 1.0) / (4.0 * n);
+    const double kp = pipe.consistency
+                    * std::pow((3.0 * n + 1.0) / (4.0 * n), n);
     return fluid.rho * std::pow(speed, 2.0 - n) * std::pow(pipe.diameter, n)
          / (kp * std::pow(8.0, n - 1.0));
 }
@@ -130,6 +158,79 @@ double binghamWallStress(const NetworkPipe& pipe, const FluidProperties& fluid,
     return tw;
 }
 
+/// Herschel-Bulkley (tau = tau0 + K gdot^n) exact laminar rate in a circular
+/// pipe, as a function of the wall stress. With tw = dp d / (4 L) and
+/// D = tw - tau0 the profile integral is termwise integrable,
+///     Q = pi R^3 tw^-3 K^(-1/n) n D^(1+1/n)
+///         [ tau0^2/(n+1) + 2 tau0 D/(2n+1) + D^2/(3n+1) ],
+/// which is not a correlation: at n = 1, K = mu the bracket times D^2 is
+/// Buckingham's [1 - (4/3) xi + (1/3) xi^4] times tw^4/4, and at tau0 = 0 only
+/// the last term survives and the expression is the power-law closed form of
+/// 5.45. So one formula contains both laws already shipped, and the threshold
+/// stays geometric: Q -> 0 as tw -> tau0, i.e. dp_static = 4 tau0 L / d for
+/// every n, while the *shape* of the landing near it depends on n (the leading
+/// power of D is 1 + 1/n, which is 2 for Bingham and 3 at n = 0.5).
+double herschelBulkleyRate(double tw, const NetworkPipe& pipe)
+{
+    const double n = pipe.flowIndex;
+    const double d = tw - pipe.yieldStress;
+    if (!(d > 0.0) || !(tw > 0.0)) return 0.0;
+    const double r = 0.5 * pipe.diameter;
+    return M_PI * r * r * r * std::pow(tw, -3.0)
+         * std::pow(pipe.consistency, -1.0 / n) * n
+         * std::pow(d, 1.0 + 1.0 / n)
+         * (pipe.yieldStress * pipe.yieldStress / (n + 1.0)
+          + 2.0 * pipe.yieldStress * d / (2.0 * n + 1.0)
+          + d * d / (3.0 * n + 1.0));
+}
+
+/// The same law inverted: the wall stress a demanded rate must be held at.
+/// Monotone in tw (the yield only removes fluid from the slow end of the
+/// profile, so a higher wall stress always carries more), so a bracket plus
+/// bisection is enough - no derivative, and no Newton stall at the left end
+/// where the slope vanishes. The left end is the threshold exactly; the right
+/// end starts at the threshold plus the tau0 = 0 (power-law) stress for the
+/// same rate - a lower bound on the root, because yielding only costs rate -
+/// and doubles until the law clears the demand, which it always does since the
+/// rate grows like tw^(1/n).
+double herschelBulkleyWallStress(const NetworkPipe& pipe, double q)
+{
+    const double tau0 = pipe.yieldStress;
+    const double demand = std::abs(q);
+    if (!(demand > 0.0)) return tau0; // no rate: the wall holds the threshold
+
+    const double n = pipe.flowIndex;
+    const double r = 0.5 * pipe.diameter;
+    const double twPl =
+        pipe.consistency
+      * std::pow(demand * (3.0 * n + 1.0) / (M_PI * r * r * r * n), n);
+    double lo = tau0, hi = tau0 + twPl;
+    for (int expand = 0; expand < 200 && !(herschelBulkleyRate(hi, pipe) > demand);
+         ++expand) hi *= 2.0;
+
+    for (int it = 0; it < 200; ++it)
+    {
+        const double mid = 0.5 * (lo + hi);
+        if (herschelBulkleyRate(mid, pipe) > demand) hi = mid;
+        else lo = mid;
+        if (!(hi > lo)) break;
+        if (std::abs(hi - lo) <= 2.0 * std::numeric_limits<double>::epsilon() * hi)
+            break;
+    }
+    return 0.5 * (lo + hi);
+}
+
+/// Which yielded law a pipe's wall stress comes from: Buckingham when only a
+/// threshold and the fluid's own mu are declared (the plastic number keeps the
+/// Reynolds convention of 5.46), Herschel-Bulkley when an index is declared
+/// with the threshold.
+double yieldedWallStress(const NetworkPipe& pipe, const FluidProperties& fluid,
+                         double q)
+{
+    if (pipe.flowIndex > 0) return herschelBulkleyWallStress(pipe, q);
+    return binghamWallStress(pipe, fluid, q);
+}
+
 /// Friction + valve loss (Pa, positive) at an imposed rate magnitude q:
 /// explicit Churchill evaluation, no iteration needed forward. A yielded pipe
 /// instead answers with the wall-stress solution, whose q = 0 limit is the
@@ -150,7 +251,7 @@ double pipeLossAt(const NetworkPipe& pipe, const FluidProperties& fluid,
 
     if (pipe.yieldStress > 0)
         return 4.0 * pipe.length
-             * binghamWallStress(pipe, fluid, q) / pipe.diameter
+             * yieldedWallStress(pipe, fluid, q) / pipe.diameter
              + pipe.valveK * fluid.rho * v * v / 2.0;
 
     const double re = generalizedReynolds(pipe, fluid, std::abs(v));
@@ -160,9 +261,13 @@ double pipeLossAt(const NetworkPipe& pipe, const FluidProperties& fluid,
 }
 
 /// Friction factor to report for a solved rate: the Churchill number for the
-/// all-regime law, and for a yielded pipe the exact factor implied by
-/// Buckingham's drop, f = 8 tau_w / (rho v^2) -- the number that reproduces the
-/// drop printed next to it, not a correlation pasted onto a yielded wall.
+/// all-regime law, and for a yielded pipe the exact factor implied by that
+/// law's drop, f = 8 tau_w / (rho v^2) -- the number that reproduces the drop
+/// printed next to it, not a correlation pasted onto a yielded wall. For a
+/// Bingham plastic the Reynolds number printed beside it is the plastic one
+/// (rho v d / mu), so the pair reads f Re g(xi) = 64; for Herschel-Bulkley
+/// there is no material viscosity and the printed number is the apparent one,
+/// which makes f Re = 64 an identity between the two reports.
 /// At v = 0 there is no rate to normalise against, so the report is 0.
 double pipeFrictionReport(const NetworkPipe& pipe, const FluidProperties& fluid,
                           double reynolds, double speed)
@@ -170,7 +275,7 @@ double pipeFrictionReport(const NetworkPipe& pipe, const FluidProperties& fluid,
     if (pipe.yieldStress > 0)
     {
         if (!(speed > 0)) return 0.0;
-        return 8.0 * binghamWallStress(pipe, fluid, speed * pipeArea(pipe))
+        return 8.0 * yieldedWallStress(pipe, fluid, speed * pipeArea(pipe))
              / (fluid.rho * speed * speed);
     }
     return churchillFriction(reynolds, pipe.roughness / pipe.diameter);
@@ -1002,11 +1107,6 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         if (p.yieldStress < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative yield"
                     " stress (0 means no threshold)");
-        if (p.yieldStress > 0 && p.flowIndex > 0)
-            cfFatal("steadyNetwork: pipe '" + name + "' declares both a power-"
-                    "law index and a yield stress: that is Herschel-Bulkley,"
-                    " whose inverted law is not Buckingham's cubic-in-1/tw and"
-                    " would need its own bracket");
         if (p.yieldStress > 0 && (net.hasBlackOil || net.hasPvtFluid))
             cfFatal("steadyNetwork: pipe '" + name + "' carries a yield stress,"
                     " which only the constant-property single-phase laminar"

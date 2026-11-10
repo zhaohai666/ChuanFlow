@@ -1,0 +1,35 @@
+# 5.47 的拒收：带指数又带阈值时，consistency 仍然不能省。
+#
+# 同一个 (flowIndex, yieldStress) 组合在 case.dict 里是合法的 Herschel-Bulkley
+# 声明（HbN1 那一类），这里只把 consistency 去掉。n != 1 时 K 的单位是 Pa.s^n，
+# 与 mu 不是同一个量纲，默认成 mu 就是一个静默的错数——5.45 为幂律立的那条
+# 拒收在这里原样适用，因为本案把 HB 写成合法声明时没有动这条声明面检查。
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+}
+
+pipes
+{
+    HbNoK { from A; to B; length 20; diameter 0.02;
+            flowIndex 0.6; yieldStress 1.0; }
+}
+
+solve
+{
+    maxIter 60;
+    tol 1e-12;
+}

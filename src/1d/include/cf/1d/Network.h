@@ -58,12 +58,18 @@ struct NetworkPipe
     // pipe's fluid is tau = K gdot^n instead of Newtonian, and the single
     // change to the Darcy-Weisbach law is the Reynolds number in the
     // friction-factor call -- the generalized one
-    //     Re_MR = rho u^(2-n) d^n / (K' 8^(n-1)),  K' = K (3n+1)/(4n)
+    //     Re_MR = rho u^(2-n) d^n / (K' 8^(n-1)),  K' = K ((3n+1)/(4n))^n
     // which reduces to rho u d / mu *exactly* at n = 1, K = mu, so a
     // declared-but-Newtonian pipe is bit-identical to an undeclared one.
-    // With this substitution Churchill's laminar branch reads 16/Re_MR,
+    // With this substitution Churchill's laminar branch reads 64/Re_MR,
     // which is the exact Hagen-Poiseuille analogue for a power-law fluid,
-    // so the laminar drop is not a correlation but a closed form.
+    // so the laminar drop is not a correlation but a closed form. The
+    // exponent on (3n+1)/(4n) is what makes it exact: that factor is
+    // Rabinowitsch's wall shear rate over the apparent one, and the stress
+    // the profile holds is K times it to the n, not to the 1. The
+    // textbook's exponent-1 constant is a turbulent-collapse convention and
+    // sits ((3n+1)/(4n))^(1-1/n) off the laminar solution (25% in the rate at
+    // n = 0.5); 5.47 measures that and fixes it.
     double flowIndex = 0;      // n; 0 = Newtonian (the fluid's own mu)
     double consistency = 0;    // K, Pa.s^n; required when flowIndex > 0
 
@@ -78,6 +84,18 @@ struct NetworkPipe
     // number -- which makes f Re g(xi) = 64 a restatement of the solution.
     // tau_0 -> 0 recovers Hagen-Poiseuille term for term, so the undeclared
     // value is a sentinel, not a branch.
+    //
+    // Declaring `yieldStress` *together with* a `flowIndex` is
+    // Herschel-Bulkley, tau = tau_0 + K gdot^n, and the same two keywords are
+    // read as its threshold and its consistency. Its laminar rate is one
+    // termwise integrable expression in the wall stress,
+    //     Q = pi R^3 tw^-3 K^(-1/n) n D^(1+1/n)
+    //         [ tau_0^2/(n+1) + 2 tau_0 D/(2n+1) + D^2/(3n+1) ],  D = tw - tau_0,
+    // which is Buckingham's bracket at n = 1, K = mu and the power-law closed
+    // form above at tau_0 = 0 -- so both shipped laws are limits of this one,
+    // and each is asserted against its own closed form. mu does not enter it,
+    // which is why a Herschel-Bulkley pipe reports the *apparent* Reynolds
+    // number rho u d / (tw d / 8u) rather than a material one.
     double yieldStress = 0;    // Pa; 0 = no threshold
 
     /// Coupled element (the 1D side of a 1D<->3D interface): when > 0 this

@@ -14,12 +14,13 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（101 项）约 258 ~ 640 s ≈ 4.3 ~ 10.7 分钟（实测 639.30 s），
-                                             # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高；八并行下
-                                             # 五条耦合用例都读到 400 ~ 620 s，比单跑时的 150 ~ 250 s 贵一倍）：
-                                             # 形状账 x 归属账 622.5 s、稳态 profile 级映射 592.0 s、
-                                             # 多边 x 惯量归属 509.6 s、逐边 ddt 456.7 s、对流动量账收进行 400.7 s、
-                                             # 屈服应力（四个毫秒级稳态求解）0.26 s、非牛顿流变 0.08 s、VOF 振荡 158.6 s
+ctest --test-dir build --output-on-failure -j8  # 全量回归（102 项）约 258 ~ 640 s ≈ 4.3 ~ 10.7 分钟（实测 459.88 s，102/102 绿），
+                                             # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高；五条最重的耦合用例
+                                             # 在 -j8 下占到整轮墙钟的 45%）：
+                                             # 形状账 x 归属账 454.3 s、稳态 profile 级映射 403.0 s、
+                                             # 多边 x 惯量归属 378.7 s、逐边 ddt 342.4 s、对流动量账收进行 300.2 s、
+                                             # VOF 振荡 100.7 s；三条非牛顿稳态用例（各把十来个毫秒级求解打包）
+                                             # 幂律 0.14 s、屈服应力 0.28 s、Herschel-Bulkley 0.21 s
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -846,19 +847,21 @@ python3 tests/check_transient_coupled_multi_turbulent_shape_and_inertia_split.py
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict"
 
-# 非牛顿管流（5.45）：新算例 steadyPowerLawRheology。内核只做**一次替换**——src/1d/src/network.cpp:80-:92 的 generalizedReynolds
-# （Metzner-Reed：rho u^(2-n) d^n / (K' 8^(n-1))，K' = K(3n+1)/4n）取代原先两处 rho u d / mu：求解用的 pipeLossAt（:105）与
-# 打印用的 reynolds（:181）。声明面 pipes.<name>{ flowIndex n; consistency K; }（Network.h:67-:68，0 = 未声明）。
+# 非牛顿管流（5.45）：新算例 steadyPowerLawRheology。内核只做**一次替换**——src/1d/src/network.cpp:101-:117 的 generalizedReynolds
+# （Metzner-Reed：rho u^(2-n) d^n / (K' 8^(n-1))，K' = K((3n+1)/(4n))^n，指数是 n，5.47 在 tau_0->0 极限上量出并改正）取代原先两处
+# rho u d / mu：求解用的 pipeLossAt（:257）与打印用的 generalizedReynolds（调用点 equipmentFlow，:369）。
+# 声明面 pipes.<name>{ flowIndex n; consistency K; }（Network.h:73-:74，0 = 未声明）。
 # 为什么判据敢写成"精确"：Churchill 的层流半区是 f = 64/Re，换上 Re_MR 之后它就是幂律圆管的**解析解**
 #   dp = (L/d) K (3n+1)/n (8u/d)^n   ->   Q = (pi d^3/32) [n dp d / ((3n+1) K L)]^(1/n)
 # 而不是任何拟合；n=1、K=mu 时 K'=mu（4/4）、8^0=1、u^1=u，**逐项**塌回原式，所以既有 98 条测试结构上不可能被这一步移动。
 # 要看什么：
 #   1) declared-but-Newtonian 必须逐位——PowN1 对 Newt 五字段 × 两个文件全部 ==（不是 <1e-12，是相等）。这一步替错了代数，
 #      这里立刻显形，而且它同时是新算例对旧算例的无害性证明。
-#   2) f * Re == 64 在 18 个状态上最差 1.562e-10：这条把"闭式确实是内核用的那条律"从推理变成读数，别省掉。
+#   2) f * Re == 64 在 18 个状态上最差 1.563e-10：这条把"闭式确实是内核用的那条律"从推理变成读数，别省掉。
 #   3) 三个指数的方向各管一件事：孔径（16 对 32）、长度（÷2 对 ÷4，指数不动）、驱动差（2^(1/n)）。剪切稀化的**尺寸律**是
 #      另一个幂——这是本案对工程最有用的那句话，写成比值而不是写成绝对数，这样它不依赖任何一次求解的巧合。
-#   4) tau_w = dp d/4L 对材料无关（五根同几何的管逐位 2.5 Pa），而 K'(8u/d)^n 各自复现自己的 tau_w（8.040e-13）。
+#   4) tau_w = dp d/4L 对材料无关（五根同几何的管逐位 2.5 Pa），而 K'(8u/d)^n 各自复现自己的 tau_w（5.413e-12，改正
+#      常数后的实测；改前那个数是 8.040e-13，它同时说明旧常数在 n!=1 的管上并不是解自己含的那条律）。
 #   5) 两条拒收要**被断言**（非零 rc + 消息），不要只在文档里描述：flowIndex 缺 consistency（量纲不同，默认即静默错数）、
 #      耦合元带流变（它的损失就是伙伴的陈述——5.43 那条不重复计费）。
 #   6) Re_MR 全程 <= 170：这是"敢用闭式"的前提，写成判据（worst_re < 1000），否则层流断言和湍流半区会被混着读。
@@ -868,19 +871,19 @@ python3 tests/check_transient_coupled_multi_turbulent_shape_and_inertia_split.py
 #   残差地板是 1.8e-12 而不是 1e-16：判据要按"打印了什么"来定，不是按"算了什么"。④`worst_re` 的上界要按**翻倍**那份文件读
 #   （Newtonian 的 Re 随 dp 线性走，170 出现在宽孔径管），只看 base 会写下一个假的安全界。⑤Python 里别把 max(...) 跨行写进
 #   单个 f-string 表达式——语法错误，先在外面算好再插值。
-# 八族 16 条；四个 case 文件、零求解成本（单次稳态毫秒级），整条 checker 墙钟 0.22 s
+# 八族 16 条；四个 case 文件、零求解成本（单次稳态毫秒级），整条 checker 墙钟 0.14 s（ctest -j8 记）
 ./build/src/1d/apps/chflow-1d-steady tests/cases/steadyPowerLawRheology/case.dict
 python3 tests/check_steady_power_law_rheology.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/steadyPowerLawRheology/case.dict"
 
-# 屈服应力（5.46）：新算例 steadyBinghamYield，四个 case 文件。内核改的是**一对**，而第一次容易只改前一半：
-# src/1d/src/network.cpp:210-:222 在 Illinois 括号**之前**显式判掉死分支（`yieldStress > 0` 才生效，牛顿/幂律那两支
-# 的 g(0) 本来就是送它们来这边的符号，一行未动），:103-:131 把 Bingham 层流解反解成网络要的 loss(q)——
+# 屈服应力（5.46）：新算例 steadyBinghamYield，五个 case 文件。内核改的是**一对**，而第一次容易只改前一半：
+# src/1d/src/network.cpp:315-:327 在 Illinois 括号**之前**显式判掉死分支（`yieldStress > 0` 才生效，牛顿/幂律那两支
+# 的 g(0) 本来就是送它们来这边的符号，一行未动），:131-:160 把 Bingham 层流解反解成网络要的 loss(q)——
 #   F(tw) = tw - (4/3)tau_0 + tau_0^4/(3 tw^3) = B = 32 mu Q/(pi d^3)，括号 [tau_0, B + (4/3)tau_0] 是解析的
-# （F(tau_0) = 0、F' = 1-(tau0/tw)^4 > 0、右端 F >= B），Newton + 二分落到舍入位；使用点 :151-:154。**同时** :167-:176
-# 把报出的摩阻系数从 Churchill 换成解自己含的 f = 8 tw/(rho v^2)（使用点 :265），声明面 pipes.<name>{ yieldStress t0; }
-# （Network.h:81，0 = 未声明），解析与三条拒收在 :1001-:1016。
+# （F(tau_0) = 0、F' = 1-(tau0/tw)^4 > 0、右端 F >= B），Newton + 二分落到舍入位；使用点 :252-:256。**同时** :272-:282
+# 把报出的摩阻系数从 Churchill 换成解自己含的 f = 8 tw/(rho v^2)（调用点 :370），声明面 pipes.<name>{ yieldStress t0; }
+# （Network.h:99，0 = 未声明），解析与拒收在 :1107-:1117。
 # 为什么必须成对：留着 Churchill 的 f，日志同一行的系数就再也复现不了那一行的 dp，"报的是哪条律"重新变成推理。
 # 要看什么：
 #   1) 死分支报的是 **0** 不是"很小"：Stk 的 Q/v/Re/f 四个字段打印就是 0，而 dp 仍是**被问到的** 1.0e4 Pa 而不是阈值
@@ -895,8 +898,10 @@ python3 tests/check_steady_power_law_rheology.py \
 #      dQ/d(dp) = k[1-(dpStatic/dp)^4] <= k，solvePipeFlow 里那个 Hagen-Poiseuille 上限对屈服管仍是**上界**。
 #   6) 反问题同台：case_driven 把 Q 钉成 5.0e-6 让 dp 成未知数，解出的 7692.34 Pa 对 checker 自己那套**二分**（不是
 #      Newton）反演差 5.326e-13；反向那根逐位是正向的负数——死分支判的是被选中方向的符号，不是正向运气好。
-#   7) 三条拒收要被断言（非零 rc + 消息）：屈服+幂律＝Herschel-Bulkley（括号里幂次换了，需要自己的单调形）、
-#      屈服+耦合元（没有墙留给阈值 hold）、负 tau_0（g(xi) > 1，这条律唯一能给出比牛顿更小压降的方式）。
+#   7) 拒收要被断言（非零 rc + 消息）：屈服+耦合元（没有墙留给阈值 hold）、屈服+PVT/黑油（那是常物性单相层流律）、
+#      负 tau_0（g(xi) > 1，这条律唯一能给出比牛顿更小压降的方式）。第四条墙——屈服+幂律＝Herschel-Bulkley——当时也
+#      是拒收，5.47 落的就是它：这个文件已从 case_rejectRheology.dict 改名 case_rheologyNowSolves.dict，checker 现在断言
+#      它**解得出**（rc=0、Q>0、dp 仍是被问到的 1.0e4），数值本身归 5.47 的 checker。
 # 写这类判据时的坑：①死分支判据要写成 `forward ? fLo >= 0 : fLo <= 0` 这种**跟随已选方向**的形式，只判 dpTotal 与
 #   阈值的大小会在反向流那根管上落错支。②哨兵是**代码级**的：只有 `yieldStress > 0` 才进括号，未声明与声明 0 那两根跑的还是原来那一行，所以 Newt/T0zero 五字段
 #   逐位 == 是无害性证明而不是巧合；代数上 `tau_0 -> 0` 也确实让 F(tw) = tw（Newton 的导数在括号左端点为 0，那里只能二分，
@@ -907,11 +912,54 @@ python3 tests/check_steady_power_law_rheology.py \
 #   照抄 Newtonian 那支会在 Re=0 上让 churchillFriction 的 1e-12 地板吐出 6.4e13（既有行为，本案没改它）。
 #   ⑥checker 的 parse() 要按文件收名字：case_driven 的管名不在主 PIPES 表里，按 PIPES 过滤会静默收到 0 条然后
 #   在 KeyError 上炸成一个假的成功。
-# 九族 26 条；四个 case 文件、零求解成本（case.dict 12 根管 1 步收敛、case_driven 6 步），整条 checker 墙钟 0.26 s
+# 九族 26 条；五个 case 文件、零求解成本（case.dict 12 根管 1 步收敛、case_driven 6 步），整条 checker 墙钟 0.28 s（ctest -j8 记）
 ./build/src/1d/apps/chflow-1d-steady tests/cases/steadyBinghamYield/case.dict
 python3 tests/check_steady_bingham_yield.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/steadyBinghamYield/case.dict"
+
+# Herschel-Bulkley（5.47）：新算例 steadyHerschelBulkley，三个 case 文件。这一格是 5.46 在解析期拒收的那一支——
+# 阈值 + 指数同时声明。内核新增的是**一条律的两个方向**，不是一个分支：正定律 src/1d/src/network.cpp:173-:185 是剖面
+# 积分的逐项闭式（tw = dp d/4L、D = tw - tau_0）
+#   Q = pi R^3 tw^-3 K^(-1/n) n D^(1+1/n) [ tau0^2/(n+1) + 2 tau0 D/(2n+1) + D^2/(3n+1) ]
+# 反解 :196-:221 用单调二分（左端 = tau_0 即阈值本身，右端从 tau_0=0 的幂律应力起，不够就加倍，速率按 tw^(1/n) 增长），
+# 两支路的选择器 yieldedWallStress 在 :227-:232（有指数走 HB，只有阈值走 5.46 的 Buckingham 三次式 Newton）。
+# **同时** generalizedReynolds（:101-:117，HB 那支 :104-:109）与 5.45 的层流常数一起改正：K' = K((3n+1)/(4n))^n，
+# 指数是 n 而不是教科书塌缩约定的 1——差 (4n/(3n+1))^(1-1/n)，n=1 处恰好为 1（所以 PowN1 == Newt 那条逐位对照看不见它），
+# n=0.5 处是 1.25。这一格是 HB 在 tau_0 -> 0 极限上量出来的，改正后 5.45 的 16 条仍全绿。
+# 要看什么：
+#   1) 两条极限必须在**打印位**上会合，而且要写成 ==：n=1 那根管（HbN1）与不写指数那根管（Bing）三个字段逐位相等——
+#      三次式 Newton 与剖面积分二分是两条代码路径，会合才证明新支是 5.46 的**推广**而不是对手；tau_0=0 那根管对幂律
+#      闭式 7.023e-13，这条是改常数之后才成立的，改常数前先跑它会红。
+#   2) 同一个积分**别逐项**再算一遍：把 int tau^2 gdot(tau) d tau 数值积分（s^(1/n) 在屈服半径处导数无穷，[0,1] 必须按
+#      2 的幂向 0 加密，本案用 21 个面板 × 12 节点高斯-勒让德）对内核仍是 1.511e-09；单个不加密面板差 3.296e-06，
+#      加密一档就是 0.000e+00——这条和闭式是同一陈述的两次独立推导，(3n+1) 写错一处不会在另一处得到同样的错。
+#   3) 软着陆那两格（HbThin2 阈值上方 0.5 Pa、HbNear 差 0.1 Pa）落在 1.511e-09 / 1.078e-10，比陡状态的 2.331e-12 差
+#      三个量级。**不要**把这当成律放宽：把打印的速率喂回闭式反演，内核留下的压差是 1.112e-06 / 1.822e-08 Pa，乘上各自
+#      的斜率 d ln Q/d ln tw = 13.593 / 59.151 恰好复现观测（第 4 位）。equipmentFlow 的速率括号门是 :364 的 1e-9 相对，
+#      它先于 :347 的残差门触发；压差是算例钉住的，余量要乘着陆自己的斜率才变成速率差。判据因此分组（陡 1e-11 / 软 1e-8）
+#      并且把余量本身写成一条断言（预测/观测 < 5e-3），这样下一次谁改了那两个门会在这里显形。
+#   4) 阈值的几何性与 n 无关（dp_static = 4 tau_0 L/d = 2000 / 8000 / 10400 Pa），D 的主导幂次有关（1+1/n：Bingham 平方、
+#      n=0.5 立方）；卡住那根在 1e4 下四个字段打印就是 0 而 dp 仍是被问到的 1e4，同一根管在 2e4 下流出 6.04532e-07
+#      （闭式差 9.720e-14）——5.46 的"死分支由被问到的压差决定"在 n!=1 上重演。
+#   5) 串接那一对要放在**自由节点**上：C 恰好 2.5e4（翻倍 3.0e4），两根 halves 五字段逐位相同；驱动差翻倍时它们从
+#      1.17871e-08 涨到 3.58889e-07，也就是每半边的 D 从阈值上方 0.25 Pa 走到 1.25 Pa——软着陆在两个点上被读，不是在一个
+#      点上被断言。
+#   6) 带指数的屈服管没有材料黏度可报，Re 换成表观数 8 rho v^2/tw，于是 f * Re == 64 是**定义**（2.911e-10 = 打印精度）：
+#      断言它的唯一理由是"两个数不同步说明日志在印另一个状态"，别把它写成物理证据。有内容的是 HbN1/Bing 之比就是
+#      g(xi) = 0.475200（黏度之比即屈服挖掉的速率份额）和 dp == f(L/d)rho v^2/2 差 1.029e-10。
+#   7) 拒收的账要一起更新：删掉一条（指数 + 阈值，现在由 steadyBinghamYield 的 case_rheologyNowSolves.dict 断言它解得出），
+#      新写一条（声明指数与阈值而不给 consistency，K 的单位是 Pa.s^n，不能被 mu 静默默认）；其余五条照旧。
+# 写这类判据时的坑：①高斯-勒让德的点权最容易写成 P_{m+1} 的根配 m 个权重（off-by-one），本案第一次就栽在这上面；核对办法是
+#   验 sum(w) == 2 且节点对上公开表，别只看"跑通了"。②数值积分那个尺度因子 tw^-3 与 span^(1+1/n) 漏一个就会得到 1.25 / 7 / 81
+#   这种荒谬比值——先在同一根管上把闭式和积分对齐到 1e-15，再去比内核。③tau_0=0 的管要判的是 5.45 的幂律闭式，如果 checker
+#   自己还留着旧常数，改正内核后这条会红，而且红的是 checker。④parse() 要按 key/value 收字段而不是按下标：dp 之后新印的字段
+#   不该把后面的数挪进前面的槽。⑤翻倍那份文件的管名要和主表同一套，否则 series 那一对被拿到并联的压差上比，误差直接是 1。
+# 十族 22 条；三个 case 文件、零求解成本（毫秒级稳态求解），整条 checker 墙钟 0.21 s（ctest -j8 记）
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyHerschelBulkley/case.dict
+python3 tests/check_steady_herschel_bulkley.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyHerschelBulkley/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

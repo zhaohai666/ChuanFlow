@@ -997,6 +997,46 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldParkingBand/case.dict)
 
 
+# 5.57: does the dead band know the flow index?  Herschel-Bulkley walls
+# (yieldStress 2 Pa with flowIndex / consistency set per pipe) parked at the
+# same 8000 Pa threshold for n = 0.5, 1, 2: yieldThresholdPa is 4 tau0 L/d and
+# reads no rheology, so the desk -- 25000 / 22000 / 28000, one token each over
+# 2001 and 20001 states, and arms b/c HELD at i=1 with drive exactly 8000 -- is
+# index-blind while everything downstream of the latch is not.  The HB section
+# integral reproduces the tokens from the FIRST decided step on every sliding
+# arm (1312 sampled rates per index, worst relative error 4.698e-07 / 3.612e-07 /
+# 2.874e-07) and at n=1 the general bracket is 5.56's Bingham bracket to 6.3e-16.
+# The first row is the ramp: inertia takes 539.5 / 1635.8 / 1821.0 Pa of the
+# 8000 Pa drive (6.7 / 20.4 / 22.8%), monotone in n, so the wall starts at
+# 2.365 / 2.091 / 2.045 instead of the rest-state 2.500.  The decay is a
+# geography, not a number: the bracket's own d ln Q / d ln gap reads 3.000 /
+# 2.000 / 1.500 one nanoPa above yield -- exactly (n+1)/n -- and 2.000 / 1.000 /
+# 0.500 five thousand yield stresses above it -- exactly 1/n -- while the real
+# trajectories only ever cross between, with 18/26/34 chords strictly inside
+# (1/n, m) and each one within 0.027% / 3.922% / 2.023% of the bracket's own
+# chord over the same two gaps.  The near-edge arms read m off their own kernel:
+# 1.99976-1.99983 at n=1, 1.49985-1.49995 at n=2 (0.012% / 0.010% of m), and at
+# n=0.5 they contribute NO chord at all because a 1 Pa start moves less than one
+# printed quantum in 40 s.  The straight line moves from 1/gap to gap^(-1/n):
+# measured slopes 1.66666e-08 / 4.90772e-04 / 1.46335e-02 per Pa per second
+# (1.859% / 0.021% / 0.011% off the leading term A_n/n, and at n=1 that is 5.56's
+# 4.9087e-04) -- the (n, K) pair moves that rate by 2.9e4 from n=0.5 to n=1 and
+# by another 30 to n=2 while the band does not move at all.  Same 1 Pa start, 40
+# s later: gap 1.000 / 0.981 / 0.398 Pa.  Mirror arms d/f and e/g are
+# token-for-token identical (pressures sum to 50000 within 0.0e+00), the latch
+# never re-arms (smallest waking rate 8.18e-18 / 4.72e-13 / 7.35e-12 m3/s), all
+# 14 static-hold flags at t=0 read 0 (the scan must start at i=1), and the
+# steady kernel is as index-blind as the transient one: six rows print Q 0, three
+# nodes print 25000, iterations=0
+add_test(
+    NAME verify.transientYieldIndexParkingBand
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_index_parking_band.py
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldIndexParkingBand/case_5.dict)
+
+
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation
 # and holdup (transported slip state + interfacial drag)

@@ -1,0 +1,50 @@
+// transientYieldIndexParkingBand / steady: the same desk read by the kernel that
+// has no latch and no memory.
+//
+// 5.56 put its eleven Bingham starts through the steady kernel and got one blind
+// guess -- every row pays zero and the undetermined node sits at the average of
+// the two fixed pressures, which happens to be the CENTRE of the band. This file
+// asks the same question of the three Herschel-Bulkley walls of case_5 / case_1 /
+// case_2: the steady kernel has no initial value to forget, so the only thing it
+// can say about the band is what its threshold says, and the threshold is
+// `4 tau_0 L / d` with no `n` and no `K` in it.
+//
+// Three cells, one per index, each two 8000 Pa walls in series across 10000 Pa --
+// no steady flow exists for ANY of them, at ANY index or consistency, because
+// 4 tau_0 L/d + 4 tau_0 L/d = 16000 > pA - pB. measured: the six rows print `Q 0`
+// with `dp 5000`, the three nodes print 25000 -- the band centre again, and the
+// same number for n=0.5, n=1 and n=2 -- and the banner reads `iterations=0
+// residual=0 (converged)`. The steady kernel gives one index-blind answer, just
+// like the band itself; the eleven Bingham starts of 5.56 and these three
+// Herschel-Bulkley laws all land on the same 25000 Pa.
+//
+// verified by tests/check_transient_yield_index_parking_band.py
+// (ctest verify.transientYieldIndexParkingBand).
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+
+    T5 {}; T1 {}; T2 {};
+}
+
+pipes
+{
+    S5 { from A; to T5; length 20; diameter 0.02; flowIndex 0.5; consistency 1.0; yieldStress 2.0; }
+    E5 { from T5; to B; length 20; diameter 0.02; flowIndex 0.5; consistency 1.0; yieldStress 2.0; }
+    S1 { from A; to T1; length 20; diameter 0.02; flowIndex 1.0; consistency 0.1; yieldStress 2.0; }
+    E1 { from T1; to B; length 20; diameter 0.02; flowIndex 1.0; consistency 0.1; yieldStress 2.0; }
+    S2 { from A; to T2; length 20; diameter 0.02; flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2 { from T2; to B; length 20; diameter 0.02; flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+}

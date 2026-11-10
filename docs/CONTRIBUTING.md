@@ -14,9 +14,9 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（111 项）约 258 ~ 939 s ≈ 4.3 ~ 15.7 分钟（本轮实测 354.01 s，111/111 绿），
+ctest --test-dir build --output-on-failure -j8  # 全量回归（112 项）约 258 ~ 939 s ≈ 4.3 ~ 15.7 分钟（本轮实测 353.63 s，112/112 绿），
                                              # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高；本轮各用例时间之和
-                                             # 2775.37 s，五条最重的耦合用例合计 1349.10 s，占 48.6%）：
+                                             # 2770.19 s，五条最重的耦合用例合计 1304.20 s，占 47.1%）：
                                              # 形状账 x 归属账 338.89 s、稳态 profile 级映射 288.76 s、
                                              # 多边 x 惯量归属 270.52 s、逐边 ddt 241.69 s、对流动量账收进行 209.24 s、
                                              # VOF 振荡 83.42 s；非牛顿那几格里跨过这个量级的只有瞬态静止支那一条：
@@ -1324,6 +1324,50 @@ python3 tests/check_transient_yield_parking_band.py \
     "$PWD/build/src/1d/apps/chflow-1d-transient" \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/transientYieldParkingBand/case.dict"
+
+# 死带 × Herschel-Bulkley：把同一张停泊桌面搬到认识指数的壁上（5.57，5.56 边界②）：新算例
+# transientYieldIndexParkingBand，七份 case 文件——三副七臂矩阵（`a` 25000 / `b` 22000 / `c` 28000 在带里，
+# `d`/`f` 在外面一格 1 Pa，`e`/`g` 在外面两千格），每臂 `A → F{tag}{x} → B` 串联两根 HB 壁
+# （`length 20; diameter 0.02; yieldStress 2.0` + 逐管 `flowIndex`/`consistency`），三档只在
+# (n, K) = (0.5, 1.0) / (1.0, 0.1) / (2.0, 0.02) 上不同；`case_long_*` 把同样七臂推到 40.0 s（20001 个
+# 状态）；`case_steady.dict` 把三档各一份串联壁交给稳态内核。**内核一字未改**。要看什么：
+#   1) 先分清"哪一半认识指数"。阈值 `yieldThresholdPa = 4τ_0L/d`（transient.cpp:28–:31）里没有 n 也没有 K，
+#      所以带、两个吸引子、`holdsStatic` 的 `<=`（:40–:43）在 HB 上与 Bingham 逐位相同（三档都停成单
+#      token 25000/22000/28000，端点 `b`/`c` 第一次决策就 HELD、drive 恰为 8000）；认识指数的是闩锁松开
+#      之后的那一行。把这两半混成一句"HB 改变了死带"会把本案读反。
+#   2) 从打印 token 反解壁应力时**不要给下行加符号**：S 行的 drive 是 `pA - p_F`、E 行的 drive 是
+#      `p_F - pB`，两支都是"从高侧往低侧流"，所以两支行打印的 Q 同为正。本案第一版按"下行反向"取了
+#      `sgn = -1`，重构误差立刻涨到 5e1 相对；去掉那个翻转后括号**从第一次已决策那一步**就闭合
+#      （1312 个采样速率最差 4.698e-07 / 3.612e-07 / 2.874e-07 = 打印量子）。
+#   3) 第一步是斜坡不是稳态：醒着的行把 539.5 / 1635.8 / 1821.0 Pa（8000 的 6.7% / 20.4% / 22.8%）交给
+#      流体惯性 `(inertia/dt)·ΔQ`（:381–:382），壁应力因此起步 2.365 / 2.091 / 2.045 而不是静止的 2.500。
+#      这笔不是污染，是行的一部分——把它当残差丢掉，"括号只在中段闭合"的假结论就来了。
+#   4) 指数有地理：`m = (n+1)/n` 只在近阈成立（括号在 δ=1 nanoPa 处读 3.000/2.000/1.500），远阈是纯幂律
+#      `1/n`（δ=5000τ_0 处读 2.00007/1.00005/0.50003）。本案 gap 跨 0.4–2000 Pa、δ/τ_0 < 0.5，任何轨迹
+#      都没走到远端，所以弦必须断"严格落在 (1/n, m) 内 + 与括号同两个 gap 的弦一致"（18/26/34 条，
+#      0.027%/3.922%/2.023%），不能断"实测指数 = m"。
+#   5) 采样要躲开噪声：峰值之前与 gap 比小于一个打印量子的配对都会造出 0.87 这种假弦。本案只取**速率峰值
+#      之后**、且两点相对杠杆 > 1e-3 的配对；这样 `n=0.5` 的近边臂一条弦也不剩——那不是缺陷，是结论：
+#      1 Pa 起点在 40 s 里动不了一个量子（0.000000 Pa），所以 5.56 的"1 Pa 夹边界"是 n=1 的便利。
+#   6) 直线从 `1/gap` 挪到 `gap^(-1/n)`：预测式 `A_n/n`（`A_n = πR³(n/(n+1))(d/4L)^m/(τ_0 K^{1/n} Cc)`）
+#      给 1.636246e-08 / 4.908739e-04 / 1.463503e-02，实测差 1.859% / 0.021% / 0.011%，且 n=1 那一档**就是**
+#      5.56 的系数——所以 5.56 的"常数项与一次项同时相消"是 m=2 的特例，一支公式覆盖两节，不是两支。
+#      注意本案 n 与 K 是**成对**改的，陡度差 2.9e4 / 30 倍要归给这一对。
+#   7) 别把 HB 的 n=1 当成"另一个基线"去对照：`n=1, K=mu` 时通用括号与 5.56 的 Bingham 括号在 3999 个壁
+#      应力上差 6.3e-16，4 s / 40 s 落点与 5.56 发布的数差 0.00e+00 – 3.00e-07 Pa。跨增量对**数**而不是对
+#      token，是这种"同一支公式的第二半"最便宜的证法。
+#   8) 稳态那侧的 banner 依旧不是物理答案：**6** 行全 `Q 0 dp 5000`、**3** 个未定节点三档都打印 25000、
+#      `iterations=0`——`(pA+pB)/2` 是带中心的恒等式，与指数无关，因为阈值与指数无关。
+# 十族 106 条；ctest -R 记 **26.61 s**、ctest -j8 记 **46 s**（Test #86；checker 直跑 26.45 s，成本在 3 档 × 2 个时钟 × 14 行的
+# 逐状态壁应力二分复现，最尖的 `case_long_5` 单跑 10.31 s），全量 **112/112** 绿（本轮实测 **353.63 s**）；
+# 既有测试一字未改。
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientYieldIndexParkingBand/case_5.dict
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientYieldIndexParkingBand/case_long_1.dict
+./build/src/1d/apps/chflow-1d-steady tests/cases/transientYieldIndexParkingBand/case_steady.dict
+python3 tests/check_transient_yield_index_parking_band.py \
+    "$PWD/build/src/1d/apps/chflow-1d-transient" \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/transientYieldIndexParkingBand/case_5.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

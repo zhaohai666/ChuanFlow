@@ -1,0 +1,96 @@
+// transientYieldIndexParkingBand / 2: does the parking lot know the flow index?
+//
+// 5.56 swept a Bingham node's own start across its band and found the tail to be
+// quadratic in the excess -- `1 - 4x/3 + x^4/3` loses BOTH its constant and its
+// linear term at x = 1 -- which is why `1/gap` is a straight line. That
+// cancellation is a property of the exponent, not of the dead band, so the
+// question this file asks is which half of 5.56 survives when the wall law is
+// Herschel-Bulkley, `tau = tau_0 + K gammas^n`:
+//
+//   * the THRESHOLD is geometry only (`4 tau_0 L / d`, no `n`, no `K`), so the
+//     band should be the SAME [pA - 8000, pB + 8000] = [22000, 28000] Pa for
+//     every index, and the two edge arms should still be held by `<=`;
+//   * the TAIL should change. The HB section integral near threshold is
+//     Q = (pi R^3 / (tau_0 K^(1/n))) (n/(n+1)) (d/4L)^m gap^m with m = (n+1)/n,
+//     so the excess decays with exponent m -- 3 for n=0.5, 2 for n=1 (5.56's
+//     number, reproduced here), 1.5 for n=2 -- and the straight line moves from
+//     `1/gap` to `gap^(-1/n)`, whose slope is A_n/n with
+//     A_n = (pi R^3 / (tau_0 K^(1/n))) (n/(n+1)) (d/4L)^m / Cc.
+//
+// Seven starts per index -- `a` 25000 parked, `b`/`c` the two edges parked,
+// `d`/`f` one Pa outside, `e`/`g` 2000 Pa outside -- and the three fluids differ
+// only in (`flowIndex`, `consistency`) = (0.5, 1.0), (1.0, 0.1), (2.0, 0.02) with
+// `tau_0 = 2.0` everywhere. verified by
+// tests/check_transient_yield_index_parking_band.py
+// (ctest verify.transientYieldIndexParkingBand).
+//
+// measured: m = 1.5 here and the desk is unchanged -- 25000 / 22000 / 28000 are
+// one token each over 2001 states, arms b/c HELD on the very first decision at
+// drive exactly 8000 = 4 tau_0 L / d -- and as at n = 1 all four sliders move, so
+// d/f print all 2001 tokens while the far arms e/g stay strictly monotone and
+// never reach or cross the band. Arms d/f and e/g mirror token for token (sums
+// to 50000 within 0.0e+00, identical waking rates in 2001/2001 states) and t = 0
+// prints 14 hold flags, all 0.
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+
+    F2a { volume 0.1; bulkModulus 1.0e8; pressure 25000.0; }
+
+    F2b { volume 0.1; bulkModulus 1.0e8; pressure 22000.0; }
+
+    F2c { volume 0.1; bulkModulus 1.0e8; pressure 28000.0; }
+
+    F2d { volume 0.1; bulkModulus 1.0e8; pressure 21999.0; }
+
+    F2e { volume 0.1; bulkModulus 1.0e8; pressure 20000.0; }
+
+    F2f { volume 0.1; bulkModulus 1.0e8; pressure 28001.0; }
+
+    F2g { volume 0.1; bulkModulus 1.0e8; pressure 30000.0; }
+}
+
+pipes
+{
+    S2a { from A; to F2a; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2a { from F2a; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    S2b { from A; to F2b; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2b { from F2b; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    S2c { from A; to F2c; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2c { from F2c; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    S2d { from A; to F2d; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2d { from F2d; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    S2e { from A; to F2e; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2e { from F2e; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    S2f { from A; to F2f; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2f { from F2f; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    S2g { from A; to F2g; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2g { from F2g; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+}
+
+time
+{
+    dt 0.002; endTime 4.0; reportEvery 1;
+}

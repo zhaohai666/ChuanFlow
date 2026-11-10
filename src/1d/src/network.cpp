@@ -231,11 +231,11 @@ double yieldedWallStress(const NetworkPipe& pipe, const FluidProperties& fluid,
     return binghamWallStress(pipe, fluid, q);
 }
 
-/// Friction + valve loss (Pa, positive) at an imposed rate magnitude q:
-/// explicit Churchill evaluation, no iteration needed forward. A yielded pipe
-/// instead answers with the wall-stress solution, whose q = 0 limit is the
-/// static threshold -- that is the whole difference, and why the rate law needs
-/// an explicit dead branch (see equipmentFlow).
+/// Friction + valve loss (Pa, positive) at an imposed rate magnitude q: the
+/// wall-law drop from pipeFrictionPa -- which the transient row also calls --
+/// plus the local loss. A yielded pipe answers with the wall-stress solution,
+/// whose q = 0 limit is the static threshold -- that is the whole difference,
+/// and why the rate law needs an explicit dead branch (see equipmentFlow).
 double pipeLossAt(const NetworkPipe& pipe, const FluidProperties& fluid,
                   double q)
 {
@@ -249,15 +249,10 @@ double pipeLossAt(const NetworkPipe& pipe, const FluidProperties& fluid,
 
     const double v = q / pipeArea(pipe);
 
-    if (pipe.yieldStress > 0)
-        return 4.0 * pipe.length
-             * yieldedWallStress(pipe, fluid, q) / pipe.diameter
-             + pipe.valveK * fluid.rho * v * v / 2.0;
-
-    const double re = generalizedReynolds(pipe, fluid, std::abs(v));
-    const double f = churchillFriction(re, pipe.roughness / pipe.diameter);
-    return (f * pipe.length / pipe.diameter + pipe.valveK)
-         * fluid.rho * v * v / 2.0;
+    // One call, both laws, the same parentheses the transient row uses; the
+    // valve term is the only thing the steady kernel adds on top.
+    return pipeFrictionPa(pipe, fluid, q)
+         + pipe.valveK * fluid.rho * v * v / 2.0;
 }
 
 /// Friction factor to report for a solved rate: the Churchill number for the
@@ -377,6 +372,32 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
 /// transient kernel).
 
 } // namespace
+
+/// The friction drop (Pa, positive) a wall law resists at an imposed rate
+/// magnitude: Churchill on the Metzner-Reed number when no threshold is
+/// declared -- so Newtonian and power-law share one line, one function, and one
+/// set of parentheses -- and the yielded solution's own wall stress when one
+/// is. Both kernels call this, and it is the only place the wall law is written
+/// outside the steady loss: the transient momentum row signs it and keeps
+/// gravity and inertia on its own side, while the steady loss adds its valve
+/// term on top. So a `flowIndex` declared in a transient case cannot be read by
+/// a different algebra than the same declaration in a steady one -- before this
+/// line existed, 5.45 to 5.47 were the steady statements of the law while the
+/// transient row computed `rho u d / mu` by hand, which made a declared
+/// rheology there not refused but *ignored*: the worst kind of silent number.
+/// At namespace scope (not the anonymous one above) because the transient
+/// kernel is a different translation unit.
+double pipeFrictionPa(const NetworkPipe& pipe, const FluidProperties& fluid,
+                      double q)
+{
+    if (pipe.yieldStress > 0)
+        return 4.0 * pipe.length * yieldedWallStress(pipe, fluid, q)
+             / pipe.diameter;
+    const double v = q / pipeArea(pipe);
+    const double re = generalizedReynolds(pipe, fluid, std::abs(v));
+    const double f = churchillFriction(re, pipe.roughness / pipe.diameter);
+    return (f * pipe.length / pipe.diameter) * fluid.rho * v * v / 2.0;
+}
 
 label OneDNetwork::addNode(const std::string& name)
 {

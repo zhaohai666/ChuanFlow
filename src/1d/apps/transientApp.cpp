@@ -38,6 +38,22 @@ int main(int argc, char** argv)
                   " pipes, dt=", num(tc.dt), " endTime=", num(tc.endTime));
 
         TransientNetwork sim(c);
+
+        // Say which wall law each momentum row is reading, and say it only where
+        // one is declared: an undeclared case prints exactly what it printed
+        // before, so the 5.48 claim that declaring n = 1, K = mu changes nothing
+        // is testable on the output itself, not only on the numbers.
+        for (std::size_t k = 0; k < sim.pipeNames().size(); ++k)
+        {
+            const label i = static_cast<label>(k);
+            const double n = sim.pipeFlowIndex(i);
+            if (n > 0)
+            {
+                log::info("pipe ", sim.pipeNames()[k], " wall-law flowIndex ",
+                          num(n), " consistency ", num(sim.pipeConsistencyOf(i)));
+            }
+        }
+
         const int report = tc.reportEvery > 0 ? tc.reportEvery : 1;
         const int nSteps = static_cast<int>(std::round(tc.endTime / tc.dt));
 

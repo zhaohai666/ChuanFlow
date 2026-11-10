@@ -14,13 +14,13 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（102 项）约 258 ~ 640 s ≈ 4.3 ~ 10.7 分钟（实测 459.88 s，102/102 绿），
+ctest --test-dir build --output-on-failure -j8  # 全量回归（103 项）约 258 ~ 640 s ≈ 4.3 ~ 10.7 分钟（实测 397.85 s，103/103 绿），
                                              # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高；五条最重的耦合用例
-                                             # 在 -j8 下占到整轮墙钟的 45%）：
-                                             # 形状账 x 归属账 454.3 s、稳态 profile 级映射 403.0 s、
-                                             # 多边 x 惯量归属 378.7 s、逐边 ddt 342.4 s、对流动量账收进行 300.2 s、
-                                             # VOF 振荡 100.7 s；三条非牛顿稳态用例（各把十来个毫秒级求解打包）
-                                             # 幂律 0.14 s、屈服应力 0.28 s、Herschel-Bulkley 0.21 s
+                                             # 合计 1556.69 s，占本轮所有用例时间之和 3060.69 s 的 50.9%）：
+                                             # 形状账 x 归属账 396.2 s、稳态 profile 级映射 359.4 s、
+                                             # 多边 x 惯量归属 317.6 s、逐边 ddt 257.5 s、对流动量账收进行 226.1 s、
+                                             # VOF 振荡 133.4 s；四条非牛顿用例（各把十来个毫秒级求解打包）
+                                             # 幂律 0.14 s、屈服应力 0.28 s、Herschel-Bulkley 0.21 s、瞬态幂律 2.58 s
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -960,6 +960,41 @@ python3 tests/check_steady_bingham_yield.py \
 python3 tests/check_steady_herschel_bulkley.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/steadyHerschelBulkley/case.dict"
+
+# 非牛顿壁面律进瞬态那一行（5.48）：新算例 transientPowerLawRheology，五个 case 文件（1 个求解 + 4 个拒收）。
+# 这一格不是"再写一遍律"，而是**把稳态那条验过三次的律换成唯一的一份**：新增 pipeFrictionPa
+# （src/1d/src/network.cpp:390，声明 Network.h:202，必须在 cf 作用域——瞬态内核是另一个翻译单元，放匿名作用域
+# 就只有 pipeLossAt 看得见），稳态 pipeLossAt（:254）在它之上只加阀项，瞬态 frictionDp（src/1d/src/transient.cpp:29-:36）
+# 除了调用与一次奇延拓什么都不算。之前那一行自己写 rho u d / mu，所以声明 flowIndex 0.5 **不报错也不警告**，只是
+# 被忽略然后报 Newtonian 速率——这是最坏的一种静默数字，也是本格唯一真正的改动。
+# 阻尼同步换：frictionSlope（:40-:55）在声明指数时取律自己的中心差分并在 :44 早退，Newtonian 下限 0.2*128 mu L/(pi d^4)
+# 只留在未声明的路径（:52）。回读接口 pipeFlowIndex/pipeConsistencyOf（:445/:452）让 app 只在声明了的管上打印
+# wall-law 那行（src/1d/apps/transientApp.cpp:46-:55），于是"未声明的案子输出逐字不变"是能在字符串上失败的断言。
+# 要看什么：
+#   1) 跨内核同一条律要打在**打印位**：t=4 时瞬态的 Q 与稳态 app 同一声明的 Q，Newt/Decl1 1.96349540849e-05、
+#      Thin05 与 Thin05Rev 3.92699081699e-06、Thin07 9.75728733974e-07 是同一个字符串；只有 Thick13 差在第 10 位
+#      （稳态 3.41904523976e-05 对瞬态 3.41904523728e-05，7.26e-10）。别把这一条写成"逐位相同"除非真的逐位相同。
+#   2) 那个 7.26e-10 要**归因**而不是放宽：把闭式的速率喂回内核自己的 pipeFrictionPa，被问的 1.0e4 Pa 回到 3.638e-16，
+#      说明层流半区与剖面积分是同一句话，余下的是每步 Newton 退出（transient.cpp:317 的 maxRel<1e-11，残差按
+#      rho L/(A dt) 定标）在弛豫里累加。判据里因此有**两条**：终端差 <1e-8，根差 <1e-12。谁改了那个门，第二条会红。
+#   3) 整条轨迹都要重解，不要只判终点：checker 自己写隐式欧拉递推逐步对照 6 根管 × 2001 状态，最差 7.246e-10。
+#      这是"行读的是哪条律"与"某个形状碰巧落在对的终点"的区分。
+#   4) 阻尼斜率从尾部拟合 s = (I/dt)(1/r-1)（r 是窗口两端 |delta|/Q_ss 的几何比），对律的 n dp/Q 差 9.6e-09~1.6e-03，
+#      而弦 dp/Q 差 49.9%（n=0.5）/29.9%（0.7）/23.0%（1.3）、Newtonian 下限 1.018592e+08 差 >10%——三个候选一起写才
+#      说明"用的不是另外两个"。注意窗口：n=0.7 的 tau 只有 0.0075 s，dt 必须显著小于它才有得拟合（本案 dt 0.002）。
+#   5) 惰性对照打在字符串上：n=1, K=mu 那根管与未声明那根管 2001/2001 状态**打印逐字相同**。
+#   6) 拒收即边界：负指数、指数无 consistency、耦合边带指数、任何 yieldStress（四条 rc!=0 + 报文 needle）。屈服那条
+#      是"瞬态只有动壁律，阈值需要一个自己在时间里积分的静止支"写成了断言——稳态 5.46 那次便宜是因为问到的压差已知，
+#      这里 dp 正是行的未知数。approximate 是禁止的，所以只能拒。
+# 写这类判据时的坑：①函数放错作用域会得到 "call to 'pipeFrictionPa' is ambiguous"（定义在匿名 namespace 里，声明在
+#   Network.h）；放 cf 作用域后 pipeLossAt 仍能经外层作用域看见它。②case 注释里引闭式要引**改过常数之后**的那条
+#   （5.47 的剖面积分），5.45 的 Metzner-Reed 常数在 n=0.5 处差 25%，先在稳态 app 上对一下再写。③面积算错一格
+#   （pi d^2/4 写成 d^2/4 之类）会让手推的时间常数差 4 倍而对不上打印的 v——核对 v == Q/A，别核对自己的算术。
+# 九族 39 条；五个 case 文件，checker 墙钟 2.58 s（ctest -j8 记，Test #77）
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientPowerLawRheology/case.dict
+python3 tests/check_transient_power_law.py \
+    "$PWD/build/src/1d/apps/chflow-1d-transient" \
+    "$PWD/tests/cases/transientPowerLawRheology/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

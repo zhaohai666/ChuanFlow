@@ -1,0 +1,9 @@
+// A coupled element's loss is its partner's statement, so it can carry neither a
+// valve (5.18) nor a rheology: declaring one here would bill the same wall
+// twice, once by the detailed region and once by this row's law.
+// verified by tests/check_transient_power_law.py (family 5).
+fluid { rho 850; mu 0.1; }
+nodes { A { fixedPressure 3.0e4; } B { fixedPressure 2.0e4; } }
+pipes { Bad { from A; to B; length 20; diameter 0.02;
+              coupledResistance 5.0e8; flowIndex 0.6; consistency 1.0; } }
+time  { dt 0.02; endTime 0.1; reportEvery 1; }

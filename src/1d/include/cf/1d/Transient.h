@@ -65,6 +65,14 @@ struct TransientPipeConfig
     // region's inertance rho*L/A stays on the 1D side, so the partner only has
     // to state the drop it resists. A coupled pipe carries no valve.
     double coupledResistance = 0;
+    // Rheology, the same two numbers the steady kernel reads (Network.h): at
+    // flowIndex > 0 the friction line is Churchill on the Metzner-Reed number
+    // instead of rho u d / mu, through the one shared wall-law function.
+    // `yieldStress` is read only to be refused: a threshold needs a static
+    // branch, and in a time-marching row that is not the steady dead branch.
+    double flowIndex = 0;      // n; 0 = Newtonian (the fluid's own mu)
+    double consistency = 0;    // K, Pa.s^n; required when flowIndex > 0
+    double yieldStress = 0;    // Pa; refused by this kernel
 };
 
 struct TransientSource
@@ -164,6 +172,14 @@ public:
 
     /// Pipe `k`'s partner coefficient (Pa/(m3/s)), or 0 when it is not coupled.
     double coupledResistanceOf(label k) const;
+
+    /// The wall law pipe `k`'s momentum row actually reads: the declared flow
+    /// index (0 = Newtonian, nothing declared) and its consistency K (Pa.s^n).
+    /// The app reports the pair only when an index is declared, so a case that
+    /// asks for a rheology can be seen asking for it -- before 5.48 the row
+    /// computed `rho u d / mu` by hand and a declaration changed no number.
+    double pipeFlowIndex(label k) const;
+    double pipeConsistencyOf(label k) const;
 
     double time() const { return t_; }
     const std::vector<std::string>& nodeNames() const { return net_.nodeNames; }

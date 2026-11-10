@@ -1,0 +1,9 @@
+// The transient row refuses a negative flow index: 0 means "nothing declared"
+// and a negative n has no wall law -- the check is on the declaration, not on
+// the number the row would have used.
+// verified by tests/check_transient_power_law.py (family 5).
+fluid { rho 850; mu 0.1; }
+nodes { A { fixedPressure 3.0e4; } B { fixedPressure 2.0e4; } }
+pipes { Bad { from A; to B; length 20; diameter 0.02;
+              flowIndex -0.5; consistency 1.0; } }
+time  { dt 0.02; endTime 0.1; reportEvery 1; }

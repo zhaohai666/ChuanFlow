@@ -749,6 +749,25 @@ foreach(tmode "blowdown;BLOWDOWN" "rlc;RLC" "slug;Slug" "valve;Valve")
             ${mode})
 endforeach()
 
+# 5.48 the wall law of 5.45 - 5.47 in the transient momentum row. The row used to
+# build `rho u d / mu` itself, so a declared `flowIndex` in a transient case was
+# not refused but ignored: it ran Newtonian friction and printed a Newtonian
+# rate. Both ends fixed-pressure makes each pipe one row,
+# rho L/A dQ/dt = dp - dp_wall(Q), so the checker solves that recursion itself
+# with the law written out from the case file and walks all 2001 reported states:
+# the terminal rate must be the profile integral 5.47 corrected 5.45 with (one
+# law, two kernels), the printed slope of the approach must be the law's own
+# n dp/Q rather than the chord dp/Q or the Newtonian floor, n = 1 with K = mu
+# must change no string, the odd continuation must show up as exactly one turn
+# around from a negative start, and a threshold is refused because static hold
+# has to be integrated in time here
+add_test(
+    NAME verify.transientPowerLawRheology
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_power_law.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientPowerLawRheology/case.dict)
+
 # distributed two-fluid kernel: Godunov shock/fan kinematics, steady
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation

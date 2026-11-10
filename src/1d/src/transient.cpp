@@ -21,16 +21,17 @@ double pipeArea(double diameter)
     return 0.25 * M_PI * diameter * diameter;
 }
 
-/// Pressure drop consumed by friction for a signed flow (Darcy-Weisbach
-/// with the same Churchill factor as the steady kernel; odd in Q).
+/// Pressure drop consumed by friction for a signed flow: the wall law the pipe
+/// declares, through the same pipeFrictionPa the steady kernel calls, made odd
+/// in Q. Nothing is computed here -- that is the point. Until 5.48 this line
+/// built `rho u d / mu` itself, so a `flowIndex` declared in a transient case
+/// was ignored rather than refused: the row quietly kept Newtonian friction.
 double frictionDp(const NetworkPipe& geo, const FluidProperties& fl, double q)
 {
     const double area = pipeArea(geo.diameter);
     const double v = std::abs(q) / area;
     if (v == 0) return 0;
-    const double re = fl.rho * v * geo.diameter / fl.mu;
-    const double f = churchillFriction(re, geo.roughness / geo.diameter);
-    const double dp = f * geo.length / geo.diameter * 0.5 * fl.rho * v * v;
+    const double dp = pipeFrictionPa(geo, fl, std::abs(q));
     return q > 0 ? dp : -dp;
 }
 
@@ -38,10 +39,18 @@ double frictionDp(const NetworkPipe& geo, const FluidProperties& fl, double q)
 /// falls back to the laminar slope 128 mu L / (pi D^4) near Q = 0.
 double frictionSlope(const NetworkPipe& geo, const FluidProperties& fl, double q)
 {
-    const double lam = 128.0 * fl.mu * geo.length
-                     / (M_PI * geo.diameter * geo.diameter * geo.diameter * geo.diameter);
     const double h = std::max(1e-5 * std::abs(q), 1e-12);
     const double d = (frictionDp(geo, fl, q + h) - frictionDp(geo, fl, q - h)) / (2.0 * h);
+    if (geo.flowIndex > 0)
+        // The Newtonian floor below is a number made out of mu. At n != 1 the
+        // declared law's own low-rate slope is n * dp / q, which diverges for a
+        // shear-thinning fluid and vanishes for a thickening one, so clamping it
+        // to 128 mu L/(pi d^4) would damp the row with a resistance the fluid
+        // does not have. The diagonal still carries inertia/dt, so a vanishing
+        // slope cannot make the system singular.
+        return (std::isfinite(d) && d > 0) ? d : 0.0;
+    const double lam = 128.0 * fl.mu * geo.length
+                     / (M_PI * geo.diameter * geo.diameter * geo.diameter * geo.diameter);
     return (std::isfinite(d) && d > 0) ? std::max(d, 0.2 * lam) : lam;
 }
 
@@ -134,6 +143,28 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         geo.elevation = pc.elevation;
         geo.valveK = pc.valveK;
         geo.coupledResistance = pc.coupledResistance;
+        geo.flowIndex = pc.flowIndex;
+        geo.consistency = pc.consistency;
+        if (pc.flowIndex < 0)
+            cfFatal("transient: pipe '" + pc.name + "' has a negative"
+                    " power-law flow index (0 means Newtonian)");
+        if (pc.flowIndex > 0 && !(pc.consistency > 0))
+            cfFatal("transient: pipe '" + pc.name + "' declares a flow index"
+                    " without a positive consistency: at n != 1 the fluid's mu"
+                    " is not the same quantity as K (Pa.s^n)");
+        if (pc.flowIndex > 0 && pc.coupledResistance > 0)
+            cfFatal("transient: pipe '" + pc.name + "' is a coupled element:"
+                    " its loss is the partner model's, so it cannot carry a"
+                    " rheology either");
+        if (pc.yieldStress > 0)
+            // 5.46 and 5.47 put the dead branch in front of the steady
+            // bracket, where the asked drop is known. Here the drop is what
+            // the row is solving for, and static hold has to be integrated in
+            // time, so a declared threshold is refused rather than approximated
+            // by the kinetic law.
+            cfFatal("transient: pipe '" + pc.name + "' declares a yield"
+                    " stress: the transient row has the moving-wall law only,"
+                    " and a threshold needs a static branch of its own");
         if (pc.coupledResistance < 0)
             cfFatal("transient: pipe '" + pc.name + "' has a negative coupled"
                     " resistance");
@@ -407,6 +438,20 @@ double TransientNetwork::pipeInertia(label k) const
     return pipes_[static_cast<std::size_t>(k)].inertia;
 }
 
+double TransientNetwork::pipeFlowIndex(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].geo.flowIndex;
+}
+
+double TransientNetwork::pipeConsistencyOf(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].geo.consistency;
+}
+
 void TransientNetwork::setCoupledInertia(label k, double inertia)
 {
     if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
@@ -580,6 +625,9 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
         p.initialFlow = pd.getScalarOr("initialFlow", 0.0);
         p.valveK = pd.getScalarOr("valve", 0.0);
         p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
+        p.flowIndex = pd.getScalarOr("flowIndex", 0.0);
+        p.consistency = pd.getScalarOr("consistency", 0.0);
+        p.yieldStress = pd.getScalarOr("yieldStress", 0.0);
         if (pd.has("valveClose"))
         {
             const Dictionary& vc = pd.getDict("valveClose");

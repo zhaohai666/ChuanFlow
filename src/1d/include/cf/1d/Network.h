@@ -193,6 +193,15 @@ struct SteadyNetworkResult
 /// returns the laminar limit 64/Re for Re -> 0.
 double churchillFriction(double reynolds, double relativeRoughness);
 
+/// The friction drop (Pa, positive) the declared wall law resists at a rate
+/// magnitude |q|: Newtonian or power-law through Churchill on the
+/// Metzner-Reed number, a yielded pipe through its own wall stress. Declared
+/// here because the transient momentum row and the steady pipe loss are two
+/// callers of one law; a rheology read differently in the two kernels would be
+/// a third set of assertions nobody could reconcile.
+double pipeFrictionPa(const NetworkPipe& pipe, const FluidProperties& fluid,
+                      double q);
+
 /// Signed flow through one pipe for a given total pressure difference
 /// dp = p(from) - p(to). Q/dpTotal conductance via central differencing.
 void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,

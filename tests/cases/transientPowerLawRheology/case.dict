@@ -1,0 +1,93 @@
+// transientPowerLawRheology: the wall law 5.45 - 5.47 proved three times in the
+// steady network is now the number the *transient* momentum row reads.
+//
+// Both ends are fixed-pressure nodes, so each pipe is its own one-row system:
+//
+//     rho L/A * dQ/dt = dp - dp_wall(Q),   dp = p(A) - p(B) = 1.0e4 Pa
+//
+// and dp_wall is the same function the steady kernel charges for the same wall
+// (pipeFrictionPa). That makes the end of a transient run a cross-kernel
+// identity rather than a coincidence: relaxed to rest, this row must land on
+// the exact laminar discharge of the declared law -- the profile integral 5.47
+// corrected 5.45 with, not the Metzner-Reed constant 5.45 first used,
+//
+//     Q = (pi d^3 / 8) * n/(3n+1) * (dp d / (4 K L))^(1/n),   tau_w = dp d/(4L)
+//
+// which the checker recomputes from the case file, not from the app. At
+// n = 1, K = mu it is 128 mu L Q = pi d^4 dp.
+//
+// Before this line the transient row built `rho u d / mu` by hand. A case that
+// declared `flowIndex 0.5` here therefore did not fail and did not warn: it ran
+// Newtonian friction and reported the Newtonian rate. The six pipes below are
+// one geometry and one drop with five different declarations, so the
+// old behaviour would have made all six traces *identical* -- the increment is
+// falsifiable in one run.
+//
+// What the exponents buy at dp = 1.0e4 Pa, L = 20 m, d = 0.02 m (fluid 850 kg/m3,
+// mu 0.1 Pa.s, so the Newtonian rate is 1.96349e-5 m3/s):
+//
+//   * `Thin05` (n = 0.5, K = 1) and `Thin07` shear-thin: a much smaller rate
+//     than the Newtonian one at the same drop, because K is not mu, and a
+//     relaxation whose slope is the law's own n dp/Q rather than the chord dp/Q.
+//   * `Thick13` (n = 1.3, K = 0.02) shear-thickens and is the only pipe here
+//     whose steady rate beats the Newtonian one.
+//   * `Newt` (undeclared) and `Decl1` (n = 1, K = mu) are the inertness control:
+//     term for term the same algebra, so their traces must be bit-identical.
+//   * `Thin05Rev` starts at a negative rate, where the law is the odd
+//     continuation of itself -- a statement only a time-marching row can make.
+//
+// The generalized number is largest for `Thick13` at its own steady rate (32.2)
+// and the Newtonian one is 10.6, so Churchill's laminar branch is in force in
+// every reported state -- the checker walks all 2001 of them -- and the closed
+// form is the exact laminar solution rather than a correlation. The turbulent
+// half is reached by the generalized number and validated against nothing here.
+//
+// A threshold is refused in this kernel, not approximated: static hold has to be
+// integrated in time and here the drop is what the row is solving for. See
+// case_rejectYieldStress.dict and the three other refusal files.
+//
+// verified by tests/check_transient_power_law.py
+// (ctest verify.transientPowerLawRheology).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+}
+
+pipes
+{
+    // --- the inertness pair: same geometry, one declared, one not ---
+    Newt  { from A; to B; length 20; diameter 0.02; }
+    Decl1 { from A; to B; length 20; diameter 0.02;
+            flowIndex 1; consistency 0.1; }
+
+    // --- the sign of the exponent, same geometry, starts at rest ---
+    Thin05  { from A; to B; length 20; diameter 0.02; initialFlow 0;
+              flowIndex 0.5; consistency 1.0; }
+    Thin07  { from A; to B; length 20; diameter 0.02; initialFlow 0;
+              flowIndex 0.7; consistency 2.0; }
+    Thick13 { from A; to B; length 20; diameter 0.02; initialFlow 0;
+              flowIndex 1.3; consistency 0.02; }
+
+    // --- the odd continuation: released flowing the wrong way ---
+    Thin05Rev { from A; to B; length 20; diameter 0.02; initialFlow -2.0e-6;
+                flowIndex 0.5; consistency 1.0; }
+}
+
+time
+{
+    // dt has to be small against the *fastest* relaxation here (n = 0.7 damps
+    // with tau = rho L/A / (n dp/Q) = 7.5 ms), so the tail the checker fits is
+    // several samples long, and endTime has to be long against the slowest
+    // (Newtonian, tau = 0.106 s) so "relaxed to rest" means what it says:
+    // 37 of those time constants.
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

@@ -1,0 +1,135 @@
+// transientYieldValveBranchRelease: one free node with TWO yielded walls on it,
+// a scheduled drain, and the question 5.53's boundary (2) and (6) left open --
+// can a timetable that cannot wake the wall put it back to sleep, and does one
+// wall's release hold the other through the shared node?
+//
+// 5.53 could only say the release is one-way, and its reason was that a single
+// wall's own flow is the only thing that can move its node back up, and that
+// flow goes to zero exactly at the pressure the wall needs. Put a second wall on
+// the same node and the node has a ceiling it did not have before: while the
+// weaker wall flows, the network's limit is the *weaker* wall's release pressure,
+// and every stronger wall on that node crosses it from below. So the row per arm
+// is
+//
+//   rho L/A (Qk - Qk')/dt = (pA - pF) - 4 L tw_k / d - Kk rho|Qk|Qk/(2A^2)
+//   rho L/A (Qd - Qd')/dt = (pF - pB) - R Qd - Kd(t) rho|Qd|Qd/(2A^2)
+//   V/BC (pF - pF')        = sum_k Qk - Qd
+//
+// with the latch rule unchanged -- Q = 0 while the entry drive is under
+// 4 tau_0 L / d (transient.cpp:40-:43) and the in-step clamp for a wall whose
+// iterate is carried back through zero (transient.cpp:353-:355). The node row is
+// already degree-generic (transient.cpp:395-:416), so nothing here needed a
+// kernel change; it needed a case file that stops putting one wall per node.
+//
+// Every node starts at 2.7e4 Pa against A = 3.0e4, so the drive on offer is
+// 3000 Pa and all three thresholds used here -- 4 tau_0 L / d = 8000 / 6000 /
+// 4000 Pa for tau_0 = 2.0 / 1.5 / 1.0 -- start held. Their release pressures are
+// pA - threshold = 22000 / 24000 / 26000 Pa, and the drain that decides when the
+// node gets there is the same close 0.8 -> 1.0 s to closedK = 1e8, reopen
+// 2.5 -> 2.7 s in every arm but one.
+//
+//   * `a` -- 8000 + 6000: the two-way latch. The 6000 wall releases first, the
+//     8000 wall releases on the way down, the drain seals, the 6000 wall fills
+//     the node back over 22000 and the 8000 wall is held again while the 6000
+//     wall is still flowing.
+//   * `i` -- 8000 + 8000: the same arm with the ordering removed. Both walls
+//     release on one step and neither re-latches, because two identical walls
+//     have the same ceiling as each other.
+//   * `t` -- 8000 + 6000 + 4000: the middle wall wakes, sleeps and wakes again
+//     (185 / 589 / 1470), the 4000 wall wakes once at 80 and never sleeps again,
+//     and the 8000 wall is never asked at all: the two weaker walls keep the node
+//     above 22000 Pa for the whole run.
+//   * `s` -- 6000 + 4000: the same node with the silent row taken out. Every
+//     token of `t`'s two flowing walls and its node is reproduced here, which is
+//     what a held pipe contributes to continuity: nothing.
+//   * `u` -- 8000 alone: 5.53's one-way arm under this file's starting pressure,
+//     the control for `a`.
+//   * `p` -- 8000 + a Newtonian feed: the ceiling does not need a second wall,
+//     only a neighbour whose flow does not vanish at the wall's own pressure.
+//     This wall is never released at all.
+//   * `e` -- 8000 + 6000 with the close moved to 0.2 -> 0.4 s: the schedule
+//     arrives while both walls are still held, so the node is carried *down*
+//     instead of up; each wall gets the one release and loses the re-latch and
+//     the second release the same arm gives `a` -- the re-latch is not an
+//     independent event, it is downstream of the release this seal cancels.
+//
+// verified by tests/check_transient_yield_valve_branch_release.py
+// (ctest verify.transientYieldValveBranchRelease).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+    Fa { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fi { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Ft { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fs { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fu { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fp { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fe { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+}
+
+pipes
+{
+    // --- the two-way latch: 8000 below 6000 -------------------------------
+    Sa { from A; to Fa; length 20; diameter 0.02; yieldStress 2.0; }
+    Wa { from A; to Fa; length 20; diameter 0.02; yieldStress 1.5; }
+    Da { from Fa; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+
+    // --- the same arm with the ordering taken out --------------------------
+    Sia { from A; to Fi; length 20; diameter 0.02; yieldStress 2.0; }
+    Sib { from A; to Fi; length 20; diameter 0.02; yieldStress 2.0; }
+    Di  { from Fi; to B; length 20; diameter 0.02; valve 0;
+          valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+          valveOpen  { start 2.5; end 2.7; } }
+
+    // --- three walls, three thresholds ------------------------------------
+    St { from A; to Ft; length 20; diameter 0.02; yieldStress 2.0; }
+    Wt { from A; to Ft; length 20; diameter 0.02; yieldStress 1.5; }
+    Tt { from A; to Ft; length 20; diameter 0.02; yieldStress 1.0; }
+    Dt  { from Ft; to B; length 20; diameter 0.02; valve 0;
+          valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+          valveOpen  { start 2.5; end 2.7; } }
+
+    // --- `t` with its silent row taken out --------------------------------
+    Ws { from A; to Fs; length 20; diameter 0.02; yieldStress 1.5; }
+    Ts { from A; to Fs; length 20; diameter 0.02; yieldStress 1.0; }
+    Ds  { from Fs; to B; length 20; diameter 0.02; valve 0;
+          valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+          valveOpen  { start 2.5; end 2.7; } }
+
+    // --- one wall only ----------------------------------------------------
+    Su { from A; to Fu; length 20; diameter 0.02; yieldStress 2.0; }
+    Du  { from Fu; to B; length 20; diameter 0.02; valve 0;
+          valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+          valveOpen  { start 2.5; end 2.7; } }
+
+    // --- a Newtonian neighbour instead of a second wall --------------------
+    Sp { from A; to Fp; length 20; diameter 0.02; yieldStress 2.0; }
+    Np { from A; to Fp; length 20; diameter 0.02; }
+    Dp  { from Fp; to B; length 20; diameter 0.02; valve 0;
+          valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+          valveOpen  { start 2.5; end 2.7; } }
+
+    // --- the same arm `a`, with the close arriving early -------------------
+    Se { from A; to Fe; length 20; diameter 0.02; yieldStress 2.0; }
+    We { from A; to Fe; length 20; diameter 0.02; yieldStress 1.5; }
+    De  { from Fe; to B; length 20; diameter 0.02; valve 0;
+          valveClose { start 0.2; end 0.4; closedK 1.0e8; }
+          valveOpen  { start 2.5; end 2.7; } }
+}
+
+time
+{
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

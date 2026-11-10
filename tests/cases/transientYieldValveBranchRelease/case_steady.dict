@@ -1,0 +1,78 @@
+// transientYieldValveBranchRelease / case_steady: the same seven arms with every
+// drain frozen at the K its schedule holds at the end of the marched run -- K 0,
+// because every arm here reopens.
+//
+// The transient file makes claims about *paths*: which wall wakes, which one
+// goes back to sleep, which one is never asked. This file is the state those
+// paths are heading for, and it is the only place in the increment where the
+// answer comes without a latch or a memory. The steady kernel asks one question
+// per yielded pipe -- can the wall law plus the topology pay the drop offered --
+// and a pipe whose settled node pressure leaves it less than 4 tau_0 L / d has no
+// rate to report. So the walls that report exactly zero here are the walls the
+// transient run leaves asleep at its last state, and the node pressures are the
+// ceilings the marched traces approach.
+//
+// verified by tests/check_transient_yield_valve_branch_release.py
+// (ctest verify.transientYieldValveBranchRelease).
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+    Fa {}; Fi {}; Ft {}; Fs {}; Fu {}; Fp {}; Fe {};
+}
+
+pipes
+{
+    Sa { from A; to Fa; length 20; diameter 0.02; yieldStress 2.0; }
+    Wa { from A; to Fa; length 20; diameter 0.02; yieldStress 1.5; }
+    Da { from Fa; to B; length 20; diameter 0.02; }
+
+    Sia { from A; to Fi; length 20; diameter 0.02; yieldStress 2.0; }
+    Sib { from A; to Fi; length 20; diameter 0.02; yieldStress 2.0; }
+    Di  { from Fi; to B; length 20; diameter 0.02; }
+
+    St { from A; to Ft; length 20; diameter 0.02; yieldStress 2.0; }
+    Wt { from A; to Ft; length 20; diameter 0.02; yieldStress 1.5; }
+    Tt { from A; to Ft; length 20; diameter 0.02; yieldStress 1.0; }
+    Dt { from Ft; to B; length 20; diameter 0.02; }
+
+    Ws { from A; to Fs; length 20; diameter 0.02; yieldStress 1.5; }
+    Ts { from A; to Fs; length 20; diameter 0.02; yieldStress 1.0; }
+    Ds { from Fs; to B; length 20; diameter 0.02; }
+
+    Su { from A; to Fu; length 20; diameter 0.02; yieldStress 2.0; }
+    Du { from Fu; to B; length 20; diameter 0.02; }
+
+    Sp { from A; to Fp; length 20; diameter 0.02; yieldStress 2.0; }
+    Np { from A; to Fp; length 20; diameter 0.02; }
+    Dp { from Fp; to B; length 20; diameter 0.02; }
+
+    Se { from A; to Fe; length 20; diameter 0.02; yieldStress 2.0; }
+    We { from A; to Fe; length 20; diameter 0.02; yieldStress 1.5; }
+    De { from Fe; to B; length 20; diameter 0.02; }
+}
+
+sources
+{
+    // A and B are the fixed-pressure nodes, so these only set the residual's
+    // rate scale; they change no flow in any pipe.
+    feed { node A; rate 6.0e-5; }
+    take { node B; rate -6.0e-5; }
+}
+
+solve
+{
+    maxIter 200;
+    tol 1e-12;
+}

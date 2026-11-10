@@ -1,0 +1,52 @@
+// transientYieldValveBranchRelease / case_long: arm `a` with the seal held open
+// for 14 s instead of 1.5 s.
+//
+// The 4 s file can say that the weakest wall on a branch does not re-latch, but
+// it cannot say why: its node is still climbing toward the ceiling when the
+// drain reopens, so "not yet" and "not ever" look the same in a trace. This file
+// separates them. The ceiling is not a schedule and not a clock -- while only
+// the 6000 Pa wall flows, the network's limit is that wall's own release
+// pressure pA - 4 tau_0 L / d = 24000 Pa, and its flow vanishes exactly there,
+// so the node arrives from below and never crosses. Seven thousand steps of seal
+// is the honest way to read that: the deficit is still open at 15 s, and it
+// shrinks by a fixed factor per fixed time, which is an asymptote, not a wait.
+//
+// Everything before t = 2.5 s is the same topology and the same schedule for
+// arm `a` as case.dict, so the two runs must agree on the flips they share and on
+// the numbers of the shared window -- to about 2e-07 Pa on the node, not token
+// for token, because the 21-pipe system and the 3-pipe system do not sum the same
+// dense rows in the same order. That agreement is what makes the strong wall's
+// 14 s of sleep after its re-latch a statement about the network rather than
+// about the calendar.
+//
+// verified by tests/check_transient_yield_valve_branch_release.py
+// (ctest verify.transientYieldValveBranchRelease).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+    Fa { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+}
+
+pipes
+{
+    Sa { from A; to Fa; length 20; diameter 0.02; yieldStress 2.0; }
+    Wa { from A; to Fa; length 20; diameter 0.02; yieldStress 1.5; }
+    Da { from Fa; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 15.0; end 15.2; } }
+}
+
+time
+{
+    dt 0.002;
+    endTime 18.0;
+    reportEvery 1;
+}

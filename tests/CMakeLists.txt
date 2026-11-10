@@ -899,6 +899,47 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValveNodeRelease/case.dict)
 
+# 5.54 the branching node under the latch: two yielded walls on ONE free node, a
+# scheduled drain, and the two cells 5.53 had to declare unreachable -- its
+# boundary 2 (a node with more than one pair) and its boundary 6 (a latch that
+# closes again after it opened). Seven arms, 13 yielded walls, 8 Newtonian pipes,
+# 9 nodes, and no kernel change: the node row was already degree-generic, the
+# entry latch was already a test on Q_prev == 0, and the in-step clamp was
+# already there. The second wall gives the node something the first never had, a
+# ceiling: while the weaker wall flows the limit is *that* wall's release
+# pressure, so every stronger wall crosses it from below and can be put back to
+# sleep. The latch reads one number in both directions -- 14 release events on 11
+# walls caught 1.00 - 16.54 Pa over 4 tau_0 L/d and 3 re-latches 3.10 - 3.55 Pa
+# under the same number, 17 flips in the file, so there is no hysteresis to fit.
+# Who re-latches is an ordering, not a
+# calendar: Sa 8000 under Wa 6000, Wt/Ws 6000 under Ts/Tt 4000, and arm `i`'s two
+# identical 8000 walls re-latch neither, as arm `u`'s single wall re-latches
+# nothing. The inequality predicts two walls the file refuses, each for its own
+# reason: arm `t`'s 8000 wall is never asked (its node bottoms at 22593.53 Pa,
+# 593.53 Pa high) and arm `e`'s never comes back under (the largest node after
+# its release is 21979.46 Pa, 20.54 Pa short of 22000, and its steady destination
+# 620.27 Pa short). The ceiling is a wall pressure only when the weakest inflow is
+# a wall: arm `p`'s Newtonian neighbour makes it pA, and its wall gets no closer
+# to the drive it needs than 5101.52 Pa of 8000. The held row is silent in the
+# strongest sense the print allows -- arm `t` is arm `s` plus a wall that never
+# wakes, and the two agree to 0.0 Pa on the node and token for token on every
+# flowing pipe, in the transient and in the steady kernel (Ft = Fs = 22657.9280).
+# 23000 states of the 4 s and 18 s runs reproduce this file's own three rows, node
+# row and sampled K (1.36e-09 relative on rates, 7.83e-12 on pressures, no latch
+# flag differs), all 19658 held states print the single token 0, and the node
+# balance closes to 4.951e-14 m3/s on the printed tokens alone. The calendar buys
+# 7001 steps of seal: arm `a`'s weak wall is 1048.65 Pa under its release pressure
+# after 2 s and still 394.36 Pa under it after 14 s, the per-thousand-step shrink
+# fallen to 0.99392, while the same window hands the strong wall 7295 steps of
+# sleep -- `not yet` and `not ever` are the same asymptote read at two times
+add_test(
+    NAME verify.transientYieldValveBranchRelease
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_valve_branch_release.py
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValveBranchRelease/case.dict)
+
 
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation

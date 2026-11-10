@@ -1,0 +1,28 @@
+// steadyYieldValveSchedule: the same network as case.dict with every valve
+// frozen at the value its own timetable is holding at t = 4 s -- 0 for the four
+// pipes whose valve has finished reopening, 1e6 for the one that closed and
+// stayed closed -- and the schedules removed, because the steady kernel reads
+// only `valve`. The point of the file is the cross-kernel meeting 5.50 made on a
+// constant K and this increment makes on a settled one: the marched row's last
+// state against the steady kernel's root of drive = dp_wall(Q) + K rho Q^2/2A^2,
+// plus the print convention that a pipe reporting Q 0 has no dpValve field at
+// all. There is no dpValve on StopEarly: its valve has reopened, and even when
+// it was closed the row was Q = 0, so the schedule never had a rate to bill.
+solver { type steadyNetwork; }
+fluid { rho 850; mu 0.1; }
+nodes { A { pressure 3.0e4; } B { pressure 2.0e4; } A2 { pressure 2.4e4; } }
+pipes {
+  CreepOpen  { from A; to B; length 20; diameter 0.02; yieldStress 1.5; }
+  CreepCyc   { from A; to B; length 20; diameter 0.02; yieldStress 1.5; }
+  CreepShut  { from A; to B; length 20; diameter 0.02; yieldStress 1.5; valve 1.0e6; }
+  CreepK1e6  { from A; to B; length 20; diameter 0.02; yieldStress 1.5; valve 1.0e6; }
+  StopPlain  { from A2; to B; length 20; diameter 0.02; yieldStress 1.5; }
+  StopEarly  { from A2; to B; length 20; diameter 0.02; yieldStress 1.5; }
+  StopMid    { from A2; to B; length 20; diameter 0.02; yieldStress 1.5; }
+  StopLate   { from A2; to B; length 20; diameter 0.02; yieldStress 1.5; }
+  HeldPlain  { from A2; to B; length 20; diameter 0.02; yieldStress 1.5; }
+  HeldCyc    { from A2; to B; length 20; diameter 0.02; yieldStress 1.5; }
+  NewtPlain  { from A2; to B; length 20; diameter 0.02; }
+  NewtEarly  { from A2; to B; length 20; diameter 0.02; }
+}
+solve { maxIter 200; tol 1e-12; }

@@ -832,7 +832,34 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyYieldTransition/case.dict)
 
-# distributed two-fluid kernel: Godunov shock/fan kinematics, steady
+# 5.52 the valve *timetable* on the same row as the yield wall's static branch --
+# which is the cell 5.50 put in its own boundary 3 and 4. The two switches on
+# that row are read from different places: the latch compares the drive (which
+# carries no K) with 4 tau_0 L/d, while the schedule only prices the term the
+# moving row pays. So a closing valve can move the stop step (54 / 72 / 184 for a
+# ramp ending at 0.15 / 0.6 / never, and monotone in it) but cannot cause it, a
+# ramp that arrives after the wall already stopped the pipe is invisible in all
+# 2001 printed tokens and in all 2001 latch flags, no schedule wakes what the
+# wall holds while its Newtonian twin returns to its own rate, and a pipe already
+# held at rest prints the schedule-free trace string for string. Above the
+# threshold the valve is a discount and not a refusal: K = 1e6 is worth 9.8x the
+# whole drive there and still holds nothing. Sampling convention is settled the
+# cheap way -- the app stops on the t + dt step, the t variant is still moving one
+# step later, and for a ramp that never overlaps motion the two are one trace
+# (0.000e+00 apart). All 12 x 2001 states reproduce this file's own recursion of
+# both laws to 2.14e-09 relative on the moving states and 2.67e-15 m3/s in
+# absolute units, and the settled row meets the steady kernel with every valve
+# frozen at its end-of-schedule K (2e-9), with no dpValve field on a pipe
+# reporting Q 0
+add_test(
+    NAME verify.transientYieldValveSchedule
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_valve_schedule.py
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValveSchedule/case.dict)
+
+
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation
 # and holdup (transported slip state + interfacial drag)

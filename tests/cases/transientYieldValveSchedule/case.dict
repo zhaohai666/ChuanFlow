@@ -1,0 +1,128 @@
+// transientYieldValveSchedule: the valve *timetable* (`valveClose` / `valveOpen`,
+// the M2 feature documented in architecture `§4.2`) applied to a pipe that has a
+// yield wall (5.46-5.47) and therefore a static branch (5.49). 5.50 put the wall
+// and a *constant* K on the same row and listed this crossing as its boundary ③;
+// this file is that boundary closed.
+//
+// The row, per pipe, both ends pinned at fixed-pressure nodes,
+//
+//     rho L/A * dQ/dt = drive - dp_wall(Q) - K(t) rho |Q| Q / (2 A^2),
+//     drive = pFrom - pTo - rho g dz,   K(t) = valveKAt(t + dt),
+//
+// has two switches in it and they are read from different places. The wall's
+// switch is the step-entry latch `|drive| <= 4 tau_0 L/d` with `Q_prev = 0`
+// (`transient.cpp:40`-`:44`), and `drive` contains no K (`:52`-`:56`). The
+// valve's switch is a schedule sampled at the implicit new time level (`:293`
+// -`:300`). So the question this case answers is not "does a big K stop a
+// yielded pipe" but "which of the two switches a schedule can reach":
+//
+//   * Above its threshold a yielded pipe is not the wall's to give up. The
+//     `Creep*` group sits on 1.0e4 Pa with a 6000 Pa wall, and even K = 1e6
+//     (worth 1.04e4 Pa at the open-valve rate, i.e. more than the whole drive)
+//     leaves it at a nonzero root of the two losses together. Closing and
+//     reopening is fully reversible there: `CreepCyc` ends on the *same* token
+//     `CreepOpen` does, and `CreepShut` -- which closes and stays closed -- ends
+//     on the same rate as the pipe with that K written as a constant,
+//     `CreepK1e6`.
+//   * Below its threshold, the only thing that stops the pipe is the wall, and
+//     the only thing a schedule can do is *when*. `StopPlain` (no valve) and
+//     `StopEarly` (K ramping over 0.05-0.15 s) are the same pipe with the same
+//     2.0e-4 m3/s start; the wall's own margin (4000 Pa offered against a 6000
+//     Pa threshold) carries it to step 184, and the ramp gets it to step 54.
+//     `StopLate`, whose ramp only starts at 0.5 s, is too late to matter at all
+//     -- and that is asserted as a whole-trace identity with `StopPlain`, not
+//     as a tolerance.
+//   * Once the wall has the pipe, no schedule can give it back. `StopEarly`
+//     prints exactly `0` through the entire reopening and to the end of the run,
+//     while the Newtonian twin `NewtEarly`, with the identical schedule and the
+//     identical 4000 Pa drive, dips during the closure and returns to the token
+//     `NewtPlain` prints. That asymmetry -- a closing valve can bring the stop
+//     forward, an opening valve cannot undo it -- belongs to the threshold, not
+//     to the valve, and it is the reason the restart-pressure question 5.49
+//     boundary ① names is *not* the same question as "what does K cost".
+//   * A pipe the wall is already holding does not answer a schedule at all.
+//     `HeldCyc` runs the full close/hold/open cycle on a pipe starting at rest
+//     under a sub-threshold drive and is bit-identical, string for string, to
+//     `HeldPlain`.
+//
+// Geometry, fluid and time are 5.45-5.50's again (L = 20 m, d = 0.02 m,
+// rho = 850 kg/m3, mu = 0.1 Pa.s, dt = 0.002 s, endTime = 4.0 s, 2001 states) so
+// the wall stresses stay at the Pa scale and every yielded answer here is the
+// laminar profile integral, not an extrapolation. The threshold of the 1.5 Pa
+// walls is 4 * 1.5 * 20 / 0.02 = 6000 Pa, offered 1.0e4 Pa (above) or 4000 Pa
+// (below) by the node pairs A -> B and A2 -> B.
+//
+// case_steady.dict is the same network with every K frozen at the value its own
+// schedule ends on (1e6 where the valve stays closed, 0 elsewhere) and the
+// schedules removed, for the cross-kernel meeting: the marched row at the end of
+// the closure against the steady kernel's root of the same two-term loss, and
+// the absence of a `dpValve` field on every pipe that reports `Q 0`.
+//
+// verified by tests/check_transient_yield_valve_schedule.py (ctest
+// verify.transientYieldValveSchedule).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A  { fixedPressure 3.0e4; }
+    B  { fixedPressure 2.0e4; }
+    A2 { fixedPressure 2.4e4; }
+}
+
+pipes
+{
+    // --- above the threshold: a valve is a discount, never a refusal -------
+    CreepOpen  { from A; to B; length 20; diameter 0.02; yieldStress 1.5; }
+    CreepCyc   { from A; to B; length 20; diameter 0.02; yieldStress 1.5; valve 0;
+                 valveClose { start 0.5; end 0.65; closedK 1.0e6; }
+                 valveOpen  { start 1.5; end 1.65; } }
+    CreepShut  { from A; to B; length 20; diameter 0.02; yieldStress 1.5; valve 0;
+                 valveClose { start 0.5; end 0.65; closedK 1.0e6; } }
+    CreepK1e6  { from A; to B; length 20; diameter 0.02; yieldStress 1.5;
+                 valve 1.0e6; }
+
+    // --- below the threshold: the schedule moves the step, the wall moves it
+    StopPlain  { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-4;
+                 yieldStress 1.5; }
+    StopEarly  { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-4;
+                 yieldStress 1.5; valve 0;
+                 valveClose { start 0.05; end 0.15; closedK 1.0e6; }
+                 valveOpen  { start 1.5; end 1.65; } }
+    StopMid    { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-4;
+                 yieldStress 1.5; valve 0;
+                 valveClose { start 0.05; end 0.6; closedK 1.0e6; }
+                 valveOpen  { start 1.5; end 1.65; } }
+    StopLate   { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-4;
+                 yieldStress 1.5; valve 0;
+                 valveClose { start 0.5; end 0.65; closedK 1.0e6; }
+                 valveOpen  { start 1.5; end 1.65; } }
+
+    // --- already held: the schedule has nothing to say to the wall ---------
+    HeldPlain  { from A2; to B; length 20; diameter 0.02; yieldStress 1.5; }
+    HeldCyc    { from A2; to B; length 20; diameter 0.02; yieldStress 1.5; valve 0;
+                 valveClose { start 0.05; end 0.15; closedK 1.0e6; }
+                 valveOpen  { start 1.5; end 1.65; } }
+
+    // --- the Newtonian twins of the same two schedules ---------------------
+    NewtPlain  { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-4; }
+    NewtEarly  { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-4;
+                 valve 0;
+                 valveClose { start 0.05; end 0.15; closedK 1.0e6; }
+                 valveOpen  { start 1.5; end 1.65; } }
+}
+
+time
+{
+    // dt small against the fastest transient in the file (a 2.0e-4 m3/s rate
+    // collapsed by K = 1e6 over a 0.1 s ramp) and endTime long against the
+    // slowest (the reopened pipes' relaxation is tens of milliseconds), so the
+    // tail of every trace is read settled, and every schedule in the file is
+    // fully executed before t = 4.
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

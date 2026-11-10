@@ -1037,6 +1037,46 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldIndexParkingBand/case_5.dict)
 
 
+# 5.58: once the band is index-blind, what can a calendar touch?  Ten HB arms per
+# index (n = 0.5 / 1 / 2) share one 4 s clock carrying valveClose(0.5 -> 1.0,
+# closedK 1e8) + valveOpen(2.0 -> 2.5) on some of their rows.  The desk and the
+# latch never see the calendar: 25000 / 25000 / 22000 / 28000 each hold ONE token
+# over 2001 states at every index, arm h (schedule on BOTH rows) is arm a
+# token-for-token in 2001 node + 2001+2001 rate tokens because a held row becomes
+# Q = 0 before kv is read, and arm b is still HELD at i = 1 with drive exactly
+# 8000 while K(t) sweeps to 1e8 behind it.  The armed row's own arithmetic closes
+# only with the valve term: the HB section integral reproduces its printed rate
+# from the FIRST decided step to 3.757e-10 / 1.001e-09 / 8.235e-10 with
+# K(t)rho|Q|Q/2A^2 moved off the drive and to 6.4e-01 / 1.4e+01 / 1.9e+01 without
+# it.  One calendar, three latencies: armed and unarmed rows agree through steps
+# 0-250 (K = 0 there, `valve 0`), the far slider leaves its twin at step 251 --
+# the first sample past closeStart, K = 4.000e+05 -- at every index, while the
+# 1 Pa armed arm leaves it at step None / 757 / 268 (n = 0.5 / 1 / 2).  What the
+# closed valve costs, per index: the rate at t = 1.5 s is throttled 1.59x / 7.22x
+# / 8.20x and the approach loses 24.1797 / 279.2209 / 253.1707 Pa of 167.8146 /
+# 1540.2417 / 1822.4064 Pa (14.4% / 18.1% / 13.9% -- the fraction is the
+# calendar's, the distance is the index's), and the money is real: the valve term
+# peaks at 323.0 / 2483.1 / 3701.8 Pa, i.e. 4.0% / 31.0% / 46.3% of the 8000 Pa
+# threshold the latch reads, monotone in n, while the wall stress the armed row
+# implies stays within 3.1822% / 10.2906% / 11.1758% of its unarmed twin's.  With
+# K back to exactly 0 the debt is repaid, strictly and monotonically, at an
+# index-dependent rate -- 8.3% / 59.6% / 70.2% by t = 4 s -- and in every one of
+# the 750 post-open states the armed arm flows FASTER than its twin (1.03..1.04 /
+# 1.59..3.57 / 1.93..5.31x) because the same law is handed more drive.  The band
+# itself does not move at any index: no arm reaches 22000 or 28000 (nearest
+# 0.89252 Pa at n = 2, a full 1.00000 Pa at n = 0.5) and no throttled row ever
+# re-arms -- smallest rate 8.1797e-18 / 4.8957e-13 / 2.6280e-11 m3/s.  Mirror e/f
+# is token-for-token exact (nodes sum to 50000 within 0.0e+00, 2001/2001 rates
+# identical) because |Q|Q is odd, all 20 t = 0 flags read 0, and every node row
+# closes on the printed tokens alone to 4.9163e-14 / 4.9640e-14 / 4.9382e-14 m3/s
+add_test(
+    NAME verify.transientYieldIndexValveBand
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_index_valve_band.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldIndexValveBand/case_5.dict)
+
+
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation
 # and holdup (transported slip state + interfacial drag)

@@ -1,0 +1,154 @@
+// transientYieldIndexValveBand / 2: what can a calendar touch once the band is
+// index-blind?
+//
+// 5.57 split the parking band in two: the THRESHOLD (`4 tau_0 L / d`, no `n`, no
+// `K`) and the `<=` that latches on it are index-blind, so n = 0.5 / 1 / 2 all
+// park in the same [22000, 28000] Pa, while everything downstream of the latch
+// reads the index. That left 5.56's boundary 4 open for HB walls: a valve
+// schedule is a term in the SAME row as the wall law
+// (`transient.cpp:363-:382`: inertia + friction + rho*K|Q|Q/2A^2 = drive), so it
+// should be able to move a rate but not a threshold. Ten arms test exactly that
+// split, and they test whether the split depends on the index:
+//
+//   * `a` 25000 plain and `h` 25000 with BOTH rows given `valve 0` +
+//     close-to-1e8 + reopen -- if a held row has no K term to read
+//     (`:353-:355` replaces the row with `Q = 0` before `kv` is ever used), the
+//     two must agree token for token at every index;
+//   * `b` 22000 and `c` 28000 are the two band edges; `b` carries the same
+//     schedule on both rows, and its waking row's drive is exactly 8000 = the
+//     threshold, so the calendar must not be able to wake it;
+//   * sliders: `d`/`e` start 1 Pa outside the ceiling, `j`/`f` 1 Pa outside the
+//     floor, `g`/`i` 2000 Pa outside the ceiling. The second of each pair carries
+//     the schedule on its WAKING row only -- and because the open value is
+//     `valve 0`, the scheduled arm's row is literally the unscheduled arm's row
+//     until t = 0.5 s, so the two must agree token for token right up to the step
+//     the ramp starts and disagree from the next one;
+//   * `e` and `f` are mirrors with the same schedule: the loss term is odd in Q
+//     (`|Q|Q`), so a schedule on the high side of an UP arm and the low side of a
+//     DOWN arm must still print mirrored tokens.
+//
+// Schedule on the armed rows: `valve 0`, `valveClose {start 0.5; end 1.0;
+// closedK 1.0e8}`, `valveOpen {start 2.0; end 2.5}` -- open, closing, closed,
+// reopening, open again inside one 4 s file, so the same wall law can be read
+// while the row is being taxed and while it is not. Geometry and rheology are
+// 5.57's: L 20, d 0.02, rho 850, mu 0.1, tau_0
+// 2.0, and here (`flowIndex`, `consistency`) = (2.0, 0.02). verified by
+// tests/check_transient_yield_index_valve_band.py
+// (ctest verify.transientYieldIndexValveBand).
+//
+// measured (this file, n = 2): desk and latch again untouched -- one token each
+// at 25000 / 25000 / 22000 / 28000 over 2001 states, h identical to a token for
+// token, b HELD at i = 1 at drive exactly 8000, 20 flags 0 at t = 0. The
+// calendar's latency is the shortest of the three: the far slider leaves its
+// twin at step 251 and the 1 Pa armed arm at step 268, only 17 steps into the
+// closed window; the reconstruction needs the valve term (8.235e-10 with it,
+// 1.927e+01 relative without). The closed valve costs 253.1707 Pa of the
+// 1822.4064 Pa of approach (13.9%) and throttles 8.20x at t = 1.5 s -- the
+// deepest throttle of the three indices -- while the armed row's wall stress
+// stays within 11.1758% of its twin's and the valve term peaks at 3701.8 Pa =
+// 46.3% of the 8000 Pa threshold. After reopening all 750 states flow faster
+// than the twin (1.93..5.31x) and repay 70.2% of the debt, the fastest recovery
+// of the three. e/f mirror token for token (0.0e+00, 2001/2001) and the node
+// rows close on printed tokens alone to 4.9382e-14 m3/s.
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+    F2a { volume 0.1; bulkModulus 1.0e8; pressure 25000.0; }
+    F2h { volume 0.1; bulkModulus 1.0e8; pressure 25000.0; }
+    F2b { volume 0.1; bulkModulus 1.0e8; pressure 22000.0; }
+    F2c { volume 0.1; bulkModulus 1.0e8; pressure 28000.0; }
+
+    F2d { volume 0.1; bulkModulus 1.0e8; pressure 21999.0; }
+    F2e { volume 0.1; bulkModulus 1.0e8; pressure 21999.0; }
+    F2j { volume 0.1; bulkModulus 1.0e8; pressure 28001.0; }
+    F2f { volume 0.1; bulkModulus 1.0e8; pressure 28001.0; }
+    F2g { volume 0.1; bulkModulus 1.0e8; pressure 20000.0; }
+    F2i { volume 0.1; bulkModulus 1.0e8; pressure 20000.0; }
+}
+
+pipes
+{
+    S2a { from A; to F2a; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2a { from F2a; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+
+    S2h { from A; to F2h; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0;
+              valve 0.0;
+              valveClose { start 0.5; end 1.0; closedK 1.0e8; }
+              valveOpen { start 2.0; end 2.5; } }
+    E2h { from F2h; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0;
+              valve 0.0;
+              valveClose { start 0.5; end 1.0; closedK 1.0e8; }
+              valveOpen { start 2.0; end 2.5; } }
+
+    S2b { from A; to F2b; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0;
+              valve 0.0;
+              valveClose { start 0.5; end 1.0; closedK 1.0e8; }
+              valveOpen { start 2.0; end 2.5; } }
+    E2b { from F2b; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0;
+              valve 0.0;
+              valveClose { start 0.5; end 1.0; closedK 1.0e8; }
+              valveOpen { start 2.0; end 2.5; } }
+
+    S2c { from A; to F2c; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2c { from F2c; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+
+    S2d { from A; to F2d; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2d { from F2d; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+
+    S2e { from A; to F2e; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0;
+              valve 0.0;
+              valveClose { start 0.5; end 1.0; closedK 1.0e8; }
+              valveOpen { start 2.0; end 2.5; } }
+    E2e { from F2e; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+
+    S2j { from A; to F2j; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2j { from F2j; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+
+    S2f { from A; to F2f; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2f { from F2f; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0;
+              valve 0.0;
+              valveClose { start 0.5; end 1.0; closedK 1.0e8; }
+              valveOpen { start 2.0; end 2.5; } }
+
+    S2g { from A; to F2g; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+    E2g { from F2g; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+
+    S2i { from A; to F2i; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0;
+              valve 0.0;
+              valveClose { start 0.5; end 1.0; closedK 1.0e8; }
+              valveOpen { start 2.0; end 2.5; } }
+    E2i { from F2i; to B; length 20; diameter 0.02;
+              flowIndex 2.0; consistency 0.02; yieldStress 2.0; }
+}
+
+time
+{
+    dt 0.002; endTime 4.0; reportEvery 1;
+}

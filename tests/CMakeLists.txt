@@ -588,6 +588,23 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentConvectiveRow/case.dict)
 
+# both who-pays tables at once, on one edge: 5.43 moved the region's changing
+# profile out of the block's chord and into the row, and recorded that the row's
+# other debt - the inertial bill 5.40 decomposed out - was still unpaid because
+# the attribution table was held at the drawing everywhere. Here the two tables
+# cross on the pinned edge, three rungs by two placements, with the free edge held
+# at the drawing and reporting in every arm. Two of the six cells are 5.43's own
+# arms, so the factorial is anchored to shipped numbers, and the question is
+# whether the two levers have different addresses: the charge must not bend the
+# attribution staircase, the rung must not bend the shape account, and the row's
+# error must fall by both halves at once only when both are declared.
+add_test(
+    NAME verify.transientCoupledMultiTurbulentShapeAndInertiaSplit
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent_shape_and_inertia_split.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict)
+
 # the three degrees of freedom this chain kept separate, all three present at once:
 # where each edge's region inertia comes from (per arm AND per edge) crossed with
 # which operator negotiates the interface - four tables x two maps, eight arms on

@@ -1,0 +1,197 @@
+# transientCoupledMultiTurbulentShapeAndInertiaSplit: the two accounts the 1D row
+# owes are paid on the same edge at the same time, and neither lever touches the
+# other's bill.
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D pipe) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# The topology, the two meshes, the probes, the wall functions, the operating
+# point, the deliberately mis-stated proxy bores, the dt and the eight levels are
+# 5.40's, 5.41's, 5.42's and 5.43's. Every arm is parabolic on both edges and both
+# edges step. Two who-pays surfaces are open at once, and both of them are read
+# back per arm and per edge out of the log:
+#
+#   5.29/5.40/5.41 -- inertiaFrom: which rho*L/A^2 the row installs as M. The
+#      drawing's (network), the region the block solves in (partner), or the fluid
+#      the block's own drop actually crosses (slab).
+#   5.43           -- convectiveToRow: whether the region's changing profile is
+#      paid by the block's chord (report) or written into the row (charge).
+#
+# 5.43 closed its half of the account and recorded the other half rather than
+# removing it: with attribution held at `network` the row's inertial term was
+# still not the one the block measured, and 5.40's identity
+#       rowError * dpBlock = (R*q - (dpFriction - rowBeta)) + (M*dq/dt - dpInertia)
+#   \________ chord: the charge moves this ________/   \__ bill: the rung moves this__/
+# sat with its two brackets three orders apart -- 0.5949 Pa against 754.2383 Pa on
+# X1 and 1903.4177 Pa on X2. This case asks whether that is one lever or two.
+#
+# The two levers are crossed on ONE edge, X2, and X1 is held at the drawing with
+# nothing charged in every arm. That placement is not a convenience, it is the
+# only one this geometry allows:
+#   * the rung is worth reading on X2 because X2's rate is pinned by topology, so
+#     its dq/dt is nonzero only at level 1 -- and level 1 is where the attribution
+#     bill is 1903 Pa, the largest number in 5.40's identity;
+#   * `slab` cannot be put on X1 at all here. 5.41 recorded why and this case
+#     re-measured it while it was being written: slab on the free edge under a
+#     parabolic inlet diverges with
+#       "the detailed region reports a non-positive drop (-89.475517 Pa) at
+#        0.000022 m3/s"
+#     -- the same digits 5.41 quotes, from a first version of this case. The
+#     pinned edge is where the rung is both safe and legible.
+#
+# Six arms, the full 3x2 factorial on X2:
+#   n_rep  network rung, reported  -- the row 5.41/5.42/5.43 solved: 5.43's `c_off`
+#   n_chr  network rung, charged   -- and 5.43's `c_pin`, both shipped controls
+#   g_rep  region rung, reported   -- M = the block's own rho*V/A^2
+#   g_chr  region rung, charged
+#   s_rep  slab rung, reported     -- M = the fluid the block's drop crosses
+#   s_chr  slab rung, charged
+# Two of the six cells are shipped numbers, so the crossing is graded against
+# them rather than against itself. The reading: the three `_rep` arms are 5.40's
+# attribution staircase with the shape axis held still, the three `_chr` arms are
+# the same staircase with the shape account moved into the row, and if the two
+# levers are independent the staircase must have the same heights in both.
+fluid { rho 1000; mu 1.0e-3; }
+
+# Src, J1, J2 and J3 are incompressible ports (no bulkModulus), so the branch
+# split is a result of the momentum balance alone rather than of node compliance.
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    # 6.0e-5 m3/s, as in 5.36..5.43: the operating point at which both
+    # wall-function ducts keep their first cell centre above the y+ = 11 their log
+    # law is written for at every level and every shape.
+    feed { node Src; rate 6.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+
+    # X1 sits in the parallel position (its rate is what the split relaxes), X2 in
+    # the series position (its rate is pinned by topology to the injected flow).
+    # Both proxy bores stay deliberately short -- X1 0.005 against the exact
+    # 0.0056418958354775631, X2 0.006 against 0.00638307648642292245 -- so the
+    # drawing overstates the region by 1.273x and 1.132x, which is what makes the
+    # rung visible in the row's inert term at all.
+    X1 { from J1; to J2; length 0.2;  diameter 0.005;
+         coupledResistance 1.4e7; }
+    By { from J1; to J2; length 0.3;  diameter 0.008; }
+
+    X2 { from J2; to J3; length 0.24; diameter 0.006;
+         coupledResistance 1.36e7; }
+
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+# dt 0.2 s over eight levels -- 5.38..5.43's level, kept so that the only
+# variables are the two who-pays tables on X2.
+time { dt 0.2; endTime 1.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    # 1e-3 as in 5.38..5.43. On a charged edge the tolerance reads
+    # |R*q - (dpFriction - dpConv)| / (dpFriction - dpConv); on a rung other than
+    # the drawing's the same relative statement is made about a row whose implicit
+    # term is a different M.
+    tolerance 1e-3;
+    maxSubIterations 12;
+    # the interface operator is not a variable here -- 5.33 crossed du/dt with
+    # quasi-Newton and 5.37 crossed shape with it. Every arm walks block GS.
+    accelerates ( 0 0 0 0 0 0 );
+    # every edge of every arm steps: a partner that carries its own du/dt is the
+    # only one whose momentum budget has a shape half to move, and the only one
+    # whose region inertia is a measured number rather than a drawn one.
+    ddts        ( Euler Euler Euler Euler Euler Euler );
+    # the drawing everywhere, so that the per-edge table below is the whole
+    # statement of the first axis and is read back arm by arm from the log.
+    inertias    ( network network network network network network );
+    inertiaFrom {
+        # X1 keeps the drawing in all six arms; the rung moves on X2 alone.
+        n_rep { X1 network; X2 network; }
+        n_chr { X1 network; X2 network; }
+        g_rep { X1 network; X2 partner; }
+        g_chr { X1 network; X2 partner; }
+        s_rep { X1 network; X2 slab; }
+        s_chr { X1 network; X2 slab; }
+    }
+    starts {
+        # one seed per arm, identical in all six: 1.4e7 / 1.36e7, the control's
+        # own secants at this rate, so neither table can come in through the
+        # starting coefficients, and parabolic on every edge so dpConv is nonzero
+        # and negative everywhere.
+        n_rep { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        n_chr { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        g_rep { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        g_chr { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        s_rep { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        s_chr { X1 1.4e7; X2 1.36e7; profile parabolic; }
+    }
+    # The second axis, on the same edge: per arm, does X2's block chord keep
+    # paying for its own changing profile, or does X2's row?
+    convectiveToRow {
+        n_rep { X1 report; X2 report; }
+        n_chr { X1 report; X2 charge; }
+        g_rep { X1 report; X2 report; }
+        g_chr { X1 report; X2 charge; }
+        s_rep { X1 report; X2 report; }
+        s_chr { X1 report; X2 charge; }
+    }
+}
+
+details {
+    # X1: 0.2 x 0.005 x 0.005 m, 8 cells across the gap so the first cell centre
+    # sits inside the log-law band. Probe = the last 0.07 m of a 0.2 m region, so
+    # its slab inertance is 0.35 of the region's.
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.12; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_shape_inertia_split_X1.vtu;
+    }
+
+    # X2: a different aspect ratio -- 4 mm gap, 8 mm span -- so its resistance is
+    # not X1's scaled. Probe = the last 0.07 m of a 0.24 m region, so its slab is
+    # 0.291667 of the region's inertance.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.24 0.004 0.008);
+            cells (24 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.16; max 0.23; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 2.4e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_turbulent_shape_inertia_split_X2.vtu;
+    }
+}

@@ -14,11 +14,11 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（98 项）约 258 ~ 371 s ≈ 4.3 ~ 6.2 分钟（实测 370.98 s），
+ctest --test-dir build --output-on-failure -j8  # 全量回归（99 项）约 258 ~ 525 s ≈ 4.3 ~ 8.8 分钟（实测 524.88 s），
                                              # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高）：
-                                             # 稳态 profile 级映射 279.6 s、逐边 ddt 248.3 s、
-                                             # 形状 x 归属 x 逐层 β 账 233.8 s、形状账收进行 153.9 s、
-                                             # 塑形 x 步进 / 准稳双边 127.7 + 127.3 s、VOF 振荡 88.9 s
+                                             # 稳态 profile 级映射 297.4 s、逐边 ddt 285.2 s、
+                                             # 形状账 × 归属账同台 244.4 s、形状账收进行 225.7 s、
+                                             # 塑形 x 步进 / 准稳双边 ~130 s、VOF 振荡 86.0 s
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -811,6 +811,38 @@ python3 tests/check_transient_coupled_multi_turbulent_profile_inertia.py \
 python3 tests/check_transient_coupled_multi_turbulent_convective_row.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiTurbulentConvectiveRow/case.dict"
+
+# 形状账 × 归属账同台（5.44）：新算例 transientCoupledMultiTurbulentShapeAndInertiaSplit，**一行内核代码也没改**——
+# 只是把 §5.40 逐边化的 inertiaFrom（network|partner|slab）与 §5.43 的 convectiveToRow（report|charge）同时指向
+# **同一条边 X2**，做成 3 档 × 2 位置 = 六臂 n_rep / n_chr / g_rep / g_chr / s_rep / s_chr；X1 在六臂里恒"图纸 + 报出"，
+# inertias ( network × 6 ) 保持全档图纸、让逐边表成为归属轴的全部陈述。n_rep ≡ 5.43 的 c_off ≡ 5.41 的 p_net，
+# n_chr ≡ 5.43 的 c_pin——两颗已出厂的对照格正好是这张因式表的左上 2x2。
+# 要看什么：
+#   1) 两根杆子还是根一根：三档的层 1 账单在 report / charge 两臂差 **0.0 Pa**，而同一档内 M 逐层逐位相同——
+#      形状的署名与惯量的署名是两个地址。反方向同样成立：dpConv 在六臂层 1..7 逐位相同，而它旁边的 M 差 3.8803×。
+#   2) §5.40 那两只括号第一次同时收缩：1903.44 → 13.21 Pa（144.1×）、rowError 0.6635 → 0.0046；同档内装上与否只差
+#      1.4e-7。这一步把 5.43 边界⑥那句"账单那半仍未消掉"从推理变成读数。
+#   3) 阶梯的第一级必须**对上厂字**：n_rep/X2 层 1 的 1903.4177 Pa 由 §5.41 发表的四个字段重算（rowError×dpBlock +
+#      dpFriction − dpNetwork）而不是硬写一个数——文档只允许引用测得的值，也允许引用由前一篇发表的字段算出的值。
+#   4) 归属不会把弦谈松：六臂最坏相对弦差同一个 7.9585e-4。换档买到的是行里那个隐式项更小，不是界面更宽。
+#   5) 两个声明都只到自己那条边：其余五臂的 X1 对 n_rep/X1 在 17 字段 × 8 层逐位 0.0，X1 账单恒 754.2383 Pa。
+#   6) 仍不收第三笔：96 状态上 rowDrop − (dpNetwork + M·dq/dt + rowBeta) == 0.0，恒等式最差 6.821e-13。
+# 写这类判据时的坑：①落位不是省——把 slab 同时落到两条边的第一版在 s_rep 臂 fatal 于
+#   `non-positive drop (-89.475517 Pa) at 0.000022 m3/s`（148.47 s，与 5.41 记下的那两个数逐位相同）：slab × 步进 ×
+#   **自由**边 × 塑形入口是那堵墙，本案只能落在钉死边上。②归属只在 dq ≠ 0 处可见，而钉死边除层 1 外 dq 恒 0——
+#   所以"两只括号同时收缩"在本案是一条**首层**陈述，别把它写成全时间轴的性质。③逐边 inertiaFrom 会盖过位置式
+#   inertias 列表，两者同时给出时以表为准；本案靠这个把 X1 恒钉在图纸上。④M 的闭合式按边不同（X1 是 d² 圆管、
+#   X2 是 4×8 mm 矩形 + 0.07 m 探针），只对一条边写常量再去断言另一条会得出 10185916.3578813 对 8488263.63；
+#   写成 M_of(edge, source)。⑤按 rung 过滤再做 max() 会遇到空生成器（X1 没有 partner/slab 臂），要么先补 0.0
+#   要么改按 (arm, edge) 求最坏。⑥迭代一份判据不必重跑 250 s：importlib 载入 checker、把它的 subprocess.run
+#   换成预先捕获的日志，所有断言在 1 s 内跑完——只在最后用真实运行确认一次。
+# 十族 34 条；六臂各 35 趟界面 / 70 次块解（合计 420）、逐层 [3,6,5,5,4,4,4,4]、最坏单级 6 趟（上限 12）——
+# 两张表都是写进行里的系数而不是迭代，所以交叉不花钱。单独跑整个 case（六臂）247.78 s user / 249.85 s 墙钟
+# （ctest -j8 记 244.43 s，全量 99 项 524.88 s；同批最慢的三条是 profile 级映射 297.4 / 逐边 ddt 285.2 / 本案 244.4 s）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict
+python3 tests/check_transient_coupled_multi_turbulent_shape_and_inertia_split.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

@@ -1,0 +1,12 @@
+// A coupled element's loss is its partner's statement, so there is no wall left
+// here for a threshold to hold: the detailed region already reports the whole
+// drop of that region, and a static branch on the 1D side would bill the same
+// wall twice -- once by the region's own solver and once by this row's `Q = 0`.
+// The steady kernel refuses the same combination (5.46) and 5.48 refuses a
+// rheology there; this is the third member of that family.
+// verified by tests/check_transient_yield_static_hold.py (family 6).
+fluid { rho 850; mu 0.1; }
+nodes { A { fixedPressure 3.0e4; } B { fixedPressure 2.0e4; } }
+pipes { Bad { from A; to B; length 20; diameter 0.02;
+              coupledResistance 5.0e8; yieldStress 1.0; } }
+time  { dt 0.02; endTime 0.1; reportEvery 1; }

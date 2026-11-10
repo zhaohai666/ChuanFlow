@@ -35,8 +35,10 @@ Nine families of judgement:
   7. the shape of the approach, including the odd continuation from a negative
      start rate
   8. the laminar branch really is the one in force in every state
-  9. the four declaration-face refusals (the yield one is this increment's
-     boundary written as an assertion instead of a sentence)
+  9. the three declaration-face refusals that are still refusals
+ 10. the fourth refusal -- the one 5.48 wrote for a yield stress -- lifted:
+     the same declarations now solve, and land on 5.46's and 5.47's closed
+     forms, with the sub-threshold one at exactly zero in every state
 """
 
 import math
@@ -357,8 +359,6 @@ REFUSALS = [
      "at n != 1 the fluid's mu is not the same quantity as K"),
     ("case_rejectCoupledRheology.dict", "cannot carry a rheology",
      "a coupled element's loss is already its partner's statement"),
-    ("case_rejectYieldStress.dict", "static branch of its own",
-     "a threshold needs a time-integrated hold, not the moving-wall law"),
 ]
 for fname, needle, why in REFUSALS:
     p = run(f"{CASE_DIR}/{fname}")
@@ -367,12 +367,82 @@ for fname, needle, why in REFUSALS:
     require(p.returncode != 0 and needle in msg,
             f"{fname}: refused, naming {why} -- '{line}'")
 
+# --- 10. the refusal 5.48 wrote down for a threshold is lifted by 5.49 -----
+# The fourth file of family 9 used to be case_rejectYieldStress.dict; the static
+# branch it refused for is now in the row, so the same declarations solve and
+# land on the steady kernel's own yielded closed forms. Only the third statement
+# is new physics: below the threshold the answer is *exactly* zero, which is the
+# shape 5.46 has and a marching row could not.
+YIELD_PIPES = {
+    "Bing": (0.02, 20.0, 0.0, 0.0, 0.5),   # tau_0 only -> Buckingham (5.46)
+    "Hb":   (0.02, 20.0, 0.5, 1.0, 0.5),   # with an index -> profile integral
+    "Stuck": (0.02, 20.0, 0.0, 0.0, 2.6),  # dp_static 1.04e4 > the asked drop
+}
+
+
+def g_buckingham(xi):
+    return 1.0 - (4.0 / 3.0) * xi + xi ** 4 / 3.0
+
+
+def q_yield_closed_form(diam, length, n, k, tau0, dp):
+    """The exact laminar discharge of the yielded law at an imposed drop, with
+    tau_w = dp d/(4L): Buckingham at n = 1, k = mu and 5.47's profile integral
+    otherwise, both written as the kernel writes them."""
+    tw = dp * diam / (4.0 * length)
+    if tw <= tau0:
+        return 0.0
+    if not n > 0:
+        xi = tau0 / tw
+        return (math.pi * diam ** 3 / (32.0 * MU)) * tw * g_buckingham(xi)
+    d = tw - tau0
+    r = 0.5 * diam
+    return (math.pi * r ** 3 * tw ** -3 * k ** (-1.0 / n) * n * d ** (1.0 + 1.0 / n)
+            * (tau0 * tau0 / (n + 1.0) + 2.0 * tau0 * d / (2.0 * n + 1.0)
+               + d * d / (3.0 * n + 1.0)))
+
+
+p = run(f"{CASE_DIR}/case_yieldNowSolves.dict")
+require(p.returncode == 0,
+        "case_yieldNowSolves.dict: 5.48's refusal is lifted -- the same "
+        "declarations the row used to reject now solve, with a threshold on all "
+        "three pipes")
+
+ylaws, ytimes, ytrace, yraw = {}, [], {}, {}
+for line in p.stdout.splitlines():
+    tok = line.replace("[chflow] ", "").split()
+    if len(tok) == 4 and tok[0] == "pipe" and tok[2] == "Q" and tok[1] in YIELD_PIPES:
+        ytrace[tok[1]] = ytrace.get(tok[1], []) + [float(tok[3])]
+    elif len(tok) >= 7 and tok[0] == "pipe" and tok[2] == "wall-law":
+        ylaws[tok[1]] = (float(tok[4]), float(tok[6]))
+require(all(len(v) == NS for v in ytrace.values()) and len(ytrace) == 3,
+        f"and all three report the same {NS} states as the six power-law traces")
+worst_yield = 0.0
+for name, (diam, length, n, k, tau0) in YIELD_PIPES.items():
+    want = q_yield_closed_form(diam, length, n, k, tau0, DP)
+    e = rel(ytrace[name][-1], want)
+    worst_yield = max(worst_yield, e)
+    law = ("Buckingham" if not n > 0 else "the HB integral")
+    at = f"Q = {ytrace[name][-1]:.10e} vs {want:.10e} (rel {e:.3e})"
+    if want == 0.0:
+        at = f"its wall needs 1.04e4 Pa against the 1.0e4 Pa on offer, so the " \
+             f"closed form's own dead branch says 0 and the trace says 0"
+    require(e < 1e-8,
+            f"{name}: ended on {law} of the same 1.0e4 Pa -- {at}")
+require(ytrace["Stuck"] == [0.0] * NS,
+        f"the sub-threshold pipe is exactly zero in all {NS} states -- not small, "
+        f"not below a tolerance: the static branch is the row, so this is the "
+        f"sentence 5.48 could only write down as a refusal")
+require(ylaws.get("Hb") == (0.5, 1.0) and "Bing" not in ylaws,
+        f"the lifted declaration still reads back its own n and K, and only where "
+        f"one was declared ({sorted(ylaws)})")
+
 print()
 print(f"transientPowerLawRheology: terminal rate vs closed form worst "
       f"{worst_q:.3e} (the closed form into the kernel's own law returns the "
       f"drop to {worst_root:.3e}), whole-trace reproduction worst "
       f"{worst_trace:.3e}, largest generalized Re {worst_re:.4f}, "
-      f"declared-vs-Newtonian gap at least {min_gap * 100:.1f}%")
+      f"declared-vs-Newtonian gap at least {min_gap * 100:.1f}%, "
+      f"yielded-terminal-vs-steady-closed-form worst {worst_yield:.3e}")
 
 if failures:
     print(f"FAILED: {len(failures)} assertion(s)")

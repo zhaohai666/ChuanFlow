@@ -52,6 +52,16 @@ int main(int argc, char** argv)
                 log::info("pipe ", sim.pipeNames()[k], " wall-law flowIndex ",
                           num(n), " consistency ", num(sim.pipeConsistencyOf(i)));
             }
+            // 5.49: the drop the static wall holds against, so the case file's
+            // own drive can be compared with it on the output. The only pipe
+            // that never says this is one with no threshold, so an undeclared
+            // case still prints exactly what it printed before.
+            const double thr = sim.pipeYieldThreshold(i);
+            if (thr > 0)
+            {
+                log::info("pipe ", sim.pipeNames()[k], " static-hold threshold ",
+                          num(thr));
+            }
         }
 
         const int report = tc.reportEvery > 0 ? tc.reportEvery : 1;
@@ -71,6 +81,15 @@ int main(int argc, char** argv)
             for (std::size_t k = 0; k < q.size(); ++k)
             {
                 log::info("pipe ", s.pipeNames()[k], " Q ", num(q[k]));
+                // The latch the step that produced this sample started with: 1
+                // means this rate is the row's own `Q = 0`, not the value a wall
+                // law was solved for. At t 0 no step has been solved yet, so the
+                // first sample reports 0 whether or not the drive can be held.
+                if (s.pipeYieldThreshold(static_cast<label>(k)) > 0)
+                {
+                    log::info("pipe ", s.pipeNames()[k], " static hold ",
+                              s.pipeHeld(static_cast<label>(k)) ? 1 : 0);
+                }
             }
         };
 

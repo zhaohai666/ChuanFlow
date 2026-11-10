@@ -14,13 +14,15 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（103 项）约 258 ~ 640 s ≈ 4.3 ~ 10.7 分钟（实测 397.85 s，103/103 绿），
+ctest --test-dir build --output-on-failure -j8  # 全量回归（104 项）约 258 ~ 640 s ≈ 4.3 ~ 10.7 分钟（实测 553.98 s，104/104 绿），
                                              # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高；五条最重的耦合用例
-                                             # 合计 1556.69 s，占本轮所有用例时间之和 3060.69 s 的 50.9%）：
-                                             # 形状账 x 归属账 396.2 s、稳态 profile 级映射 359.4 s、
-                                             # 多边 x 惯量归属 317.6 s、逐边 ddt 257.5 s、对流动量账收进行 226.1 s、
-                                             # VOF 振荡 133.4 s；四条非牛顿用例（各把十来个毫秒级求解打包）
-                                             # 幂律 0.14 s、屈服应力 0.28 s、Herschel-Bulkley 0.21 s、瞬态幂律 2.58 s
+                                             # 合计 1707.10 s，占本轮所有用例时间之和 3558.34 s 的 48.0%）：
+                                             # 形状账 x 归属账 451.98 s、稳态 profile 级映射 390.70 s、
+                                             # 多边 x 惯量归属 343.13 s、逐边 ddt 291.34 s、对流动量账收进行 229.95 s、
+                                             # VOF 振荡 154.42 s；五格非牛顿用例里跨过这个量级的只有瞬态两格：
+                                             # 稳态幂律 0.22 s、稳态屈服 0.33 s、稳态 HB 0.36 s、瞬态幂律 6.64 s、
+                                             # 瞬态屈服静止支 140.14 s——后一条贵的不是求解器（5 次 app 调用共 0.31 s），
+                                             # 是 checker 把 10 x 2001 步的带支递推在 Python 里自己重解了一遍
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -961,21 +963,21 @@ python3 tests/check_steady_herschel_bulkley.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/steadyHerschelBulkley/case.dict"
 
-# 非牛顿壁面律进瞬态那一行（5.48）：新算例 transientPowerLawRheology，五个 case 文件（1 个求解 + 4 个拒收）。
+# 非牛顿壁面律进瞬态那一行（5.48）：新算例 transientPowerLawRheology，五个 case 文件（2 个求解 + 3 个拒收）。
 # 这一格不是"再写一遍律"，而是**把稳态那条验过三次的律换成唯一的一份**：新增 pipeFrictionPa
 # （src/1d/src/network.cpp:390，声明 Network.h:202，必须在 cf 作用域——瞬态内核是另一个翻译单元，放匿名作用域
-# 就只有 pipeLossAt 看得见），稳态 pipeLossAt（:254）在它之上只加阀项，瞬态 frictionDp（src/1d/src/transient.cpp:29-:36）
+# 就只有 pipeLossAt 看得见），稳态 pipeLossAt（:254）在它之上只加阀项，瞬态 frictionDp（src/1d/src/transient.cpp:72-:80）
 # 除了调用与一次奇延拓什么都不算。之前那一行自己写 rho u d / mu，所以声明 flowIndex 0.5 **不报错也不警告**，只是
 # 被忽略然后报 Newtonian 速率——这是最坏的一种静默数字，也是本格唯一真正的改动。
-# 阻尼同步换：frictionSlope（:40-:55）在声明指数时取律自己的中心差分并在 :44 早退，Newtonian 下限 0.2*128 mu L/(pi d^4)
-# 只留在未声明的路径（:52）。回读接口 pipeFlowIndex/pipeConsistencyOf（:445/:452）让 app 只在声明了的管上打印
-# wall-law 那行（src/1d/apps/transientApp.cpp:46-:55），于是"未声明的案子输出逐字不变"是能在字符串上失败的断言。
+# 阻尼同步换：frictionSlope（:85-:105）在声明指数时取律自己的中心差分并在 :106-:114 早退，Newtonian 下限 0.2*128 mu L/(pi d^4)
+# 只留在未声明的路径（:115-:116）。回读接口 pipeFlowIndex/pipeConsistencyOf（:556/:563）让 app 只在声明了的管上打印
+# wall-law 那行（src/1d/apps/transientApp.cpp:42-:54），于是"未声明的案子输出逐字不变"是能在字符串上失败的断言。
 # 要看什么：
 #   1) 跨内核同一条律要打在**打印位**：t=4 时瞬态的 Q 与稳态 app 同一声明的 Q，Newt/Decl1 1.96349540849e-05、
 #      Thin05 与 Thin05Rev 3.92699081699e-06、Thin07 9.75728733974e-07 是同一个字符串；只有 Thick13 差在第 10 位
 #      （稳态 3.41904523976e-05 对瞬态 3.41904523728e-05，7.26e-10）。别把这一条写成"逐位相同"除非真的逐位相同。
 #   2) 那个 7.26e-10 要**归因**而不是放宽：把闭式的速率喂回内核自己的 pipeFrictionPa，被问的 1.0e4 Pa 回到 3.638e-16，
-#      说明层流半区与剖面积分是同一句话，余下的是每步 Newton 退出（transient.cpp:317 的 maxRel<1e-11，残差按
+#      说明层流半区与剖面积分是同一句话，余下的是每步 Newton 退出（transient.cpp:418 的 maxRel<1e-11，残差按
 #      rho L/(A dt) 定标）在弛豫里累加。判据里因此有**两条**：终端差 <1e-8，根差 <1e-12。谁改了那个门，第二条会红。
 #   3) 整条轨迹都要重解，不要只判终点：checker 自己写隐式欧拉递推逐步对照 6 根管 × 2001 状态，最差 7.246e-10。
 #      这是"行读的是哪条律"与"某个形状碰巧落在对的终点"的区分。
@@ -983,18 +985,61 @@ python3 tests/check_steady_herschel_bulkley.py \
 #      而弦 dp/Q 差 49.9%（n=0.5）/29.9%（0.7）/23.0%（1.3）、Newtonian 下限 1.018592e+08 差 >10%——三个候选一起写才
 #      说明"用的不是另外两个"。注意窗口：n=0.7 的 tau 只有 0.0075 s，dt 必须显著小于它才有得拟合（本案 dt 0.002）。
 #   5) 惰性对照打在字符串上：n=1, K=mu 那根管与未声明那根管 2001/2001 状态**打印逐字相同**。
-#   6) 拒收即边界：负指数、指数无 consistency、耦合边带指数、任何 yieldStress（四条 rc!=0 + 报文 needle）。屈服那条
-#      是"瞬态只有动壁律，阈值需要一个自己在时间里积分的静止支"写成了断言——稳态 5.46 那次便宜是因为问到的压差已知，
-#      这里 dp 正是行的未知数。approximate 是禁止的，所以只能拒。
+#   6) 拒收即边界：负指数、指数无 consistency、耦合边带指数（三条 rc!=0 + 报文 needle，判据在 transient.cpp:212-:217）。
+#      第四条原本也是拒收——"瞬态只有动壁律，阈值需要一个自己在时间里积分的静止支"（稳态 5.46 那次便宜是因为问到的
+#      压差已知，这里 dp 正是行的未知数，approximate 是禁止的所以只能拒）；5.49 落了那条支之后它改名
+#      case_yieldNowSolves.dict 并被断言**解得出**（Bing 1.4409438297e-05 对闭式 1.4409438304e-05 即 5.528e-10、
+#      Hb 2.2250853568e-06 即 1.138e-12、Stuck 打印 Q 0），所以"边界"这一格从 needle 换成了数值断言。
 # 写这类判据时的坑：①函数放错作用域会得到 "call to 'pipeFrictionPa' is ambiguous"（定义在匿名 namespace 里，声明在
 #   Network.h）；放 cf 作用域后 pipeLossAt 仍能经外层作用域看见它。②case 注释里引闭式要引**改过常数之后**的那条
 #   （5.47 的剖面积分），5.45 的 Metzner-Reed 常数在 n=0.5 处差 25%，先在稳态 app 上对一下再写。③面积算错一格
 #   （pi d^2/4 写成 d^2/4 之类）会让手推的时间常数差 4 倍而对不上打印的 v——核对 v == Q/A，别核对自己的算术。
-# 九族 39 条；五个 case 文件，checker 墙钟 2.58 s（ctest -j8 记，Test #77）
+# 十族 45 条；五个 case 文件，checker 墙钟 6.64 s（ctest -j8 记，Test #77；5.48 那格当年同一条测试记的是 2.58 s）
 ./build/src/1d/apps/chflow-1d-transient tests/cases/transientPowerLawRheology/case.dict
 python3 tests/check_transient_power_law.py \
     "$PWD/build/src/1d/apps/chflow-1d-transient" \
     "$PWD/tests/cases/transientPowerLawRheology/case.dict"
+
+# 屈服应力的静止支进瞬态那一行（5.49）：新算例 transientYieldStaticHold，五个 case 文件（1 个定压求解 +
+# 1 个自由节点串联求解 + 1 个同拓扑稳态对照 + 2 个拒收）。5.48 留下的那一格现在有了物理：屈服管的 dp_wall(Q)
+# 在 Q->0+ 时趋于 dp_static = 4 tau_0 L/d（transient.cpp:28-:31，只吃几何所以不认识 n），而 |drive| <= dp_static
+# 时**那条奇延拓的律没有根**——稳态可以停在括号端点，瞬态的 dp 正是行在解的未知数，所以必须有一条静止支。
+# 三件东西缺一不可：入口闩锁 holdsStatic（:40-:44，:310-:316 每步只决定一次；不闩就会被 hold 的管所见的 drive
+# 随节点压力来回翻）、求解内的穿过钳制（:353-:362，x[k]*qPrev<=0 时写 x=0/r=0/J=1，这是有限时间停住那一半）、
+# 静止处的值与斜率（frictionDp :72-:81 返回 copysign(dp_static, drive)；frictionSlope :89-:103 走"超额割线"
+# (dp_wall-dp_static)/|q|，因为屈服律在静止点斜率是**无穷**，跨 q=0 中心差分会把阈值跳变除进商里得到 ~1e15，
+# Newton 于是永远坐在静止点上——那是与 5.48 拒收方向相反的错）。drive 用 :52-:56 的 drivePa = pFrom-pTo-rho g dz，
+# 与行自己的 dp-grav（:352）同一条约定，否则闩锁与行会对"哪端是上游"各有说法（本案 Hang/Roll 就是这条的判据）。
+# 要看什么：
+#   1) "恰好 0"要打在**字符串**上：四根管各自因不同理由打印单个 token `0`（壁高于所给压差 / 阈值不认识 n /
+#      重力把 drive 拉到阈值下 / 静止在阈值之下没有根），而 2000/2000 步的 static hold 旗标是另一条独立打印
+#      （transientApp.cpp:55-:64 报阈值、:84-:92 每样本报旗标）。用容差判"几乎不动"会让 1e-19 通过，也就会让
+#      "静止支根本没生效"通过。
+#   2) 停止必须**穿过**零并且与递推同步：StopBelow 从 2.0e-6 起步、第 17 步（t=0.034）达到恰好 0，停止前最后一个
+#      速率 5.409e-08 m3/s，而"没有支时每步的位移" (dp_static-drive) dt/(rho L/A) = 7.392e-08 m3/s——两个数一起写
+#      才说明差别是一条支而不是一个容差；checker 的递推自己也算出第 17 步（17 对 17）。
+#   3) 节点账要量到**求解器自己的退出**：被 hold 的管另一端是自由节点时，体积账 V/(K dt)(p_i-p_{i-1})-(Q_in-Q_out)
+#      关到 4.874e-13（C）/4.960e-13（D），对门 1e-11；注意 :414 的定标带一个 +1.0 m3/s，所以这里是**绝对**余量——
+#      把它写成"相对 1e-11"是错的。同时给一个物理换算（4.960e-13 m3/s 是最大节点吞吐 1.657e-05 的 3.0e-08，作为漏
+#      需要 1.008e+08 s 才排空 5000 Pa），否则读者无法判断这条余量是数值还是物理。
+#   4) 静止支得能被**放开**：ReleaseLate 前 253 个状态打印 0，第 253 步（t=0.506）放开，判据打的是"入口 drive"：
+#      节点 F 上一样本留 7996.7725 Pa、这一样本留 8006.8851 Pa，阈值 8000 Pa。只断言"后来不等于 0"不够——那只说明跑过。
+#   5) 跨内核对照用**同一拓扑**的稳态文件：case_steadySeries.dict 与 case_series.dict 逐字同构，只差 solver 块；
+#      放开那一对终点 8.8475721067e-07 对 8.8475719418e-07（1.864e-08）。同时必须断言两个被封节点**还没**到稳态
+#      压力（22291.3 对 20000、25875.7 对 30000，4.0 s 只是 0.79 个弛豫时间 5.09 s）——不写这一条，读者会以为
+#      速率对上就等于状态对上。
+# 写这类判据时的坑：①drive 的重力符号写成 +rho g dz 时 Hang 会流动、Roll 会被 hold（与行的 dp-grav 相反）；
+#   ②"每步位移"是 (dp_static-drive)*dt/(rho L/A)（单位 m3/s），误写成 /(I/dt) 得到的是 m3 体积，数字与单位一起错
+#   三个量级，而这句话是要写进判据消息里的；③稳态 app 的 pipe 行比瞬态长（带 v/Re/f/dp）、节点行是 4 token，
+#   两套 parse 不能共用一个 len() 条件。
+# 十族 47 条；五个 case 文件，checker 墙钟 140.14 s（ctest -j8 记，Test #78；单独跑 122 s）。贵全部贵在 checker 自己那
+# 10 x 2001 步的带支递推上：5 次 app 调用合计只有 0.31 s（case.dict 0.198 s、case_series.dict 0.107 s、
+# case_steadySeries.dict 0.007 s），所以这一格的回归时间不是求解器的，剩下的都在 checker 自己的算术里
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientYieldStaticHold/case.dict
+python3 tests/check_transient_yield_static_hold.py \
+    "$PWD/build/src/1d/apps/chflow-1d-transient" \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/transientYieldStaticHold/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

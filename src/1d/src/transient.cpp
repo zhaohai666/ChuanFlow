@@ -21,26 +21,88 @@ double pipeArea(double diameter)
     return 0.25 * M_PI * diameter * diameter;
 }
 
+/// The drop a yielded pipe's static wall can hold without moving: the same
+/// `4 tau_0 L / d` the steady kernel puts in front of its rate bracket (5.46),
+/// and the q = 0 limit of the moving-wall law. Geometry only -- the threshold
+/// does not know the flow index, which is why 5.47 could state it as a limit.
+double yieldThresholdPa(const NetworkPipe& geo)
+{
+    return 4.0 * geo.yieldStress * geo.length / geo.diameter;
+}
+
+/// A yielded pipe at rest whose drive does not reach the wall's own threshold
+/// is held: the static wall supplies whatever the drive asks for, up to
+/// `4 tau_0 L / d`, so the row has no friction law to read and becomes the
+/// statement `Q = 0`. Note what is *not* here: the drive is compared with the
+/// threshold, not with a rate tolerance, so the held set is decided by the same
+/// geometry-only number 5.46 put in front of the steady bracket, and a fluid
+/// held at rest under a super-threshold drive is a fluid that starts moving.
+bool holdsStatic(const NetworkPipe& geo, double qPrev, double drive)
+{
+    if (!(geo.yieldStress > 0)) return false;
+    return qPrev == 0 && std::abs(drive) <= yieldThresholdPa(geo);
+}
+
+/// The drop a pipe's momentum row is offered: the node pair minus the static
+/// head of its own rise, which is what a static wall has to resist. The sign is
+/// the row's, not a second convention: `drivePa` is `dp - rho g dz`, the same
+/// quantity the residual moves, so the latch and the row cannot disagree about
+/// which end is upstream. Valve and convective terms are not in it -- both
+/// vanish with the rate, so at the held point they ask nothing.
+double drivePa(const NetworkPipe& geo, const FluidProperties& fl,
+               double pFrom, double pTo)
+{
+    return pFrom - pTo - fl.rho * kGravity * geo.elevation;
+}
+
 /// Pressure drop consumed by friction for a signed flow: the wall law the pipe
 /// declares, through the same pipeFrictionPa the steady kernel calls, made odd
 /// in Q. Nothing is computed here -- that is the point. Until 5.48 this line
 /// built `rho u d / mu` itself, so a `flowIndex` declared in a transient case
 /// was ignored rather than refused: the row quietly kept Newtonian friction.
-double frictionDp(const NetworkPipe& geo, const FluidProperties& fl, double q)
+///
+/// A yielded pipe at rest is the one rate where the wall law is not a function:
+/// `dp_wall(Q)` tends to its threshold `4 tau_0 L/d` from above as Q -> 0+, and
+/// the static wall can hold anything up to that number, so the value the row
+/// needs at Q = 0 is the threshold with the sign of the drive it has to resist
+/// (`drive`, the pressure side of the row). Zero drive asks for zero, which is
+/// the held case -- and a held pipe's row is replaced by `Q = 0` before this
+/// function is ever read, so the sign convention only ever matters when the
+/// fluid is starting to move.
+double frictionDp(const NetworkPipe& geo, const FluidProperties& fl,
+                  double q, double drive)
 {
-    const double area = pipeArea(geo.diameter);
-    const double v = std::abs(q) / area;
-    if (v == 0) return 0;
+    if (q == 0)
+        return (geo.yieldStress > 0 && drive != 0)
+                 ? std::copysign(yieldThresholdPa(geo), drive)
+                 : 0.0;
     const double dp = pipeFrictionPa(geo, fl, std::abs(q));
     return q > 0 ? dp : -dp;
 }
 
 /// d(dpFriction)/dQ by central differencing on the monotone odd law;
 /// falls back to the laminar slope 128 mu L / (pi D^4) near Q = 0.
-double frictionSlope(const NetworkPipe& geo, const FluidProperties& fl, double q)
+double frictionSlope(const NetworkPipe& geo, const FluidProperties& fl,
+                     double q, double drive)
 {
     const double h = std::max(1e-5 * std::abs(q), 1e-12);
-    const double d = (frictionDp(geo, fl, q + h) - frictionDp(geo, fl, q - h)) / (2.0 * h);
+    if (geo.yieldStress > 0)
+    {
+        // The yielded law's slope at the rest point is infinite: any rate at
+        // all lifts the wall stress back to the threshold, so the diagonal must
+        // be taken from the rest value outward, not across it. Differencing
+        // through Q = 0 would put the threshold jump itself into the quotient
+        // (dp_wall(h) - dp_wall(-h) = 2 dp_wall(h), a slope of ~1e15) and Newton
+        // would then sit at the rest point forever -- the fluid would never
+        // start, which is the opposite error from the one 5.48 refused.
+        const double a = std::abs(q);
+        const double qa = a > 0 ? a : h;
+        const double dp = pipeFrictionPa(geo, fl, qa);
+        const double excess = dp - yieldThresholdPa(geo);
+        return (std::isfinite(excess) && excess > 0) ? excess / qa : 0.0;
+    }
+    const double d = (frictionDp(geo, fl, q + h, drive)
+                    - frictionDp(geo, fl, q - h, drive)) / (2.0 * h);
     if (geo.flowIndex > 0)
         // The Newtonian floor below is a number made out of mu. At n != 1 the
         // declared law's own low-rate slope is n * dp / q, which diverges for a
@@ -145,6 +207,7 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         geo.coupledResistance = pc.coupledResistance;
         geo.flowIndex = pc.flowIndex;
         geo.consistency = pc.consistency;
+        geo.yieldStress = pc.yieldStress;
         if (pc.flowIndex < 0)
             cfFatal("transient: pipe '" + pc.name + "' has a negative"
                     " power-law flow index (0 means Newtonian)");
@@ -156,15 +219,14 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
             cfFatal("transient: pipe '" + pc.name + "' is a coupled element:"
                     " its loss is the partner model's, so it cannot carry a"
                     " rheology either");
-        if (pc.yieldStress > 0)
-            // 5.46 and 5.47 put the dead branch in front of the steady
-            // bracket, where the asked drop is known. Here the drop is what
-            // the row is solving for, and static hold has to be integrated in
-            // time, so a declared threshold is refused rather than approximated
-            // by the kinetic law.
-            cfFatal("transient: pipe '" + pc.name + "' declares a yield"
-                    " stress: the transient row has the moving-wall law only,"
-                    " and a threshold needs a static branch of its own");
+        if (pc.yieldStress < 0)
+            cfFatal("transient: pipe '" + pc.name + "' has a negative yield"
+                    " stress: the threshold is the stress a static wall holds,"
+                    " and a negative one would make the held set empty");
+        if (pc.yieldStress > 0 && pc.coupledResistance > 0)
+            cfFatal("transient: pipe '" + pc.name + "' is a coupled element:"
+                    " its loss is the partner model's, so it cannot carry a"
+                    " threshold either");
         if (pc.coupledResistance < 0)
             cfFatal("transient: pipe '" + pc.name + "' has a negative coupled"
                     " resistance");
@@ -238,6 +300,21 @@ double TransientNetwork::solveStep(double dt)
                          pipes_[k].openStart, pipes_[k].openEnd, tNew);
 
     double maxRel = 0;
+
+    // 5.49: which yielded pipes the static wall is holding, decided once at the
+    // start of the step from the state the step starts in. Latching it here
+    // rather than asking the Newton loop every pass is what keeps the switch
+    // from oscillating: the drive a held pipe sees depends on the node
+    // pressures the same solve is moving, so an unratcheted test could flip the
+    // row between `Q = 0` and the moving-wall law inside one time step.
+    for (std::size_t k = 0; k < nP; ++k)
+    {
+        PipeDyn& pd = pipes_[k];
+        const double drive = drivePa(pd.geo, fluid_, pressureOf(pd.geo.from),
+                                      pressureOf(pd.geo.to));
+        pd.held = holdsStatic(pd.geo, pd.qPrev, drive);
+    }
+
     for (int newton = 0; newton < 60; ++newton)
     {
         for (double& v : r) v = 0;
@@ -261,10 +338,34 @@ double TransientNetwork::solveStep(double dt)
             // is the pipe's own rho*L/A unless the interface measured the
             // region's and handed the number back (setCoupledInertia).
             const double R = pd.geo.coupledResistance;
-            const double fr = R > 0 ? R * x[k] : frictionDp(pd.geo, fluid_, x[k]);
+            // 5.49: the static branch, in its two shapes. Either the wall was
+            // already holding this pipe at the start of the step (`pd.held`,
+            // latched above), or the drive on offer now is below the threshold
+            // and the iterate has carried the rate through zero -- which the
+            // moving-wall law alone answers with a reverse flow the same size,
+            // because `dp_wall` is odd and never drops below the threshold.
+            // Both are stated the same way: the row becomes `Q = 0`. Its own
+            // columns into the node pressures go away with it -- a held pipe
+            // does not answer to the drive, it refuses it -- while the node rows
+            // keep their entries in this pipe's column, so continuity still sees
+            // the forced zero and the volume a held pipe occupies stays sealed.
+            const double drive = dp - grav;
+            const bool crossing = pd.geo.yieldStress > 0 && pd.qPrev != 0
+                               && std::abs(drive) <= yieldThresholdPa(pd.geo)
+                               && x[k] * pd.qPrev <= 0.0;
+            if (pd.held || crossing)
+            {
+                x[k] = 0;
+                r[k] = 0;
+                J[k][k] = 1.0;
+                continue;
+            }
+            const double fr = R > 0
+                                  ? R * x[k]
+                                  : frictionDp(pd.geo, fluid_, x[k], drive);
             const double slope = R > 0
                                     ? 1.0 / R
-                                    : frictionSlope(pd.geo, fluid_, x[k]);
+                                    : frictionSlope(pd.geo, fluid_, x[k], drive);
             const double ar = pipeArea(pd.geo.diameter);
             const double vd = kv[k] * fluid_.rho * std::abs(x[k]) * x[k]
                             / (2.0 * ar * ar);
@@ -436,6 +537,20 @@ double TransientNetwork::pipeInertia(label k) const
     if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
         cfFatal("transient: no pipe at index " + std::to_string(k));
     return pipes_[static_cast<std::size_t>(k)].inertia;
+}
+
+double TransientNetwork::pipeYieldThreshold(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return yieldThresholdPa(pipes_[static_cast<std::size_t>(k)].geo);
+}
+
+bool TransientNetwork::pipeHeld(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].held;
 }
 
 double TransientNetwork::pipeFlowIndex(label k) const

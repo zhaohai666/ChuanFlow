@@ -759,14 +759,38 @@ endforeach()
 # law, two kernels), the printed slope of the approach must be the law's own
 # n dp/Q rather than the chord dp/Q or the Newtonian floor, n = 1 with K = mu
 # must change no string, the odd continuation must show up as exactly one turn
-# around from a negative start, and a threshold is refused because static hold
-# has to be integrated in time here
+# around from a negative start. Its ninth family used to end in a threshold
+# refusal; 5.49 below turns that refusal into a solved case, so the refusal
+# file is now `case_yieldNowSolves.dict` and the checker measures the yielded
+# terminal rates instead
 add_test(
     NAME verify.transientPowerLawRheology
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_power_law.py
         $<TARGET_FILE:chflow-1d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientPowerLawRheology/case.dict)
+
+# 5.49 the static branch: a yielded wall in the transient momentum row. The odd
+# continuation 5.48 leans on has no root where |drive| <= dp_static = 4 tau_0 L/d,
+# so a marching row there would chatter around zero with amplitude
+# (dp_static - drive) dt / (rho L/A) instead of standing still. The row now
+# latches at step entry (the committed rate is zero and the wall can hold the
+# drive), clamps the crossing inside the solve, and reads an excess secant rather
+# than a chord, because the yielded law's slope at rest is infinite. Verified by
+# walking all 2001 states of 10 pipes against that recursion including `Q = 0`,
+# by the four exactly-zero pipes each zero for a different reason (threshold,
+# HB above its own threshold, gravity in the drive, a drive under the wall), by
+# the stop happening *through* zero at a step the recursion also predicts, by the
+# node storage balance closing to the solver's own exit residual when the pipe
+# feeding it is held, and by the released pair ending on the rate the *steady*
+# kernel of 5.46 computes for the same topology
+add_test(
+    NAME verify.transientYieldStaticHold
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_static_hold.py
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldStaticHold/case.dict)
 
 # distributed two-fluid kernel: Godunov shock/fan kinematics, steady
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity

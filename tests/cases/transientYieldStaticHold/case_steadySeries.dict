@@ -1,0 +1,59 @@
+// transientYieldStaticHold / case_steadySeries: the same three series pairs as
+// case_series.dict, solved by the steady kernel instead of marched.
+//
+// The checker uses this file as the reference for two things the transient run
+// has to agree with: the released pair (node F, tau_0 = 2.0) must end on the
+// rate this solve reports, and the two pairs whose yielded pipe is stuck must
+// report exactly zero with the floating node flat against the pressure of the
+// *moving* side's other end. Both are 5.46's own statements, but here they are
+// the same numbers a different kernel produces for the same topology, which is
+// what makes the transient terminal state a cross-kernel identity rather than a
+// recursion that agrees only with itself.
+//
+// verified by tests/check_transient_yield_static_hold.py
+// (ctest verify.transientYieldStaticHold).
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+    C {};
+    D {};
+    F {};
+}
+
+pipes
+{
+    HoldUp    { from A; to C; length 20; diameter 0.02; yieldStress 2.6; }
+    BleedDown { from C; to B; length 20; diameter 0.02; }
+
+    HoldDown { from A; to D; length 20; diameter 0.02; }
+    FeedUp   { from D; to B; length 20; diameter 0.02; yieldStress 2.6; }
+
+    ReleaseLate { from A; to F; length 20; diameter 0.02; yieldStress 2.0; }
+    Bleed       { from F; to B; length 20; diameter 0.02; }
+}
+
+sources
+{
+    // A and B are the fixed-pressure nodes, so these only set the residual's
+    // rate scale; they change no flow in any pipe.
+    feed { node A; rate 6.0e-5; }
+    take { node B; rate -6.0e-5; }
+}
+
+solve
+{
+    maxIter 60;
+    tol 1e-12;
+}

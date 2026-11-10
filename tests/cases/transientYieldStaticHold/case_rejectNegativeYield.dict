@@ -1,0 +1,10 @@
+// A negative threshold is refused: dp_static = 4 tau_0 L / d is the drop a
+// static wall can hold, so tau_0 < 0 makes the held set empty *and* hands the
+// moving-wall law a stress it subtracts from every rate -- the same
+// "drag-reducing additive" misreading 5.46 refused in the steady kernel, now
+// refused where the threshold is a branch instead of a bracket.
+// verified by tests/check_transient_yield_static_hold.py (family 6).
+fluid { rho 850; mu 0.1; }
+nodes { A { fixedPressure 3.0e4; } B { fixedPressure 2.0e4; } }
+pipes { Bad { from A; to B; length 20; diameter 0.02; yieldStress -1.0; } }
+time  { dt 0.02; endTime 0.1; reportEvery 1; }

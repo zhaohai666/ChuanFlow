@@ -1,0 +1,105 @@
+// transientYieldStaticHold: the yield threshold 5.46 - 5.47 put in front of the
+// steady bracket is now a branch *of the transient momentum row itself*.
+//
+// A yielded pipe's wall drop does not vanish with the rate: dp_wall(Q) -> 
+// dp_static = 4 tau_0 L / d as Q -> 0+, and below that number the law has no
+// root at all. Both facts are what a time-marching row has to answer, and the
+// steady kernel never had to: there the asked drop is known and the bracket can
+// stop at Q = 0. Here the drop is what the row solves for, so the row needs a
+// static branch of its own -- which is exactly the boundary 5.48 refused.
+//
+// Both ends are fixed-pressure nodes again, so each pipe is its own one-row
+// system,
+//
+//     rho L/A * dQ/dt = drive - dp_wall(Q),   drive = pFrom - pTo - rho g dz
+//
+// and the branch is stated as the complementarity the wall really obeys: while
+// the fluid sits at rest and |drive| <= dp_static, the row *is* `Q = 0` and no
+// wall law is read at all. Everything below is one of the four shapes that
+// statement takes, and each pair is designed so that the old refusal -- or the
+// moving-wall law alone -- gives a different number.
+//
+//   * Held at rest: `Stuck` (tau_0 = 2.6, dp_static = 1.04e4 > the 1.0e4 Pa on
+//     offer) and `StuckHB` (same threshold declared together with n = 0.7,
+//     K = 2). The threshold is geometry-only -- 5.47 says so -- so both must sit
+//     at exactly zero, and "exactly" is the point: a rate tolerance would let a
+//     1e-19 through and the checker reads the printed string.
+//   * Released from rest: `ReleaseB05`/`ReleaseB10` (Bingham), `ReleaseN1`
+//     (n = 1, K = mu, which must be *bit-identical* to `ReleaseB10` -- the same
+//     inertness control 5.48 used) and `ReleaseHB05` (n = 0.5). Relaxed, these
+//     land on the exact yielded discharges of 5.46/5.47 with tw = 2.5 Pa.
+//   * Gravity in the drive: `Hang` (dz = +1.0 m) and `Roll` (dz = -1.0 m) are
+//     one pipe with one threshold (tau_0 = 0.5, dp_static = 2000 Pa) and the
+//     same node pair, and rho g dz = 8335.65 Pa is on both sides of it: hanging
+//     up, the drive is 1664.35 Pa and the wall holds; rolling down, it is
+//     18335.65 Pa and the pipe flows at the closed form of *that* drive. A
+//     branch that compared the node pressures alone would move `Hang`.
+//   * Starting below the threshold: `HeldBelow` (initialFlow 0) and `StopBelow`
+//     (initialFlow 2.0e-6) are the same tau_0 = 1.5, dp_static = 6000 Pa pipe
+//     under a 4000 Pa drive. One never starts, the other stops in a finite
+//     number of steps and then stays at exactly zero. The odd continuation of
+//     the moving law has no root anywhere in this pair, so without the branch
+//     the most this row could do is oscillate around zero with a per-step
+//     amplitude of (drive - dp_static) dt / (rho L/A) -- which is why `StopBelow`
+//     is the falsifiable one.
+//
+// The generalized Reynolds number of every moving state here is a single digit
+// (the checker walks all 2001 of them), so the yielded closed forms are the
+// applicable laminar solution rather than an extrapolation.
+//
+// Free nodes, network-decided release and the cross-kernel identities are in
+// case_series.dict; the two refusal files keep the declaration surface honest.
+//
+// verified by tests/check_transient_yield_static_hold.py
+// (ctest verify.transientYieldStaticHold).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A  { fixedPressure 3.0e4; }
+    B  { fixedPressure 2.0e4; }
+    A2 { fixedPressure 2.4e4; }
+}
+
+pipes
+{
+    // --- the static branch: the wall's number is bigger than the drive ------
+    Stuck   { from A; to B; length 20; diameter 0.02; yieldStress 2.6; }
+    StuckHB { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.7; consistency 2.0; yieldStress 2.6; }
+
+    // --- released from rest, lands on 5.46 / 5.47 with tw = 2.5 Pa ---------
+    ReleaseB05  { from A; to B; length 20; diameter 0.02; yieldStress 0.5; }
+    ReleaseB10  { from A; to B; length 20; diameter 0.02; yieldStress 1.0; }
+    ReleaseN1   { from A; to B; length 20; diameter 0.02;
+                  flowIndex 1.0; consistency 0.1; yieldStress 1.0; }
+    ReleaseHB05 { from A; to B; length 20; diameter 0.02;
+                  flowIndex 0.5; consistency 1.0; yieldStress 0.5; }
+
+    // --- one threshold, gravity on both sides of it ------------------------
+    Hang  { from A; to B; length 20; diameter 0.02; elevation 1.0;
+            yieldStress 0.5; }
+    Roll  { from A; to B; length 20; diameter 0.02; elevation -1.0;
+            yieldStress 0.5; }
+
+    // --- below the threshold, arriving from rest and from motion -----------
+    HeldBelow { from A2; to B; length 20; diameter 0.02; initialFlow 0;
+                yieldStress 1.5; }
+    StopBelow { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-6;
+                yieldStress 1.5; }
+}
+
+time
+{
+    // dt small against the fastest relaxation in the file (the stopped pipe
+    // decelerates over ~19 steps) and endTime long against the slowest (the
+    // Newtonian-scale tau = rho L A / (n dp / Q) of the released pipes is
+    // tens of milliseconds), so every trace here is read after it has settled.
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

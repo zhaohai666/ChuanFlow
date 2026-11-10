@@ -1,0 +1,71 @@
+// transientYieldStaticHold / case_series: a held pipe inside a network whose
+// node pressure is an unknown.
+//
+// With both ends fixed, the drive is a number in the case file. Here one end of
+// each stuck pipe is a *free* node, so the drive is whatever the solve says --
+// which is the only way to ask the three questions a static branch really has
+// to answer:
+//
+//   1. What does the network do around a pipe that will not move? The node's
+//      storage row keeps its own column, the held row keeps the forced zero, and
+//      the free node drifts to the pressure the *moving* side needs for its own
+//      rate to be zero. `HoldUp`/`BleedDown` and `HoldDown`/`FeedUp` are the
+//      same stuck pipe (tau_0 = 2.6, dp_static = 1.04e4 Pa) on the upstream and
+//      the downstream side of the floating node, and in both the whole 1.0e4 Pa
+//      ends up sitting on the wall -- which is 5.46's Sr2 statement, reached
+//      through time instead of through the bracket.
+//   2. Can the latch be left? `ReleaseLate` (tau_0 = 2.0, dp_static = 8000 Pa)
+//      starts held because p(F) = 2.5e4 leaves it a drive of 5000 Pa, and the
+//      Newtonian `Bleed` then drains that node toward 2.0e4. The drive grows
+//      with the node, crosses 8000 Pa, and the very next step entry releases the
+//      latch -- so being held is a state of the row, not a property of the pipe.
+//      Node F is deliberately one tenth of C and D (its compliance is 1e-9
+//      instead of 1e-8 m3/Pa, so its relaxation time is a tenth of theirs) so
+//      that the crossing happens inside the reported window.
+//   3. Where does it land? After the release, this pair is 5.46's series
+//      problem with a yielded upstream pipe, and the transient trace has to end
+//      on the rate the *steady* kernel computes for the same topology. That
+//      comparison is made in the checker against case_steadySeries.dict, which
+//      is the same three pipes and nodes with `solver { type steadyNetwork; }`
+//      instead of a `time` block -- the two kernels, one physical state.
+//
+// verified by tests/check_transient_yield_static_hold.py
+// (ctest verify.transientYieldStaticHold).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+    // compliance C = volume / bulkModulus: 1e-8 and 1e-9 m3/Pa, so the two
+    // relaxation times differ by ten
+    C { volume 1.0; bulkModulus 1.0e8; pressure 2.5e4; }
+    D { volume 1.0; bulkModulus 1.0e8; pressure 2.1e4; }
+    F { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+}
+
+pipes
+{
+    // --- 1: the stuck pipe upstream of the floating node --------------------
+    HoldUp    { from A; to C; length 20; diameter 0.02; yieldStress 2.6; }
+    BleedDown { from C; to B; length 20; diameter 0.02; }
+
+    // --- 1 mirrored: the stuck pipe downstream --------------------------------
+    HoldDown { from D; to B; length 20; diameter 0.02; yieldStress 2.6; }
+    FeedUp   { from A; to D; length 20; diameter 0.02; }
+
+    // --- 2 and 3: released by the node it is attached to ----------------------
+    ReleaseLate { from A; to F; length 20; diameter 0.02; yieldStress 2.0; }
+    Bleed       { from F; to B; length 20; diameter 0.02; }
+}
+
+time
+{
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

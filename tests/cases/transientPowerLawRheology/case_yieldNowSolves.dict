@@ -1,0 +1,23 @@
+// 5.48 refused this declaration: a yield stress in the transient row needed "a
+// static branch of its own". 5.49 wrote that branch, so the same three lines now
+// solve -- this file is the record that the refusal was lifted, and the numbers
+// are checked against 5.46's and 5.47's own closed forms.
+//
+// At the imposed drop of 1.0e4 Pa the wall stress is geometry-only,
+// tw = dp d/(4L) = 2.5 Pa, so:
+//   Bing  (tau_0 = 0.5, no index)      -> Buckingham's g(0.2), Q = 1.4409438e-05
+//   Hb    (tau_0 = 0.5, n = 0.5, K = 1)-> 5.47's profile integral,  2.2250854e-06
+//   Stuck (tau_0 = 2.6, dp_static = 1.04e4 Pa > the drop) -> Q exactly 0
+// The third line is the point of the file: this is the state the 5.48 refusal
+// was protecting, and it now comes from a branch rather than from a stop.
+// verified by tests/check_transient_power_law.py (family 9).
+fluid { rho 850; mu 0.1; }
+nodes { A { fixedPressure 3.0e4; } B { fixedPressure 2.0e4; } }
+pipes
+{
+    Bing  { from A; to B; length 20; diameter 0.02; yieldStress 0.5; }
+    Hb    { from A; to B; length 20; diameter 0.02;
+            flowIndex 0.5; consistency 1.0; yieldStress 0.5; }
+    Stuck { from A; to B; length 20; diameter 0.02; yieldStress 2.6; }
+}
+time  { dt 0.002; endTime 4.0; reportEvery 1; }

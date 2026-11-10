@@ -42,9 +42,12 @@
 // form is the exact laminar solution rather than a correlation. The turbulent
 // half is reached by the generalized number and validated against nothing here.
 //
-// A threshold is refused in this kernel, not approximated: static hold has to be
-// integrated in time and here the drop is what the row is solving for. See
-// case_rejectYieldStress.dict and the three other refusal files.
+// A threshold used to be refused in this kernel: static hold has to be
+// integrated in time, and here the drop is what the row is solving for. 5.49
+// wrote that branch, so the declaration solves now -- see
+// case_yieldNowSolves.dict, whose sub-threshold pipe sits at exactly zero in
+// every state, and the transientYieldStaticHold case set for the branch itself.
+// The three other files in this directory are still refusals.
 //
 // verified by tests/check_transient_power_law.py
 // (ctest verify.transientPowerLawRheology).

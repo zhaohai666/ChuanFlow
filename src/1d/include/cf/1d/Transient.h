@@ -65,14 +65,16 @@ struct TransientPipeConfig
     // region's inertance rho*L/A stays on the 1D side, so the partner only has
     // to state the drop it resists. A coupled pipe carries no valve.
     double coupledResistance = 0;
-    // Rheology, the same two numbers the steady kernel reads (Network.h): at
+    // Rheology, the same numbers the steady kernel reads (Network.h): at
     // flowIndex > 0 the friction line is Churchill on the Metzner-Reed number
     // instead of rho u d / mu, through the one shared wall-law function.
-    // `yieldStress` is read only to be refused: a threshold needs a static
-    // branch, and in a time-marching row that is not the steady dead branch.
+    // `yieldStress` is the threshold the row's static branch holds against: at
+    // rest with |drive| <= 4 tau_0 L / d the momentum row is `Q = 0` and no wall
+    // law is read (5.49); that threshold needs a branch integrated in *time*,
+    // which is why it is not the steady kernel's rate-bracket dead branch.
     double flowIndex = 0;      // n; 0 = Newtonian (the fluid's own mu)
     double consistency = 0;    // K, Pa.s^n; required when flowIndex > 0
-    double yieldStress = 0;    // Pa; refused by this kernel
+    double yieldStress = 0;    // Pa; 0 = no threshold, the row always has a law
 };
 
 struct TransientSource
@@ -181,6 +183,15 @@ public:
     double pipeFlowIndex(label k) const;
     double pipeConsistencyOf(label k) const;
 
+    /// The drop pipe `k`'s static wall can hold: `4 tau_0 L / d` (Pa), 0 when no
+    /// yield stress is declared. `pipeHeld` reports the latch the last solved
+    /// step started with: true means that step replaced this pipe's momentum row
+    /// with `Q = 0` and read no wall law at all. A held pipe is a *state* of the
+    /// row, not of the fluid -- the same pipe under a super-threshold drive is
+    /// released and steps on the moving-wall law.
+    double pipeYieldThreshold(label k) const;
+    bool pipeHeld(label k) const;
+
     double time() const { return t_; }
     const std::vector<std::string>& nodeNames() const { return net_.nodeNames; }
     const std::vector<std::string>& pipeNames() const;
@@ -203,6 +214,11 @@ private:
         // it is the momentum-flux imbalance of the shape, not a friction. Zero
         // unless a coupled interface measures it and installs it.
         double convective = 0;
+        // True for this step when a yielded pipe sits at rest under a drive the
+        // static wall can hold: the row is then `Q = 0` and reads no wall law.
+        // Latched at step entry from the committed state, so re-solving the same
+        // step (the partitioned interface does that) cannot flip it mid-solve.
+        bool held = false;
         // valve schedule: K ramps geo.valveK -> kClosed over
         // [closeStart, closeEnd] and back over [openStart, openEnd];
         // negative start times disable the ramps

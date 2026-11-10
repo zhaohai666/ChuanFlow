@@ -1,0 +1,86 @@
+// transientYieldParkingBand / case_long: the same ladder walked for 40 s.
+//
+// The 4 s file can say which starts freeze; only a long clock can say what the
+// six sliding starts do about it. The expectation the sweep sets up is that a
+// start outside the band never arrives: the moving wall's rate is a function of
+// the excess over 4 tau_0 L / d, that excess shrinks as the node approaches the
+// edge, and the row keeps a strictly positive rate forever -- so Q_prev is
+// never exactly 0, the latch (transient.cpp:40-:43) is never re-armed, and the
+// gap to the edge is a number to be measured against the calendar rather than a
+// number expected to reach 0.
+//
+// measured over 20001 states: every slider is strictly monotone (no overshoot)
+// and every gap to its own edge is still open -- `c`/`i` 0.9807 Pa (they started
+// 1 Pa out), `b`/`j` 49.9313 Pa, `a`/`k` 51.5302 Pa, each mirror pair the same
+// number to the printed digit. The far starts drain most of their excess in the
+// first seconds and then crawl, so the 40 s clock says `still not there` for all
+// six and `exactly the start token` for the six parked arms.
+//
+// verified by tests/check_transient_yield_parking_band.py
+// (ctest verify.transientYieldParkingBand).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+    Fa { volume 0.1; bulkModulus 1.0e8; pressure 2.0e4; }
+    Fb { volume 0.1; bulkModulus 1.0e8; pressure 2.1e4; }
+    Fc { volume 0.1; bulkModulus 1.0e8; pressure 21999; }
+    Fd { volume 0.1; bulkModulus 1.0e8; pressure 2.2e4; }
+    Fe { volume 0.1; bulkModulus 1.0e8; pressure 2.3e4; }
+    Ff { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fg { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fh { volume 0.1; bulkModulus 1.0e8; pressure 2.8e4; }
+    Fi { volume 0.1; bulkModulus 1.0e8; pressure 28001; }
+    Fj { volume 0.1; bulkModulus 1.0e8; pressure 2.9e4; }
+    Fk { volume 0.1; bulkModulus 1.0e8; pressure 3.0e4; }
+    Fm { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+}
+
+pipes
+{
+    Sa { from A; to Fa; length 20; diameter 0.02; yieldStress 2.0; }
+    Ea { from Fa; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sb { from A; to Fb; length 20; diameter 0.02; yieldStress 2.0; }
+    Eb { from Fb; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sc { from A; to Fc; length 20; diameter 0.02; yieldStress 2.0; }
+    Ec { from Fc; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sd { from A; to Fd; length 20; diameter 0.02; yieldStress 2.0; }
+    Ed { from Fd; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Se { from A; to Fe; length 20; diameter 0.02; yieldStress 2.0; }
+    Ee { from Fe; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sf { from A; to Ff; length 20; diameter 0.02; yieldStress 2.0; }
+    Ef { from Ff; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sg { from A; to Fg; length 20; diameter 0.02; yieldStress 2.0; }
+    Eg { from Fg; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sh { from A; to Fh; length 20; diameter 0.02; yieldStress 2.0; }
+    Eh { from Fh; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Si { from A; to Fi; length 20; diameter 0.02; yieldStress 2.0; }
+    Ei { from Fi; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sj { from A; to Fj; length 20; diameter 0.02; yieldStress 2.0; }
+    Ej { from Fj; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sk { from A; to Fk; length 20; diameter 0.02; yieldStress 2.0; }
+    Ek { from Fk; to B; length 20; diameter 0.02; yieldStress 2.0; }
+
+    // `m` = `f` with the 5.52/5.55 schedule on both of its rows: the calendar
+    // reaches the file, but not a row that is held.
+    Sm { from A; to Fm; length 20; diameter 0.02; yieldStress 2.0; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+    Em { from Fm; to B; length 20; diameter 0.02; yieldStress 2.0; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+}
+
+time
+{
+    dt 0.002;
+    endTime 40.0;
+    reportEvery 1;
+}

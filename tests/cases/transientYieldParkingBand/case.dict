@@ -1,0 +1,117 @@
+// transientYieldParkingBand: where a yielded node can be PARKED, found by
+// sweeping its own initial pressure across the band its two walls make.
+//
+// 5.55 put two 8000 Pa walls on one free node, started it at 2.7e4, and read
+// one frozen token in all 2001 states; its own boundary list said that was one
+// desk and one initial value. This file is the sweep: the same two-row arm,
+// eleven times, with the node's initial pressure walking from pB to pA. Nothing
+// in the kernel is new, because the whole question is decided by two lines --
+// holdsStatic compares |drive| with 4 tau_0 L / d using <= (transient.cpp:40-
+// :43), and frictionDp at Q = 0 just copies the drive (transient.cpp:72-:81) --
+// so a start inside the band makes both rows print the identity 0 = 0 and the
+// node row (transient.cpp:395-:416) has nothing left to move.
+//
+// The rows per arm (both walls have tau_0 = 2.0 -> threshold 4*2.0*20/0.02 =
+// 8000 Pa, so the band is [pB + 8000, pA - 8000] = [28000, 22000], 6000 Pa
+// wide):
+//
+//   rho L/A (Qs - Qs')/dt = (pA - pF) - 4 L tw_s/d - Ks rho|Qs|Qs/(2A^2)
+//   rho L/A (Qe - Qe')/dt = (pF - pB) - 4 L tw_e/d - Ke rho|Qe|Qe/(2A^2)
+//   V/BC (pF - pF')        = Qs - Qe
+//
+// What the sweep should say, and what each arm is there to check:
+//
+//   * PARKED (frozen at its own start in every state, both walls held in every
+//     decided state): `d` 22000, `e` 23000, `f` 25000, `g` 27000, `h` 28000 --
+//     and `m`, which is `f` plus a close/open schedule on BOTH rows. `d` and
+//     `h` are the band edges, where the waking wall's drive is exactly
+//     4 tau_0 L / d, so they are the arms that read the `<=` and not the `<`:
+//     a strict inequality would start them flowing on the first step.
+//   * SLIDING UP (node below the band, the inflow wall wakes and only ever
+//     rises toward 22000): `a` 20000, `b` 21000, `c` 21999. `c` is one Pa
+//     outside the edge, so `c` versus `d` locates the boundary to 1 Pa.
+//   * SLIDING DOWN (node above the band, the drain wall wakes and only ever
+//     falls toward 28000): `i` 28001, `j` 29000, `k` 30000. `k` starts at pA
+//     itself, so its inflow drive is 0 and that wall is the one that holds.
+//   * The sliding arms also answer whether a wall that woke can sleep again:
+//     the latch is a state test (Q_prev == 0), and a node relaxing toward an
+//     edge keeps a strictly positive rate, so the expectation is one wall held
+//     in every state and the other never held again.
+//
+// measured over 2001 states: 6 arms print one token (`d` 22000, `e` 23000, `f`
+// 25000, `g` 27000, `h` 28000 and `m` 25000, each with both rows printing a
+// single token 0) and 6 print 2001 different ones -- `a` 20000 -> 21540.241693,
+// `c` 21999 -> 21999.0019592, and the three above the band mirrored token for
+// token (`Fk` 30000 -> 28459.758307, Fa + Fk = 50000 Pa at every state). The
+// boundary is bracketed by 1 Pa on each side: `c` moves, `d` holds.
+//
+// Every arm has its own node and its own two walls, and A = 3.0e4, B = 2.0e4
+// are the only fixed pressures, so the parking lot is decided per node with no
+// calendar involved. verified by tests/check_transient_yield_parking_band.py
+// (ctest verify.transientYieldParkingBand).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+    Fa { volume 0.1; bulkModulus 1.0e8; pressure 2.0e4; }
+    Fb { volume 0.1; bulkModulus 1.0e8; pressure 2.1e4; }
+    Fc { volume 0.1; bulkModulus 1.0e8; pressure 21999; }
+    Fd { volume 0.1; bulkModulus 1.0e8; pressure 2.2e4; }
+    Fe { volume 0.1; bulkModulus 1.0e8; pressure 2.3e4; }
+    Ff { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+    Fg { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fh { volume 0.1; bulkModulus 1.0e8; pressure 2.8e4; }
+    Fi { volume 0.1; bulkModulus 1.0e8; pressure 28001; }
+    Fj { volume 0.1; bulkModulus 1.0e8; pressure 2.9e4; }
+    Fk { volume 0.1; bulkModulus 1.0e8; pressure 3.0e4; }
+    Fm { volume 0.1; bulkModulus 1.0e8; pressure 2.5e4; }
+}
+
+pipes
+{
+    Sa { from A; to Fa; length 20; diameter 0.02; yieldStress 2.0; }
+    Ea { from Fa; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sb { from A; to Fb; length 20; diameter 0.02; yieldStress 2.0; }
+    Eb { from Fb; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sc { from A; to Fc; length 20; diameter 0.02; yieldStress 2.0; }
+    Ec { from Fc; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sd { from A; to Fd; length 20; diameter 0.02; yieldStress 2.0; }
+    Ed { from Fd; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Se { from A; to Fe; length 20; diameter 0.02; yieldStress 2.0; }
+    Ee { from Fe; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sf { from A; to Ff; length 20; diameter 0.02; yieldStress 2.0; }
+    Ef { from Ff; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sg { from A; to Fg; length 20; diameter 0.02; yieldStress 2.0; }
+    Eg { from Fg; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sh { from A; to Fh; length 20; diameter 0.02; yieldStress 2.0; }
+    Eh { from Fh; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Si { from A; to Fi; length 20; diameter 0.02; yieldStress 2.0; }
+    Ei { from Fi; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sj { from A; to Fj; length 20; diameter 0.02; yieldStress 2.0; }
+    Ej { from Fj; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sk { from A; to Fk; length 20; diameter 0.02; yieldStress 2.0; }
+    Ek { from Fk; to B; length 20; diameter 0.02; yieldStress 2.0; }
+
+    // `m` = `f` with the 5.52/5.55 schedule on both of its rows: the calendar
+    // reaches the file, but not a row that is held.
+    Sm { from A; to Fm; length 20; diameter 0.02; yieldStress 2.0; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+    Em { from Fm; to B; length 20; diameter 0.02; yieldStress 2.0; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+}
+
+time
+{
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

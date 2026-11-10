@@ -967,6 +967,35 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValveSplitRelease/case.dict)
 
+# the dead band itself, swept from the inside: 12 arms, 24 yielded walls, the
+# free node's OWN initial pressure walked across [pA - 4 tau_0 L/d, pB + 4 tau_0
+# L/d] = [22000, 28000] with the kernel untouched.  6 arms parked (both edges
+# included -- `<=`, not `<`: Fd prints 22000.0 in all 2001 states and Fh 28000.0)
+# and 6 sliding (3 below, 3 above, mirrored token-for-token: Fa + Fk = 50000 Pa
+# at every one of 2001 states, max 0 Pa off, identical rates).  Boundary bracketed
+# to 1 Pa on each side: Fc 21999 -> 21999.00196 moves, Fd 22000 (drive 8000 =
+# threshold 8000) holds; Fi 28001 moves, Fh holds.  Nothing overshoots -- 20001
+# states put the closest slider 0.9807 Pa above its floor.  The approach is a 1/t
+# tail whose coefficient comes out of the documented Bingham near-threshold
+# quadratic (both the constant and linear terms of 1 - 4t/3 + t^4/3 cancel at
+# t=1), k_Q = 4.9087e-13 m3/(s Pa2) so 1/gap gains 4.9087e-4 Pa-1 per second:
+# measured slopes land within 1.45%, the integrated 40 s arrival within 3.62%,
+# d ln Q / d ln gap = 1.9647 - 1.9974, and the per-2 s shrink climbs 0.22988 ->
+# 0.89994 toward 1 without ever reaching it.  A wall that woke never re-arms
+# (smallest printed waking rate 4.78156e-13 m3/s), the calendar cannot park a
+# slider (arm m == arm f token-for-token while K hits 1e8), and the band is local:
+# a 3-arm file reproduces the parked arm's tokens exactly and the sliders to one
+# printed quantum.  Steady pays zero on all 22 rows and leaves every swept node at
+# the solver's own guess 25000 Pa -- which is the band centre by arithmetic,
+# (pA - thr + pB + thr)/2 = (pA + pB)/2, so the blind default is always parked
+add_test(
+    NAME verify.transientYieldParkingBand
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_parking_band.py
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldParkingBand/case.dict)
+
 
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation

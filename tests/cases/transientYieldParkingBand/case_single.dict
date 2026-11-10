@@ -1,0 +1,54 @@
+// transientYieldParkingBand / case_single: three arms of the ladder, alone.
+//
+// The ladder in case.dict puts twelve nodes and twenty-four pipes in one
+// matrix, so the claim "a node's parking lot is decided by its own two rows"
+// has to be paid for with a second file. Here only `c` (21999, one Pa outside
+// the ceiling), `a` (20000, far below the band) and `d` (22000, the edge
+// itself) are in the network and the other nine arms are gone. If the parking
+// lot is a property of the node's own two rows, these three must print token
+// for token what they printed in the twelve-arm file -- the slider, the far
+// slider, and the frozen edge.
+//
+// measured: the frozen edge and the near slider are token-for-token the same in
+// both files -- Fd prints the single token 22000 in all 2001 states, Fc 21999 ->
+// 21999.0019592, and each of their two rows too (2001/2001 on all six series).
+// Only the far slider carries a difference, and it is one unit of the last
+// printed pressure digit: Fa's 2001 tokens agree 1306 times with at most
+// 1.000e-07 Pa drift, its rate at most 3.800e-16 m3/s. So the parking lot is the
+// node's own two rows' property, and the twelve-arm matrix is not what freezes a
+// node.
+//
+// verified by tests/check_transient_yield_parking_band.py
+// (ctest verify.transientYieldParkingBand).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+    Fa { volume 0.1; bulkModulus 1.0e8; pressure 2.0e4; }
+    Fc { volume 0.1; bulkModulus 1.0e8; pressure 21999; }
+    Fd { volume 0.1; bulkModulus 1.0e8; pressure 2.2e4; }
+}
+
+pipes
+{
+    Sa { from A; to Fa; length 20; diameter 0.02; yieldStress 2.0; }
+    Ea { from Fa; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sc { from A; to Fc; length 20; diameter 0.02; yieldStress 2.0; }
+    Ec { from Fc; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sd { from A; to Fd; length 20; diameter 0.02; yieldStress 2.0; }
+    Ed { from Fd; to B; length 20; diameter 0.02; yieldStress 2.0; }
+}
+
+time
+{
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

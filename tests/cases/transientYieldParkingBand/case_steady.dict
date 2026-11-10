@@ -1,0 +1,79 @@
+// transientYieldParkingBand / case_steady: the ladder's eleven walls in the
+// steady kernel, which has no latch at all.
+//
+// Every arm here is two 8000 Pa walls in series across a 10000 Pa source, so no
+// steady flow exists for ANY start: 4 tau_0 L/d + 4 tau_0 L/d = 16000 > pA - pB.
+// The transient distinguishes eleven starts with that same arithmetic; the
+// question for this file is what the steady kernel makes of them -- whether it
+// reports one answer for the parked and another for the sliding, and what it
+// reports for the node pressure when the node is not determined by anything.
+//
+// measured: 22 rows and 22 rows only -- every one prints `Q 0` with `dp 5000`,
+// every one of the eleven free nodes prints 25000, and the banner reads
+// `iterations=0 residual=0 (converged)`. The kernel never looked at the eleven
+// initial pressures this ladder is swept over: an undetermined node is left at
+// the average of the fixed pressures, and with two equal walls in series that
+// average IS the band centre, (pA - 4 tau_0 L/d + pB + 4 tau_0 L/d)/2 =
+// (pA + pB)/2. So the steady answer is one blind guess for eleven starts, and it
+// happens to be a start the transient would freeze.
+//
+// verified by tests/check_transient_yield_parking_band.py
+// (ctest verify.transientYieldParkingBand).
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+
+    Fa {}; Fb {}; Fc {}; Fd {}; Fe {}; Ff {}; Fg {}; Fh {}; Fi {}; Fj {}; Fk {};
+}
+
+pipes
+{
+    Sa { from A; to Fa; length 20; diameter 0.02; yieldStress 2.0; }
+    Ea { from Fa; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sb { from A; to Fb; length 20; diameter 0.02; yieldStress 2.0; }
+    Eb { from Fb; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sc { from A; to Fc; length 20; diameter 0.02; yieldStress 2.0; }
+    Ec { from Fc; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sd { from A; to Fd; length 20; diameter 0.02; yieldStress 2.0; }
+    Ed { from Fd; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Se { from A; to Fe; length 20; diameter 0.02; yieldStress 2.0; }
+    Ee { from Fe; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sf { from A; to Ff; length 20; diameter 0.02; yieldStress 2.0; }
+    Ef { from Ff; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sg { from A; to Fg; length 20; diameter 0.02; yieldStress 2.0; }
+    Eg { from Fg; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sh { from A; to Fh; length 20; diameter 0.02; yieldStress 2.0; }
+    Eh { from Fh; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Si { from A; to Fi; length 20; diameter 0.02; yieldStress 2.0; }
+    Ei { from Fi; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sj { from A; to Fj; length 20; diameter 0.02; yieldStress 2.0; }
+    Ej { from Fj; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Sk { from A; to Fk; length 20; diameter 0.02; yieldStress 2.0; }
+    Ek { from Fk; to B; length 20; diameter 0.02; yieldStress 2.0; }
+}
+
+sources
+{
+    // A and B are the fixed-pressure nodes, so these only set the residual's
+    // rate scale; they change no flow in any pipe.
+    feed { node A; rate 6.0e-5; }
+    take { node B; rate -6.0e-5; }
+}
+
+solve
+{
+    maxIter 200;
+    tol 1e-12;
+}

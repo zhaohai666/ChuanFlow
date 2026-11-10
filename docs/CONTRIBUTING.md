@@ -14,11 +14,12 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（99 项）约 258 ~ 525 s ≈ 4.3 ~ 8.8 分钟（实测 524.88 s），
-                                             # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高）：
-                                             # 稳态 profile 级映射 297.4 s、逐边 ddt 285.2 s、
-                                             # 形状账 × 归属账同台 244.4 s、形状账收进行 225.7 s、
-                                             # 塑形 x 步进 / 准稳双边 ~130 s、VOF 振荡 86.0 s
+ctest --test-dir build --output-on-failure -j8  # 全量回归（100 项）约 258 ~ 525 s ≈ 4.3 ~ 8.8 分钟（实测 525.22 s），
+                                             # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高；本批 load ~19，
+                                             # 所以四条耦合用例都读到 370 ~ 520 s，比单跑时的 150 ~ 250 s 贵一倍）：
+                                             # 形状账 x 归属账 520.9 s、稳态 profile 级映射 502.4 s、
+                                             # 逐边 ddt 424.4 s、形状账收进行 369.9 s、
+                                             # 非牛顿流变（四个毫秒级稳态求解）0.08 s、VOF 振荡 86.0 s
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -838,11 +839,40 @@ python3 tests/check_transient_coupled_multi_turbulent_convective_row.py \
 #   换成预先捕获的日志，所有断言在 1 s 内跑完——只在最后用真实运行确认一次。
 # 十族 34 条；六臂各 35 趟界面 / 70 次块解（合计 420）、逐层 [3,6,5,5,4,4,4,4]、最坏单级 6 趟（上限 12）——
 # 两张表都是写进行里的系数而不是迭代，所以交叉不花钱。单独跑整个 case（六臂）247.78 s user / 249.85 s 墙钟
-# （ctest -j8 记 244.43 s，全量 99 项 524.88 s；同批最慢的三条是 profile 级映射 297.4 / 逐边 ddt 285.2 / 本案 244.4 s）
+# （ctest -j8 记 244.43 s（全量 99 项 524.88 s，load ~8）对 520.87 s（全量 100 项 525.22 s，load ~19）——本案是六臂，
+#  同批耦合用例彼此推高，墙钟按负载读；单跑 249.85 s 是这份判据自己的地板）
 ./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict
 python3 tests/check_transient_coupled_multi_turbulent_shape_and_inertia_split.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict"
+
+# 非牛顿管流（5.45）：新算例 steadyPowerLawRheology。内核只做**一次替换**——src/1d/src/network.cpp:80-:92 的 generalizedReynolds
+# （Metzner-Reed：rho u^(2-n) d^n / (K' 8^(n-1))，K' = K(3n+1)/4n）取代原先两处 rho u d / mu：求解用的 pipeLossAt（:105）与
+# 打印用的 reynolds（:181）。声明面 pipes.<name>{ flowIndex n; consistency K; }（Network.h:67-:68，0 = 未声明）。
+# 为什么判据敢写成"精确"：Churchill 的层流半区是 f = 64/Re，换上 Re_MR 之后它就是幂律圆管的**解析解**
+#   dp = (L/d) K (3n+1)/n (8u/d)^n   ->   Q = (pi d^3/32) [n dp d / ((3n+1) K L)]^(1/n)
+# 而不是任何拟合；n=1、K=mu 时 K'=mu（4/4）、8^0=1、u^1=u，**逐项**塌回原式，所以既有 98 条测试结构上不可能被这一步移动。
+# 要看什么：
+#   1) declared-but-Newtonian 必须逐位——PowN1 对 Newt 五字段 × 两个文件全部 ==（不是 <1e-12，是相等）。这一步替错了代数，
+#      这里立刻显形，而且它同时是新算例对旧算例的无害性证明。
+#   2) f * Re == 64 在 18 个状态上最差 1.562e-10：这条把"闭式确实是内核用的那条律"从推理变成读数，别省掉。
+#   3) 三个指数的方向各管一件事：孔径（16 对 32）、长度（÷2 对 ÷4，指数不动）、驱动差（2^(1/n)）。剪切稀化的**尺寸律**是
+#      另一个幂——这是本案对工程最有用的那句话，写成比值而不是写成绝对数，这样它不依赖任何一次求解的巧合。
+#   4) tau_w = dp d/4L 对材料无关（五根同几何的管逐位 2.5 Pa），而 K'(8u/d)^n 各自复现自己的 tau_w（8.040e-13）。
+#   5) 两条拒收要**被断言**（非零 rc + 消息），不要只在文档里描述：flowIndex 缺 consistency（量纲不同，默认即静默错数）、
+#      耦合元带流变（它的损失就是伙伴的陈述——5.43 那条不重复计费）。
+#   6) Re_MR 全程 <= 170：这是"敢用闭式"的前提，写成判据（worst_re < 1000），否则层流断言和湍流半区会被混着读。
+# 写这类判据时的坑：①Churchill 返回的是 **Darcy** 因子（层流 64/Re），Fanning 文献里的 16/Re_MR 直接抄进来会把压降差 4 倍——
+#   本案第一次推导就栽在这上面（闭式对不上，直到发现 n=1 时应退回 32 mu L u/d^2 而不是 8 mu L u/d^2）。②九根管的两端必须都
+#   接**定压节点**，否则牛顿解把并联分配夹在断言和物理之间，闭式就不再加和。③打印精度是 12 位有效数字，所以 v == Q/A 的
+#   残差地板是 1.8e-12 而不是 1e-16：判据要按"打印了什么"来定，不是按"算了什么"。④`worst_re` 的上界要按**翻倍**那份文件读
+#   （Newtonian 的 Re 随 dp 线性走，170 出现在宽孔径管），只看 base 会写下一个假的安全界。⑤Python 里别把 max(...) 跨行写进
+#   单个 f-string 表达式——语法错误，先在外面算好再插值。
+# 八族 16 条；四个 case 文件、零求解成本（单次稳态毫秒级），整条 checker 墙钟 0.22 s
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyPowerLawRheology/case.dict
+python3 tests/check_steady_power_law_rheology.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyPowerLawRheology/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

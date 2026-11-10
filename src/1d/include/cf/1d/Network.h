@@ -54,6 +54,19 @@ struct NetworkPipe
     double pumpShutoffHead = 0;// m at zero rate (defaults to pumpHead)
     double pumpRate = 0;       // m3/s where pumpHead is quoted
 
+    // Power-law rheology (Metzner & Reed 1955): when `flowIndex` > 0 the
+    // pipe's fluid is tau = K gdot^n instead of Newtonian, and the single
+    // change to the Darcy-Weisbach law is the Reynolds number in the
+    // friction-factor call -- the generalized one
+    //     Re_MR = rho u^(2-n) d^n / (K' 8^(n-1)),  K' = K (3n+1)/(4n)
+    // which reduces to rho u d / mu *exactly* at n = 1, K = mu, so a
+    // declared-but-Newtonian pipe is bit-identical to an undeclared one.
+    // With this substitution Churchill's laminar branch reads 16/Re_MR,
+    // which is the exact Hagen-Poiseuille analogue for a power-law fluid,
+    // so the laminar drop is not a correlation but a closed form.
+    double flowIndex = 0;      // n; 0 = Newtonian (the fluid's own mu)
+    double consistency = 0;    // K, Pa.s^n; required when flowIndex > 0
+
     /// Coupled element (the 1D side of a 1D<->3D interface): when > 0 this
     /// pipe carries NO 1D resistance of its own – its whole loss is
     /// `coupledResistance * |Q|`, supplied by the partner model, and the

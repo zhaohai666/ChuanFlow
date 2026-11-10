@@ -330,6 +330,23 @@ foreach(tcase steadyEquipmentValve steadyEquipmentPump steadyEquipmentNetwork)
             ${mode})
 endforeach()
 
+# non-Newtonian pipe friction, one substitution deep: the Metzner-Reed
+# generalized Reynolds number goes where rho*u*d/mu used to go, and because the
+# fluid is then a power law the laminar branch of the same Churchill call stops
+# being a correlation and becomes the exact discharge
+# Q = (pi d^3/32) [n dp d/((3n+1) K L)]^(1/n). Nine pipes with both ends fixed
+# therefore assert against closed forms -- the dp exponent 1/n, the bore
+# exponent (3n+1)/n, an unmoved length exponent, the wall stress that no K
+# changes, the bit-identity of the declared-but-Newtonian pair, and the two
+# parse-time refusals (a flow index without a consistency, a rheology on a
+# coupled element)
+add_test(
+    NAME verify.steadyPowerLawRheology
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_power_law_rheology.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyPowerLawRheology/case.dict)
+
 # black-oil Beggs-Brill gathering network: balance, holdup/regime sanity and
 # a dry-oil GOR sensitivity twin
 add_test(

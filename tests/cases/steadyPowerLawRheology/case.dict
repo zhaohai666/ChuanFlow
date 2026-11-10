@@ -1,0 +1,85 @@
+// steadyPowerLawRheology: a non-Newtonian fill in the steady network, one
+// generalized Reynolds number away from the Newtonian law.
+//
+// Both ends are fixed-pressure nodes, so every pipe carries exactly
+// dp = p(A) - p(B) and its rate is the closed form of that drop -- no network
+// solve stands between the assertion and the physics, and the eight pipes are
+// eight independent statements in one run.
+//
+// The kernel change is one substitution: where the Darcy-Weisbach law asked for
+// Re = rho u d / mu it now asks for the Metzner-Reed number
+//
+//     Re_MR = rho u^(2-n) d^n / (K' 8^(n-1)),   K' = K (3n+1)/(4n)
+//
+// in the same Churchill call. That is the whole rheology: tau = K gdot^n. Its
+// payoff is that Churchill's laminar branch, f = 64/Re, is then *not* a
+// correlation for this fluid but its exact solution,
+//
+//     dp = (L/d) K (3n+1)/n (8u/d)^n   ->   Q = (pi d^3/32) [n dp d/((3n+1) K L)]^(1/n)
+//
+// which at n = 1, K = mu is 128 mu L Q = pi d^4 dp. So the assertions below are
+// against a closed form, and three structural exponents come out of it:
+//
+//   * dp      -> Q ~ dp^(1/n)        (Newtonian 1/2: exponent 1 vs 2)
+//   * d       -> Q ~ d^((3n+1)/n)    (Newtonian 4;  n=0.5: 5, i.e. 32x per doubling)
+//   * L       -> Q ~ 1/L            (unchanged -- the rheology moves the slope
+//                                    in dp and in d, never the length exponent)
+//
+// and one equivalence is the inertness control: n = 1 with K = mu is the
+// Newtonian number term for term, so `PowN1` must be *bit-identical* to the
+// undeclared `Newt`, and every undeclared pipe in the other 98 tests must not
+// move at all.
+//
+// Shear-thinning (n < 1) buys flow cheaply at a rising drop; shear-thickening
+// (n > 1) is the opposite. Both are in one run so the two signs of the same
+// exponent are read against each other rather than against a remembered number.
+//
+// Re_MR stays below ~170 everywhere, including the doubled-dp file, so the
+// laminar branch is the one in force and the closed form is exact rather than
+// approximate. The turbulent half of Churchill is *reached* by the generalized
+// number but is not validated against anything here -- that is this
+// increment's boundary, not a claim.
+//
+// verified by tests/check_steady_power_law_rheology.py
+// (ctest verify.steadyPowerLawRheology).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    // 1.0e4 Pa across every pipe. case_dpDouble.dict raises the upstream node
+    // to 4.0e4, which doubles the drop and nothing else.
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+}
+
+pipes
+{
+    // --- the equivalence control pair ---
+    Newt  { from A; to B; length 20; diameter 0.02; }          // undeclared
+    PowN1 { from A; to B; length 20; diameter 0.02;
+            flowIndex 1; consistency 0.1; }                    // must be bit-identical
+
+    // --- the sign of the exponent, same geometry ---
+    Thin05  { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.5; consistency 1.0; }
+    Thin07  { from A; to B; length 20; diameter 0.02;
+              flowIndex 0.7; consistency 2.0; }
+    Thick13 { from A; to B; length 20; diameter 0.02;
+              flowIndex 1.3; consistency 0.02; }
+
+    // --- the diameter exponent: 4 for Newtonian, (3n+1)/n = 5 at n = 0.5 ---
+    D2xNewt { from A; to B; length 20; diameter 0.04; }
+    D2xThin { from A; to B; length 20; diameter 0.04;
+              flowIndex 0.5; consistency 1.0; }
+
+    // --- the length exponent is not moved by the rheology ---
+    LongNewt { from A; to B; length 40; diameter 0.02; }
+    LongThin { from A; to B; length 40; diameter 0.02;
+               flowIndex 0.5; consistency 1.0; }
+}
+
+solve { maxIter 60; tol 1e-12; }

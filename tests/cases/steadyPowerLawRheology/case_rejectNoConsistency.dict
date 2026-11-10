@@ -1,0 +1,23 @@
+// steadyPowerLawRheology negative declaration: a flow index with no
+// consistency. At n != 1 the fluid's mu is not the same physical quantity as K
+// (Pa.s^n), so there is no sensible default to fall back to -- the kernel
+// refuses at parse time. This file exists so that the guard is a failing
+// assertion instead of a line of code someone has to trust; the checker runs it
+// expecting a non-zero exit and the message, and asserts nothing about physics.
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+}
+
+pipes
+{
+    Bad { from A; to B; length 20; diameter 0.02; flowIndex 0.5; }
+}
+
+solve { maxIter 60; tol 1e-12; }

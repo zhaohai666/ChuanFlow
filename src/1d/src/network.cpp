@@ -70,6 +70,24 @@ double pumpHeadOf(const NetworkPipe& p, double q)
     return std::max(h, 0.0);
 }
 
+/// Metzner-Reed generalized Reynolds number: the Newtonian rho u d / mu when
+/// the pipe declares no rheology, and rho u^(2-n) d^n / (K' 8^(n-1)) with
+/// K' = K(3n+1)/(4n) otherwise. At n = 1, K = mu the second expression is the
+/// first one term for term (4/4 = 1 exactly, 8^0 = 1 exactly, x^1 = x exactly,
+/// and the multiplications are in the same order), which is what makes a
+/// declared-but-Newtonian pipe a bit-identical control rather than a new
+/// number.
+double generalizedReynolds(const NetworkPipe& pipe, const FluidProperties& fluid,
+                           double speed)
+{
+    if (!(pipe.flowIndex > 0))
+        return fluid.rho * speed * pipe.diameter / fluid.mu;
+    const double n = pipe.flowIndex;
+    const double kp = pipe.consistency * (3.0 * n + 1.0) / (4.0 * n);
+    return fluid.rho * std::pow(speed, 2.0 - n) * std::pow(pipe.diameter, n)
+         / (kp * std::pow(8.0, n - 1.0));
+}
+
 /// Friction + valve loss (Pa, positive) at an imposed rate magnitude q:
 /// explicit Churchill evaluation, no iteration needed forward.
 double pipeLossAt(const NetworkPipe& pipe, const FluidProperties& fluid,
@@ -84,7 +102,7 @@ double pipeLossAt(const NetworkPipe& pipe, const FluidProperties& fluid,
     if (pipe.coupledResistance > 0) return pipe.coupledResistance * q;
 
     const double v = q / pipeArea(pipe);
-    const double re = fluid.rho * v * pipe.diameter / fluid.mu;
+    const double re = generalizedReynolds(pipe, fluid, std::abs(v));
     const double f = churchillFriction(re, pipe.roughness / pipe.diameter);
     return (f * pipe.length / pipe.diameter + pipe.valveK)
          * fluid.rho * v * v / 2.0;
@@ -160,7 +178,7 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
 
     RawFlow r;
     r.velocity = (forward ? x : -x) / pipeArea(pipe);
-    r.reynolds = fluid.rho * std::abs(r.velocity) * pipe.diameter / fluid.mu;
+    r.reynolds = generalizedReynolds(pipe, fluid, std::abs(r.velocity));
     r.friction = churchillFriction(r.reynolds, pipe.roughness / pipe.diameter);
     Hq = pumpHeadOf(pipe, std::abs(r.velocity) * pipeArea(pipe));
     return r;
@@ -894,6 +912,23 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.pumpRate = pd.getScalarOr("pumpRate", 0.0);
         p.pumpShutoffHead = pd.getScalarOr("pumpShutoffHead", p.pumpHead);
         p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
+        p.flowIndex = pd.getScalarOr("flowIndex", 0.0);
+        p.consistency = pd.getScalarOr("consistency", 0.0);
+        if (p.flowIndex < 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' has a negative"
+                    " power-law flow index (0 means Newtonian)");
+        if (p.flowIndex > 0 && !(p.consistency > 0))
+            cfFatal("steadyNetwork: pipe '" + name + "' declares a flow index"
+                    " without a positive consistency: at n != 1 the fluid's mu"
+                    " is not the same quantity as K (Pa.s^n)");
+        if (p.flowIndex > 0 && (net.hasBlackOil || net.hasPvtFluid))
+            cfFatal("steadyNetwork: pipe '" + name + "' carries a rheology,"
+                    " which only the constant-property single-phase law"
+                    " computes");
+        if (p.flowIndex > 0 && p.coupledResistance > 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' is a coupled element:"
+                    " its loss is the partner model's, so it cannot carry a"
+                    " rheology either");
         if (p.valveK < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative valve"
                     " coefficient");

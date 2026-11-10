@@ -1,0 +1,24 @@
+// steadyPowerLawRheology negative declaration 2: a coupled element that also
+// carries a rheology. A coupled pipe's whole loss *is* the partner model's
+// statement (the 1D side adds no friction of its own, or the wall is charged
+// twice -- 5.43), so there is nothing for a flow index to act on. Refused at
+// parse time; the checker asserts the refusal, not any physics.
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+}
+
+pipes
+{
+    Bad { from A; to B; length 20; diameter 0.02;
+          coupledResistance 1.0e6;
+          flowIndex 0.5; consistency 1.0; }
+}
+
+solve { maxIter 60; tol 1e-12; }

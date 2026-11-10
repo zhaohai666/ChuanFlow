@@ -1,0 +1,10 @@
+// 拒绝：负屈服应力。tau_0 < 0 让 g(xi) 越过 1，也就是这条律唯一能给出比牛顿更小
+// 压降的方式——那不是物理，是符号写错。宁可拒绝，不要让它变成一个"减阻剂"。
+// verified by tests/check_steady_bingham_yield.py (ctest verify.steadyBinghamYield).
+fluid { rho 850; mu 0.1; }
+nodes { A { pressure 3.0e4; } B { pressure 2.0e4; } }
+pipes
+{
+    Bad { from A; to B; length 20; diameter 0.02; yieldStress -1.0; }
+}
+solve { maxIter 20; tol 1e-10; }

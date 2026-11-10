@@ -88,8 +88,53 @@ double generalizedReynolds(const NetworkPipe& pipe, const FluidProperties& fluid
          / (kp * std::pow(8.0, n - 1.0));
 }
 
+/// Buckingham (1921) exact laminar solution for a Bingham plastic, inverted
+/// for the wall stress. With tw = dp d / (4 L) and xi = tau0 / tw the rate is
+///     Q = (pi d^3 / (32 mu)) tw [1 - (4/3) xi + (1/3) xi^4],
+/// which rearranges (multiply the bracket by tw) into one monotone equation
+///     F(tw) = tw - (4/3) tau0 + tau0^4 / (3 tw^3) = B,  B = 32 mu Q / (pi d^3)
+/// with F(tau0) = 0 and F' = 1 - (tau0/tw)^4 > 0 for tw > tau0, so the root is
+/// unique and the bracket [tau0, B + (4/3) tau0] is analytic -- the right end
+/// already gives B + tau0^4/(3 tw^3) >= B. Newton with a bisection fallback
+/// then lands on the root to rounding, which is what the closed-form checks
+/// need: a 1e-9 slack here would be indistinguishable from a wrong law.
+/// tw = tau0 (Q = 0) and tau0 -> 0 both come out right: the first is the left
+/// end of the bracket, the second makes F(tw) = tw identically.
+double binghamWallStress(const NetworkPipe& pipe, const FluidProperties& fluid,
+                         double q)
+{
+    const double tau0 = pipe.yieldStress;
+    const double b = 32.0 * fluid.mu * std::abs(q)
+                   / (M_PI * pipe.diameter * pipe.diameter * pipe.diameter);
+    if (!(b > 0.0)) return tau0; // no rate: the wall holds exactly the threshold
+
+    double lo = tau0, hi = b + (4.0 / 3.0) * tau0;
+    double tw = 0.5 * (lo + hi);
+    const double tau04 = tau0 * tau0 * tau0 * tau0;
+    for (int it = 0; it < 100; ++it)
+    {
+        const double t2 = tw * tw;
+        const double t4 = t2 * t2;
+        const double f = tw - (4.0 / 3.0) * tau0
+                       + tau04 / (3.0 * t2 * tw) - b;
+        if (f > 0.0) hi = tw;
+        else lo = tw;
+        // F' = 1 - tau0^4/tw^4, which vanishes at the left end: bisect there
+        const double df = 1.0 - tau04 / t4;
+        const double next = df > 0.0 ? tw - f / df : 0.5 * (lo + hi);
+        tw = (next > lo && next < hi) ? next : 0.5 * (lo + hi);
+        if (!(hi > lo)) break;
+        if (std::abs(hi - lo) <= 2.0 * std::numeric_limits<double>::epsilon() * hi)
+            break;
+    }
+    return tw;
+}
+
 /// Friction + valve loss (Pa, positive) at an imposed rate magnitude q:
-/// explicit Churchill evaluation, no iteration needed forward.
+/// explicit Churchill evaluation, no iteration needed forward. A yielded pipe
+/// instead answers with the wall-stress solution, whose q = 0 limit is the
+/// static threshold -- that is the whole difference, and why the rate law needs
+/// an explicit dead branch (see equipmentFlow).
 double pipeLossAt(const NetworkPipe& pipe, const FluidProperties& fluid,
                   double q)
 {
@@ -102,10 +147,33 @@ double pipeLossAt(const NetworkPipe& pipe, const FluidProperties& fluid,
     if (pipe.coupledResistance > 0) return pipe.coupledResistance * q;
 
     const double v = q / pipeArea(pipe);
+
+    if (pipe.yieldStress > 0)
+        return 4.0 * pipe.length
+             * binghamWallStress(pipe, fluid, q) / pipe.diameter
+             + pipe.valveK * fluid.rho * v * v / 2.0;
+
     const double re = generalizedReynolds(pipe, fluid, std::abs(v));
     const double f = churchillFriction(re, pipe.roughness / pipe.diameter);
     return (f * pipe.length / pipe.diameter + pipe.valveK)
          * fluid.rho * v * v / 2.0;
+}
+
+/// Friction factor to report for a solved rate: the Churchill number for the
+/// all-regime law, and for a yielded pipe the exact factor implied by
+/// Buckingham's drop, f = 8 tau_w / (rho v^2) -- the number that reproduces the
+/// drop printed next to it, not a correlation pasted onto a yielded wall.
+/// At v = 0 there is no rate to normalise against, so the report is 0.
+double pipeFrictionReport(const NetworkPipe& pipe, const FluidProperties& fluid,
+                          double reynolds, double speed)
+{
+    if (pipe.yieldStress > 0)
+    {
+        if (!(speed > 0)) return 0.0;
+        return 8.0 * binghamWallStress(pipe, fluid, speed * pipeArea(pipe))
+             / (fluid.rho * speed * speed);
+    }
+    return churchillFriction(reynolds, pipe.roughness / pipe.diameter);
 }
 
 /// Pipe + equipment law Q(dpTotal): dpTotal = rho g dz + loss(q) - rho g H(q).
@@ -138,6 +206,21 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
                                         + pumpHeadOf(pipe, 0.0)));
     const double xSeed = std::max(1e-3 * pipeArea(pipe), 1e-8);
     double xLo = 0.0, fLo = g(0.0);
+
+    // The dead branch of a yielded pipe. loss(0) is not 0 there, it is the
+    // static threshold 4 tau0 L / d, so g(0) can already sit on the far side of
+    // the crossing: the asked drop never reaches the wall's threshold and the
+    // exact answer is no flow at all. Falling through would expand the bracket
+    // 60 times on two same-signed samples and hand the secant a garbage pair,
+    // so this has to be decided before the bracket, not damped inside it.
+    // Newtonian and power-law pipes keep the plateau branch untouched -- their
+    // g(0) is the sign that sent them here in the first place.
+    if (pipe.yieldStress > 0 && (forward ? fLo >= 0.0 : fLo <= 0.0))
+    {
+        Hq = pumpHeadOf(pipe, 0.0);
+        return RawFlow();
+    }
+
     double xHi = xSeed, fHi = g(xHi);
     int expansions = 0;
     while (!(forward ? fHi > 0.0 : fHi < 0.0))
@@ -179,7 +262,8 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     RawFlow r;
     r.velocity = (forward ? x : -x) / pipeArea(pipe);
     r.reynolds = generalizedReynolds(pipe, fluid, std::abs(r.velocity));
-    r.friction = churchillFriction(r.reynolds, pipe.roughness / pipe.diameter);
+    r.friction = pipeFrictionReport(pipe, fluid, r.reynolds,
+                                    std::abs(r.velocity));
     Hq = pumpHeadOf(pipe, std::abs(r.velocity) * pipeArea(pipe));
     return r;
 }
@@ -914,6 +998,23 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
         p.flowIndex = pd.getScalarOr("flowIndex", 0.0);
         p.consistency = pd.getScalarOr("consistency", 0.0);
+        p.yieldStress = pd.getScalarOr("yieldStress", 0.0);
+        if (p.yieldStress < 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' has a negative yield"
+                    " stress (0 means no threshold)");
+        if (p.yieldStress > 0 && p.flowIndex > 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' declares both a power-"
+                    "law index and a yield stress: that is Herschel-Bulkley,"
+                    " whose inverted law is not Buckingham's cubic-in-1/tw and"
+                    " would need its own bracket");
+        if (p.yieldStress > 0 && (net.hasBlackOil || net.hasPvtFluid))
+            cfFatal("steadyNetwork: pipe '" + name + "' carries a yield stress,"
+                    " which only the constant-property single-phase laminar"
+                    " law computes");
+        if (p.yieldStress > 0 && p.coupledResistance > 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' is a coupled element:"
+                    " its loss is the partner model's, so it cannot carry a"
+                    " yield stress either");
         if (p.flowIndex < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative"
                     " power-law flow index (0 means Newtonian)");

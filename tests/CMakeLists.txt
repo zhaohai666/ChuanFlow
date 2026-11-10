@@ -347,6 +347,26 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyPowerLawRheology/case.dict)
 
+# 5.46 Bingham yield stress in the steady network. The drop no longer vanishes
+# with the rate -- at q = 0 the wall holds dpStatic = 4 tau_0 L / d -- so this is
+# not another substitution into Re: the rate law needs an explicit dead branch
+# before the Illinois bracket, and the flow side is Buckingham's 1921 laminar
+# solution inverted for the wall stress by a monotone bracket. The checker
+# therefore asserts the closed form at a known dp (eight fixed-end pipes) and at
+# a known Q (case_driven, where the drop is the unknown), the exact static
+# threshold (Q, v, Re and f all print 0 and dp stays at the asked drop), the
+# identity f Re g(xi) = 64 that proves the reported factor is the solution rather
+# than a Churchill number, Q/Q_Hagen-Poiseuille == g(xi), the wall stress that no
+# tau_0 moves, the dead branch through the network Newton (a yielded series pair
+# lands the free node exactly on its symmetric pressure, a stuck one empties the
+# line), and the three parse-time refusals
+add_test(
+    NAME verify.steadyBinghamYield
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_bingham_yield.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyBinghamYield/case.dict)
+
 # black-oil Beggs-Brill gathering network: balance, holdup/regime sanity and
 # a dry-oil GOR sensitivity twin
 add_test(

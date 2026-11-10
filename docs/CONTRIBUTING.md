@@ -14,12 +14,12 @@
 ```bash
 cmake -S . -B build
 cmake --build build -j8
-ctest --test-dir build --output-on-failure -j8  # 全量回归（100 项）约 258 ~ 525 s ≈ 4.3 ~ 8.8 分钟（实测 525.22 s），
-                                             # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高；本批 load ~19，
-                                             # 所以四条耦合用例都读到 370 ~ 520 s，比单跑时的 150 ~ 250 s 贵一倍）：
-                                             # 形状账 x 归属账 520.9 s、稳态 profile 级映射 502.4 s、
-                                             # 逐边 ddt 424.4 s、形状账收进行 369.9 s、
-                                             # 非牛顿流变（四个毫秒级稳态求解）0.08 s、VOF 振荡 86.0 s
+ctest --test-dir build --output-on-failure -j8  # 全量回归（101 项）约 258 ~ 640 s ≈ 4.3 ~ 10.7 分钟（实测 639.30 s），
+                                             # 墙钟的大头是最慢那几条（同批负载会把它们彼此推高；八并行下
+                                             # 五条耦合用例都读到 400 ~ 620 s，比单跑时的 150 ~ 250 s 贵一倍）：
+                                             # 形状账 x 归属账 622.5 s、稳态 profile 级映射 592.0 s、
+                                             # 多边 x 惯量归属 509.6 s、逐边 ddt 456.7 s、对流动量账收进行 400.7 s、
+                                             # 屈服应力（四个毫秒级稳态求解）0.26 s、非牛顿流变 0.08 s、VOF 振荡 158.6 s
 ```
 
 单个验证算例可以直接手动跑，便于调试：
@@ -873,6 +873,45 @@ python3 tests/check_transient_coupled_multi_turbulent_shape_and_inertia_split.py
 python3 tests/check_steady_power_law_rheology.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/steadyPowerLawRheology/case.dict"
+
+# 屈服应力（5.46）：新算例 steadyBinghamYield，四个 case 文件。内核改的是**一对**，而第一次容易只改前一半：
+# src/1d/src/network.cpp:210-:222 在 Illinois 括号**之前**显式判掉死分支（`yieldStress > 0` 才生效，牛顿/幂律那两支
+# 的 g(0) 本来就是送它们来这边的符号，一行未动），:103-:131 把 Bingham 层流解反解成网络要的 loss(q)——
+#   F(tw) = tw - (4/3)tau_0 + tau_0^4/(3 tw^3) = B = 32 mu Q/(pi d^3)，括号 [tau_0, B + (4/3)tau_0] 是解析的
+# （F(tau_0) = 0、F' = 1-(tau0/tw)^4 > 0、右端 F >= B），Newton + 二分落到舍入位；使用点 :151-:154。**同时** :167-:176
+# 把报出的摩阻系数从 Churchill 换成解自己含的 f = 8 tw/(rho v^2)（使用点 :265），声明面 pipes.<name>{ yieldStress t0; }
+# （Network.h:81，0 = 未声明），解析与三条拒收在 :1001-:1016。
+# 为什么必须成对：留着 Churchill 的 f，日志同一行的系数就再也复现不了那一行的 dp，"报的是哪条律"重新变成推理。
+# 要看什么：
+#   1) 死分支报的是 **0** 不是"很小"：Stk 的 Q/v/Re/f 四个字段打印就是 0，而 dp 仍是**被问到的** 1.0e4 Pa 而不是阈值
+#      1.04e4 Pa——那是静摩擦吃掉要它吃的那笔，不是被封顶的动摩擦。这条只能写成 == 0.0，写成 <1e-12 就读不到东西。
+#   2) f * Re * g(xi) == 64（最差 1.843e-10，地板是 12 位打印）是"系数就是解里的系数"的可失败形式；配套再断言
+#      dp == f (L/d) rho v^2/2（2.904e-12），否则同一行可以填两个各自成立但互相矛盾的数。
+#   3) Q / Q_Hagen-Poiseuille **就是** g(xi)：0.7339 / 0.4752 / 0.2432 / 0.0699 / 0.0031 且全在 (0,1]——比值形式不依赖
+#      任何一次求解的巧合，也比绝对数更容易看出"阈值只删流量、不弯抛物线"。
+#   4) 壁应力八根逐位 2.500 Pa（tau_0 不在 dp d/4L 里），而 8 tw/(rho v^2) 复现报出的 f 到 2.904e-12。
+#   5) 死分支要放上**网络 Newton** 再看：Sr1a/Sr1b 两条全同屈服管把自由中点落在恰好 2.5e4 Pa（iterations=1、残差恰 0）
+#      且两根速率逐位相同；Sr2a 卡住时整条线清空、D 被下游定压拽到恰好 2.0e4。这一步不需要新 Jacobian，因为闭式给出
+#      dQ/d(dp) = k[1-(dpStatic/dp)^4] <= k，solvePipeFlow 里那个 Hagen-Poiseuille 上限对屈服管仍是**上界**。
+#   6) 反问题同台：case_driven 把 Q 钉成 5.0e-6 让 dp 成未知数，解出的 7692.34 Pa 对 checker 自己那套**二分**（不是
+#      Newton）反演差 5.326e-13；反向那根逐位是正向的负数——死分支判的是被选中方向的符号，不是正向运气好。
+#   7) 三条拒收要被断言（非零 rc + 消息）：屈服+幂律＝Herschel-Bulkley（括号里幂次换了，需要自己的单调形）、
+#      屈服+耦合元（没有墙留给阈值 hold）、负 tau_0（g(xi) > 1，这条律唯一能给出比牛顿更小压降的方式）。
+# 写这类判据时的坑：①死分支判据要写成 `forward ? fLo >= 0 : fLo <= 0` 这种**跟随已选方向**的形式，只判 dpTotal 与
+#   阈值的大小会在反向流那根管上落错支。②哨兵是**代码级**的：只有 `yieldStress > 0` 才进括号，未声明与声明 0 那两根跑的还是原来那一行，所以 Newt/T0zero 五字段
+#   逐位 == 是无害性证明而不是巧合；代数上 `tau_0 -> 0` 也确实让 F(tw) = tw（Newton 的导数在括号左端点为 0，那里只能二分，
+#   代码靠 `next` 的括号包含判据避开），所以两支不会在最后一位上分岔。
+#   ③内层解松紧会伪装：xi=0.96 那根管 Q ∝ (dp-dpStatic)² 是软着陆，括号左端扫过去也"差不多对"，所以要单独断言
+#   它**仍带流量**（6.11731e-08）而不是只看闭式残差。④别把阈值那一格写成 dp == dpStatic 的精确相等：0.02 不是二进制
+#   精确值，4*2.5*20/0.02 与 1.0e4 谁大由舍入决定，本案把 tau_0 放两侧各留 400 Pa。⑤Q=0 时 f 必须是 0（没有速率可归一），
+#   照抄 Newtonian 那支会在 Re=0 上让 churchillFriction 的 1e-12 地板吐出 6.4e13（既有行为，本案没改它）。
+#   ⑥checker 的 parse() 要按文件收名字：case_driven 的管名不在主 PIPES 表里，按 PIPES 过滤会静默收到 0 条然后
+#   在 KeyError 上炸成一个假的成功。
+# 九族 26 条；四个 case 文件、零求解成本（case.dict 12 根管 1 步收敛、case_driven 6 步），整条 checker 墙钟 0.26 s
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyBinghamYield/case.dict
+python3 tests/check_steady_bingham_yield.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyBinghamYield/case.dict"
 
 # 一维瞬态：app 输出可解析的时间序列，check_transient.py 支持
 # blowdown / rlc / slug 三种解析对照模式

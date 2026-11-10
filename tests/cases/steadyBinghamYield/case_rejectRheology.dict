@@ -1,0 +1,12 @@
+// 拒绝：屈服应力 + 幂律指数 = Herschel-Bulkley。本案只解 Bingham 的那条单调括号
+// （F(tw) = tw - 4 tau0/3 + tau0^4/(3 tw^3) - B）；n != 1 时括号里的幂次换了，
+// 需要自己的解。宁可当场拒绝，不要静默地把 HB 当成 Bingham 算。
+// verified by tests/check_steady_bingham_yield.py (ctest verify.steadyBinghamYield).
+fluid { rho 850; mu 0.1; }
+nodes { A { pressure 3.0e4; } B { pressure 2.0e4; } }
+pipes
+{
+    Bad { from A; to B; length 20; diameter 0.02;
+          yieldStress 1.0; flowIndex 0.5; consistency 2.0; }
+}
+solve { maxIter 20; tol 1e-10; }

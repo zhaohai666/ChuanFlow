@@ -67,6 +67,19 @@ struct NetworkPipe
     double flowIndex = 0;      // n; 0 = Newtonian (the fluid's own mu)
     double consistency = 0;    // K, Pa.s^n; required when flowIndex > 0
 
+    // Bingham plastic (tau = tau_0 + mu_p gdot): `yieldStress` is tau_0 in Pa
+    // and mu_p is the fluid's mu. This is NOT another substitution into the
+    // Reynolds number, because the drop no longer vanishes with the rate: at
+    // q = 0 the wall still holds dpStatic = 4 tau_0 L / d, and below that the
+    // exact answer is q = 0 (the pipe is stuck, and it takes whatever drop is
+    // asked of it up to the threshold). Above it the law is Buckingham's 1921
+    // closed form, inverted for the wall stress, and the reported friction
+    // factor is the exact f = 8 tau_w / (rho v^2) rather than a Churchill
+    // number -- which makes f Re g(xi) = 64 a restatement of the solution.
+    // tau_0 -> 0 recovers Hagen-Poiseuille term for term, so the undeclared
+    // value is a sentinel, not a branch.
+    double yieldStress = 0;    // Pa; 0 = no threshold
+
     /// Coupled element (the 1D side of a 1D<->3D interface): when > 0 this
     /// pipe carries NO 1D resistance of its own – its whole loss is
     /// `coupledResistance * |Q|`, supplied by the partner model, and the

@@ -1,0 +1,80 @@
+# 5.46 Bingham 屈服应力第一次进稳态管网（缺口 12 的第二格）
+#
+# 幂律（5.45）是把广义 Re 代进 Churchill 就完事；屈服应力不是——壁面的压降不再随
+# 流量归零：q = 0 时它仍然拿着 dpStatic = 4 tau0 L / d。低于这个数，流量的精确答案
+# 就是 0（管卡住了，且它吃掉被问到的全部压差，不是 4 tau0 L/d）。这会让 Illinois
+# 括号落错分支，所以死分支必须在括号之前显式判掉。
+#
+# 上面的层流闭式（Buckingham 1921，圆管精确解）：
+#   Q = (pi d^3 / (32 mu)) * tw * g(xi),  tw = dp d / (4 L),  xi = tau0 / tw
+#   g(xi) = 1 - (4/3) xi + (1/3) xi^4                      in (0, 1]
+# 反解给的是 loss(q)（网络要的正是这个方向）：
+#   tw - (4/3) tau0 + tau0^4 / (3 tw^3) = 32 mu Q / (pi d^3)
+# 左端 tw = tau0 给出 0 = B（单调、凸，Newton + 二分落到位），tau0 -> 0 逐位退回
+# Hagen-Poiseuille。摩阻系数报的是这个解自己含的 f = 8 tw / (rho v^2)，于是
+#   f * Re * g(xi) == 64 就是闭式本身的复述，而不是把 Churchill 的数贴上去。
+#
+# 本案的数：mu = 0.1 Pa.s, rho = 850, d = 0.02, L = 20, 两端定压 dp = 1.0e4 Pa。
+# 于是 tw = 2.5 Pa 与 tau0 无关（墙应力是几何的），xi = tau0 / 2.5：
+#   tau0 = 0.5 -> xi = 0.2, 1.0 -> 0.4, 1.5 -> 0.6, 2.0 -> 0.8, 2.4 -> 0.96
+#   tau0 = 2.6 -> dpStatic = 1.04e4 > dp：死分支，q 恰为 0
+# 每条屈服管的 Re_B = rho v d / mu 只有个位数（最牛的新顿管才 10.6），所以层流闭式
+# 是本案的适用区，不是外推。
+#
+# 串接对中点 C 是自由节点：两条全同屈服管分掉 1.0e4，各拿 5000 Pa，p_C 必须落在
+# 2.5e4（对称）；而卡住的 Sr2 让整串流量为 0，此时 p_C 只能等于下游定压的 2.0e4
+# ——那是死分支在网络 Newton 里的形状，不是容差能糊过去的。
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+    C {};
+    D {};
+}
+
+pipes
+{
+    # --- 平行组：两端定压，每条管的 dp 恰为 1.0e4 Pa --------------------------
+    Newt    { from A; to B; length 20; diameter 0.02; }
+    T0zero  { from A; to B; length 20; diameter 0.02; yieldStress 0; }
+    Xi02    { from A; to B; length 20; diameter 0.02; yieldStress 0.5; }
+    Xi04    { from A; to B; length 20; diameter 0.02; yieldStress 1.0; }
+    Xi06    { from A; to B; length 20; diameter 0.02; yieldStress 1.5; }
+    Xi08    { from A; to B; length 20; diameter 0.02; yieldStress 2.0; }
+    Xi096   { from A; to B; length 20; diameter 0.02; yieldStress 2.4; }
+    Stk     { from A; to B; length 20; diameter 0.02; yieldStress 2.6; }
+
+    # --- 串接：两条全同屈服管，中间自由节点应落在正中间 ----------------------
+    Sr1a    { from A; to C; length 20; diameter 0.02; yieldStress 1.0; }
+    Sr1b    { from C; to B; length 20; diameter 0.02; yieldStress 1.0; }
+
+    # --- 串接：上游卡住（1.0e4 < 1.04e4），整串为 0，自由节点被下游定压拽平 --
+    Sr2a    { from A; to D; length 20; diameter 0.02; yieldStress 2.6; }
+    Sr2b    { from D; to B; length 20; diameter 0.02; }
+}
+
+# A/B 是定压节点，它们不进任何自由节点的方程：这两个源只给残差定标（qScale 取正
+# 注入总量，本案约 6e-5 m3/s），不改变任何一条管的流量。
+sources
+{
+    feed { node A; rate 6.0e-5; }
+    take { node B; rate -6.0e-5; }
+}
+
+solve
+{
+    maxIter 60;
+    tol 1e-12;
+}

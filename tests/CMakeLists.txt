@@ -792,6 +792,26 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldStaticHold/case.dict)
 
+# 5.50 the yield wall and the local loss on the same row: the cell 5.46 and 5.49
+# each put in their own boundary list. The wall still asks for 4 tau_0 L/d at zero
+# rate while the valve asks for nothing there, so the latch's drive contains no K
+# (three Stuck pipes five decades apart in K print one shared trace, and the
+# steady kernel reports no dpValve field for a pipe at rest), while every pipe the
+# wall is *not* holding lands on the root of both losses together -- asserted
+# against the checker's own bisection in both kernels, monotone in K across one
+# threshold, and met between the kernels at t = 4. The stop is the row's
+# arithmetic rather than the latch's: the same 2000 Pa margin under a K of 5e3
+# stops at the same step as no valve (where the valve is worth 4.7e-02 Pa) and at
+# step 5 under a K of 1e8 (worth 1.7e10 Pa at the starting rate), and the
+# recursion with both terms reproduces all three traces and all three steps
+add_test(
+    NAME verify.transientYieldValve
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_valve.py
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValve/case.dict)
+
 # distributed two-fluid kernel: Godunov shock/fan kinematics, steady
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation

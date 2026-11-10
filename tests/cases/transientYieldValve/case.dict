@@ -1,0 +1,122 @@
+// transientYieldValve: the local loss (the M2 row's `valve K`, documented in
+// architecture `§4.2`) and the yield wall
+// (5.46 - 5.47's `yieldStress`) on the *same* momentum row, which is the one
+// combination both of them listed as a boundary and neither of them measured.
+//
+// The row is, per pipe, with both ends pinned at fixed-pressure nodes,
+//
+//     rho L/A * dQ/dt = drive - dp_wall(Q) - K rho |Q| Q / (2 A^2),
+//     drive = pFrom - pTo - rho g dz
+//
+// and the two claims this file exists to make are about *where* the valve term
+// sits relative to the static branch 5.49 added:
+//
+//   * At the held point the valve asks for nothing. `K rho |Q| Q / (2 A^2)`
+//     vanishes with the rate, so a pipe the wall is holding has no valve drop to
+//     report either: `StuckRef` (no valve), `StuckK500` and `StuckK1e8` differ by
+//     five orders of magnitude in K, print the same string in all 2001 states,
+//     and in the steady kernel the same three print `Q 0` with a bare `dp` and no
+//     `dpValve` field at all. What the wall is compared against stays `drive`,
+//     which contains no K (transient.cpp:52).
+//   * Everywhere the wall law *is* being read, the valve is charged, so a
+//     released pipe's terminal rate is no longer 5.46's Buckingham discharge at
+//     `drive` but the root of `drive = dp_wall(Q) + K rho Q^2/(2 A^2)` -- a
+//     smaller number, and the checker finds it by bisection on its own copy of
+//     both laws. `ReleaseRef` / `ReleaseK100` / `ReleaseK500` / `ReleaseK5000`
+//     are one threshold (tau_0 = 1.0) with four K's, so the whole sequence is
+//     monotone in K and each entry has to land on its own root; the valve's share
+//     of the asked drop grows from nothing to 11% across it.
+//
+// The gravity pair carries the same split: `HangRef` / `HangK500` hang up into a
+// 2000 Pa wall with a drive of 1664.35 Pa, so both sit at exactly zero no matter
+// what K says, while `RollRef` / `RollK500` roll down with 18335.65 Pa and must
+// differ from each other, each on the implicit root of *that* drive.
+//
+// `StopRef` / `StopK5000` / `StopK1e8` are the interesting half: the same
+// tau_0 = 1.5 pipe under a 4000 Pa drive -- 2000 Pa short of its own wall --
+// starting in motion, with no valve, with K = 5e3 and with K = 1e8. The stop
+// itself is the row's arithmetic, so the path decides when it happens: the two
+// small-valve pipes take the same 17 steps while their last moving rates differ,
+// because there the K of 5e3 is worth 4.7e-02 Pa against the 2000 Pa margin the
+// stop runs on, and `StopK1e8` stops on step 5 because its own valve drop at
+// 2.0e-4 m3/s is 1.72e10 Pa, four million times the drive on offer. None of
+// that is the latch answering to K -- it is the valve being charged where there
+// is a rate to charge it against, and the checker reproduces all three traces,
+// including the three different stop steps, from both laws written out in Python.
+//
+// case_steady.dict is the same network with `solver { type steadyNetwork; }`, for
+// the cross-kernel meeting: the marched row at t = 4 against the steady
+// kernel's own root of the same two-term loss, plus the printed split
+// dpWall + dpValve == dp on a pipe whose drop is known.
+//
+// Geometry, fluid and time are 5.45 - 5.49's again (L = 20 m, d = 0.02 m,
+// rho = 850 kg/m3, mu = 0.1 Pa.s, dt = 0.002 s, endTime = 4.0 s), and every wall
+// stress stays under 5 Pa, so the yielded half of the law is the laminar profile
+// integral and the closed forms are exact, not extrapolated.
+//
+// verified by tests/check_transient_yield_valve.py (ctest
+// verify.transientYieldValve).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A  { fixedPressure 3.0e4; }
+    B  { fixedPressure 2.0e4; }
+    A2 { fixedPressure 2.4e4; }
+}
+
+pipes
+{
+    // --- a held pipe has no valve drop to report ----------------------------
+    StuckRef  { from A; to B; length 20; diameter 0.02; yieldStress 2.6; }
+    StuckK500 { from A; to B; length 20; diameter 0.02; yieldStress 2.6;
+                valve 500; }
+    StuckK1e8 { from A; to B; length 20; diameter 0.02; yieldStress 2.6;
+                valve 1.0e8; }
+
+    // --- one threshold, four K's, each on its own root ---------------------
+    ReleaseRef   { from A; to B; length 20; diameter 0.02; yieldStress 1.0; }
+    ReleaseK100  { from A; to B; length 20; diameter 0.02; yieldStress 1.0;
+                   valve 100; }
+    ReleaseK500  { from A; to B; length 20; diameter 0.02; yieldStress 1.0;
+                   valve 500; }
+    ReleaseK5000 { from A; to B; length 20; diameter 0.02; yieldStress 1.0;
+                   valve 5000; }
+
+    // --- gravity on both sides of the wall, with and without a valve -------
+    HangRef  { from A; to B; length 20; diameter 0.02; elevation 1.0;
+               yieldStress 0.5; }
+    HangK500 { from A; to B; length 20; diameter 0.02; elevation 1.0;
+               yieldStress 0.5; valve 500; }
+    RollRef  { from A; to B; length 20; diameter 0.02; elevation -1.0;
+               yieldStress 0.5; }
+    RollK500 { from A; to B; length 20; diameter 0.02; elevation -1.0;
+               yieldStress 0.5; valve 500; }
+
+    // --- the stop: the path decides the step, the wall decides the stop ----
+    StopRef   { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-6;
+                yieldStress 1.5; }
+    StopK5000 { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-6;
+                yieldStress 1.5; valve 5000; }
+    // A valve bigger than the whole drive, on a wall-held row: 2.0e-4 m3/s
+    // through K = 1e8 asks for 1.72e10 Pa, four million times the 4000 Pa on
+    // offer, so the first step collapses the rate and the stop comes early.
+    StopK1e8  { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-4;
+                yieldStress 1.5; valve 1.0e8; }
+}
+
+time
+{
+    // Same reasoning as 5.49: dt small against the fastest transient in the
+    // file (the K = 1e8 pipe collapses its own 2.0e-4 m3/s over ~5 steps) and
+    // endTime long against the slowest (the released pipes' Newtonian-scale
+    // relaxation is tens of milliseconds), so every trace here is read after it
+    // has settled.
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

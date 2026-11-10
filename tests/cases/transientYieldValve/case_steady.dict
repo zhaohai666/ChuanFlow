@@ -1,0 +1,68 @@
+// transientYieldValve/case_steady.dict: the same 14 pipes and 3 nodes with
+// `solver { type steadyNetwork; }`. Two things can only be read here, where the
+// asked drop is a known number rather than the row's unknown: the printed split
+// dpWall + dpValve == dp on a yielded pipe that is *moving* (5.46's bracket stops
+// the friction part at Q = 0, and the valve sits on top of it), and the terminal
+// rates the marched row has to meet at t = 4. The held pipes must still report
+// exactly zero here -- 5.49's static branch and the steady dead branch are the
+// same statement reached from opposite sides, and neither of them is a function
+// of K.
+//
+// verified by tests/check_transient_yield_valve.py (ctest
+// verify.transientYieldValve).
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A  { pressure 3.0e4; }
+    B  { pressure 2.0e4; }
+    A2 { pressure 2.4e4; }
+}
+
+pipes
+{
+    // --- a held pipe does not answer to K ----------------------------------
+    StuckRef  { from A; to B; length 20; diameter 0.02; yieldStress 2.6; }
+    StuckK500 { from A; to B; length 20; diameter 0.02; yieldStress 2.6;
+                valve 500; }
+    StuckK1e8 { from A; to B; length 20; diameter 0.02; yieldStress 2.6;
+                valve 1.0e8; }
+
+    // --- one threshold, four K's, each on its own root ---------------------
+    ReleaseRef   { from A; to B; length 20; diameter 0.02; yieldStress 1.0; }
+    ReleaseK100  { from A; to B; length 20; diameter 0.02; yieldStress 1.0;
+                   valve 100; }
+    ReleaseK500  { from A; to B; length 20; diameter 0.02; yieldStress 1.0;
+                   valve 500; }
+    ReleaseK5000 { from A; to B; length 20; diameter 0.02; yieldStress 1.0;
+                   valve 5000; }
+
+    // --- gravity on both sides of the wall, with and without a valve -------
+    HangRef  { from A; to B; length 20; diameter 0.02; elevation 1.0;
+               yieldStress 0.5; }
+    HangK500 { from A; to B; length 20; diameter 0.02; elevation 1.0;
+               yieldStress 0.5; valve 500; }
+    RollRef  { from A; to B; length 20; diameter 0.02; elevation -1.0;
+               yieldStress 0.5; }
+    RollK500 { from A; to B; length 20; diameter 0.02; elevation -1.0;
+               yieldStress 0.5; valve 500; }
+
+    // --- the stop: same step, different path -------------------------------
+    StopRef   { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-6;
+                yieldStress 1.5; }
+    StopK5000 { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-6;
+                yieldStress 1.5; valve 5000; }
+
+    // --- a valve bigger than the whole drive, on a wall-held row ------------
+    StopK1e8  { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-4;
+                yieldStress 1.5; valve 1.0e8; }
+}

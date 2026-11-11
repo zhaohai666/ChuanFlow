@@ -131,6 +131,26 @@ python3 tests/check_coupled_1d3d.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d" \
     "$PWD/tests/cases/coupled1d3d/case.dict"
 
+# 耦合边流变（§5.63）：同一根 coupledResistance 管上声明 flowIndex/consistency/
+# yieldStress。1D parser 把声明搬进 partnerRheology 并清零自己的壁面律字段（损失仍是
+# 伙伴给的 R·q，不重复计费），四个 coupling apps 转发给 DetailBlock；3D 侧新增
+# GeneralizedNewtonianViscosity 实现现成的 IEddyViscosity 逐面钩子，SIMPLE 方程装配未改。
+# check_coupled_rheology.py 从一份 case 派生 5 个稳态臂（未声明 / 声明但牛顿 / 剪切稀化 /
+# 剪切增稠 / HB 屈服）+ 1 个瞬态臂 + 4 个拒收 case，306 条判据：声明但牛顿档与未声明档
+# 求解日志逐位相同、nuWall/gdotWall/tauWall 独立重建 K*gdot^(n-1)+tau0/gdot、
+# |probeSlope|·H/2 对 tau_w、dp 对同一本构的平面渠道闭式（含塞流积分）、逐趟界面残差、
+# 1D Re 仍逐位是 rho*v*d/mu、瞬态每步动量行、四条拒收边界。
+# §5.63 还把 4 个既有 checker 的耦合边负例（case_rejectCoupled*.dict）从
+# "必须拒收"改成"接受且与无声明孪生档逐位相同"：verify.steadyPowerLawRheology /
+# verify.steadyBinghamYield / verify.transientPowerLawRheology /
+# verify.transientYieldStaticHold。只改判据与 case 头注释，不改物理。
+# 约 110 s（5 稳态臂 63 s + 瞬态臂 43 s）
+python3 tests/check_coupled_rheology.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d" \
+    "$PWD/tests/cases/coupledRheology/case.dict" \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient" \
+    "$PWD/tests/cases/transientCoupled1d3d/case.dict"
+
 # 瞬态分区耦合：同一个网络、同一块网格改成从静止被突加的注入速率驱动。app 逐时间层
 # 打印 q/dpNetwork/dpBlock/R/残差/趟数/newton 与块收敛标志，外加 name-keyed 的节点压力与
 # 管流序列；vtu 是最后一个时间层、最后一次子迭代的块场（步内解多次，只有最后一次可回放）。

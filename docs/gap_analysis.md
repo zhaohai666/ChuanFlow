@@ -72,12 +72,13 @@
 ### A4. 耦合边拒绝流变与屈服
 
 - **参考工具**：Fluent system coupling + 非牛顿伙伴块
-- **当前状态**：`OPEN`
+- **当前状态**：`CLOSED`（由 §5.63 / task #96 关闭）
 - **阻塞项**：无
-- **内核改动**：`src/1d/src/transient.cpp:226–229` 当前显式拒绝非牛顿 key；耦合调度 `src/coupling/coupledNetwork.cpp` 需要把 `pipeFrictionPa` 用完整 rheology key 调用。
-- **成本估计**：1 增量
-- **落点**：architecture.md §5.65（预估）
-- **备注**：与 C1 本质相同；A 类与 C 类的区别是 A 在架构文档里有命名边界、C 没有。
+- **内核改动**：稳态 `network.cpp` / 瞬态 `transient.cpp` 的四处 `coupledResistance > 0 && rheology` 拒收已移除；声明改存 `NetworkPipe::partnerRheology`，1D 壁面律字段清零，四个 coupling apps 转发给 `DetailBlock`。
+- **成本估计**：1 增量（与 C1 合并落地，实测 1 增量而非 2.5）
+- **落点**：architecture.md §5.63
+- **备注**：与 C1 本质相同；A 类与 C 类的区别是 A 在架构文档里有命名边界、C 没有。实际落法不是"把 `pipeFrictionPa` 用完整 key 调用"——耦合边的损失**就是**伙伴的陈述（§5.43），再算一次 1D 摩阻是重复计费；流变只在 3D 伙伴侧生效。
+- **既有判据迁移**：5.45 / 5.46 / 5.48 / 5.49 四个 checker 的 `case_rejectCoupled*.dict` 原本断言"非零退出"，首次全量回归因此 4 条失败；现改为**接受 + 与删去三个 key 的孪生档 stdout 逐位相同**，四个 case 头注释同步改写。文件名保留 `reject` 只为兼容旧引用；`ctest -R` 复跑 4/4 通过。
 
 ### A5. PVT / 黑油 / 两流体分布式拒绝流变与屈服
 
@@ -87,6 +88,7 @@
 - **内核改动**：`src/1d/src/twoFluid.cpp` + `src/pvt/*` 调度面
 - **成本估计**：2 增量
 - **落点**：architecture.md §5.66（预估）
+- **§5.63 后的范围收缩**：耦合边那一路的拒收已由 C1/A4 解除；本条现在只剩 PVT 表 / 黑油 / 两流体分布式求解那三行，`steadyNetwork` 里的 `hasBlackOil || hasPvtFluid` 拒收仍在。
 
 ### A6. 环空 / 矩形 duct（Dodge–Metzner）
 
@@ -201,10 +203,12 @@
 
 ### C1. 流变参数（`flowIndex` / `consistency` / `yieldStress`）进入耦合边
 
-- **当前状态**：`OPEN`（与 A4 同体）
-- **内核改动**：4 处 fatal guard 删除（trivial）；`ICoupledElement` 接口加 rheology 传递；`DetailBlock` 构造接受 (n, K, τ_0)；3D SIMPLE 求解器加非牛顿黏度模型（power-law / HB）替换当前定值 `nu`；coupling apps 转发 rheology
-- **成本估计**：2.5 增量（不是 0.5：3D 侧需要完整的非牛顿黏度回路，与 §5.45-5.47 的 1D 侧同量级）
-- **落点**：architecture.md §5.65（与 A4 合并）
+- **当前状态**：`CLOSED`（由 §5.63 关闭，与 A4 同体）
+- **内核改动**：4 处 fatal guard 删除；`ICoupledElement::rheology()`；`DetailBlock` 构造接受 `(n, K, τ_0)` 与数值控制；新增 `src/3d/src/solvers/generalizedNewtonian.cpp` 的逐面表观黏度（power-law / HB，Papanastasiou 正则化 + 壁面剪切率覆盖）；4 个 coupling apps 转发
+- **成本估计**：2.5 增量 → **实测 1 增量**。原因：3D 侧**没有**改 SIMPLE 的方程装配——`IEddyViscosity::nuEffFace()` 早在 RANS 伙伴块里就是现成的逐面黏度钩子，`GeneralizedNewtonianViscosity` 只是它的第二个实现，`fvm::laplacianFace` 一字未动。原估计把"新增逐面黏度回路"算成了改求解器。
+- **落点**：architecture.md §5.63（与 A4 合并）
+- **实测**：306 条判据、5 个稳态臂 + 1 个瞬态臂 + 4 个拒收边界；声明但牛顿档与未声明档的求解日志**逐位相同**；1D 侧 `Re` 仍逐位是 `ρvd/μ`；`dp/dp_closed` 在 1.0203 ~ 1.0752
+- **新边界**：`turbulence{}` 与非牛顿流体互斥（两者争同一个逐面黏度钩子）；多边同时带流变已转发但未端到端验证；PVT/黑油/两流体仍拒收（A5）
 
 ### C2. HB × 阀 `K`（无日程）
 
@@ -309,12 +313,15 @@
 1. ~~**B3**~~ — CLOSED（§5.59）
 2. ~~**B2**~~ — CLOSED（§5.62）
 3. ~~**B4**~~ — CLOSED（§5.54 审计）
-4. **C1** — 流变进入耦合边（与 A4 合并关闭）。
-5. **A1** —— 任务 #84，β 项被第三方文献确认后启动。
-6. **D5** — 自适应时间步。D 类里唯一钩子较小的一项。
+4. ~~**C1 / A4**~~ — **CLOSED**（§5.63）：流变进入耦合边，稳态 + 瞬态 + 3D 逐面黏度同台；实测 1 增量而非 2.5。
+5. **A1** —— 任务 #84，β 项被第三方文献确认后启动（仍 `BLOCKED`）。
+6. **D5** — 自适应时间步。A1 阻塞期间**这是可执行的第一项**；D 类里唯一钩子较小的一项。
+
 7. **B5 / B6 / C2 / C3 / C4** — 按需要穿插。
 8. **A2 / A3 / A5 / A6 / A7 / A8 / A9 / A10 / A11** — 按引用热度排。
 9. **D1 / D2 / D3 / D4 / D6 / D7 / D8 / D9** — 大型能力块，按产品规划排期。
+
+> **成本估计的修正（§5.63 实测）**：本清单里"3D 侧需要完整非牛顿黏度回路"被估成 2.5 增量，实际 1 增量。教训是先看 `src/3d/include/cf/fvm/EddyViscosity.h`：RANS 伙伴块（§5.23）早已把逐面黏度做成了求解器钩子，`fvm::laplacianFace` 每趟读一次 `nuEffFace()`，因此新增一种流体只需实现该接口，不动方程装配。后续 C 类成本估计应先核对现成钩子再报数。
 
 ## 6. 实施日志
 
@@ -327,3 +334,4 @@
 | 2026-11-11 | B1 | §5.61 | 6581c96 | 1311.16 s / 116 | 源日程唤醒停泊臂：`sources{ schedule{ openRate; close; open } }` 与阀日程同一 ramp helper；1 HB 壁 + 1 阀泄放 + 1 注入源同台；6423 判据、2 case 文件、Test #90 (2.23 s) |
 | 2026-11-11 | B2 | §5.62 | ee21027 | 385.66 s / 117 | 停泊带下边缘：pB 20000→19500 使 n=0.5 臂 d 第一次醒来（313 流动状态）、臂 c 重锁周期回来（388/929/1390）；pB 扫描定位转捩 ≈19780；84 判据、3 case 文件、Test #91、0 内核行 |
 | 2026-11-11 | B4 | — | — | — | **审计为 CLOSED**：§5.54 每臂 2 壁 + 1 泄放 = 3 管/节点，17 次翻（含 3 次重锁）；文档初版误记 §5.54 为"只一进一出" |
+| 2026-11-11 | C1 / A4 | §5.63 | 待补 hash | 375.04 s / 117 | 耦合边接受 `flowIndex`/`consistency`/`yieldStress`；新增 `GeneralizedNewtonianViscosity`（幂律 + HB 逐面表观黏度）；4 个 coupling apps 转发；声明但牛顿档求解日志逐位相同；新 checker 5 稳态臂 + 1 瞬态臂 + 4 拒收边界共 306 判据（Test #49）；4 个旧负例 checker 迁移为"接受 + 与无声明孪生档逐位相同"，全量 **117/117 绿**；成本 2.5→1 增量 |

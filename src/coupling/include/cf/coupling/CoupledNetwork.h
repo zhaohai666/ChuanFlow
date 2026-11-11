@@ -8,7 +8,9 @@
 #include "cf/1d/Transient.h"
 #include "cf/common/Dictionary.h"
 #include "cf/common/Labels.h"
+#include "cf/common/Rheology.h"
 #include "cf/fvm/Fields.h"
+#include "cf/fvm/GeneralizedNewtonian.h"
 #include "cf/fvm/FvMatrix.h"
 #include "cf/fvm/PolyMesh.h"
 #include "cf/fvm/SimpleSolver.h"
@@ -18,6 +20,22 @@ namespace cf
 {
 namespace coupling
 {
+
+/// The constitutive law the 1D case declared on one coupled edge, read from
+/// the same three keys the 1D parser validates (`flowIndex`, `consistency`,
+/// `yieldStress`). This is only a forwarding of the declaration: the 1D
+/// kernels do the checking and keep the law out of their own wall rows, while
+/// the coupling apps hand it to the 3D block that actually solves the fluid.
+/// A case that declares nothing answers Newtonian.
+Rheology readPartnerRheology(const Dictionary& caseDict,
+                             const std::string& edgeName);
+
+/// Numerical controls of the block's algebraic viscosity law, read from
+/// `detail { generalizedNewtonian { shearFloor; regularization; relaxation; } }`.
+/// Everything not named stays at the struct's default, so an existing case
+/// does not need a new block to keep the equation it already solves.
+GeneralizedNewtonianControls readGeneralizedNewtonianControls(
+    const Dictionary& caseDict);
 
 /// What an element's inlet carries beyond the number of cubic metres per second
 /// it was asked for: the shape the interface declared, that rate read back as
@@ -138,6 +156,13 @@ public:
     /// has no section to distribute over, and a block the case left unnamed
     /// spreads its rate evenly across the inlet faces it wrote.
     virtual ProfileLedger profileLedger() const { return {}; }
+
+    /// The fluid this element's region is made of. An analytic law has no
+    /// region to hold a fluid and answers Newtonian; a 3D block answers the
+    /// law the 1D case declared on its coupled edge. Reporting it here is what
+    /// lets a regression tell "the interface forwarded a different n" from
+    /// "the block solved a different wall stress".
+    virtual Rheology rheology() const { return {}; }
 };
 
 /// What the last solve of a `DetailBlock` produced. Every number is measured on
@@ -256,7 +281,9 @@ public:
     DetailBlock(polyMesh mesh, scalar nu, scalar rho, const Schemes& schemes,
                 const SimpleControls& ctl, scalar probeMin, scalar probeMax,
                 const TurbulenceConfig& turb,
-                const std::string& inletShape = "flat");
+                const std::string& inletShape = "flat",
+                const Rheology& rheology = Rheology{},
+                const GeneralizedNewtonianControls& gnCtl = {});
 
     DetailBlock(const DetailBlock&) = delete;
     DetailBlock& operator=(const DetailBlock&) = delete;
@@ -289,6 +316,15 @@ public:
     const polyMesh& mesh() const { return mesh_; }
     const volVectorField& U() const { return U_; }
     const volScalarField& p() const { return p_; }
+
+    /// The fluid of this block, straight from the coupled edge's declaration.
+    Rheology rheology() const override { return rheology_; }
+    /// The per-face viscosity law the last solve assembled, or null when the
+    /// block is Newtonian (which is every case that declares no fluid).
+    const GeneralizedNewtonianViscosity* generalizedNewtonian() const
+    {
+        return nonNewtonian_.get();
+    }
 
     label lastSweeps() const override { return measure_.sweeps; }
     bool lastConverged() const override { return measure_.converged; }
@@ -402,7 +438,14 @@ private:
     double levelDt_ = 0;
     scalar levelQPrev_ = 0;
     Field<Vector> UOldLevel_;
-    /// Declared after the fields it references so it dies before them.
+
+    /// A non-Newtonian declaration replaces the constant `nu` the SIMPLE
+    /// solver assembles with a per-face apparent viscosity. Both viscosity
+    /// models hold references to the fields above, so both are declared after
+    /// them and die before them.
+    Rheology rheology_;
+    GeneralizedNewtonianControls gnCtl_;
+    std::unique_ptr<GeneralizedNewtonianViscosity> nonNewtonian_;
     std::unique_ptr<RansModel> turbModel_;
 };
 

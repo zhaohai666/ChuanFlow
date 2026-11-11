@@ -35,15 +35,20 @@ Nine families of judgement:
   7. the shape of the approach, including the odd continuation from a negative
      start rate
   8. the laminar branch really is the one in force in every state
-  9. the three declaration-face refusals that are still refusals
+  9. the two declaration-face refusals that are still refusals; the third --
+     a rheology on a coupled edge -- is lifted by 5.63: accepted, with the
+     transient trace bit-identical to an undeclared twin
  10. the fourth refusal -- the one 5.48 wrote for a yield stress -- lifted:
      the same declarations now solve, and land on 5.46's and 5.47's closed
      forms, with the sub-threshold one at exactly zero in every state
 """
 
 import math
+import os
+import re as re_lib  # alias: module scope reuses `re` for the Reynolds number
 import subprocess
 import sys
+import tempfile
 
 BINARY = sys.argv[1]
 CASE = sys.argv[2]
@@ -357,8 +362,6 @@ REFUSALS = [
      "a negative index is no law at all (0 means nothing was declared)"),
     ("case_rejectNoConsistency.dict", "without a positive consistency",
      "at n != 1 the fluid's mu is not the same quantity as K"),
-    ("case_rejectCoupledRheology.dict", "cannot carry a rheology",
-     "a coupled element's loss is already its partner's statement"),
 ]
 for fname, needle, why in REFUSALS:
     p = run(f"{CASE_DIR}/{fname}")
@@ -366,6 +369,25 @@ for fname, needle, why in REFUSALS:
     line = next((ln for ln in msg.splitlines() if needle in ln), "")
     require(p.returncode != 0 and needle in msg,
             f"{fname}: refused, naming {why} -- '{line}'")
+
+# 5.63 lifted the third refusal of this family. A coupled edge now forwards
+# (n, K, tau_0) to its 3D partner and clears its own wall-law fields, so the
+# transient row must still be the same R*q row it always was: the trace of a
+# twin case without the three keys has to match bit for bit.
+fname = "case_rejectCoupledRheology.dict"
+src = open(f"{CASE_DIR}/{fname}").read()
+control = re_lib.sub(r"\s*(flowIndex|consistency|yieldStress) [^;]+;", "", src)
+with tempfile.TemporaryDirectory() as td:
+    ctrl = os.path.join(td, "case_coupledControl.dict")
+    open(ctrl, "w").write(control)
+    declared = run(f"{CASE_DIR}/{fname}")
+    twin = run(ctrl)
+require(declared.returncode == 0 and twin.returncode == 0,
+        f"{fname}: accepted -- the rheology describes the partner region's"
+        " fluid, not a wall law this transient row reads")
+require(declared.stdout == twin.stdout,
+        f"{fname}: the 1D trace is bit-identical to a twin without the"
+        " declaration: the coupled row still charges only R*q (5.43 / 5.63)")
 
 # --- 10. the refusal 5.48 wrote down for a threshold is lifted by 5.49 -----
 # The fourth file of family 9 used to be case_rejectYieldStress.dict; the static

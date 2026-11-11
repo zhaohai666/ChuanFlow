@@ -38,12 +38,17 @@ Ten families of judgement:
      sample
   9. the terminal states of the released pair, and of the two stuck pairs, read
      off the *steady* kernel for the same topology
- 10. the two declaration-face refusals this branch still refuses
+ 10. the declaration-face refusal this branch still refuses, plus the coupled
+     edge yield stress 5.63 lifted: accepted, with the transient trace
+     bit-identical to an undeclared twin
 """
 
 import math
+import os
+import re
 import subprocess
 import sys
+import tempfile
 
 TRANSIENT = sys.argv[1]
 STEADY = sys.argv[2]
@@ -475,8 +480,6 @@ require(ser["p"]["C"][-1] > ss_p["C"] and ser["p"]["D"][-1] < ss_p["D"]
 REFUSALS = [
     ("case_rejectNegativeYield.dict", "negative yield",
      "a threshold below zero empties the held set and then pays every rate"),
-    ("case_rejectCoupledYield.dict", "cannot carry a threshold",
-     "a coupled element's loss is its partner's, so no wall is left to hold"),
 ]
 for fname, needle, why in REFUSALS:
     p = run(TRANSIENT, f"{CASE_DIR}/{fname}")
@@ -484,6 +487,24 @@ for fname, needle, why in REFUSALS:
     line = next((ln for ln in msg.splitlines() if needle in ln), "")
     require(p.returncode != 0 and needle in msg,
             f"{fname}: refused, naming {why} -- '{line}'")
+
+# 5.63: the coupled edge's yield stress is no longer refused -- it is the
+# fluid of the 3D partner region. A static wall must NOT appear in this row,
+# so the whole transient trace has to match a twin without the three keys.
+fname = "case_rejectCoupledYield.dict"
+src = open(f"{CASE_DIR}/{fname}").read()
+control = re.sub(r"\s*(flowIndex|consistency|yieldStress) [^;]+;", "", src)
+with tempfile.TemporaryDirectory() as td:
+    ctrl = os.path.join(td, "case_coupledControl.dict")
+    open(ctrl, "w").write(control)
+    declared = run(TRANSIENT, f"{CASE_DIR}/{fname}")
+    twin = run(TRANSIENT, ctrl)
+require(declared.returncode == 0 and twin.returncode == 0,
+        f"{fname}: accepted -- the threshold belongs to the partner region,"
+        " not to a latch in this network")
+require(declared.stdout == twin.stdout,
+        f"{fname}: the transient trace is bit-identical to a twin without the"
+        " declaration, so no held row was added to a coupled edge (5.43 / 5.63)")
 
 print()
 print(f"transientYieldStaticHold: {len(HELD)} pipes exactly zero in all {NS} "

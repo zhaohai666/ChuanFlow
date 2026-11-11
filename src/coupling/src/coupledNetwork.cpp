@@ -223,11 +223,41 @@ private:
 
 } // namespace
 
+Rheology readPartnerRheology(const Dictionary& caseDict,
+                             const std::string& edgeName)
+{
+    Rheology r;
+    if (!caseDict.has("pipes")) return r;
+    const Dictionary& pipes = caseDict.getDict("pipes");
+    if (!pipes.has(edgeName)) return r;
+    const Dictionary& pd = pipes.getDict(edgeName);
+    r.flowIndex = pd.getScalarOr("flowIndex", 0.0);
+    r.consistency = pd.getScalarOr("consistency", 0.0);
+    r.yieldStress = pd.getScalarOr("yieldStress", 0.0);
+    return r;
+}
+
+GeneralizedNewtonianControls readGeneralizedNewtonianControls(
+    const Dictionary& caseDict)
+{
+    GeneralizedNewtonianControls ctl;
+    if (!caseDict.has("detail")) return ctl;
+    const Dictionary& detail = caseDict.getDict("detail");
+    if (!detail.has("generalizedNewtonian")) return ctl;
+    const Dictionary& gn = detail.getDict("generalizedNewtonian");
+    ctl.shearFloor = gn.getScalarOr("shearFloor", ctl.shearFloor);
+    ctl.regularization = gn.getScalarOr("regularization", ctl.regularization);
+    ctl.relaxation = gn.getScalarOr("relaxation", ctl.relaxation);
+    return ctl;
+}
+
 DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
                          const Schemes& schemes, const SimpleControls& ctl,
                          scalar probeMin, scalar probeMax,
                          const TurbulenceConfig& turb,
-                         const std::string& inletShape)
+                         const std::string& inletShape,
+                         const Rheology& rheology,
+                         const GeneralizedNewtonianControls& gnCtl)
     : mesh_(std::move(mesh)),
       nu_(nu),
       rho_(rho),
@@ -237,6 +267,8 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
       probeMax_(probeMax),
       turb_(turb),
       inletShape_(inletShape),
+      rheology_(rheology),
+      gnCtl_(gnCtl),
       U_(mesh_, "U"),
       p_(mesh_, "p"),
       phi_(mesh_, "phi", 0.0)
@@ -244,6 +276,21 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
     if (!(nu_ > 0) || !(rho_ > 0))
         cfFatal("detailBlock: nu and rho must be positive");
     turb_.validate();
+    // The solver owns ONE per-face viscosity hook. A RANS model supplies
+    // nu + nut through it; a generalized-Newtonian fluid supplies the whole
+    // effective viscosity through it. Asking both would silently discard one
+    // of the two laws, so it is refused rather than resolved by precedence.
+    // Every case that declares no rheology takes neither path and solves
+    // exactly the constant-nu equation it always did.
+    if (!rheology_.isNewtonian())
+    {
+        if (turb_.model != "laminar")
+            cfFatal("detailBlock: a non-Newtonian fluid and a '"
+                    + turb_.model + "' turbulence model cannot both supply"
+                    " the per-face viscosity");
+        nonNewtonian_ = std::make_unique<GeneralizedNewtonianViscosity>(
+            mesh_, U_, rho_, nu_, rheology_, schemes_, gnCtl_);
+    }
 
     // Whether this region carries its own acceleration is the case's statement,
     // not the interface's: `schemes{ ddt Euler; }` in the block's own dict. Only
@@ -618,9 +665,15 @@ scalar DetailBlock::lossAt(scalar qMag)
     if (!turbModel_ && turb_.model != "laminar")
         turbModel_ = RansModel::create(mesh_, U_, phi_, nu_, schemes_, turb_);
 
+    // One hook, two possible owners. A block that declares a fluid assembles
+    // its viscosity from the local shear rate instead of from nu + nut; a
+    // Newtonian block keeps exactly the pointer it always handed the solver.
+    IEddyViscosity* viscosity = nonNewtonian_
+                                    ? static_cast<IEddyViscosity*>(nonNewtonian_.get())
+                                    : static_cast<IEddyViscosity*>(turbModel_.get());
     const SimpleResult res = solveIncompressibleSimple(mesh_, U_, p_, phi_, nu_,
                                                        schemes_, ctl_,
-                                                       turbModel_.get());
+                                                       viscosity);
     measure(res, qMag);
     if (!std::isfinite(measure_.dpPa))
         cfFatal("detailBlock: non-finite pressure drop");

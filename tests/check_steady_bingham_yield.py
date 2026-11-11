@@ -27,12 +27,17 @@ Nine families of judgement:
   6. the yield multiplies the Newtonian rate by exactly g(xi)
   7. the wall stress is still geometry: tw does not contain tau_0
   8. the dead branch through the network Newton, plus the inverse problem
-  9. the two parse-time refusals that are still refusals, and the one 5.47 lifted
+  9. the parse-time refusal that is still a refusal, and the two that were
+     lifted -- 5.47 freed the combined law, 5.63 freed the coupled edge's
+     partner fluid (accepted here, but bit-identical to an undeclared twin)
 """
 
 import math
+import os
+import re
 import subprocess
 import sys
+import tempfile
 
 BINARY = sys.argv[1]
 CASE = sys.argv[2]
@@ -351,12 +356,23 @@ require(r1.returncode == 0 and Y1["Bad"]["Q"] > 0.0
         f" the bracket is no longer Buckingham's cubic but the profile integral,"
         f" which is monotone in tw for every n, so the case has its own inverted"
         f" law. What that number *is* belongs to 5.47's checker, not here")
-r2 = run(f"{CASE_DIR}/case_rejectCoupled.dict")
 r3 = run(f"{CASE_DIR}/case_rejectNegative.dict")
-require(r2.returncode != 0 and "coupled" in (r2.stdout + r2.stderr).lower(),
-        "a coupled element that also declares a yield stress is refused: its"
-        " loss already is the partner model's statement, so there is no wall"
-        " here for a threshold to hold")
+# 5.63: a coupled edge's yield stress is now the fluid of its 3D partner,
+# forwarded rather than refused. The 1D row must still see no threshold at
+# all: a twin case without the three keys has to produce the same trace.
+src = open(f"{CASE_DIR}/case_rejectCoupled.dict").read()
+control = re.sub(r"\s*(flowIndex|consistency|yieldStress) [^;]+;", "", src)
+with tempfile.TemporaryDirectory() as td:
+    ctrl = os.path.join(td, "case_coupledControl.dict")
+    open(ctrl, "w").write(control)
+    r2 = run(f"{CASE_DIR}/case_rejectCoupled.dict")
+    r2c = run(ctrl)
+require(r2.returncode == 0 and r2c.returncode == 0,
+        "a coupled element that declares a yield stress is accepted: the"
+        " threshold belongs to the partner region's fluid, not to this row")
+require(r2.stdout == r2c.stdout,
+        "and the 1D trace is bit-identical to a twin without the declaration:"
+        " no static wall was silently added to a coupled edge (5.43 / 5.63)")
 require(r3.returncode != 0 and "negative" in (r3.stdout + r3.stderr).lower(),
         "a negative yield stress is refused instead of read as a threshold that"
         " helps the flow: tau_0 < 0 pushes g(xi) past 1, the one way this law"

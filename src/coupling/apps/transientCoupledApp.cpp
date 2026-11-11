@@ -135,6 +135,9 @@ int main(int argc, char** argv)
                     " over");
         }
 
+        const Rheology blockRheology = readPartnerRheology(caseDict, edgeName);
+        const GeneralizedNewtonianControls gnCtl =
+            readGeneralizedNewtonianControls(caseDict);
         log::info("transient network+block: block has ", mesh.nCells(), " cells and ",
                   mesh.nPatches(), " patches; nu ", num(c.fluid.mu / c.fluid.rho),
                   "; dt ", num(tc.dt), " endTime ", num(tc.endTime),
@@ -148,7 +151,8 @@ int main(int argc, char** argv)
             // previous solution, so sharing it between seeds would let seed 2
             // inherit seed 1's interface history
             DetailBlock block(mesh, c.fluid.mu / c.fluid.rho, c.fluid.rho, schemes,
-                               blockCtl, probeMin, probeMax, blockTurb);
+                               blockCtl, probeMin, probeMax, blockTurb, "flat",
+                               blockRheology, gnCtl);
 
             // and one fresh network: the agreed coefficient carries from step to
             // step, so a reused instance would start the series where the
@@ -219,6 +223,16 @@ int main(int argc, char** argv)
                       " nutMax ", num(m.nutMax),
                       " wallYPlusMax ", num(m.wallYPlusMax),
                       " wallUTau ", num(m.wallUTau));
+            if (const GeneralizedNewtonianViscosity* gn =
+                    block.generalizedNewtonian())
+                log::info("transient block fluid ", s, ": n ",
+                          num(gn->rheology().index()),
+                          " K ", num(gn->rheology().consistencyOr(c.fluid.mu)),
+                          " tau0 ", num(gn->rheology().yieldStress),
+                          " gdotMax ", num(gn->maxShearRate()),
+                          " nuWall ", num(gn->meanWallViscosity()),
+                          " gdotWall ", num(gn->meanWallShearRate()),
+                          " tauWall ", num(gn->meanWallShearPa()));
 
             log::info("transient coupled seed ", s, ": edge ", edgeName,
                       " steps ", res.steps.size(), " q ", num(res.state[0].q),

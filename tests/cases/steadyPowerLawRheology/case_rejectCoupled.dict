@@ -1,8 +1,9 @@
-// steadyPowerLawRheology negative declaration 2: a coupled element that also
-// carries a rheology. A coupled pipe's whole loss *is* the partner model's
-// statement (the 1D side adds no friction of its own, or the wall is charged
-// twice -- 5.43), so there is nothing for a flow index to act on. Refused at
-// parse time; the checker asserts the refusal, not any physics.
+// steadyPowerLawRheology control 2 (5.63): a coupled element that also declares
+// a rheology is now ACCEPTED. The declaration describes the fluid inside the 3D
+// partner region, not a wall law for this 1D row; the row still charges only
+// R*q (5.43), so no wall is charged twice. The checker asserts that the 1D
+// trace is bit-identical to a twin case with the three keys removed. The name
+// keeps `reject` only for historical continuity with the earlier refusal.
 fluid
 {
     rho 850; mu 0.1;

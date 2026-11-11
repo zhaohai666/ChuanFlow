@@ -1173,10 +1173,11 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             cfFatal("steadyNetwork: pipe '" + name + "' carries a yield stress,"
                     " which only the constant-property single-phase laminar"
                     " law computes");
-        if (p.yieldStress > 0 && p.coupledResistance > 0)
-            cfFatal("steadyNetwork: pipe '" + name + "' is a coupled element:"
-                    " its loss is the partner model's, so it cannot carry a"
-                    " yield stress either");
+        // A coupled edge MAY declare a yield stress: it describes the fluid in
+        // its partner region, not a threshold this network's row holds. The
+        // declaration is forwarded to the 3D block below, after every check,
+        // and the wall-law fields are cleared so the 1D loss stays exactly the
+        // partner's statement (no second charge, §5.43).
         if (p.flowIndex < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative"
                     " power-law flow index (0 means Newtonian)");
@@ -1188,10 +1189,8 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             cfFatal("steadyNetwork: pipe '" + name + "' carries a rheology,"
                     " which only the constant-property single-phase law"
                     " computes");
-        if (p.flowIndex > 0 && p.coupledResistance > 0)
-            cfFatal("steadyNetwork: pipe '" + name + "' is a coupled element:"
-                    " its loss is the partner model's, so it cannot carry a"
-                    " rheology either");
+        // Same for `flowIndex`/`consistency`: allowed on a coupled edge, but
+        // only as the partner region's constitutive law.
         if (p.valveK < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative valve"
                     " coefficient");
@@ -1212,6 +1211,19 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         if (p.pumpHead > 0 && p.pumpShutoffHead < p.pumpHead)
             cfFatal("steadyNetwork: pipe '" + name + "' has a pump curve that"
                     " rises with rate (pumpShutoffHead < pumpHead)");
+        // The declaration has passed every check. Move it out of the wall-law
+        // fields: a coupled pipe's loss is `coupledResistance * q` alone, so
+        // leaving a `flowIndex` or `yieldStress` here would let the yielded
+        // dead branch of `equipmentFlow` and `pipeFrictionReport` read a law
+        // the partner never claimed (5.46/5.47). Zeroing is what makes this
+        // change structurally unable to move any existing 1D test.
+        if (p.coupledResistance > 0)
+        {
+            p.partnerRheology = {p.flowIndex, p.consistency, p.yieldStress};
+            p.flowIndex = 0;
+            p.consistency = 0;
+            p.yieldStress = 0;
+        }
         net.addPipe(p);
     }
 

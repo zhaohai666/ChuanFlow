@@ -18,6 +18,7 @@ add_library(cf3d STATIC
     src/turbulence/kOmegaSST.cpp
     src/solvers/pressureCorrection.cpp
     src/solvers/simpleSolver.cpp
+    src/solvers/generalizedNewtonian.cpp
     src/solvers/pisoSolver.cpp
     src/solvers/energySolver.cpp
     src/multiphase/vof.cpp

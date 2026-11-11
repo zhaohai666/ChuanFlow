@@ -3839,6 +3839,44 @@ V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
 
 **本增量的边界**：① `pB` 只取**两个值**（`20000` 来自 5.60，`19500` 是本案），转捩点 `pB ≈ 19780` 由 6 次手扫定位、精度 `±20 Pa`；临界值的精确位置（如二分法到 `1 Pa`）**未**做。② `n = 0.5` 的臂 `c` 重锁周期只出现在 `pB = 19500`；`pB = 19800` 时臂 `c` 仍只释放一次（节点最低 `20713 Pa`，差释放 `21000` 还有 `287 Pa`），`pB` 在 `19500..19800` 之间**有没有**一个值让臂 `c` 也走完重锁周期**未**扫。③ 节点初值仍是 `27000 Pa`；5.60 边界③ 说的"节点初值抬 600 Pa 使 `n = 0.5` 臂被第一时间问"那一格**未**做（那是另一个独立轴）。④ `beta` × 静止支、耦合边两笔账照旧拒收。⑤ 本案**没有**跑稳态内核。⑥ 对的是**同一内核的两份字典与打印 token**，不是实测或场数据。
 
+### 5.63 耦合边的流体第一次进入三维详细区：**1D 行算术一字未动，3D 扩散项换成逐面表观黏度**——声明但牛顿档与未声明档的求解日志**逐位相同**，`dp` 对同一本构的平面渠道闭式落到 **1.0203 ~ 1.0752**
+
+**这一格从哪来**：5.45 / 5.46 / 5.47 把幂律、Bingham、Herschel-Bulkley 三支壁面律写进 1D 稳态内核，5.48 把瞬态行接到同一个 `pipeFrictionPa`；四条解析期拒收里有一条是"`coupledResistance` 的耦合边不许带流变"，`docs/gap_analysis.md` 把它记为 **A4 / C1**，估 **2.5 增量**（"3D 侧需要完整非牛顿黏度回路，与 5.45-5.47 的 1D 侧同量级"）。本案关闭它，**实测 1 增量**。
+
+**为什么不是"把 `pipeFrictionPa` 用完整 rheology key 调用"**（原 gap 清单的落法）：耦合边的损失**就是**伙伴的陈述，`pipeLossAt` 在 `network.cpp` 的第一行就 `return coupledResistance * q`，瞬态动量行同样只装 `R·q`；再算一次 1D 摩阻是 §5.43 那条**重复计费**。而 §5.49 的 `holdsStatic` / `frictionDp` / 穿零闩锁又都会读 `yieldStress`——只在 parser 里删掉四个 fatal guard 会让耦合边凭空长出一条"屈服壁"，把本来属于 3D 区域的阈值记到 1D 行上。所以落法是**把声明搬走而不是放开**：`NetworkPipe::partnerRheology` 收下 `(n, K, τ_0)`，`flowIndex / consistency / yieldStress` 三个壁面律字段清零；1D 侧一个物理读取点都不用改，既有测试**结构上不可能被移动**（`verify.coupled1d3d` 实测逐位照旧）。
+
+**成本估计为什么错了一个量级**：3D 侧**没有**改 SIMPLE。§5.23 的 RANS 伙伴块早已把逐面黏度做成求解器钩子 `IEddyViscosity::nuEffFace()`，`simpleSolver.cpp:97` 每趟用 `fvm::laplacianFace` 读它一次。新增一个流体只需实现这个接口：
+
+| 文件 | 作用 |
+|---|---|
+| `src/common/include/cf/common/Rheology.h` | POD 本构 `τ = τ_0 + K γ̇^n` 与 `apparentViscosityPaS()`；三个模块共用一份声明 |
+| `src/3d/include/cf/fvm/GeneralizedNewtonian.h`<br>`src/3d/src/solvers/generalizedNewtonian.cpp` | `GeneralizedNewtonianViscosity : IEddyViscosity`：`γ̇ = √(2S:S)` 取单元值，`nuEff = [K γ̇^(n-1) + τ_0(1−e^(−mγ̇))/γ̇]/ρ`，`harmonicFaceGamma` 插到面，**wall 面覆盖**为 `|U_c,∥|/y_wall` 处的黏度 |
+| `src/coupling/include/cf/coupling/CoupledNetwork.h`<br>`src/coupling/src/coupledNetwork.cpp` | `ICoupledElement::rheology()`；`DetailBlock` 收 `(n,K,τ_0)` 与数值控制；`lossAt` 把非牛顿模型作为那个钩子交给 `solveIncompressibleSimple` |
+| `src/1d/src/network.cpp` / `transient.cpp` | 删 4 处 guard，声明搬进 `partnerRheology`，壁面律字段清零 |
+| 4 个 `src/coupling/apps/*App.cpp` | 逐边 `readPartnerRheology(caseDict, edge)` 转发；打印 `nuWall / gdotWall / tauWall` 供 checker 独立重算 |
+
+壁面覆盖是物理需要，不是数值修饰：剪切稀化流体在**壁面** `γ̇` 最大、`ν_eff` 最小，把单元中心黏度外推到壁面会系统性高估阻力。离散动量方程实际收的正是 `ρ·ν_f·U_c/y_wall`，所以用**同一个** `γ̇_w` 定值才让 `τ_w` 与报出的压降闭合。
+
+**算例**（`tests/cases/coupledRheology/case.dict` + `tests/check_coupled_rheology.py`）：5.20 的稳态拓扑（`Src → A → {X(3D) ‖ By} → B → Snk`）、0.5 × 0.02 × 0.02 m 平面渠道、`(50 20 1)` 网格，只在 X 这根耦合边上声明流体；checker 在临时目录把声明改写成五臂（未声明 / 声明但牛顿 / 剪切稀化 / 剪切增稠 / HB 屈服），再用 `transientCoupled1d3d` 的字典跑第六臂。**306 条判据、0 失败**。
+
+| 臂 | `(n, K, τ_0)` | `q` (m³/s) | `dp` (Pa) | 同一本构的平面渠道闭式 | `dp/dp_closed` |
+|---|---|---|---|---|---|
+| `plain` | — | 1.577703868e-4 | 620.445938 | 591.638951 | **1.04869** |
+| `newton` | (1, 0.1, 0) | **1.577703868e-4** | **620.445938** | 591.638951 | **1.04869** |
+| `thin` | (0.5, 1.0, 0) | 1.556433553e-4 | 636.466090 | 623.785531 | **1.02033** |
+| `thick` | (1.5, 0.00913, 0) | 1.649709723e-4 | 566.091800 | 526.520390 | **1.07516** |
+| `hb` | (0.8, 0.3, 0.5) | 1.436554338e-4 | 726.910256 | 711.827917 | **1.02119** |
+
+闭式不是拟合：`q = 2W·K^(−1/n)·G^(−2)·[ n/(2n+1)·T^((2n+1)/n) + n/(n+1)·τ_0·T^((n+1)/n) ]`，`T = G·H/2 − τ_0`、`G = dp/L`，第二项就是塞流区的积分；`τ_0 = 0` 逐项塌回 `2Wn/(2n+1)·(G/K)^(1/n)·(H/2)^((2n+1)/n)`。checker 在 `G` 上二分反解，五个臂各自的比值都在 `[0.95, 1.13]` 内；牛顿臂那 **4.87%** 是入口段与离散误差，不是新误差——它就是 5.20 那条算例本来就有的地板。
+
+**八族判据**：① `plain` 与 `newton` 的全部求解日志（去掉只有声明流体才打印的诊断行）**逐位相同**，尽管只有 `newton` 走 `laplacianFace` 路径；`nuWall` 逐位是 `μ/ρ = 1.25e-4`、`tauWall` 逐位是 `μ·γ̇_w`。② 从日志的 `nuWall / gdotWall / tauWall` 独立重建 `K γ̇^(n−1)/ρ` 与 `K γ̇^n + τ_0`（6% / 10% 内，平均值之积的相关性误差）。③ `|probeSlope|·H/2 == τ_w` 到 **9%**（壁面平均含入口段，充分发展窗口只取 `0.12..0.49`）。④ 上表闭式。⑤ 每趟界面 `residual == |R·q − dpBlock|/dpBlock` 到打印精度（3 seeds × 6~7 趟），三 seeds 落同一点（`spread < 1e-4`），末趟残差 ≤ `1e-4` 容差。⑥ 1D 侧 `Re` 逐位仍是 `ρvd/μ`（`79.268509937331771`），`pipe final X dp` 与并联支 `By dp` 逐位同为 `636.4812793667661 Pa`——**声明没有在 1D 行里被收第二次费**。⑦ 瞬态臂 60 个时间层每步 `dpNetwork == R·q`，末态落在稳态 `thin` 档 2% 内，块报出的 `nuWall` 与稳态档 6% 内。⑧ 四条拒收仍在：缺 `K`、负 `n`、负 `τ_0`（由本构模型自身命名原因）、以及 `turbulence{} + rheology` 争同一个逐面黏度钩子。
+
+**既有拒收判据的迁移**：A4 解除的不只是四处 guard。5.45 / 5.46 / 5.48 / 5.49 四个既有 checker 各有一个 `case_rejectCoupled*.dict`，断言"耦合边带流变 / 屈服必须非零退出"——这正是 A4 的字面内容，所以第一次全量回归跑出 4 条失败（97% / 117）。按新契约它们改为**接受 + 逐位不变**：checker 在临时目录把同一份 case 删掉 `flowIndex` / `consistency` / `yieldStress` 三个 key 生成孪生档，断言两份 `rc == 0` 且 stdout 字符串完全相同；声明只被搬进 `partnerRheology`，1D 行里既没多出摩阻项，也没多出静止支。四个 case 的头注释同步改写（文件名保留 `reject` 只为兼容旧引用），四个 checker 的"判据族"说明也相应改写。`check_transient_power_law.py` 在模块作用域把 `re` 当广义雷诺数用，新引入的正则模块因此别名成 `re_lib`。这是本增量唯一一处既有测试判据改动，`ctest -R` 复跑 **4/4 通过**。
+
+**本增量的边界**：① `turbulence{}` 与非牛顿流体**互斥**，构造里显式 fatal；湍流 + 广义牛顿同时用需要把 `nut` 与 `ν_eff` 合成一个面场，未做。② `detail{ generalizedNewtonian{ shearFloor 20; regularization 100; relaxation 0.15; } }` 是数值地板而非拟合常数：剪切稀化流体在 `γ̇ → 0` 时黏度发散，缺省 `1e-6` 会让第一趟 SIMPLE 拿到比牛顿大 500× 的黏度并实测发散（`iter 10` 起 `continuity 1.9e10`）；屈服档在缺省松弛 `0.7` 下 300 sweeps 内不收敛，降到 `0.15` 后 **10.7 s** 收敛。③ 多边同台带流变：四个 apps 都已转发，但**未**端到端验证。④ PVT 表 / 黑油 / 两流体分布式仍拒收（gap A5）；耦合边与 `valve` / `pump` 的互斥也照旧。⑤ 3D 详细区仍是平面渠道 + `flat` 入口；入口剖面 × 流变、环空（A6）未做。⑥ 闭式比的是**充分发展**解，实测比值里的 2~7% 是入口段与网格，不是系数拟合。
+
+**成本**：1 个新 case 文件、1 个新 checker、3 个新源文件 / 头（common `Rheology.h` + 3D `GeneralizedNewtonian.h/.cpp`）、24 个既有文件的局部改动（含 4 个旧负例 case 头注释与 4 个旧 checker 的判据迁移）；5 稳态臂约 **63 s**、瞬态臂约 **43 s**、4 个拒收 case 可忽略；`verify.coupledRheology`（Test #49）直跑约 **110 s**，`-j8` 全量里两次分别 **93.63 s / 160.54 s**（并发争用）。**最终全量 `ctest -j8`（`CHFLOW_WITH_PYTHON=OFF`）：117/117 绿、375.04 s**；四个迁移过的旧测试 0.23 / 0.34 / 3.98 / 152.57 s 全通过。详见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|
@@ -4336,4 +4374,11 @@ V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
 - `cli`（CTest `cli.unit` + `cli.runSteady` + `cli.runTransient` +
   `cli.runPvt`）：cargo 参数解析单测 + 通过 CLI 端到端跑稳态/瞬态管网与
   pvt 闪蒸冒烟测试（存在 cargo 时才注册）；
+- `tests/check_coupled_rheology.py`（CTest `verify.coupledRheology`，§5.63）：
+  一份 case 派生 5 个稳态臂（未声明 / 声明但牛顿 / `n=0.5` / `n=1.5` / HB 屈服）
+  与 1 个瞬态臂，另加 4 个拒收 case，**306** 条判据——声明但牛顿档与未声明档的
+  求解日志逐位相同、从 `nuWall/gdotWall/tauWall` 独立重建 `K γ̇^(n−1)+τ_0/γ̇`、
+  `|probeSlope|·H/2 == τ_w`、`dp` 对同一本构的平面渠道闭式（含塞流积分）、
+  逐趟界面残差 `|R·q − dpBlock|/dpBlock`、1D `Re` 仍逐位是 `ρvd/μ`、
+  瞬态每步动量行与末态落点、四条拒收边界；
 - 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`

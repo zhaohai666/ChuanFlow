@@ -385,6 +385,12 @@ int main(int argc, char** argv)
                   (anyPerEdge ? " (per-edge on some arms)" : ""),
                   (anyCharged ? " (shape charged on some edges)" : ""));
 
+        std::vector<Rheology> edgeRheology;
+        for (const std::string& edgeName : edgeNames)
+            edgeRheology.push_back(readPartnerRheology(caseDict, edgeName));
+        const GeneralizedNewtonianControls gnCtl =
+            readGeneralizedNewtonianControls(caseDict);
+
         for (std::size_t s = 0; s < startNames.size(); ++s)
         {
             // one fresh set of blocks per starting set: each warm-starts from its
@@ -402,7 +408,7 @@ int main(int argc, char** argv)
                 owners.push_back(std::make_unique<DetailBlock>(
                     specs[i].mesh, nu, c.fluid.rho, sch, specs[i].simple,
                     specs[i].probeMin, specs[i].probeMax, specs[i].turb,
-                    startShapes[s][i]));
+                    startShapes[s][i], edgeRheology[i], gnCtl));
                 partners.push_back(owners.back().get());
             }
 
@@ -644,6 +650,16 @@ int main(int argc, char** argv)
                           " momentumFluxPa ", num(m.momentumFluxImposedPa),
                           " betaIn ", num(m.betaIn), " betaOut ", num(m.betaOut),
                           " dtLevel ", num(m.dtLevel));
+                if (const GeneralizedNewtonianViscosity* gn =
+                        owners[i]->generalizedNewtonian())
+                    log::info("transient block fluid ", startNames[s], " edge ",
+                              edgeNames[i], ": n ", num(gn->rheology().index()),
+                              " K ", num(gn->rheology().consistencyOr(c.fluid.mu)),
+                              " tau0 ", num(gn->rheology().yieldStress),
+                              " gdotMax ", num(gn->maxShearRate()),
+                              " nuWall ", num(gn->meanWallViscosity()),
+                              " gdotWall ", num(gn->meanWallShearRate()),
+                              " tauWall ", num(gn->meanWallShearPa()));
                 std::ostringstream betas;
                 betas << std::setprecision(17);
                 for (const std::pair<scalar, scalar>& sb : m.betaStations)

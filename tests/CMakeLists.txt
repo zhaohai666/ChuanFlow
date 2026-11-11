@@ -419,6 +419,21 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3d/case.dict)
 
+# a coupled edge declares the fluid of its 3D partner region. Five arms of one
+# case (undeclared / declared-Newtonian / shear-thinning / shear-thickening /
+# yielded) check the per-face apparent viscosity against K*gdot^(n-1)+tau0/gdot,
+# the plane-channel closed form of the same law, the interface residual, and a
+# bit-identical Newtonian limit; a sixth arm forwards it through the transient
+# app. The 1D row's Re and parallel drop must not move at all.
+add_test(
+    NAME verify.coupledRheology
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_coupled_rheology.py
+        $<TARGET_FILE:chflow-coupled-1d3d>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupledRheology/case.dict
+        $<TARGET_FILE:chflow-coupled-1d3d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupled1d3d/case.dict)
+
 # the same duct and the same network, put in motion: the interface is iterated
 # inside every time step, so the checker closes each step's momentum row against
 # the block's own drop, and regresses the ramp the two solvers produce together

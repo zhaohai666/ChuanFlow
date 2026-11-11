@@ -242,24 +242,33 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
             cfFatal("transient: pipe '" + pc.name + "' declares a flow index"
                     " without a positive consistency: at n != 1 the fluid's mu"
                     " is not the same quantity as K (Pa.s^n)");
-        if (pc.flowIndex > 0 && pc.coupledResistance > 0)
-            cfFatal("transient: pipe '" + pc.name + "' is a coupled element:"
-                    " its loss is the partner model's, so it cannot carry a"
-                    " rheology either");
+        // A coupled edge may declare a rheology: it is the constitutive law of
+        // the fluid inside its partner region, not a wall law this row reads.
+        // It is forwarded below, after every check, and the wall-law fields are
+        // cleared so holdsStatic/frictionDp/the crossing latch cannot see it.
         if (pc.yieldStress < 0)
             cfFatal("transient: pipe '" + pc.name + "' has a negative yield"
                     " stress: the threshold is the stress a static wall holds,"
                     " and a negative one would make the held set empty");
-        if (pc.yieldStress > 0 && pc.coupledResistance > 0)
-            cfFatal("transient: pipe '" + pc.name + "' is a coupled element:"
-                    " its loss is the partner model's, so it cannot carry a"
-                    " threshold either");
         if (pc.coupledResistance < 0)
             cfFatal("transient: pipe '" + pc.name + "' has a negative coupled"
                     " resistance");
         if (pc.coupledResistance > 0)
             requireNoValve(pc.name, pc.valveK, pc.valveCloseStart,
                            pc.valveOpenStart);
+        // The 1D momentum row of a coupled pipe charges `R*q` and nothing
+        // else. Move the declaration onto `partnerRheology` and clear the
+        // wall-law fields: otherwise `holdsStatic` would latch a Q = 0 row on
+        // a threshold the partner region never claimed, and `frictionDp`
+        // would price the rate a second time (§5.43).
+        if (geo.coupledResistance > 0)
+        {
+            geo.partnerRheology = {geo.flowIndex, geo.consistency,
+                                   geo.yieldStress};
+            geo.flowIndex = 0;
+            geo.consistency = 0;
+            geo.yieldStress = 0;
+        }
         net_.addPipe(geo);
         PipeDyn d;
         d.geo = net_.pipes.back();
@@ -602,6 +611,13 @@ double TransientNetwork::pipeConsistencyOf(label k) const
     if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
         cfFatal("transient: no pipe at index " + std::to_string(k));
     return pipes_[static_cast<std::size_t>(k)].geo.consistency;
+}
+
+Rheology TransientNetwork::partnerRheologyOf(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].geo.partnerRheology;
 }
 
 void TransientNetwork::setCoupledInertia(label k, double inertia)

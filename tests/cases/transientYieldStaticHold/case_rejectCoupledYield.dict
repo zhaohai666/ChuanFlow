@@ -1,9 +1,11 @@
-// A coupled element's loss is its partner's statement, so there is no wall left
-// here for a threshold to hold: the detailed region already reports the whole
-// drop of that region, and a static branch on the 1D side would bill the same
-// wall twice -- once by the region's own solver and once by this row's `Q = 0`.
-// The steady kernel refuses the same combination (5.46) and 5.48 refuses a
-// rheology there; this is the third member of that family.
+// 5.63: a coupled element may declare a yield stress -- it belongs to the 3D
+// partner region's fluid, not to a wall on this row. The detailed region still
+// reports the whole drop of that region, and the transient row charges only
+// R*q: no static branch is inserted here, so the wall is never billed twice.
+// The checker asserts that the transient trace is bit-identical to a twin case
+// with the three rheology keys removed. This used to be the third member of the
+// refusal family (steady 5.46 / transient 5.48); both refusals are now lifted.
+// The name keeps `reject` only for historical continuity.
 // verified by tests/check_transient_yield_static_hold.py (family 6).
 fluid { rho 850; mu 0.1; }
 nodes { A { fixedPressure 3.0e4; } B { fixedPressure 2.0e4; } }

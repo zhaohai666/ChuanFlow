@@ -1,7 +1,10 @@
-// A coupled element's loss is its partner's statement, so it can carry neither a
-// valve (5.18) nor a rheology: declaring one here would bill the same wall
-// twice, once by the detailed region and once by this row's law.
-// verified by tests/check_transient_power_law.py (family 5).
+// 5.63: a coupled element may now declare a rheology, but not a valve (5.18).
+// (n, K, tau_0) are forwarded to the 3D partner region's per-face viscosity;
+// the transient row clears its own wall-law fields and still charges only R*q,
+// so the wall is never billed twice. The checker asserts that the transient
+// trace is bit-identical to a twin case with the three keys removed.
+// The name keeps `reject` only for historical continuity with the earlier refusal.
+// verified by tests/check_transient_power_law.py (family 9, third member lifted).
 fluid { rho 850; mu 0.1; }
 nodes { A { fixedPressure 3.0e4; } B { fixedPressure 2.0e4; } }
 pipes { Bad { from A; to B; length 20; diameter 0.02;

@@ -191,6 +191,13 @@ public:
     double pipeFlowIndex(label k) const;
     double pipeConsistencyOf(label k) const;
 
+    /// The constitutive law of pipe `k`'s partner region (empty/Newtonian when
+    /// the pipe is not coupled or declared none). A coupled pipe's own
+    /// wall-law fields are zero by construction: its loss is the partner's
+    /// statement, and this is the declaration the coupling app forwards to
+    /// the 3D block.
+    Rheology partnerRheologyOf(label k) const;
+
     /// The drop pipe `k`'s static wall can hold: `4 tau_0 L / d` (Pa), 0 when no
     /// yield stress is declared. `pipeHeld` reports the latch the last solved
     /// step started with: true means that step replaced this pipe's momentum row

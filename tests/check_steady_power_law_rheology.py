@@ -24,13 +24,17 @@ Eight families of judgement:
   4. the laminar branch is the one in force (f * Re == 64, Re well inside)
   5. the three structural exponents: dp -> 1/n, d -> (3n+1)/n, L -> -1
   6. the wall stress is not a material property (same dp, d, L -> same tauw)
-  7. the two parse-time refusals, asserted as refusals
+  7. the parse-time refusal that is still a refusal, plus the coupled-edge
+     declaration 5.63 lifted: accepted, but the 1D trace is bit-identical to a
+     twin without the three keys (the declaration belongs to the 3D partner)
 """
 
 import math
+import os
 import re
 import subprocess
 import sys
+import tempfile
 
 BINARY = sys.argv[1]
 CASE = sys.argv[2]
@@ -250,19 +254,33 @@ require(worst_tk < 1e-9,
 
 # --- 7. refusals ------------------------------------------------------------
 r1 = run(f"{CASE_DIR}/case_rejectNoConsistency.dict")
-r2 = run(f"{CASE_DIR}/case_rejectCoupled.dict")
 require(r1.returncode != 0
         and "flow index" in (r1.stdout + r1.stderr).lower()
         and "consistency" in (r1.stdout + r1.stderr).lower(),
         "a flow index without a consistency is refused at parse time, not"
         " defaulted to mu: at n != 1 the fluid's viscosity is a different unit"
         " (Pa.s^n), so a default would be a silent wrong number")
-require(r2.returncode != 0
-        and "coupled" in (r2.stdout + r2.stderr).lower(),
-        "a coupled element that also declares a rheology is refused: its loss"
-        " already *is* the partner model's statement, so there is no friction"
-        " term for a flow index to act on -- the same no-double-counting rule"
-        " 5.43 established for the shape account")
+
+# 5.63 opened this cell: a coupled edge MAY declare the fluid of its 3D
+# partner region. The 1D parser moves the declaration to
+# NetworkPipe::partnerRheology and clears its own wall-law fields, so the 1D
+# trace must be bit-identical to a twin case without the three keys -- the
+# no-double-counting rule 5.43 established for the shape account still holds.
+src = open(f"{CASE_DIR}/case_rejectCoupled.dict").read()
+control = re.sub(r"\s*(flowIndex|consistency|yieldStress) [^;]+;", "", src)
+with tempfile.TemporaryDirectory() as td:
+    ctrl = os.path.join(td, "case_coupledControl.dict")
+    open(ctrl, "w").write(control)
+    r2 = run(f"{CASE_DIR}/case_rejectCoupled.dict")
+    r2c = run(ctrl)
+require(r2.returncode == 0 and r2c.returncode == 0,
+        "a coupled element that declares a rheology is accepted: the keys now"
+        " describe the fluid inside the partner region, not a wall law the 1D"
+        " row evaluates")
+require(r2.stdout == r2c.stdout,
+        "and the 1D trace is bit-identical to a twin without the declaration:"
+        " the coupling edge still charges only R*q, so no friction term was"
+        " silently added by the declaration (5.43 / 5.63)")
 
 print()
 print(f"{len(failures)} failure(s)")

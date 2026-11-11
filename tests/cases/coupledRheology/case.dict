@@ -1,0 +1,111 @@
+// Rheology on a coupled edge (§5.63): the fluid of the 3D detailed region is
+// declared on the 1D pipe that stands in for it, with the same three keys a
+// wall-law pipe uses (flowIndex n, consistency K in Pa.s^n, yieldStress tau0).
+//
+// The 1D row never evaluates that law: its whole loss is the partner's
+// statement R*q, so the parser moves the declaration onto
+// NetworkPipe::partnerRheology and clears the wall-law fields. The coupling
+// app forwards it to the 3D block, where the SIMPLE diffusion term is
+// assembled with a per-face apparent viscosity
+//     nu_eff = [ K gdot^(n-1) + tau0 (1 - exp(-m gdot))/gdot ] / rho
+// instead of the constant mu/rho.
+//
+// Topology is the shipped steady coupled case:
+//   Src -> A -> { X (the 3D block) || By (1D bypass) } -> B -> Snk
+// The block is a 0.5 x 0.02 x 0.02 m plane duct, so its developed pressure
+// gradient answers to the plane-channel closed form for the SAME law
+// (2 W n/(2n+1) (dp/dx/K)^(1/n) (H/2)^((2n+1)/n) = q for tau0 = 0, and the
+// plug-integral form for tau0 > 0).
+//
+// This file is one arm (n = 0.5, K = 1.0). tests/check_coupled_rheology.py
+// copies it into a temporary directory and rewrites the declaration into five
+// arms: undeclared Newtonian, declared-but-Newtonian, shear-thinning,
+// shear-thickening and yielded (Herschel-Bulkley), plus the rejection cases.
+// Verified by tests/check_coupled_rheology.py.
+fluid { rho 800; mu 0.1; }
+
+nodes {
+    Src  {};
+    J1   {};
+    J2   {};
+    Snk  { pressure 1.0e6;  }
+}
+
+sources {
+    feed { node Src; rate 2.4e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    // X is the coupled edge. Its rheology describes the fluid INSIDE the
+    // region, not a wall law this network solves. length/diameter stay the
+    // region's own geometry for the reported velocity and Reynolds number.
+    X  { from J1; to J2; length 0.5;   diameter 0.02;
+         coupledResistance 3.75e6;
+         flowIndex 0.5; consistency 1.0; }
+
+    By { from J1; to J2; length 1.5;   diameter 0.03; }
+    B  { from J2; to Snk; length 5.0;  diameter 0.1; }
+}
+
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edge X;
+    seeds ( 1.0e6 3.75e6 1.2e7 );
+    relax 1.0;
+    tolerance 1e-4;
+    // a shear-thickening fluid needs a few more coefficient refreshes than
+    // the 6 the Newtonian case needs; 12 is enough for every arm here
+    maxOuterIterations 12;
+}
+
+detail {
+    // Numerical floors of the algebraic law, not fitted constants. The shear
+    // floor only bounds gdot -> 0 (a shear-thinning fluid's viscosity diverges
+    // there); the regularisation m is Papanastasiou's; the relaxation damps
+    // the viscosity field between SIMPLE sweeps. Every number is printed by
+    // the app and re-derived by the checker.
+    generalizedNewtonian {
+        shearFloor    20.0;
+        regularization 100.0;
+        relaxation    0.15;
+    }
+
+    block {
+        min   (0 0 0);
+        max   (0.5 0.02 0.02);
+        cells (50 20 1);
+
+        xmin  { name inlet;   type inlet;    }
+        xmax  { name outlet;  type outlet;   }
+        ymin  { name bottom;  type wall;     }
+        ymax  { name top;     type wall;     }
+        zmin  { name front;   type symmetry; }
+        zmax  { name back;    type symmetry; }
+    }
+
+    probe { min 0.12; max 0.49; }
+
+    schemes {
+        ddt       steady;
+        div       upwind;
+        laplacian corrected;
+        grad      corrected;
+    }
+
+    simple {
+        maxIterations 300;
+        continuityTol 1e-6;
+        pcorrTol      1e-5;
+        momentumTol   1e-5;
+        relaxU        0.9;
+        relaxP        0.03;
+        pRelaxStart   0.02;
+    }
+}
+
+output {
+    vtk out_coupled_rheology.vtu;
+}

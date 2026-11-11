@@ -5,6 +5,7 @@
 
 #include "cf/common/Dictionary.h"
 #include "cf/common/Labels.h"
+#include "cf/common/Rheology.h"
 #include "cf/pvt/BlackOil.h"
 
 namespace cf
@@ -107,6 +108,15 @@ struct NetworkPipe
     /// Length and diameter stay meaningful: they are the detailed region's own
     /// geometry, used for the reported velocity and Reynolds number.
     double coupledResistance = 0; // Pa/(m3/s), i.e. Pa.s/m3
+
+    /// The fluid of a coupled edge's PARTNER region. A case declares it with
+    /// the same `flowIndex` / `consistency` / `yieldStress` keys a wall-law
+    /// pipe uses, but the 1D row never evaluates it: this pipe's loss is the
+    /// partner's own statement (§5.43), so the parser moves the declaration
+    /// here and leaves the three wall-law fields above at zero. The coupling
+    /// apps read it back and hand it to the 3D detailed block, which turns it
+    /// into a per-face apparent viscosity. Absent on an uncoupled pipe.
+    Rheology partnerRheology;
 };
 
 /// Steady single-phase node-model pipeline network (the M1 "SteadySolver"

@@ -1167,6 +1167,26 @@ add_test(
         $<TARGET_FILE:chflow-1d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientSourceYieldWake/case_off.dict)
 
+# 5.62 -- band edge: pB lowered from 20000 to 19500 so arm d (n=0.5, tau_0=2.5)
+# wakes for the first time. Zero kernel change -- the same holdsStatic, in-step
+# clamp, and degree-generic node row as 5.49/5.54/5.60. The only move is the
+# sink pressure, which lets the node drop below the release floor pA - 4 tau_0
+# L/d = 20000 Pa that was asymptotically unreachable at pB = 20000.
+# pB scan at n=0.5: 19800->NEVER, 19780->4 states, 19760->61, 19740->103,
+# 19720->136, 19700->163, 19500->313 flowing states out of 2000.
+# Arm c in n=0.5 now has re-latch cycle: release 388, re-latch 929, re-release
+# 1390 (was release 1479, no re-latch in 5.60).
+# Node Fd at step 2000: 19752.84 Pa (below 20000 threshold floor, only possible
+# because pB = 19500 < 20000).
+# Weak walls release at same step [1,1,1,1] across all tiers -- the desk is
+# blind to the far-end boundary.
+# 84 judgments, three case files, 0 kernel lines
+add_test(
+    NAME verify.transientYieldTauIndexBandEdge
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_tau_index_band_edge.py
+        $<TARGET_FILE:chflow-1d-transient>)
+
 
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation

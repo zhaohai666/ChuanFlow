@@ -1,0 +1,139 @@
+// transientYieldTauIndexRelatch (case n = 1.0, K = 0.1): the tau_0 x flowIndex
+// cross that 5.57 and 5.59 both left empty. 5.59 swept the index at ONE yield
+// stress (tau_0 = 2.0 against a 1.5 neighbour) and found the re-latch present at
+// n = 1 / 2 and absent at n = 0.5 -- and it could not say whether the absence was
+// a property of the index or of that one threshold. 5.57 swept the index on the
+// parking band and left "tau_0 x index" explicitly untested. This file closes
+// that cell by sweeping BOTH axes on the same two-way latch desk.
+//
+// Four arms per file, one free node each, identical but for the strong wall's
+// yield stress; the weak neighbour is tau_0 = 1.5 everywhere:
+//
+//   arm  tau_0(strong)  threshold 4 tau_0 L/d   release pressure pA - threshold
+//    a      1.75            7000 Pa                 23000 Pa
+//    b      2.0             8000 Pa                 22000 Pa   <- 5.59's arm a
+//    c      2.25            9000 Pa                 21000 Pa
+//    d      2.5            10000 Pa                 20000 Pa
+//
+// The row per arm is 5.54's / 5.59's, with Herschel-Bulkley walls:
+//
+//   rho L/A (Qk - Qk')/dt = (pA - pF) - 4 L tw_k / d
+//   rho L/A (Qd - Qd')/dt = (pF - pB) - R Qd - Kd(t) rho|Qd|Qd/(2A^2)
+//   V/BC (pF - pF')        = Q_S + Q_W - Q_d
+//
+// No kernel change: threshold (transient.cpp:28-:31), entry latch (:40-:43),
+// in-step clamp (:353-:355, before kv is read), degree-generic node row
+// (:395-:416). tau_0 enters ONLY through 4 tau_0 L/d, so the tau_0 axis moves the
+// release pressure by exactly -4000 Pa per unit tau_0 while the index axis moves
+// the refill that has to reach it -- the two axes are not interchangeable, and
+// the point of the cross is to measure which one buys the sleep.
+//
+// Every free node starts at 2.7e4 Pa against A = 3.0e4, so the drive on offer is
+// 3000 Pa and every wall starts held. The drain closes 0.8 -> 1.0 s to
+// closedK = 1e8 and reopens 2.5 -> 2.7 s in every arm (first sealed sample 500,
+// first reopened sample 1350). Constants are 5.57's/5.58's/5.59's: L 20, d 0.02,
+// rho 850, mu 0.1, dt 0.002, endTime 4.0 (2001 states), volume 0.1,
+// bulkModulus 1e8. This tier is (flowIndex, consistency) = (1.0, 0.1);
+// case_1.dict is (1.0, 0.1), whose arm b is 5.59's arm a written in a new file
+// and is compared against it token for token.
+//
+// verified by tests/check_transient_yield_tau_index_relatch.py
+// (ctest verify.transientYieldTauIndexRelatch).
+//
+// Measured at (n, K) = (1.0, 0.1), 2001 states:
+//
+//   * four weak walls release at [1,180]; four arms the same strings for the
+//     first 240 states; prefix ends exactly at earliest strong wake
+//     [240, 333, 2001, 2001].
+//   * thresholds 7000/8000/9000/10000 Pa, release 23000/22000/21000/20000,
+//     no n anywhere; wake at 7007.0834 / 8006.1182 / --- / --- Pa (overshoot
+//     7.0834 / 6.1182 Pa = 0.101 / 0.076%); c/d never wake, max entry drive
+//     8674.0542 Pa (325.9458 short of 9000, 1325.9458 short of 10000).
+//   * census: 2 SLEPT (a [1,240,963,1403], b [1,333,507,1530]),
+//     2 NEVER (c/d [1]). c and d the same strings for ALL 2001 states -- two
+//     different tau_0 that the desk never asks about are indistinguishable.
+//   * best sealed-window node moves only 45.20672 Pa across tau_0 1.75..2.5
+//     (23236.59532 / 23192.44613 / 23191.38860 / 23191.38860), monotone
+//     DECREASING in tau_0.
+//   * re-latch fires at the crossing step itself (lag 0 / 0): entry drive falls
+//     under 7000 / 8000 at step 963 / 507 (6999.2383 / 7996.9049 Pa), flag
+//     flips 0 steps later at 963 / 507 -- the row still prints 0 m3/s at the
+//     crossing, so :353-:355 also needs the iterate carried through zero.
+//   * sleep windows [963,1403) / [507,1530) are 440 / 1023 exact zeros, each
+//     one contiguous block. Second wakes 1403 / 1530 = 53 / 180 steps after K
+//     returned to 0 at 1350 (entry drives 7007.0388 / 8001.0644 Pa).
+//   * bracket: Sa worst 1.876e-06 at 961 over 1318, Sb 4.402e-07 at 505 over
+//     642; W{a,b,c,d} 4.956e-09 at 181 over 1820. Sc/Sd offer the bracket
+//     nothing (all 2000 decided states hold 1).
+//   * sub-yield unheld steps exactly [962] (arm a) and [506] (arm b), each the
+//     last before its clamp -- row loses root first, :353-:355 follows one
+//     step later.
+//   * arm b identity with 5.59's arm a: flags equal 2001/2001, ladder
+//     [1,333,507,1530] both sides, Sb 1684/2001 tokens the same string worst
+//     1.780e-08, Wb 734/2001 worst 1.425e-10, Db (drain, no flag) 1391/2001
+//     worst 9.721e-12, node Fb within 1.000e-07 Pa (1958/2001 identical).
+//   * 12 node rows close to 4.8836e-14 m3/s = 9.77e-08 Pa per step; all 8
+//     t=0 flags 0; smallest decision gap 174 steps (0.348 s) over 6 gaps.
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 1.95e4; }
+
+    Fa { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fb { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fc { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fd { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+}
+
+pipes
+{
+    // --- arm a: tau_0 = 1.75 (threshold 7000 Pa, release 23000 Pa) ------
+    Sa { from A; to Fa; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 1.75; }
+    Wa { from A; to Fa; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 1.5; }
+    Da { from Fa; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+
+    // --- arm b: tau_0 = 2.0 (threshold 8000 Pa, release 22000 Pa) ------
+    Sb { from A; to Fb; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 2.0; }
+    Wb { from A; to Fb; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 1.5; }
+    Db { from Fb; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+
+    // --- arm c: tau_0 = 2.25 (threshold 9000 Pa, release 21000 Pa) ------
+    Sc { from A; to Fc; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 2.25; }
+    Wc { from A; to Fc; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 1.5; }
+    Dc { from Fc; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+
+    // --- arm d: tau_0 = 2.5 (threshold 10000 Pa, release 20000 Pa) ------
+    Sd { from A; to Fd; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 2.5; }
+    Wd { from A; to Fd; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 1.5; }
+    Dd { from Fd; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+
+}
+
+time
+{
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

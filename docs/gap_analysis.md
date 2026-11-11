@@ -45,7 +45,7 @@
 - **阻塞项**：Wilson & Thomas 2006 (*Can. J. Chem. Eng.* 84:520–525) 与 Thomas & Wilson 2007 (Hydrotransport 17) 两份文献对 `β = τ_w/τ_B` 的区间收缩写法与 `11.6/χ` 钝化项的陈述不一致； adjudicator 已推得 `D U* ρ/μ_B = He^0.5·β^0.5`（对数项必须在 `τ_B → 0` 时塌回 `Re*`），但 β 自身的解方程形式仍待第三方核对。Task #84 保留已失败路径与两份已提取文本（`/tmp/wilson_thomas.pdf`、`/tmp/wilson_rough.pdf.txt`，本箱无 poppler，可用 stdlib zlib 重抽）。
 - **内核改动**：`src/1d/src/network.cpp` 增加 `yieldedTurbulentFriction(Re, He, n)`；`src/1d/src/transient.cpp::pipeFrictionPa` 同路径；§5.51 的 `yieldedTransitionOf` 已报告 locus，此处只需写摩擦侧。
 - **成本估计**：1 增量（设计已 settled，只差转录核对）
-- **落点**：architecture.md §5.61
+- **落点**：architecture.md §5.73（预估）
 - **判据**：§5.51 的 `f·Re_B·g(xi) = 64` 在 4× 与 151× 超过 locus 的两格**必须由新公式复现**（替换而非删除）；"rate is the laminar root" 家族（最差 3.2e-12）同样替换。
 
 ### A2. 亚阈值蠕变 / 凝胶强度 / 重启压力
@@ -55,7 +55,7 @@
 - **阻塞项**：无（需要一条本构律，不是文献问题）
 - **内核改动**：`src/1d/src/transient.cpp::holdsStatic` 当前是 `qPrev == 0 && |drive| <= threshold` 的刚性判据；亚阈值蠕变需要把它改成 `qPrev <= q_creep(t_rest, …)` 的时变判据，并在节点行加一笔凝胶累积项。
 - **成本估计**：1.5 增量（本构 + 一个启停算例）
-- **落点**：architecture.md §5.62（预估）
+- **落点**：architecture.md §5.63（预估）
 - **备注**：当前内核 §5.49 分支 `Q` 严格为 0、无蠕变、无触变性、无"静止 N 小时后重启需要的压力"（OLGA/Pipesim restart-pressure 类）。
 
 ### A3. β（对流动量项）与静止支同行
@@ -65,7 +65,7 @@
 - **阻塞项**：无；但该量在 1D 定截面积稳态管道里恒为 0，只能在**瞬态行**或**截面积突变节点**处被观测。
 - **内核改动**：`src/1d/src/transient.cpp` 节点行（degree-generic §:395-:416）需要在 `Σ s_i A_i v_i = 0` 之外再带一笔 `Σ s_i β_i A_i v_i²`；`transient.cpp::pipeFrictionPa` 不动。
 - **成本估计**：1 增量
-- **落点**：architecture.md §5.63（预估）
+- **落点**：architecture.md §5.64（预估）
 - **被命名 5 次**：§5.34 边界① / §5.35 边界② / §5.36 边界② / §5.37 边界② / §5.38 边界③。
 - **现状接受数**：第一层 χ 间隙 5–7%（ramp 类瞬态用例）。
 
@@ -76,7 +76,7 @@
 - **阻塞项**：无
 - **内核改动**：`src/1d/src/transient.cpp:226–229` 当前显式拒绝非牛顿 key；耦合调度 `src/coupling/coupledNetwork.cpp` 需要把 `pipeFrictionPa` 用完整 rheology key 调用。
 - **成本估计**：1 增量
-- **落点**：architecture.md §5.64（预估）
+- **落点**：architecture.md §5.65（预估）
 - **备注**：与 C1 本质相同；A 类与 C 类的区别是 A 在架构文档里有命名边界、C 没有。
 
 ### A5. PVT / 黑油 / 两流体分布式拒绝流变与屈服
@@ -86,7 +86,7 @@
 - **阻塞项**：无（表面比 A4 大）
 - **内核改动**：`src/1d/src/twoFluid.cpp` + `src/pvt/*` 调度面
 - **成本估计**：2 增量
-- **落点**：architecture.md §5.65（预估）
+- **落点**：architecture.md §5.66（预估）
 
 ### A6. 环空 / 矩形 duct（Dodge–Metzner）
 
@@ -95,7 +95,7 @@
 - **阻塞项**：无
 - **内核改动**：`src/1d/src/network.cpp` 增加一个截面分支 `annulus{ dInner … }`；层流锚点取 Fredrickson–Bird 1958 闭式；`Re_GP` 用 Dodge–Metzner。
 - **成本估计**：1 增量
-- **落点**：architecture.md §5.66（预估）
+- **落点**：architecture.md §5.67（预估）
 - **备注**：README 已写"圆管 only（5.45）"。
 
 ### A7. 求解器退出门槛已测未立
@@ -105,7 +105,7 @@
 - **阻塞项**：需要一条文档化的策略
 - **内核改动**：文档为主；`network.cpp:347`（1e-13·dp 残差门）与 `:364`（1e-9 相对括号门）以及 `transient.cpp:317`（1e-11 maxRel）当前都是硬编码。
 - **成本估计**：0.5 增量（文档 + 一个 policy assertion）
-- **落点**：architecture.md §5.67（预估）
+- **落点**：architecture.md §5.68（预估）
 - **已测量**：§5.47 稳态括号门先于残差门触发，§5.49 瞬态牛顿出口不收敛到不动点而累积缓慢松弛。
 
 ### A8. 1D↔3D 界面多相 / 可压伙伴块
@@ -113,21 +113,21 @@
 - **当前状态**：`OPEN`
 - **阻塞项**：无
 - **成本估计**：2 增量
-- **落点**：architecture.md §5.68（预估）
+- **落点**：architecture.md §5.69（预估）
 
 ### A9. 两条耦合边同处串联位置
 
 - **当前状态**：`OPEN`
 - **阻塞项**：无
 - **成本估计**：1 增量
-- **落点**：architecture.md §5.69（预估）
+- **落点**：architecture.md §5.70（预估）
 
 ### A10. 行 `M·dq/dt` 双重计费已测未消
 
 - **当前状态**：`OPEN`（已测：层 1 `rowError` 44–63%）
 - **阻塞项**：需要准则"多少层才允许 `rowError` 低于 X"
 - **成本估计**：1 增量
-- **落点**：architecture.md §5.70（预估）
+- **落点**：architecture.md §5.71（预估）
 - **相关**：§5.38/§5.39 测得，§5.40 分解，§5.44 仍未消。
 
 ### A11. 真 MPI 传输 / 域耦合矩阵求解
@@ -135,7 +135,7 @@
 - **当前状态**：`BLOCKED`
 - **阻塞项**：用户 OK 之前不得安装 MPI 工具包（ standing 约束）
 - **成本估计**：≥ 3 增量
-- **落点**：architecture.md §5.71（预估）
+- **落点**：architecture.md §5.72（预估）
 
 ## 2. B 类 —— 零内核改动增量（case + checker only）
 
@@ -147,19 +147,19 @@
 - **当前状态**：`CLOSED`（由 §5.61 / task #95 关闭）
 - **内核改动**：`src/1d/include/cf/1d/Transient.h::TransientSource` 加 ramp 字段；`src/1d/src/transient.cpp` 加 `sourceRateAt()` helper，`step()` 与 `commitStep()` 把 `nd.source` 改成按 `tNew` 求值；parser 加 `schedule{}` 子块。
 - **成本估计**：1 增量（实质是 C 类小钩子，与阀日程同形态）
-- **落点**：architecture.md §5.72（预估）
+- **落点**：architecture.md §5.61
 - **来源**：§5.56 边界④。
 - **拓扑**：一根屈服壁 + 一根带 `valveClose/Open` 的泄放管 + 一个 `source{ schedule … }` 在同一自由节点；日程在 sealed 窗口内把节点抬过该壁的放开压力，让"本来一直 held"的壁被叫醒一次。
 
-### B2. 节点初值 +600 Pa，使 n=0.5 臂被第一时间问
+### B2. 停泊带下边缘：pB 下移使 NEVER 臂醒来
 
-- **参考工具**：OLGA `INITIAL` 扫描
-- **当前状态**：`OPEN`
+- **参考工具**：OLGA `INITIAL` 扫描 / Pipesim 边界压力灵敏度
+- **当前状态**：`CLOSED`（由 §5.62 关闭）
 - **内核改动**：无
 - **成本估计**：0.5 增量
-- **落点**：architecture.md §5.73（预估）
+- **落点**：architecture.md §5.62
 - **来源**：§5.59 边界③ / §5.60 边界④。
-- **做法**：把 `Fa..Fd` 的 `pressure 2.7e4` 改成 `2.76e4`（释放压力 23000/22000/21000/20000，+600 后 n=0.5 臂 c、d 的起始 drive 都跨过自家阈值）。
+- **做法**：把 `B { fixedPressure 2.0e4 }` 改成 `1.95e4`（pB 下移 500 Pa，节点地板被移走，n=0.5 臂 d 在第 1689 步第一次释放、313 个流动状态；臂 c 的完整重锁周期也回来了）。
 
 ### B3. HB × 阀日程 × 双向闩锁 三路同台
 
@@ -307,8 +307,8 @@
 ## 5. 优先级排序（推荐实施顺序）
 
 1. ~~**B3**~~ — CLOSED（§5.59）
-2. **B4** — 分支节点 + 双向闩锁。B3 之后闩锁线的下一个自然跳。
-3. **B2** — 节点初值扫描（+600 Pa 使 n=0.5 臂被问）。0.5 增量。
+2. ~~**B2**~~ — CLOSED（§5.62）
+3. **B4** — 分支节点 + 双向闩锁。B3 之后闩锁线的下一个自然跳。
 4. **C1** — 流变进入耦合边（与 A4 合并关闭）。
 5. **A1** —— 任务 #84，β 项被第三方文献确认后启动。
 6. **D5** — 自适应时间步。D 类里唯一钩子较小的一项。
@@ -325,3 +325,4 @@
 | 2026-11-11 | — | 文档初版 | 93b2c69 | — | A 类 11 条、B 类 6 条、C 类 4 条、D 类 9 条 |
 | 2026-11-11 | B3 | — | — | — | **审计为 CLOSED**：§5.59（task #93, commit 已在闩锁线）= Herschel-Bulkley × 阀 `valveClose`/`valveOpen` 日程 × 双向闩锁三路同台，三档 (n,K)=(0.5,1.0)/(1.0,0.1)/(2.0,0.02)；本节 5.59 起即关闭，文档初版误记为 OPEN |
 | 2026-11-11 | B1 | §5.61 | 6581c96 | 1311.16 s / 116 | 源日程唤醒停泊臂：`sources{ schedule{ openRate; close; open } }` 与阀日程同一 ramp helper；1 HB 壁 + 1 阀泄放 + 1 注入源同台；6423 判据、2 case 文件、Test #90 (2.23 s) |
+| 2026-11-11 | B2 | §5.62 | — | 5.52 s / 1 | 停泊带下边缘：pB 20000→19500 使 n=0.5 臂 d 第一次醒来（313 流动状态）、臂 c 重锁周期回来（388/929/1390）；pB 扫描定位转捩 ≈19780；84 判据、3 case 文件、Test #91、0 内核行 |

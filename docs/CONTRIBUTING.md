@@ -1207,6 +1207,24 @@ python3 tests/check_transient_adaptive_cfl.py \
     "$PWD/build/src/1d/apps/chflow-1d-transient" \
     "$PWD/tests/cases/transientAdaptiveCfl/case.dict"
 
+# 求解器退出门门槛策略（5.69 / A7）：SolverGates.h 五个 inline constexpr 是
+# 合同不是旋钮——外层 solve{ tol; maxIter; relax; } 用户可调，内层五常量
+# （稳态管解残差门 1e-13 / 括号门 1e-9 / 管解帽 100、瞬态牛顿门 1e-11 / 帽 60）
+# 是已发布行为的一部分。零行为变化（常量化），checker 做三件事：
+#   1) policy 互证：header 五常量逐个等于文档值，architecture.md 对每个门
+#      名字与值同处一行，站点引用 gates:: 名且旧裸字面量消失（单一来源）；
+#   2) 括号门足迹实测：steadyBinghamYield 六管与 Buckingham 闭式差
+#      2.4e-13 ~ 4.9e-12——括号名义 1e-9 的宽度不是答案实际感到的；
+#   3) 两层关系实测：tol 1e-16 逐位不变（内门是地板）、maxIter 0 大声失败
+#      （NOT converged 非零退出）、瞬态 march 漂移非零 < 1e-9（worst
+#      1.46e-12）——牛顿出口在门上不在不动点上（5.49 声明的可测形式）。
+# 注意：两相族（solvePipeFlowTwoPhase）的门按声明范围留在 header 外。
+# 26 判据（ctest verify.solverGates）
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyBinghamYield/case.dict
+python3 tests/check_solver_gates.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyBinghamYield/case.dict"
+
 
 
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件

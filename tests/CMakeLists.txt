@@ -917,6 +917,23 @@ add_test(
         $<TARGET_FILE:chflow-1d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientAdaptiveCfl/case.dict)
 
+# 5.69 / A7 the solver exit-gate policy as a published contract: the five
+# named constants in SolverGates.h equal the documented values, the
+# architecture document states each gate by name AND value, the call sites
+# reference the constants (no second source), and the gates' measured
+# footprints hold -- steadyBinghamYield within 1e-11 of Buckingham's exact
+# solution (bracket gate far below its nominal 1e-9 width), tol 1e-16
+# bit-identical to the default (inner gates are floors), maxIter 0 fails
+# loudly, and the transient march reproduces the exact implicit row with a
+# real nonzero drift under 1e-9 (the Newton exits ON its gate, not on a
+# fixed point).
+add_test(
+    NAME verify.solverGates
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_solver_gates.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyBinghamYield/case.dict)
+
 
 # 5.51 the published laminar-turbulent locus of a yielded pipe, read off the
 # pipe's own wall law. The turbulent-yield FRICTION closure could not be

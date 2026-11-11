@@ -4002,6 +4002,33 @@ checker `check_transient_adaptive_cfl.py`，**16 判据 0 失败**：
 
 **成本**：内核 ~40 行（`cflStep` + core/app 各一条分支 + loader 校验）+ 1 case 文件 + 1 checker + 1 条 `add_test` + 绑定 3 字段，16 判据；checker 全程 **0.81 s**（Test #85）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.69 求解器退出门门槛策略（A7）：**两层政策一个来源**——`SolverGates.h` 的五个 `inline constexpr` 是合同，不是旋钮
+
+**这一格从哪来**：§5.47 的稳态括号、§5.49 的瞬态牛顿各自带着一行裸字面量门槛散在 `network.cpp`/`transient.cpp` 里；`docs/gap_analysis.md` 编为 **A7**（"求解器退出门槛策略文档化 + policy assertion"），估 0.5 增量。实测 ~0.5：常量化 + 三份文档 + 一个 checker。
+
+**两层政策**（区分是刻意的，不是意外）：
+
+- **外层（用户可调，逐 case）**：`solve { tol; maxIter; relax; }`——稳态网络 Newton 的收敛判据（`tol` 相对总注入率）。case 不收敛时用户转的是这个旋钮。
+- **内层（命名常量，**不**用户可调）**：管解与瞬态行的内部守卫。§5.47 以来每个闭式 checker 都在**恰好这些数**的强度上把内核状态复现到 1e-9..1e-11 相对——改其中一个就是改已发布行为，必须先过架构文档。
+
+| 常量（`src/1d/include/cf/1d/SolverGates.h`，`cf::gates`） | 值 | 站点 | 角色 |
+|---|---|---|---|
+| `steadyPipeResidualGate` | 1e-13 | `network.cpp` 管解 Illinois 循环 | `\|f\| < 1e-13·max(pScale, 1.0)` 时停——"函数足够平"的逐管出口 |
+| `steadyPipeBracketGate` | 1e-9 | 同上循环的另一出口 | 括号收到 1e-9 相对宽度时停。**已测（§5.47）**：屈服管上括号门先触发——断点处的残差远高于残差门，管解是括号受限的 |
+| `steadyPipeMaxIter` | 100 | 管解循环帽 + `binghamWallStress` 的帽 | 管解迭代帽；Bingham 壁应力反解自己的出口在机器精度（括号宽 ≤ 2 ulp），帽是同一政策上的保险网 |
+| `transientNewtonGate` | 1e-11 | `transient.cpp` 逐步 Newton | max 相对残差 < 1e-11 时停。**已测（§5.49 及此后每个 march checker）**：出口通常落在**门上**而非不动点上——提交态离精确隐式行差一个门尺度的弛豫量，march 慢慢累积它；闭式 checker 把漂移压在 < 5e-9 相对 |
+| `transientNewtonMaxIter` | 60 | 同一循环的帽 | 一步内到不了门就提交部分弛豫态（耦合 app 里可见为 `rowError`，§5.40） |
+
+**实测足迹**（checker 的判据基础，不是记住的数）：steadyBinghamYield 六根并联管（Buckingham 闭式）与打印 Q 的相对差 **2.4e-13 ~ 4.9e-12**——括号门名义 1e-9 的宽度，答案实际感到的远低于名义值，这个余量就是括号门的足迹；瞬态侧 transientTimeDecoupled 的全部报告态被精确隐式行复现到 **< 1e-9 且非零**——出口在门上、不在不动点上，这是 §5.49 声明的可测形式。
+
+**探针**：`solve { tol 1e-16; maxIter 500 }` 加到 steadyBinghamYield 仍收敛且全部 pipe 行与默认**逐位相同**——内门是地板，外层旋钮转不动它；`solve { maxIter 0 }` 以非零退出报 `NOT converged`——未收敛态被如实报告为失败，绝不被打印环节洗成答案。
+
+**范围边界**：本 header 只覆盖**单相**稳态管解（含 `binghamWallStress`）与瞬态 Newton。两相族（`solvePipeFlowTwoPhase` 及其匿名命名空间伴生函数）保留自己的门（残差门 1e-7 / 1e-12 相对上游压力、括号门 1e-9 相对流量）——另一族合同，由两相 checker 把守，不进这五个常量。
+
+checker `check_solver_gates.py`（CTest `verify.solverGates`），**26 判据 0 失败**：header 五常量逐个等于文档值；architecture.md 对每个门**名字与值同处一行**（header 与文档不能在沉默中漂移）；`network.cpp`/`transient.cpp` 站点引用 `gates::` 名且旧的裸 `1e-13`/`1e-11` 已从原文件消失（单一来源）；六管闭式 ≤ 1e-11；tol 1e-16 逐位不变；maxIter 0 大声失败；瞬态门足迹（复现 < 1e-9 + 漂移非零）。
+
+**成本**：内核 0 行为变化（常量化 + 两处 include）+ 1 checker + 1 条 `add_test`，26 判据；checker 全程 **0.29 s**（Test #86）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

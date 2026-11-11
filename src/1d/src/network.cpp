@@ -8,6 +8,7 @@
 #include "cf/common/Log.h"
 
 #include "cf/1d/BeggsBrill.h"
+#include "cf/1d/SolverGates.h"
 
 #include "DenseSolve.h"
 
@@ -139,7 +140,9 @@ double binghamWallStress(const NetworkPipe& pipe, const FluidProperties& fluid,
     double lo = tau0, hi = b + (4.0 / 3.0) * tau0;
     double tw = 0.5 * (lo + hi);
     const double tau04 = tau0 * tau0 * tau0 * tau0;
-    for (int it = 0; it < 100; ++it)
+    // The exit below is machine precision (bracket width <= 2 ulp), so the cap
+    // is a safety net, not a gate -- but it is the same pipe-solve cap policy.
+    for (int it = 0; it < gates::steadyPipeMaxIter; ++it)
     {
         const double t2 = tw * tw;
         const double t4 = t2 * t2;
@@ -336,10 +339,10 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     }
 
     double x = xLo + (xHi - xLo) * fLo / (fLo - fHi);
-    for (int it = 0; it < 100; ++it)
+    for (int it = 0; it < gates::steadyPipeMaxIter; ++it)
     {
         const double fx = g(x);
-        if (std::abs(fx) < 1e-13 * std::max(pScale, 1.0)) break;
+        if (std::abs(fx) < gates::steadyPipeResidualGate * std::max(pScale, 1.0)) break;
         if (forward ? fx > 0.0 : fx < 0.0)
         {
             xHi = x;
@@ -356,7 +359,7 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
         const double xNew = xLo + (xHi - xLo) * fLo / (fLo - fHi);
         if (!(xNew > xLo && xNew < xHi)) x = 0.5 * (xLo + xHi);
         else x = xNew;
-        if (std::abs(xHi - xLo) < 1e-9 * std::max(xHi, 1e-30)) break;
+        if (std::abs(xHi - xLo) < gates::steadyPipeBracketGate * std::max(xHi, 1e-30)) break;
     }
 
     RawFlow r;

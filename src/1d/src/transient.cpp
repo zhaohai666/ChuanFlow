@@ -5,6 +5,7 @@
 #include <string>
 #include <utility>
 
+#include "cf/1d/SolverGates.h"
 #include "cf/common/Error.h"
 
 #include "DenseSolve.h"
@@ -361,7 +362,7 @@ double TransientNetwork::solveStep(double dt)
         pd.held = holdsStatic(pd.geo, pd.qPrev, drive);
     }
 
-    for (int newton = 0; newton < 60; ++newton)
+    for (int newton = 0; newton < gates::transientNewtonMaxIter; ++newton)
     {
         for (double& v : r) v = 0;
         for (auto& row : J) std::fill(row.begin(), row.end(), 0.0);
@@ -461,7 +462,7 @@ double TransientNetwork::solveStep(double dt)
             maxRel = std::max(maxRel, std::abs(r[e]) / scale);
         }
 
-        if (maxRel < 1e-11) break;
+        if (maxRel < gates::transientNewtonGate) break;
         std::vector<double> negR(nEq);
         for (std::size_t i = 0; i < nEq; ++i) negR[i] = -r[i];
         detail::solveDenseLinear(J, negR);

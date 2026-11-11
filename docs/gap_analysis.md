@@ -34,7 +34,7 @@
      BLOCKED  ──（阻塞解除）──► IN_PROGRESS
 ```
 
-> **落点编号说明（2026-11-11 审计）**：带「（预估）」的 §5.x 落点只是**占位编号**，实际按增量关闭顺序分配，不预留。架构文档当前已用到 **§5.68**（§5.63 = C1/A4，§5.64 = B6，§5.65 = C2，§5.66 = C4，§5.67 = B5，§5.68 = D5）；因此 A2 原写 §5.63、A3 原写 §5.64 均已被占用，C3 原写 §5.66 与 A6 的 §5.67 也不一致。这三条在本轮审计里改为「待分配 / 顺延」，其余预估编号维持不动，等该项真正启动时再定。
+> **落点编号说明（2026-11-11 审计）**：带「（预估）」的 §5.x 落点只是**占位编号**，实际按增量关闭顺序分配，不预留。架构文档当前已用到 **§5.69**（§5.63 = C1/A4，§5.64 = B6，§5.65 = C2，§5.66 = C4，§5.67 = B5，§5.68 = D5，§5.69 = A7）；因此 A2 原写 §5.63、A3 原写 §5.64 均已被占用，C3 原写 §5.66 与 A6 的 §5.67 也不一致。这三条在本轮审计里改为「待分配 / 顺延」，其余预估编号维持不动，等该项真正启动时再定。
 
 ## 1. A 类 —— 已命名且已记录的 open cell
 
@@ -105,12 +105,12 @@
 ### A7. 求解器退出门槛已测未立
 
 - **参考工具**：所有商业软件都有用户可调收敛门槛
-- **当前状态**：`OPEN`（策略决定，不是 bug）
-- **阻塞项**：需要一条文档化的策略
-- **内核改动**：文档为主；`src/1d/src/network.cpp:342`（1e-13·dp 残差门）与 `:359`（1e-9 相对括号门）以及 `src/1d/src/transient.cpp:464`（1e-11 maxRel）当前都是硬编码（**2026-11-11 审计修正行号**：原文写 `:347` / `:364` / `:317`，分别漂移 5 / 5 / 147 行；网络 Newton 的外部门 `ctl.tol` 可调，但这三处内部门不受它控制）。
-- **成本估计**：0.5 增量（文档 + 一个 policy assertion）
-- **落点**：architecture.md §5.68（预估）
-- **已测量**：§5.47 稳态括号门先于残差门触发，§5.49 瞬态牛顿出口不收敛到不动点而累积缓慢松弛。
+- **当前状态**：`CLOSED`（2026-11-11，§5.69）
+- **阻塞项**：无
+- **内核改动**：`src/1d/include/cf/1d/SolverGates.h`（新建，`cf::gates` 五个 `inline constexpr`：steadyPipeResidualGate 1e-13 / steadyPipeBracketGate 1e-9 / steadyPipeMaxIter 100 / transientNewtonGate 1e-11 / transientNewtonMaxIter 60）；三处站点改用常量名，零行为变化（`network.cpp` 残差门 `:343`、括号门 `:360`、`binghamWallStress` 帽 `:145` 也并入同一管解帽政策；`transient.cpp` 门 `:465`、帽 `:365`）。两相族（`solvePipeFlowTwoPhase`，残差门 1e-7/1e-12·pUp）按声明范围留在 header 之外。
+- **成本估计**：0.5 增量（文档 + 一个 policy assertion）；实测 ~0.5
+- **落点**：architecture.md §5.69
+- **已测量**：§5.47 稳态括号门先于残差门触发，§5.49 瞬态牛顿出口不收敛到不动点而累积缓慢松弛；checker 实测六管闭式足迹 2.4e-13~4.9e-12（括号门名义 1e-9 的实际余量）、瞬态 march 漂移非零 < 1e-9（worst 1.46e-12）、tol 1e-16 逐位不变、maxIter 0 大声失败。
 
 ### A8. 1D↔3D 界面多相 / 可压伙伴块
 
@@ -324,8 +324,8 @@
 4. ~~**C1 / A4**~~ — **CLOSED**（§5.63）：流变进入耦合边，稳态 + 瞬态 + 3D 逐面黏度同台；实测 1 增量而非 2.5。
 5. **A1** —— 任务 #84，β 项被第三方文献确认后启动（仍 `BLOCKED`）。
 6. ~~**D5**~~ — **CLOSED**（§5.68，`time{ cfl; dtMin; dtMax; }` 三个可选键 + 自适应行进，`cfl` 缺席 = 5.66 固定步长逐位不变；实测 ~0.5 增量而非 1.5）。
-7. ~~**B6**~~ — **CLOSED**（§5.64）；~~**C2**~~ — **CLOSED**（§5.65，HB × 无日程阀 K，阀的分成由壁律指数决定）；~~**C4**~~ — **CLOSED**（§5.66，ceil + 末步裁剪 + 末态恒打印，endTime 为 dt 整倍数时逐位兼容）；~~**B5**~~ — **CLOSED**（§5.67，三张逐边表 × 逐边 profile 同台，quasi+slab+charge 三表叠一边）；**C3** — 按需要穿插。
-8. **A2 / A3 / A5 / A6 / A7 / A8 / A9 / A10 / A11** — 按引用热度排。
+7. ~~**B6**~~ — **CLOSED**（§5.64）；~~**C2**~~ — **CLOSED**（§5.65，HB × 无日程阀 K，阀的分成由壁律指数决定）；~~**C4**~~ — **CLOSED**（§5.66，ceil + 末步裁剪 + 末态恒打印，endTime 为 dt 整倍数时逐位兼容）；~~**B5**~~ — **CLOSED**（§5.67，三张逐边表 × 逐边 profile 同台，quasi+slab+charge 三表叠一边）；~~**A7**~~ — **CLOSED**（§5.69，`SolverGates.h` 五常量单一来源 + policy assertion，零行为变化）；**C3** — 按需要穿插。
+8. **A2 / A3 / A5 / A6 / A8 / A9 / A10 / A11** — 按引用热度排。
 9. **D1 / D2 / D3 / D4 / D6 / D7 / D8 / D9** — 大型能力块，按产品规划排期。
 
 > **成本估计的修正（§5.63 实测）**：本清单里"3D 侧需要完整非牛顿黏度回路"被估成 2.5 增量，实际 1 增量。教训是先看 `src/3d/include/cf/fvm/EddyViscosity.h`：RANS 伙伴块（§5.23）早已把逐面黏度做成了求解器钩子，`fvm::laplacianFace` 每趟读一次 `nuEffFace()`，因此新增一种流体只需实现该接口，不动方程装配。后续 C 类成本估计应先核对现成钩子再报数。
@@ -348,3 +348,4 @@
 | 2026-11-11 | C4 | §5.66 | eb794d9 | 885.06 s / 120 | `reportEvery` 与 `endTime` 解耦：步数 `ceil(endTime/dt − 1e-9)`、末步 `h = min(dt, endTime − (i−1)dt)`、`tPrev` 用步索引、末态恒打印、dt/endTime 拒收 0；1 case 文件 + 1 checker、40 判据（六臂 + 拒收）；0.1/0.03 → 0.03/0.03/0.03/0.01 五态落在 t=0.1 精确、0.12/0.03（浮点 4.000000000000001）不误计、endTime 整倍数时 `transientYieldValve` 仍 2001 状态逐位兼容；全序列隐式欧拉递推复现最差 3.27e-11（Bingham 臂）；`verify.transientTimeDecoupled`（Test #83）。**checker 首跑 21 失败根因**：头注释里的示例字样（`endTime 0.1`、`reportEvery 3 and 5`）被 END/REPORT 正则先命中——键提取必须先剥 `//` 注释再读活字典文本 |
 | 2026-11-11 | B5 | §5.67 | 95aefb6 | 563.25 s / 121 | 三张独立逐边表（`ddtFrom` + `inertiaFrom` + `convectiveToRow`）× 逐边 `profile` 同台，**0 内核改动**：1 case 文件 + 1 checker、21 判据；5 臂（base/mix/mix_charge/pin/both_chr，拓扑/网格/dt/seeds 复用 §5.41），4 臂是 §5.41/§5.44 的已发布格子，唯一新格 `mix_charge` = quasi + slab + charge 三表叠一边（quasi 边的行用 slab 的 M 付 M·dq/dt、同时让出 dpConv、grade 恒 0——运行验证可行）；base 臂 1e-12 复现 §5.41 p_net 的 level-1/8 状态与 pass 序列；80 状态 row 闭合 slack 恰 0；charge 只动一行的一项（mix 与 mix_charge 的 X1 逐位相同）；chord 最差 8.9e-4 在容差内；`verify.transientCoupledMultiTurbulentTripleTable` |
 | 2026-11-11 | D5 | §5.68 | 74066e3 | 743.73 s / 122 | CFL 自适应时间步：`time{ cfl; dtMin; dtMax; }` 三个可选键，`cfl > 0` 切换自适应行进 `dt_next = clamp(cfl·min_k(L_k A_k/\|q_k\|), dtMin, dtMax)`（从刚提交的流量读出）、首步 = case 的 dt、静止网络取 dtMax、t 累加、末步裁到余量且 t 精确吸附 endTime、`cfl` 缺席 = 5.66 固定步长逐位不变；内核 `TransientNetwork::cflStep` + core/app 各一条自适应分支 + 三条拒收 + Python 绑定新字段与 controls 重载；1 case 文件 + 1 checker、16 判据——调度逐步被「上一态流量的 Courant 规则」复现（调度是物理的性质不是记住的表）、全部 27 态被逐步 h 的隐式欧拉行复现（最差 8.53e-10，全管层流 Re_inf ≈ 1345/1272）、固定行进 501 态闭式复现且与自适应末态不同、调度访问全部四个 regime、三条拒收；`verify.transientAdaptiveCfl`（Test #85，0.81 s）。**case 设计教训**：rule_inf = cfl ρL²/(drive·τ) 与 Re_inf = ρd³·drive/(32 μ²L) 联立定 drive——floor 绑定与层流可以同时成立，但 drive 要按这两条 identity 选（第一版 μ=0.01 时 Re 14280 进湍流区，checker 层流闭式全面失配 0.83 才暴露） |
+| 2026-11-11 | A7 | §5.69 | 待补 hash | 3471.66 s / 123 | 求解器退出门门槛策略：`src/1d/include/cf/1d/SolverGates.h` 五个 `inline constexpr` 单一来源（steadyPipeResidualGate 1e-13 / steadyPipeBracketGate 1e-9 / steadyPipeMaxIter 100 / transientNewtonGate 1e-11 / transientNewtonMaxIter 60），`network.cpp` 三处 + `transient.cpp` 两处站点改用常量名、`binghamWallStress` 的保险帽并入同一管解帽政策，**零行为变化**；两相族门按声明范围留在 header 外。checker 26 判据：header ↔ 文档值互证（名字与值同处一行）、站点引用 + 旧裸字面量消失、六管闭式足迹 2.4e-13~4.9e-12（括号门名义 1e-9 的实际余量）、tol 1e-16 逐位不变（内门是地板）、maxIter 0 大声失败、瞬态 march 漂移非零 < 1e-9（worst 1.46e-12，§5.49 声明的可测形式）；`verify.solverGates`（Test #86，0.29 s） |

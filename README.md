@@ -22,6 +22,7 @@
 - **HB 壁 × 无日程阀 K**：同一根管上 `flowIndex`/`consistency`/`yieldStress` 与常数阀 `valve K` 组合，补上（阀, 日程, 指数）表的最后一格；阀的分成由壁律指数决定——同一个 K=500 从 n=0.5 管拿 2.33 Pa、从 n=1.5 管拿 308.76 Pa（133×）——56 条判据、零内核改动（§5.65 / C2）
 - **`reportEvery` 与 `endTime` 解耦**：瞬态步进循环改为 `ceil(endTime/dt − 1e-9)` 步、末步裁剪到余量、`t` 用步索引落点、末态恒打印——endTime 不必再是 dt 的整倍数（0.1 s 配 dt 0.03 跑出 0.03/0.03/0.03/0.01 四步、末态精确落在 t=0.1），近整除陷阱（0.12/0.03 = 4.000000000000001）不被误计，整倍数旧 case 逐位兼容——40 条判据（§5.66 / C4）
 - **耦合语法三张逐边表 × 逐边入口形状同台**：`ddtFrom` + `inertiaFrom` + `convectiveToRow` 与逐边 `profile` 第一次进同一份 case——quasi + slab + charge 三表叠一边的新格可行（quasi 边的行用 slab 的 M 付 M·dq/dt、同时让出 dpConv、grade 恒 0），charge 只动一行的一项、row 闭合 slack 恰 0、base 臂 1e-12 复现已发布孪生——21 条判据、零内核改动（§5.67 / B5）
+- **CFL 自适应时间步**：`time{ cfl; dtMin; dtMax; }` 三个可选键，`cfl > 0` 切换自适应行进——`dt_next = clamp(cfl·min_k(L_k A_k/|q_k|), dtMin, dtMax)` 从刚提交的流量读出，首步 = case 的 dt，静止网络取 dtMax，末步裁到余量且 t 精确吸附 endTime；`cfl` 缺席 = 固定步长逐位不变。checker 把整条调度从状态列重推（调度是物理的性质不是记住的表）并全部闭式复现——16 条判据（§5.68 / D5）
 - **多入口使用形态**：C++ 原生库 / Python API / CLI 命令行 / Tauri 桌面GUI，集群自动化、本地交互都支持
 - **标准IO兼容**：支持 Gmsh msh、VTK/VTU、HDF5，可导入 OpenFOAM 网格，结果直接用 ParaView 可视化
 

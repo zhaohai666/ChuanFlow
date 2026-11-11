@@ -3979,6 +3979,29 @@ V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
 
 **成本**：0 内核改动；1 case 文件 + 1 checker + 1 条 `add_test`，21 判据；checker 复跑（含求解）约 **5.5 分钟**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.68 CFL 自适应时间步：**调度是物理的性质**——`dt_next = clamp(cfl·min_k(L_k A_k/|q_k|), dtMin, dtMax)` 从刚提交的流量读出，checker 把整条调度从状态列重推出来，而不是记住一张表
+
+**这一格从哪来**：§5.49 以来每个瞬态 case 都 marched 一个固定 `dt`；§5.66 解耦了 `reportEvery` 与 `endTime` 但步长序列仍是常量。`docs/gap_analysis.md` 编为 **D5**，估 1.5 增量、备注"在最慢管上放一个 CFL 探针"。实测 ~0.5：`TransientNetwork` 里几何都在手边，规则本身 `cflStep` 是 ~15 行。
+
+**语法**：`time { dt <初始>; endTime; reportEvery; cfl <target>; dtMin <下限>; dtMax <上限>; }`——后三个键可选，`cfl` **在场**即切换自适应行进（`cfl` 声明但 ≤ 0、`dtMin ≤ 0`、`dtMax < dtMin` 三条拒收）。`cfl` 缺席 = 5.66 的固定步长 march **逐位不变**。
+
+**自适应 march 的簿记**：首步用 case 自己的 `dt`；此后每步 `h = min(dt_next, endTime − t)`，其中 `dt_next` 由 `cflStep` 从**刚提交的流量**读出（`min_k(L_k A_k/|q_k|)` 是最紧的 Courant 预算，静止管不强加约束，**全静止的网络取 dtMax**）；`t` 累加——变步长没有索引可定位一步——但裁剪触发时 `t` **精确吸附**到 endTime（`h = endTime − t` 赋值后判 `clampFires` 置 `t = endTime`），末态不会落在 1.9999999999999998 上。app 打一行 `transient adaptive: cfl … dtMin … dtMax …`，让日志读者知道 t 列记录的是哪一种 march。Python 绑定暴露 `cfl/dt_min/dt_max` 字段与 controls 版 `run_transient` 重载。
+
+**case 与判据**：`tests/cases/transientAdaptiveCfl`（三管 Fast d=0.015/L=1、Slow d=0.04/L=20、Yield τ₀=1 d=0.02/L=20；drive 1.5e5、cfl 0.8、dt 0.004、dtMin 0.08、dtMax 0.1、endTime 2）。case 设计靠两条 identity 联立定 drive：`rule_inf = cfl·ρL²/(drive·τ)`（floor 要绑定就要 rule_inf < dtMin）与 `Re_inf = ρd³·drive/(32 μ²L)`（checker 的层流闭式要复现就要 Re_inf < 2000）——**drive 1.5e5 让两条同时成立**（τ = ρd²/32μ = 0.0598 s，rule_inf ≈ 7.6e-2，Re_inf ≈ 1345 / 1272 全管层流）。第一版 μ=0.01 时 Re 14280 进湍流区，内核走 Churchill 摩阻，checker 层流闭式全面失配 0.83 才暴露——湍流档的 CFL 判据留作边界。
+
+checker `check_transient_adaptive_cfl.py`，**16 判据 0 失败**：
+
+- 声明行命名规则与钳；`steps=` 等于 t 列隐含的 h 数；末态 t 精确 = endTime；
+- **调度逐步复现**：`h_i = min(clamp(0.8·min_k(L A/|q_k|(state_{i−1})), 0.08, 0.1), endTime − t_{i−1})` 对全部 26 步成立（首步 = dt 单独断言）——调度是从物理读出来的，不是记住的表；
+- 调度访问全部四个 regime（init ×1 / ceiling ×2 / rule ×3 / floor ×20）+ 末步余量钳；
+- 全部 27 态被**逐步 h** 的隐式欧拉行复现（Newtonian 闭式、Bingham tw 空间二分；最差 **8.53e-10**）；
+- 固定 march 完好：去掉 `cfl` 后 ceil(2/0.004) = 500 均匀步、501 态闭式复现，且与自适应末态**不同**（调度真的动了离散化）；
+- 三条拒收（`cfl 0` / `dtMin 0` / `dtMax < dtMin`）。
+
+**本增量的边界**：① 这是 1D 管网的 Courant 规则，**不触碰** §5.38 记录的耦合界面发散墙——那是 3D 块侧的预算，不在 1D 行里；② 显式液量输运（`commitStep` 的 upwind 漂移通量）另有"runs dry − reduce dt"的 fatal，`dtMin` 必须把它挡在门外——本 case 的 dtMin 由 Courant 规则自然覆盖，未单列探针；③ 湍流档的 CFL 判据未单列（case 全层流）；④ 规则只看管流量，不看节点压力变化率——压力驱动的刚性（bulkModulus 大的节点）不进这个规则。
+
+**成本**：内核 ~40 行（`cflStep` + core/app 各一条分支 + loader 校验）+ 1 case 文件 + 1 checker + 1 条 `add_test` + 绑定 3 字段，16 判据；checker 全程 **0.81 s**（Test #85）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|
@@ -4505,4 +4528,10 @@ V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
   新格可行（row 用 slab 的 M 付 M·dq/dt 且 `rowBeta == dpConv`）；base 臂
   1e-12 复现 §5.41 p_net 的 level-1/8 状态与 pass 序列；80 状态 row 闭合
   slack 恰 0、charge 只动一行的一项（邻居逐位相同）、chord 在容差内；
+- `tests/check_transient_adaptive_cfl.py`（CTest `verify.transientAdaptiveCfl`，
+  §5.68 / D5）：**16** 条判据——调度逐步被上一态流量的 Courant 规则复现
+  （`dt_next = clamp(cfl·min_k(L A/|q_k|), dtMin, dtMax)`）、全部 27 态被
+  逐步 h 的隐式 Euler 行复现（最差 8.53e-10，全管层流）、固定 march
+  （`cfl` 缺席）500 步闭式复现且与自适应末态不同、四个 regime 全访问、
+  `cfl 0` / `dtMin 0` / `dtMax < dtMin` 三条拒收；
 - 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`

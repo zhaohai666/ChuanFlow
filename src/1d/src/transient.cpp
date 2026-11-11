@@ -545,6 +545,22 @@ double TransientNetwork::step(double dt)
     return maxRel;
 }
 
+double TransientNetwork::cflStep(double target, double lo, double hi) const
+{
+    double fastest = 0.0; // min_k(L A / |q|): the tightest Courant budget
+    for (std::size_t k = 0; k < pipes_.size(); ++k)
+    {
+        const double q = std::abs(q_[k]);
+        if (q <= 0) continue; // a pipe at rest imposes nothing
+        const NetworkPipe& geo = pipes_[k].geo;
+        const double budget = geo.length * (M_PI * geo.diameter * geo.diameter
+                                            / 4.0) / q;
+        fastest = fastest > 0 ? std::min(fastest, budget) : budget;
+    }
+    const double raw = fastest > 0 ? target * fastest : hi;
+    return std::min(std::max(raw, lo), hi);
+}
+
 double TransientNetwork::pendingPipeFlow(label k) const
 {
     if (!pending_) cfFatal("transient: no step is pending to read a flow from");
@@ -756,6 +772,62 @@ TransientSeries runTransient(const TransientCase& c, double dt,
     return out;
 }
 
+TransientSeries runTransient(const TransientCase& c,
+                             const TransientTimeControls& controls)
+{
+    // cfl absent (0) keeps the fixed-step march bit for bit.
+    if (!(controls.cfl > 0))
+        return runTransient(c, controls.dt, controls.endTime,
+                            controls.reportEvery);
+
+    // 5.68 / D5: CFL-adaptive stepping. The next dt is the Courant rule over
+    // the whole network read off the flows the step just committed; the FIRST
+    // step is the case's own dt. t accumulates -- with varying dt there is no
+    // index to position a step -- and the last step is clamped to
+    // endTime - t, with t snapped to endTime exactly when the clamp fires.
+    if (!(controls.dt > 0) || !(controls.endTime > 0))
+        cfFatal("transient: dt and endTime must both be positive");
+    if (!(controls.dtMin > 0))
+        cfFatal("transient: adaptive stepping needs dtMin > 0");
+    if (controls.dtMax < controls.dtMin)
+        cfFatal("transient: dtMax must not be below dtMin");
+
+    TransientNetwork sim(c);
+    TransientSeries out;
+    out.nodeNames.assign(sim.nodeNames().begin(), sim.nodeNames().end());
+    out.pipeNames.reserve(c.pipes.size());
+    for (const TransientPipeConfig& p : c.pipes) out.pipeNames.push_back(p.name);
+
+    auto sample = [&]()
+    {
+        TransientSample s;
+        s.t = sim.time();
+        s.pressure = sim.pressure();
+        s.liquidFraction = sim.liquidFractions();
+        s.hydrateFraction = sim.hydrateFractions();
+        s.flowRate = sim.pipeFlows();
+        out.samples.push_back(std::move(s));
+    };
+
+    sample();
+    const int report = std::max(1, controls.reportEvery);
+    double dtCur = controls.dt;
+    double t = 0.0;
+    long long nSteps = 0;
+    while (t < controls.endTime - 1e-12)
+    {
+        const double rest = controls.endTime - t;
+        const bool clampFires = rest <= dtCur;
+        const double h = clampFires ? rest : dtCur;
+        sim.step(h);
+        ++nSteps;
+        t = clampFires ? controls.endTime : t + h;
+        if (nSteps % report == 0 || clampFires) sample();
+        dtCur = sim.cflStep(controls.cfl, controls.dtMin, controls.dtMax);
+    }
+    return out;
+}
+
 TransientCase loadTransientFromDict(const Dictionary& caseDict)
 {
     TransientCase c;
@@ -899,6 +971,16 @@ TransientTimeControls loadTransientControls(const Dictionary& caseDict)
     tc.dt = td.getScalar("dt");
     tc.endTime = td.getScalar("endTime");
     tc.reportEvery = static_cast<int>(td.getScalarOr("reportEvery", 1.0));
+    // 5.68 / D5: cfl switches the loop to CFL-adaptive stepping. Absent means
+    // the fixed-step march; present-but-nonpositive is a broken case.
+    tc.cfl = td.getScalarOr("cfl", 0.0);
+    if (td.has("cfl") && !(tc.cfl > 0))
+        cfFatal("transient: cfl must be positive when declared");
+    if (tc.cfl > 0)
+    {
+        tc.dtMin = td.getScalarOr("dtMin", tc.dt);
+        tc.dtMax = td.getScalarOr("dtMax", tc.endTime);
+    }
     return tc;
 }
 

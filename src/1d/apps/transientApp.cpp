@@ -74,6 +74,27 @@ int main(int argc, char** argv)
             log::error("transient: dt and endTime must both be positive");
             return 1;
         }
+        // 5.68 / D5: cfl > 0 switches the loop to CFL-adaptive stepping --
+        // the next dt is the Courant rule over the whole network, first step
+        // is the case's own dt. Say so on the output so the reader sees which
+        // march the t column is a record of; an undeclared case prints
+        // exactly what it printed before.
+        const bool adaptive = tc.cfl > 0;
+        if (adaptive)
+        {
+            if (!(tc.dtMin > 0))
+            {
+                log::error("transient: adaptive stepping needs dtMin > 0");
+                return 1;
+            }
+            if (tc.dtMax < tc.dtMin)
+            {
+                log::error("transient: dtMax must not be below dtMin");
+                return 1;
+            }
+            log::info("transient adaptive: cfl ", num(tc.cfl), " dtMin ",
+                      num(tc.dtMin), " dtMax ", num(tc.dtMax));
+        }
         const int nSteps =
             static_cast<int>(std::ceil(tc.endTime / tc.dt - 1e-9));
 
@@ -104,6 +125,36 @@ int main(int argc, char** argv)
         };
 
         emit(sim);
+        if (adaptive)
+        {
+            // 5.68 / D5: the adaptive march. t accumulates -- with varying dt
+            // there is no index to position one -- and the last step is
+            // clamped to endTime - t, with t snapped to endTime exactly when
+            // the clamp fires. Every state is emitted at its own step boundary
+            // per reportEvery, and the final state is always emitted.
+            double dtCur = tc.dt;
+            double t = 0.0;
+            long long i = 0;
+            while (t < tc.endTime - 1e-12)
+            {
+                const double rest = tc.endTime - t;
+                const bool clampFires = rest <= dtCur;
+                const double h = clampFires ? rest : dtCur;
+                const double res = sim.step(h);
+                ++i;
+                t = clampFires ? tc.endTime : t + h;
+                if (i % report == 0 || clampFires) emit(sim);
+                if (!std::isfinite(res))
+                {
+                    log::error("transient: non-finite Newton residual at step ",
+                               i);
+                    return 1;
+                }
+                dtCur = sim.cflStep(tc.cfl, tc.dtMin, tc.dtMax);
+            }
+            log::info("transient solved: steps=", i);
+            return 0;
+        }
         for (int i = 1; i <= nSteps; ++i)
         {
             const double tPrev = std::min((i - 1) * tc.dt, tc.endTime);

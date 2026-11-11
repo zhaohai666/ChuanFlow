@@ -213,7 +213,10 @@ PYBIND11_MODULE(chflow_core, m)
         .def(py::init<>())
         .def_readwrite("dt", &cf::TransientTimeControls::dt)
         .def_readwrite("end_time", &cf::TransientTimeControls::endTime)
-        .def_readwrite("report_every", &cf::TransientTimeControls::reportEvery);
+        .def_readwrite("report_every", &cf::TransientTimeControls::reportEvery)
+        .def_readwrite("cfl", &cf::TransientTimeControls::cfl)
+        .def_readwrite("dt_min", &cf::TransientTimeControls::dtMin)
+        .def_readwrite("dt_max", &cf::TransientTimeControls::dtMax);
 
     py::class_<cf::TransientNetwork>(m, "TransientNetwork")
         .def(py::init<const cf::TransientCase&>(), py::arg("case"))
@@ -237,10 +240,19 @@ PYBIND11_MODULE(chflow_core, m)
           py::arg("liquid_volume"), py::arg("hydrate_volume"),
           py::arg("rate"), py::arg("dt"));
 
-    m.def("run_transient", &cf::runTransient,
+    m.def("run_transient", static_cast<cf::TransientSeries (*)(
+              const cf::TransientCase&, double, double, int)>(&cf::runTransient),
           py::call_guard<py::gil_scoped_release>(),
           py::arg("case"), py::arg("dt"), py::arg("end_time"),
           py::arg("report_every") = 1);
+    // 5.68 / D5: the controls-driven overload -- cfl > 0 runs the
+    // CFL-adaptive march.
+    m.def("run_transient",
+          static_cast<cf::TransientSeries (*)(
+              const cf::TransientCase&, const cf::TransientTimeControls&)>(
+              &cf::runTransient),
+          py::call_guard<py::gil_scoped_release>(),
+          py::arg("case"), py::arg("controls"));
 
     m.def("load_transient_case", [](const std::string& caseDictPath)
           { return cf::loadTransientFromDict(cf::Dictionary::parseFile(caseDictPath)); },

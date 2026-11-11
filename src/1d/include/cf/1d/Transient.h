@@ -218,6 +218,12 @@ public:
     std::vector<double> liquidVolumes() const;
     std::vector<double> hydrateVolumes() const;
 
+    /// 5.68 / D5: the Courant rule over the whole network, read off the flows
+    /// the last committed step left: target * min_k(L_k A_k / |q_k|) over
+    /// MOVING pipes, clamped to [lo, hi]. A pipe at rest imposes nothing; a
+    /// network at rest has no constraint at all and takes the ceiling hi.
+    double cflStep(double target, double lo, double hi) const;
+
 private:
     struct PipeDyn
     {
@@ -303,7 +309,24 @@ struct TransientTimeControls
     double dt = 0.01;
     double endTime = 1.0;
     int reportEvery = 1;
+    // 5.68 / D5: cfl > 0 switches the transient loop to CFL-adaptive stepping.
+    // Zero (the key absent) keeps the fixed-step march of 5.66.
+    double cfl = 0.0;
+    double dtMin = 0.0; // adaptive floor; loader defaults it to dt
+    double dtMax = 0.0; // adaptive ceiling; loader defaults it to endTime
 };
+
+/// Same, driven by the whole TransientTimeControls. When controls.cfl > 0 the
+/// loop is CFL-adaptive (5.68 / D5): the next dt is the Courant rule over the
+/// whole network, dt = clamp(cfl * min_k(L_k A_k / |q_k|), dtMin, dtMax), read
+/// off the flows the step just committed -- a pipe at rest imposes nothing,
+/// and a network at rest takes dtMax. t accumulates (with varying dt there is
+/// no step index to position one), the last step is clamped to
+/// endTime - t -- and t snaps to endTime exactly when that clamp fires.
+/// controls.cfl == 0 delegates to the fixed-step overload unchanged.
+TransientSeries runTransient(const TransientCase& c,
+                             const TransientTimeControls& controls);
+
 TransientTimeControls loadTransientControls(const Dictionary& caseDict);
 
 } // namespace cf

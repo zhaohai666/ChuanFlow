@@ -900,6 +900,23 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentTripleTable/case.dict)
 
+# 5.68 / D5 CFL-adaptive time stepping: `cfl` in time{} switches the loop to
+# dt_next = clamp(cfl * min_k(L_k A_k / |q_k|), dtMin, dtMax) read off the
+# flows the step just committed -- first step is the case's dt, a resting
+# network takes dtMax, t accumulates, the last step is clamped to the
+# remainder and t snaps to endTime. The case's schedule visits every regime
+# (initial / ceiling / rule / floor / remainder) and stays laminar so every
+# state re-derives in closed form. The checker re-derives the whole schedule
+# from the states -- the schedule is a property of the physics, not a
+# remembered list -- plus the fixed march (cfl absent) untouched and three
+# refusals.
+add_test(
+    NAME verify.transientAdaptiveCfl
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_adaptive_cfl.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientAdaptiveCfl/case.dict)
+
 
 # 5.51 the published laminar-turbulent locus of a yielded pipe, read off the
 # pipe's own wall law. The turbulent-yield FRICTION closure could not be

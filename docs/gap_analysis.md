@@ -34,7 +34,7 @@
      BLOCKED  ──（阻塞解除）──► IN_PROGRESS
 ```
 
-> **落点编号说明（2026-11-11 审计）**：带「（预估）」的 §5.x 落点只是**占位编号**，实际按增量关闭顺序分配，不预留。架构文档当前已用到 **§5.67**（§5.63 = C1/A4，§5.64 = B6，§5.65 = C2，§5.66 = C4，§5.67 = B5）；因此 A2 原写 §5.63、A3 原写 §5.64 均已被占用，C3 原写 §5.66 与 A6 的 §5.67 也不一致。这三条在本轮审计里改为「待分配 / 顺延」，其余预估编号维持不动，等该项真正启动时再定。
+> **落点编号说明（2026-11-11 审计）**：带「（预估）」的 §5.x 落点只是**占位编号**，实际按增量关闭顺序分配，不预留。架构文档当前已用到 **§5.68**（§5.63 = C1/A4，§5.64 = B6，§5.65 = C2，§5.66 = C4，§5.67 = B5，§5.68 = D5）；因此 A2 原写 §5.63、A3 原写 §5.64 均已被占用，C3 原写 §5.66 与 A6 的 §5.67 也不一致。这三条在本轮审计里改为「待分配 / 顺延」，其余预估编号维持不动，等该项真正启动时再定。
 
 ## 1. A 类 —— 已命名且已记录的 open cell
 
@@ -279,10 +279,10 @@
 ### D5. 自适应时间步（CFL 驱动的 `dt`）
 
 - **参考工具**：OLGA adaptive time stepping
-- **当前状态**：`OPEN`
-- **成本估计**：1.5 增量
-- **落点**：architecture.md §6.x
-- **备注**：每个瞬态用例都用固定 `dt`；在最慢管上放一个 CFL 探针能直接消掉 §5.38 记录的 `dt 0.05` 发散墙。
+- **当前状态**：`CLOSED`（2026-11-11，§5.68）
+- **成本估计**：1.5 增量（实际 ~0.5：内核 ~40 行 + 1 case 文件 + 1 checker）
+- **落点**：architecture.md §5.68
+- **备注**：每个瞬态用例都用固定 `dt`；在最慢管上放一个 CFL 探针能直接消掉 §5.38 记录的 `dt 0.05` 发散墙。**落地（2026-11-11）**：`time { cfl <target>; dtMin; dtMax; }` 三个可选键——`cfl` 在场即切换自适应行进，`dt_next = clamp(cfl·min_k(L_k A_k/|q_k|), dtMin, dtMax)` 从刚提交的流量读出；首步是 case 自己的 `dt`；静止网络取 `dtMax`（静止管不强加约束）；`t` 累加（变步长没有索引可定位），末步裁到 `endTime − t` 且裁剪触发时 `t` 精确吸附到 endTime；`cfl` 缺席 = 5.66 的固定步长逐位不变。三条拒收：`cfl` 声明但 ≤ 0、`dtMin ≤ 0`、`dtMax < dtMin`。Python 绑定暴露三个新字段与 controls 版 `run_transient` 重载。**边界**：这是 1D 管网 Courant 规则，不触碰 §5.38 记录的耦合界面发散墙（那是 3D 块侧的预算，见 §5.38 边界）；case 设计上让全管保持层流（Re_inf ≈ 1345 / 1272），使 checker 的整条调度闭式可复现——湍流档的 CFL 判据未单列。新增 case `transientAdaptiveCfl`（调度访问全部四个 regime：初始 0.004 → 天花板 0.1 ×2 → 规则自定 ×3 → 地板 0.08 ×20 → 余量钳）+ checker `check_transient_adaptive_cfl.py` 16 判据，`verify.transientAdaptiveCfl`（Test #85，0.81 s）。
 
 ### D6. 地形诱发段塞（起伏管线低点积液）
 
@@ -323,7 +323,7 @@
 3. ~~**B4**~~ — CLOSED（§5.54 审计）
 4. ~~**C1 / A4**~~ — **CLOSED**（§5.63）：流变进入耦合边，稳态 + 瞬态 + 3D 逐面黏度同台；实测 1 增量而非 2.5。
 5. **A1** —— 任务 #84，β 项被第三方文献确认后启动（仍 `BLOCKED`）。
-6. **D5** — 自适应时间步。A1 阻塞期间**这是 D 类里钩子最小的第一项**；按 §2 的标准，零内核改动的 B 类项（B5 / C2 / C4）风险更低，应优先穿插，不要因为这条编号就跳过它们。（2026-11-11 审计澄清：原文"可执行的第一项"与 §2「首选从 B 类开始」相互冲突。）
+6. ~~**D5**~~ — **CLOSED**（§5.68，`time{ cfl; dtMin; dtMax; }` 三个可选键 + 自适应行进，`cfl` 缺席 = 5.66 固定步长逐位不变；实测 ~0.5 增量而非 1.5）。
 7. ~~**B6**~~ — **CLOSED**（§5.64）；~~**C2**~~ — **CLOSED**（§5.65，HB × 无日程阀 K，阀的分成由壁律指数决定）；~~**C4**~~ — **CLOSED**（§5.66，ceil + 末步裁剪 + 末态恒打印，endTime 为 dt 整倍数时逐位兼容）；~~**B5**~~ — **CLOSED**（§5.67，三张逐边表 × 逐边 profile 同台，quasi+slab+charge 三表叠一边）；**C3** — 按需要穿插。
 8. **A2 / A3 / A5 / A6 / A7 / A8 / A9 / A10 / A11** — 按引用热度排。
 9. **D1 / D2 / D3 / D4 / D6 / D7 / D8 / D9** — 大型能力块，按产品规划排期。
@@ -347,3 +347,4 @@
 | 2026-11-11 | C2 | §5.65 | fb09958 | 885.06 s / 120 | HB 壁 × 无日程阀 K（`flowIndex`/`consistency`/`yieldStress`/`valve` 同一根管），**0 内核改动**：2 case 文件 + 1 checker、56 判据；16 管 × 2001 状态被「HB 剖面积分 + K ρ\|Q\|Q/2A²」递推复现（最差 4.347e-10）；同一 K=500 在 n=0.5 管拿 2.33 Pa、n=1.5 管拿 308.76 Pa（133×，阀分成由壁律指数决定）；三停止迹第 9/9/5 步逐状态复现；稳态核对同根会合；`verify.transientYieldIndexValveK` |
 | 2026-11-11 | C4 | §5.66 | eb794d9 | 885.06 s / 120 | `reportEvery` 与 `endTime` 解耦：步数 `ceil(endTime/dt − 1e-9)`、末步 `h = min(dt, endTime − (i−1)dt)`、`tPrev` 用步索引、末态恒打印、dt/endTime 拒收 0；1 case 文件 + 1 checker、40 判据（六臂 + 拒收）；0.1/0.03 → 0.03/0.03/0.03/0.01 五态落在 t=0.1 精确、0.12/0.03（浮点 4.000000000000001）不误计、endTime 整倍数时 `transientYieldValve` 仍 2001 状态逐位兼容；全序列隐式欧拉递推复现最差 3.27e-11（Bingham 臂）；`verify.transientTimeDecoupled`（Test #83）。**checker 首跑 21 失败根因**：头注释里的示例字样（`endTime 0.1`、`reportEvery 3 and 5`）被 END/REPORT 正则先命中——键提取必须先剥 `//` 注释再读活字典文本 |
 | 2026-11-11 | B5 | §5.67 | 95aefb6 | 563.25 s / 121 | 三张独立逐边表（`ddtFrom` + `inertiaFrom` + `convectiveToRow`）× 逐边 `profile` 同台，**0 内核改动**：1 case 文件 + 1 checker、21 判据；5 臂（base/mix/mix_charge/pin/both_chr，拓扑/网格/dt/seeds 复用 §5.41），4 臂是 §5.41/§5.44 的已发布格子，唯一新格 `mix_charge` = quasi + slab + charge 三表叠一边（quasi 边的行用 slab 的 M 付 M·dq/dt、同时让出 dpConv、grade 恒 0——运行验证可行）；base 臂 1e-12 复现 §5.41 p_net 的 level-1/8 状态与 pass 序列；80 状态 row 闭合 slack 恰 0；charge 只动一行的一项（mix 与 mix_charge 的 X1 逐位相同）；chord 最差 8.9e-4 在容差内；`verify.transientCoupledMultiTurbulentTripleTable` |
+| 2026-11-11 | D5 | §5.68 | 待补 hash | 待全量回归 | CFL 自适应时间步：`time{ cfl; dtMin; dtMax; }` 三个可选键，`cfl > 0` 切换自适应行进 `dt_next = clamp(cfl·min_k(L_k A_k/\|q_k\|), dtMin, dtMax)`（从刚提交的流量读出）、首步 = case 的 dt、静止网络取 dtMax、t 累加、末步裁到余量且 t 精确吸附 endTime、`cfl` 缺席 = 5.66 固定步长逐位不变；内核 `TransientNetwork::cflStep` + core/app 各一条自适应分支 + 三条拒收 + Python 绑定新字段与 controls 重载；1 case 文件 + 1 checker、16 判据——调度逐步被「上一态流量的 Courant 规则」复现（调度是物理的性质不是记住的表）、全部 27 态被逐步 h 的隐式欧拉行复现（最差 8.53e-10，全管层流 Re_inf ≈ 1345/1272）、固定行进 501 态闭式复现且与自适应末态不同、调度访问全部四个 regime、三条拒收；`verify.transientAdaptiveCfl`（Test #85，0.81 s）。**case 设计教训**：rule_inf = cfl ρL²/(drive·τ) 与 Re_inf = ρd³·drive/(32 μ²L) 联立定 drive——floor 绑定与层流可以同时成立，但 drive 要按这两条 identity 选（第一版 μ=0.01 时 Re 14280 进湍流区，checker 层流闭式全面失配 0.83 才暴露） |

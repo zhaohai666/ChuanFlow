@@ -1,0 +1,74 @@
+// transientAdaptiveCfl (D5, gap_analysis): CFL-adaptive time stepping -- the
+// loop's next dt is the Courant rule over the whole network, read off the
+// flows the step just committed:
+//
+//     dt_next = clamp(cfl * min_k(L_k A_k / |q_k|), dtMin, dtMax)
+//
+// Every transient case before this one marched a fixed dt (5.66 added the
+// ceil + clamp bookkeeping; D5 adds the SCHEDULE). The first step is the
+// case's own `dt`; a pipe at rest imposes nothing; a network at rest takes
+// dtMax; t accumulates (with varying dt there is no index to position one)
+// and the last step is clamped to endTime - t, with t snapped to endTime
+// exactly when the clamp fires. Zero new keys beyond three optional ones in
+// the same `time{}` block; a case without `cfl` marches exactly what 5.66's
+// loop marched, bit for bit.
+//
+// The three pipes make the schedule exercise all three regimes:
+//
+//     Fast  Newtonian d = 0.015, L = 1  -- the pipe whose Courant budget
+//                                       tightens: tau = rho d^2 / 32 mu
+//                                       = 0.0598 s, Q_inf ~ 1.86e-3,
+//                                       rule_inf ~ 7.6e-2 < dtMin, and
+//                                       Re_inf ~ 1345 stays laminar, so
+//                                       the row stays the closed form the
+//                                       checker re-derives
+//     Slow  Newtonian d = 0.04, L = 20  -- never binds (rule_inf ~ 4.3 s,
+//                                       Re_inf ~ 1272, also laminar)
+//     Yield Bingham  tau0 = 1.0, d = 0.02 -- never binds (threshold 4000 Pa
+//                                       << drive 1.5e5 so it flows, but its
+//                                       rule is ~17 s); the rule is a min
+//                                       over the whole network and here
+//                                       Fast is the binder
+//
+// with dt 0.004 / endTime 2 / cfl 0.8 / dtMin 0.08 / dtMax 0.1: the march
+// starts at 0.004, jumps to the 0.1 ceiling while the flows are still small,
+// tightens as Fast's flow develops (its tau is 0.0598 s, so the ceiling
+// holds only while t << tau), settles on the 0.08 floor, and the remainder
+// clamp ends the run on endTime exactly. The design identity
+// rule_inf = cfl rho L^2 / (drive tau) is what sets the drive: with
+// drive 1.5e5 the floor binds inside the window AND every pipe stays
+// laminar, which keeps the whole schedule re-derivable in closed form.
+//
+// verified by tests/check_transient_adaptive_cfl.py (ctest
+// verify.transientAdaptiveCfl). The checker re-derives the whole schedule:
+// each h from the printed t column, each state from the implicit-Euler row
+// with that h, and each NEXT h from the Courant rule on that state's flows --
+// the schedule is a property of the physics, not a remembered list.
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 1.7e5; }
+    B { fixedPressure 2.0e4; }
+}
+
+pipes
+{
+    Fast  { from A; to B; length 1;  diameter 0.015; }
+    Slow  { from A; to B; length 20; diameter 0.04; }
+    Yield { from A; to B; length 20; diameter 0.02; yieldStress 1.0; }
+}
+
+time
+{
+    dt 0.004;
+    endTime 2;
+    reportEvery 1;
+    cfl 0.8;
+    dtMin 0.08;
+    dtMax 0.1;
+}

@@ -1190,6 +1190,24 @@ python3 tests/check_transient_coupled_multi_turbulent_triple_table.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiTurbulentTripleTable/case.dict"
 
+# CFL 自适应时间步（5.68 / D5）：time{ cfl; dtMin; dtMax; } 三个可选键，cfl 在场
+# 即切换自适应行进 dt_next = clamp(cfl * min_k(L_k A_k / |q_k|), dtMin, dtMax)，
+# 从刚提交的流量读出；首步 = case 的 dt；静止网络取 dtMax；t 累加（变步长没有
+# 索引可定位），末步裁到 endTime - t 且 t 精确吸附 endTime；cfl 缺席 = 5.66 的
+# 固定步长逐位不变。case 的调度访问全部四个 regime（初始 0.004 / 天花板 0.1 x2 /
+# 规则自定 x3 / 地板 0.08 x20 / 余量钳），全管保持层流（Re_inf ~ 1345 / 1272），
+# 所以整条调度与全部 27 态都被闭式复现——调度是物理的性质不是记住的表。
+# 注意：case 设计用两条 identity 联立定 drive——rule_inf = cfl rho L^2 / (drive tau)
+# < dtMin 且 Re_inf = rho d^3 drive / (32 mu^2 L) < 2000；第一版 mu=0.01 时
+# Re 14280 进湍流区，checker 层流闭式全面失配才暴露。
+# 三条拒收：cfl 声明但 <= 0、dtMin <= 0、dtMax < dtMin。
+# 16 判据；checker 全程 0.81 s（ctest verify.transientAdaptiveCfl）
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientAdaptiveCfl/case.dict
+python3 tests/check_transient_adaptive_cfl.py \
+    "$PWD/build/src/1d/apps/chflow-1d-transient" \
+    "$PWD/tests/cases/transientAdaptiveCfl/case.dict"
+
+
 
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
 # （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增

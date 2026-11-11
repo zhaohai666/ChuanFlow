@@ -1144,6 +1144,29 @@ add_test(
         $<TARGET_FILE:chflow-1d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldTauIndexRelatch/case_5.dict)
 
+# 5.61 -- source schedule x HB yield wall x drain valve. New kernel hook:
+# `sources{ <name> { node N; schedule { openRate; close { start; end; }
+# open { start; end; } } } }`, mirror of valveClose / valveOpen on a pipe,
+# evaluated at the same implicit new time level t + dt (transient.cpp:125-:145
+# shared ramp helper, sourceRateAt; :329-:337 per-step reset+sum into
+# nd.source; :400 node balance; :480 liquid inventory with sourceFraction).
+# Parser rejects `sources` entries with neither `rate` nor `schedule`. The
+# desk (transient.cpp:40-:43) and clamp (:353-:355) are schedule-blind, so
+# the release step (318) is identical in case_off and case_on; the schedule
+# only moves the re-latch and re-release steps.
+# case_off transitions: [1, 318] (events(), 2 entries).
+# case_on  transitions: [1, 318, 531, 1466] (events(), 4 entries).
+# Release drive 8006.59 Pa > threshold 8000, one step earlier 7999.38 Pa.
+# HB section integral worst 1.4e-8 rel, node closure worst 1.2e-7 Pa/step,
+# 600-state prefix bit-for-bit identical across the two files.
+# 6423 judgments, two case files, 0 kernel lines (counted at the next hook).
+add_test(
+    NAME verify.transientSourceYieldWake
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_source_yield_wake.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientSourceYieldWake/case_off.dict)
+
 
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation

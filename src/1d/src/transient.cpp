@@ -133,6 +133,19 @@ double valveKAt(double kOpen, double kClosed,
     return kOpen;
 }
 
+/// Source rate at time t, mirror of valveKAt with "open" = 0 (off) and
+/// "closed" = openRate (on). The source is off before start, ramps up to
+/// openRate over [start, end], holds at openRate, then ramps back to 0 over
+/// [reopenStart, reopenEnd]. start < 0 disables the schedule and the caller
+/// falls back to the constant `rate`. Continuous in t.
+double sourceRateAt(double rate, double openRate,
+                    double start, double end,
+                    double reopenStart, double reopenEnd, double t)
+{
+    if (start < 0) return rate;
+    return valveKAt(0.0, openRate, start, end, reopenStart, reopenEnd, t);
+}
+
 /// A coupled pipe's loss is its partner's, so no local loss may share it.
 void requireNoValve(const std::string& name, double kOpen, double closeStart,
                     double openStart)
@@ -189,8 +202,22 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
     for (const TransientSource& s : c.sources)
     {
         const label i = net_.nodeIndex(s.nodeName);
-        nodes_[static_cast<std::size_t>(i)].source += s.rate;
-        nodes_[static_cast<std::size_t>(i)].sourceFraction = s.fraction;
+        SourceEntry e;
+        e.nodeIndex = static_cast<std::size_t>(i);
+        e.rate = s.rate;
+        e.openRate = s.openRate;
+        e.fraction = s.fraction;
+        e.start = s.start;
+        e.end = s.end;
+        e.reopenStart = s.reopenStart;
+        e.reopenEnd = s.reopenEnd;
+        sourceEntries_.push_back(e);
+        // The fraction is constant; the rate is re-summed every step() so the
+        // schedule can move it. Pre-fill with the constant-rate value for any
+        // caller that reads `nd.source` before the first step().
+        nodes_[e.nodeIndex].sourceFraction = e.fraction;
+        nodes_[e.nodeIndex].source =
+            (e.start < 0) ? e.rate : 0.0;
     }
 
     for (const TransientPipeConfig& pc : c.pipes)
@@ -298,6 +325,16 @@ double TransientNetwork::solveStep(double dt)
         kv[k] = valveKAt(pipes_[k].geo.valveK, pipes_[k].kClosed,
                          pipes_[k].closeStart, pipes_[k].closeEnd,
                          pipes_[k].openStart, pipes_[k].openEnd, tNew);
+
+    // source rate at the same implicit new time level; reset-then-sum so a
+    // node with multiple scheduled sources sees their sum (not a carry-over).
+    for (const SourceEntry& e : sourceEntries_)
+        nodes_[e.nodeIndex].source = 0.0;
+    for (const SourceEntry& e : sourceEntries_)
+        nodes_[e.nodeIndex].source += sourceRateAt(e.rate, e.openRate,
+                                                   e.start, e.end,
+                                                   e.reopenStart, e.reopenEnd,
+                                                   tNew);
 
     double maxRel = 0;
 
@@ -784,8 +821,43 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
             const Dictionary& sd = src.getDict(name);
             TransientSource s;
             s.nodeName = sd.getWord("node");
-            s.rate = sd.getScalar("rate");
             s.fraction = sd.getScalarOr("fraction", 1.0);
+            const bool hasRate = sd.has("rate");
+            const bool hasSchedule = sd.has("schedule");
+            if (hasRate) s.rate = sd.getScalar("rate");
+            if (hasSchedule)
+            {
+                const Dictionary& sc = sd.getDict("schedule");
+                s.openRate = sc.getScalar("openRate");
+                if (sc.has("close"))
+                {
+                    const Dictionary& cl = sc.getDict("close");
+                    s.start = cl.getScalar("start");
+                    s.end = cl.getScalar("end");
+                    if (s.start > s.end)
+                        cfFatal("transient: source '" + name
+                                + "' schedule.close start must be <= end");
+                }
+                if (sc.has("open"))
+                {
+                    if (s.start < 0)
+                        cfFatal("transient: source '" + name
+                                + "' schedule.open needs a schedule.close block");
+                    const Dictionary& op = sc.getDict("open");
+                    s.reopenStart = op.getScalar("start");
+                    s.reopenEnd = op.getScalar("end");
+                    if (s.reopenStart < s.end)
+                        cfFatal("transient: source '" + name
+                                + "' schedule.open must not start before"
+                                  " schedule.close ends");
+                    if (s.reopenStart > s.reopenEnd)
+                        cfFatal("transient: source '" + name
+                                + "' schedule.open start must be <= end");
+                }
+            }
+            if (!hasRate && !hasSchedule)
+                cfFatal("transient: source '" + name
+                        + "' needs a `rate` or a `schedule` block");
             c.sources.push_back(s);
         }
     }

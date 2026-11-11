@@ -1,0 +1,71 @@
+// transientSourceYieldWake (case_on): the schedule case. Same arm `u` as
+// case_off plus a single source on the same free node, ramping 0 -> 2e-6 m3/s
+// over [1.2, 1.4] s (steps 600..700), holding, then ramping back to 0 over
+// [2.0, 2.2] s (steps 1000..1100). Both ramps sit inside the drain's sealed
+// window [500, 1350], so the source is the only thing that can move the node
+// during the hold.
+//
+// New kernel hook: `sources{ inj { node F; schedule { openRate 2e-6; close {
+// start 1.2; end 1.4; } open { start 2.0; end 2.2; } } } }`. The schedule
+// shares the ramp shape with valveClose / valveOpen on a pipe; the source
+// rate is evaluated at the same implicit new time level t + dt as the valve
+// K. A source without a schedule{} is constant (5.52..5.60 behaviour), and
+// a `rate` key can be supplied instead for the constant-rate form; this file
+// exercises only the schedule form, so the case_off file above is the
+// control (no sources block at all).
+//
+// The row per arm is unchanged. The node balance picks up one more `+ Q_inj`
+// term in sumIn, and the liquid inventory picks up `dt * Q_inj` in commitStep.
+// Both follow the ramp continuously, so the Newton residual at each step
+// still sees a smooth sumIn.
+//
+// What the schedule is predicted to buy: with case_off the sealed-window
+// ceiling is the wall's own release pressure pA - threshold = 22000 Pa (the
+// wall flows, the wall holds the ceiling). With case_on the source is added
+// on top of the wall's flow, so the node climbs past 22000 during the hold
+// and the wall is asked to re-latch; when the source ramps off the node
+// falls back to 22000 and the wall wakes again. The threshold and the
+// release pressure are schedule-blind, so the two files share the same two
+// integers (22000 Pa / 8000 Pa) and differ only in the STEP each latch fires.
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+    F { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+}
+
+pipes
+{
+    Sa { from A; to F; length 20; diameter 0.02;
+         flowIndex 0.5; consistency 1.0; yieldStress 2.0; }
+    Da { from F; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+}
+
+sources
+{
+    inj
+    {
+        node F;
+        schedule
+        {
+            openRate 2.0e-6;
+            close { start 1.2; end 1.4; }
+            open  { start 2.0; end 2.2; }
+        }
+    }
+}
+
+time
+{
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

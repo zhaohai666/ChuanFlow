@@ -3776,6 +3776,34 @@ V/BC (pF - pF')    = Σin Q - Σout Q
 
 **本增量的边界**：① 只测**一副拓扑、一份日程**（关闭 `0.8→1.0 s`、开启 `2.5→2.7 s`、4 s 时钟），与非线性阀特性/快关/水锤无关。② `τ_0` 只取 **0.25 网格上的四个值**：窗口的两条边都**没有定位**——`2.0` 睡、`2.25` 从不醒之间的那根临界 `τ_0` 未扫，`n = 0.5` 侧"从未被问"到"被问"的临界指数同样未扫。③ `(n, K)` 仍是**三对且成对**扫，`n` 固定、`K` 单独扫的二维表没有做。④ `n = 0.5` 那两格证的是"**没被问起**"，不是定理；把节点初值抬 **600 Pa** 就能问（5.59 边界③），本案没做。⑤ **LATE** 这个分类依赖本案选的封闭窗 `[500, 1350]`：换一份日程，`n = 0.5` 臂 `c` 可能落进另一类。⑥ 步号分辨率仍是 `dt`（0.002 s）：那 **5 / 7** 步滑行是 `dt` 的整数倍，细于此看不见。⑦ "哪个清醒状态打印 `0`"受制于**打印量子**，不是内核的判决。⑧ 本案**没有**跑稳态内核，跨增量对照对的是 5.59 的瞬态文件。⑨ `beta`（对流动量账）× 静止支、耦合边两笔账照旧拒收。⑩ 对的是**同一内核的两份字典与打印 token**，不是实测或场数据。
 
+### 5.61 源日程唤醒停泊臂：**阀日程的形状第一次出现在源上**——瞬态 `sources{}` 学会 `schedule{ openRate; close { start; end; } open { start; end; } }`，与管上 `valveClose / valveOpen` **同一份 ramp helper**（`sourceRateAt` 复用 `valveKAt`），在**同一隐式新时刻 `t + dt`** 求值；注入脉冲把本来一直 held 的 HB 壁叫醒一次——**释放步相同，重锁步被日程推后**
+
+> 把 §5.56 边界④（"源 / 汇日程能否叫醒一根停泊臂"）拿出来做掉。新内核钩子（transient.cpp:125-:145 加 `sourceRateAt`，:329-:337 每步 reset+sum 进 `nd.source`，parser 加 `schedule{}` 子块；header 加 `SourceEntry` 与 `TransientSource` 上的 ramp 字段）把瞬态 `sources{}` 从**常数**升级到**分段线性 ramp**：`0 → openRate` over `[close.start, close.end]`，hold，`openRate → 0` over `[open.start, open.end]`。无日程时退化为常数 `rate`（与 §5.52-§5.60 逐 token 相同）；parser 拒绝**既无 `rate` 也无 `schedule`** 的 entry（非零退出码 + 消息）。节点衡算 `sumIn` 与 `commitStep` 的液态库存都看见同一个日程率（`transient.cpp:400` / `:480`），`sourceFraction` 保持为常数。
+
+**拓扑**：1 根 HB 屈服壁（`Sa`：`L 20, d 0.02, (n, K, τ_0) = (0.5, 1.0, 2.0)`，阈值 `4 τ_0 L/d = 8000 Pa`，释放压力 `pA − threshold = 22000 Pa`）+ 1 根泄放管（`Da`：`valve 0`，`valveClose 0.8→1.0 s closedK 1e8`、`valveOpen 2.5→2.7 s`）+ 1 个**自由节点**（`F`：`V 0.1, B 1e8, p_start 2.7e4`）。两副字典只差一个 `sources` 块：`case_off.dict` 无源（控制），`case_on.dict` 加 `inj{ node F; schedule { openRate 2e-6; close { start 1.2; end 1.4; } open { start 2.0; end 2.2; } } }`——注入 `0 → 2e-6 m³/s` 在步骤 **600..700**，hold 到步骤 **1000**，ramp 回 `0` 在步骤 **1000..1100**。所有常量沿用 §5.59 / §5.60（`ρ 850, μ 0.1, dt 0.002, endTime 4.0` 即 **2001** 状态）。
+
+**行 per arm**（日程不进入行，只进入 `sumIn`）：
+
+```
+ρ L/A (Q_s − Q_s')/dt = (pA − pF) − 4 L tw_s / d           (Sa, HB)
+ρ L/A (Q_d − Q_d')/dt = (pF − pB) − R Q_d − K_d(t) ρ|Q_d|Q_d/(2 A²)   (Da)
+V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
+```
+
+**内核**一行未改：**阈值** `4 τ_0 L/d`（`transient.cpp:28-:31`）、**entry desk** `holdsStatic = qPrev == 0 && |drive| ≤ threshold`（`:40-:43`）、**in-step clamp**（`:353-:355`，在 `kv` 被读之前跑）、**度泛型节点行**（`:395-:416`）——这**四条**正是 §5.59 / §5.60 用的同四条；日程盲，因为**它们不看 `nd.source`**。新加的只在**求值侧**：每条 `SourceEntry` 的 rate 在每步 `solveStep` 开始时**重置然后求和**到 owning 节点（`:329-:337`），用与阀同一个 `t + dt` 求值（保证 Newton 残差里的 `sumIn` 连续）。
+
+* **释放步相同，重锁步被日程动**：`case_off` 的旗标阶梯 `[1, 318]`（events()，**2** 次翻：`t = 0` 边界 + 第一次释放），从步骤 **318** 到结束**一直流**；`case_on` 阶梯 `[1, 318, 531, 1466]`（**4** 次翻：`t = 0` 边界 + 释放 + 日程推动的重锁 + 日程 ramp-off 后的再释放）。前 **600** 个状态（日程为 `0`）的 `p_F`、`Q_Sa`、`Q_Da`、旗标 `_Sa` **逐 token 相同**——日程**不能**倒推回到它还没动的时刻。
+* **阈值与释放压力照旧是 8000 Pa / 22000 Pa**：两副字典启动 banner 都打 `pipe Sa static-hold threshold 8000`；决定释放那一步的驱动 `pA − pPrev` 在 `case_off` 为 **8006.5905 Pa**（> 阈值），再前一步 **7999.3816 Pa**（≤ 阈值）；`case_on` 逐 token 相同。日程**不能**改阈值，因为阈值是 `τ_0` 的函数，不是 `nd.source` 的函数。
+* **日程推动重锁的物理**：步骤 **318..530**（`0.636..1.060 s`）节点从 `22000` 跌到 `21239`（壁在流、泄放在流、两者把节点夹在释放与下游之间）；步骤 **600..700**（`1.2..1.4 s`）日程把 `Q_inj` 从 `0` 抬到 `2e-6`，`dp_F/dt = (Q_s + Q_inj − Q_d)/C_c` 变正，节点开始**回升**；步骤 **700..1000**（`1.4..2.0 s`）`Q_inj = 2e-6` 恒定，节点继续上行直到穿过 `22000`，步骤 **531**（`1.062 s`，实际在 `1.2 s` 之后的积分累积）壁被**重新锁上**；步骤 **1000..1100**（`2.0..2.2 s`）日程 ramp off，节点失去补给开始回落，步骤 **1466**（`2.932 s`）再次穿过 `22000`，壁**再次释放**。日程**只动了两个整数**（`531`、`1466`），**没动释放本身**。
+* **HB 截面积分照旧**：每个 `Q_Sa > 0` 的步，`Q_Sa` 就是本行隐含壁应力的 HB 截面积分（`q_hb(tw, τ_0, n, K)`），最差相对 **1.4e-8**（步骤 **319**，**1682** 个已决策状态）。held 步 `Q_Sa == 0` 到打印位。
+* **节点衡算照旧**：`case_off` 的节点闭合 `V/B · dp_F/dt = Q_s − Q_d` 到最差 **9.9e-8 Pa/step**（**2000** 个已决策状态）；`case_on` 的 `V/B · dp_F/dt = Q_s + Q_inj(t) − Q_d` 到最差 **1.2e-7 Pa/step**，注入贡献 `Q_inj(t)` 用**同一份 `sourceRateAt` 在 checker 里再求一次**——日程在 checker 与内核是**同一份 ramp 表达式**（`transient.cpp:125-:145` verbatim）。
+* **泄放阀与日程无关**：`Da` 的 `K(t)` 由 `valveKAt` 求值，`case_off` 与 `case_on` 逐 token 相同；源日程**只**影响节点压力，泄放管只**看见**那份压力。
+* **源日程** `schedule{}` 块与 `valveClose / valveOpen` 块**形态相同**：`close` 块把率从 `0` ramp 到 `openRate`（"阀 close 把 K 从 openK 推到 closedK"的类比），`open` 块把率从 `openRate` ramp 回 `0`（"阀 open 把 K 从 closedK 拉回 openK"的类比）；ramp 在 `t` 上**连续**，跨 ramp 边界的样本**不**看见跳变。parser 强制 `close.start ≤ close.end`、`open.start ≥ close.end`、`open.start ≤ open.end`，否则非零退出码。
+
+**成本**：**2** 个 case 文件（**3** 节点 / **2** 根管 / **1** 根 HB 壁 × **2001** 状态 × **2** 副），两次 app 调用合计 **0.11 s**，checker 直跑 **0.38 s**、ctest `-R` 记 **2.67 s**、`-j8` 全量里记 **2.23 s**（Test #90），**6423** 条判据、**1** 次内核改动（parser + 求值侧；行算术**一行未改**）；全量 **116/116** 绿 **1311.16 s**。
+
+**本增量的边界**：① 只测**一副拓扑、一份源日程**（`openRate 2e-6`、`1.2→1.4 s` 上 ramp、`2.0→2.2 s` 下 ramp），与源的正弦/脉冲/多段日程无关。② 源只挂在**一个**自由节点上；多源共享同一节点时的 fraction 累计**未**扫（parser 接受，但多源节点的 `sourceFraction` 是最后一个源的值——沿用旧行为，未修正）。③ `schedule{}` 块只支持 `close` + `open` 两段线性 ramp，**不**支持点序（`times / values` 表）；要的话走 `TwoFluidPipe.inlet.schedule`（已经支持）。④ 源日程与阀日程**没有**放在同一根管上做过；本案源在节点、阀在另一根管的端点。⑤ `beta`（对流动量账）× 静止支、耦合边两笔账照旧拒收。⑥ 耦合边拒收流变与屈服（`transient.cpp:226-:229`）照旧。⑦ 对的是**同一内核的两份字典与打印 token**，不是实测或场数据。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

@@ -80,8 +80,16 @@ struct TransientPipeConfig
 struct TransientSource
 {
     std::string nodeName;
-    double rate = 0;     // m3/s total injected volume
+    double rate = 0;     // m3/s total injected volume (used when no schedule)
     double fraction = 1; // liquid fraction of the injected volume
+    // Optional linear ramp schedule, same shape as valveClose / valveOpen on a
+    // pipe: rate ramps from 0 to openRate over [start, end], holds at openRate,
+    // then ramps back to 0 over [reopenStart, reopenEnd]. start < 0 disables
+    // the schedule and `rate` is used for the whole run; reopenStart < 0 keeps
+    // the source on at openRate after the ramp. Continuous in t.
+    double openRate = 0;
+    double start = -1, end = -1;
+    double reopenStart = -1, reopenEnd = -1;
 };
 
 struct TransientCase
@@ -240,6 +248,17 @@ private:
     std::vector<std::string> pipeNames_;
     std::vector<PipeDyn> pipes_;
     std::vector<NodeDyn> nodes_;
+
+    // Per-source schedule record, one entry per TransientSource in the case.
+    // The owning node's `source` is re-summed from these every step() so the
+    // rate tracks the schedule; `fraction` is constant and applied once here.
+    struct SourceEntry {
+        std::size_t nodeIndex = 0;
+        double rate = 0, openRate = 0, fraction = 1;
+        double start = -1, end = -1;
+        double reopenStart = -1, reopenEnd = -1;
+    };
+    std::vector<SourceEntry> sourceEntries_;
     std::vector<double> p_;  // current node pressures (all nodes)
     std::vector<double> q_;  // current pipe flows
     FluidProperties fluid_;

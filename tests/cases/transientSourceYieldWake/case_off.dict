@@ -1,0 +1,55 @@
+// transientSourceYieldWake (case_off): the control. One HB yield wall, one
+// drain with the usual close/reopen schedule, NO source. 5.59/5.60's strong
+// arm (`u`) topology: the drain pulls the node down, the wall releases, the
+// drain reopens and the wall re-latches. The source file will add a single
+// injection pulse on the same node during the sealed window and ask whether
+// that pulse moves the latch steps.
+//
+// Row per arm (no neighbour, no second wall):
+//
+//   rho L/A (Q_s - Q_s')/dt = (pA - pF) - 4 L tw_s / d
+//   rho L/A (Q_d - Q_d')/dt = (pF - pB) - R Q_d - K_d(t) rho|Q_d|Q_d/(2 A^2)
+//   V/BC (pF - pF')         = Q_s - Q_d
+//
+// No kernel change from 5.59/5.60: threshold (transient.cpp:28-:31), entry
+// latch (:40-:43), in-step clamp (:353-:355), degree-generic node row
+// (:395-:416).
+//
+// Constants: L 20, d 0.02, rho 850, mu 0.1, dt 0.002, endTime 4.0 (2001
+// states), volume 0.1, bulkModulus 1e8. The HB wall is (n, K, tau_0) =
+// (0.5, 1.0, 2.0), threshold 4 tau_0 L/d = 8000 Pa, release pressure
+// pA - threshold = 22000 Pa. The drain closes 0.8 -> 1.0 s to closedK = 1e8
+// and reopens 2.5 -> 2.7 s (first sealed sample 500, first reopened 1350).
+// Every free node starts at 2.7e4 Pa against A = 3e4, so drive on offer is
+// 3000 Pa and the wall starts held.
+//
+// verified by tests/check_transient_source_yield_wake.py
+// (ctest verify.transientSourceYieldWake).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+    F { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+}
+
+pipes
+{
+    Sa { from A; to F; length 20; diameter 0.02;
+         flowIndex 0.5; consistency 1.0; yieldStress 2.0; }
+    Da { from F; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+}
+
+time
+{
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

@@ -34,7 +34,7 @@
      BLOCKED  ──（阻塞解除）──► IN_PROGRESS
 ```
 
-> **落点编号说明（2026-11-11 审计）**：带「（预估）」的 §5.x 落点只是**占位编号**，实际按增量关闭顺序分配，不预留。架构文档当前已用到 **§5.69**（§5.63 = C1/A4，§5.64 = B6，§5.65 = C2，§5.66 = C4，§5.67 = B5，§5.68 = D5，§5.69 = A7）；因此 A2 原写 §5.63、A3 原写 §5.64 均已被占用，C3 原写 §5.66 与 A6 的 §5.67 也不一致。这三条在本轮审计里改为「待分配 / 顺延」，其余预估编号维持不动，等该项真正启动时再定。
+> **落点编号说明（2026-11-11 审计）**：带「（预估）」的 §5.x 落点只是**占位编号**，实际按增量关闭顺序分配，不预留。架构文档当前已用到 **§5.70**（§5.63 = C1/A4，§5.64 = B6，§5.65 = C2，§5.66 = C4，§5.67 = B5，§5.68 = D5，§5.69 = A7，§5.70 = A3）；因此 A2 原写 §5.63 已被占用，C3 原写 §5.66 与 A6 的 §5.67 也不一致。这几条在本轮审计里改为「待分配 / 顺延」，其余预估编号维持不动，等该项真正启动时再定。
 
 ## 1. A 类 —— 已命名且已记录的 open cell
 
@@ -63,13 +63,13 @@
 ### A3. β（对流动量项）与静止支同行
 
 - **参考工具**：Fluent 截面动量通量因子
-- **当前状态**：`OPEN`
-- **阻塞项**：无；但该量在 1D 定截面积稳态管道里恒为 0，只能在**瞬态行**或**截面积突变节点**处被观测。
-- **内核改动**：`src/1d/src/transient.cpp` 节点行（degree-generic §:395-:416）需要在 `Σ s_i A_i v_i = 0` 之外再带一笔 `Σ s_i β_i A_i v_i²`；`transient.cpp::pipeFrictionPa` 不动。
-- **成本估计**：1 增量
-- **落点**：architecture.md 待分配（原写 §5.64，已由 B6 占用）
-- **被命名 5 次**：§5.34 边界① / §5.35 边界② / §5.36 边界② / §5.37 边界② / §5.38 边界③。
-- **现状接受数**：第一层 χ 间隙 5–7%（ramp 类瞬态用例）。
+- **当前状态**：`CLOSED`（2026-11-11，§5.70）
+- **阻塞项**：无
+- **内核改动**：`src/1d/include/cf/1d/Transient.h`（`TransientPipeConfig` 加 `betaIn`/`betaOut`，缺省 1.0；`PipeDyn` 存声明值）+ `transient.cpp`（loader 两键、两条拒收 β < 1 与耦合管声明 β、装填 `d.convective = ρ(βOut−βIn)/A²` 复用既有行路径）+ `transientApp.cpp`（`betaIn ≠ betaOut` 的管条件打印 `dpConv`）+ 绑定三个访问器。**零声明零行为变化**；`pipeFrictionPa` 未动（稳态侧无动量方程，β 不属于那里）。
+- **成本估计**：1 增量；实测 ~0.7
+- **落点**：architecture.md §5.70
+- **被命名 5 次**：§5.34 边界① / §5.35 边界② / §5.36 边界② / §5.37 边界② / §5.38 边界③——全部由 §5.70 关闭（管行认识 β + 与静止支同台）。
+- **已测量**：三根几何全同的管只差声明就分开（记账 −6.4e-4 / 退账 +6.4e-4 相对，方向即物理）；全部 501 态被行的隐式二次方程闭式复现（记账正根 / 退账小根，最差 1.32e-9）；账随 q|q| 反号（反驱 |q| 逐位相同）；held pipe 无账可报（Q=0 消掉 q|q|，§5.50 的陈述）。
 
 ### A4. 耦合边拒绝流变与屈服
 
@@ -325,7 +325,7 @@
 5. **A1** —— 任务 #84，β 项被第三方文献确认后启动（仍 `BLOCKED`）。
 6. ~~**D5**~~ — **CLOSED**（§5.68，`time{ cfl; dtMin; dtMax; }` 三个可选键 + 自适应行进，`cfl` 缺席 = 5.66 固定步长逐位不变；实测 ~0.5 增量而非 1.5）。
 7. ~~**B6**~~ — **CLOSED**（§5.64）；~~**C2**~~ — **CLOSED**（§5.65，HB × 无日程阀 K，阀的分成由壁律指数决定）；~~**C4**~~ — **CLOSED**（§5.66，ceil + 末步裁剪 + 末态恒打印，endTime 为 dt 整倍数时逐位兼容）；~~**B5**~~ — **CLOSED**（§5.67，三张逐边表 × 逐边 profile 同台，quasi+slab+charge 三表叠一边）；~~**A7**~~ — **CLOSED**（§5.69，`SolverGates.h` 五常量单一来源 + policy assertion，零行为变化）；**C3** — 按需要穿插。
-8. **A2 / A3 / A5 / A6 / A8 / A9 / A10 / A11** — 按引用热度排。
+8. ~~**A3**~~ — **CLOSED**（§5.70，`betaIn`/`betaOut` 可选键把 §5.43 的账推广到非耦合管，零声明零行为变化；实测 ~0.7 增量而非 1）。**A2 / A5 / A6 / A8 / A9 / A10 / A11** — 按引用热度排。
 9. **D1 / D2 / D3 / D4 / D6 / D7 / D8 / D9** — 大型能力块，按产品规划排期。
 
 > **成本估计的修正（§5.63 实测）**：本清单里"3D 侧需要完整非牛顿黏度回路"被估成 2.5 增量，实际 1 增量。教训是先看 `src/3d/include/cf/fvm/EddyViscosity.h`：RANS 伙伴块（§5.23）早已把逐面黏度做成了求解器钩子，`fvm::laplacianFace` 每趟读一次 `nuEffFace()`，因此新增一种流体只需实现该接口，不动方程装配。后续 C 类成本估计应先核对现成钩子再报数。
@@ -349,3 +349,4 @@
 | 2026-11-11 | B5 | §5.67 | 95aefb6 | 563.25 s / 121 | 三张独立逐边表（`ddtFrom` + `inertiaFrom` + `convectiveToRow`）× 逐边 `profile` 同台，**0 内核改动**：1 case 文件 + 1 checker、21 判据；5 臂（base/mix/mix_charge/pin/both_chr，拓扑/网格/dt/seeds 复用 §5.41），4 臂是 §5.41/§5.44 的已发布格子，唯一新格 `mix_charge` = quasi + slab + charge 三表叠一边（quasi 边的行用 slab 的 M 付 M·dq/dt、同时让出 dpConv、grade 恒 0——运行验证可行）；base 臂 1e-12 复现 §5.41 p_net 的 level-1/8 状态与 pass 序列；80 状态 row 闭合 slack 恰 0；charge 只动一行的一项（mix 与 mix_charge 的 X1 逐位相同）；chord 最差 8.9e-4 在容差内；`verify.transientCoupledMultiTurbulentTripleTable` |
 | 2026-11-11 | D5 | §5.68 | 74066e3 | 743.73 s / 122 | CFL 自适应时间步：`time{ cfl; dtMin; dtMax; }` 三个可选键，`cfl > 0` 切换自适应行进 `dt_next = clamp(cfl·min_k(L_k A_k/\|q_k\|), dtMin, dtMax)`（从刚提交的流量读出）、首步 = case 的 dt、静止网络取 dtMax、t 累加、末步裁到余量且 t 精确吸附 endTime、`cfl` 缺席 = 5.66 固定步长逐位不变；内核 `TransientNetwork::cflStep` + core/app 各一条自适应分支 + 三条拒收 + Python 绑定新字段与 controls 重载；1 case 文件 + 1 checker、16 判据——调度逐步被「上一态流量的 Courant 规则」复现（调度是物理的性质不是记住的表）、全部 27 态被逐步 h 的隐式欧拉行复现（最差 8.53e-10，全管层流 Re_inf ≈ 1345/1272）、固定行进 501 态闭式复现且与自适应末态不同、调度访问全部四个 regime、三条拒收；`verify.transientAdaptiveCfl`（Test #85，0.81 s）。**case 设计教训**：rule_inf = cfl ρL²/(drive·τ) 与 Re_inf = ρd³·drive/(32 μ²L) 联立定 drive——floor 绑定与层流可以同时成立，但 drive 要按这两条 identity 选（第一版 μ=0.01 时 Re 14280 进湍流区，checker 层流闭式全面失配 0.83 才暴露） |
 | 2026-11-11 | A7 | §5.69 | 825b200 | 3471.66 s / 123 | 求解器退出门门槛策略：`src/1d/include/cf/1d/SolverGates.h` 五个 `inline constexpr` 单一来源（steadyPipeResidualGate 1e-13 / steadyPipeBracketGate 1e-9 / steadyPipeMaxIter 100 / transientNewtonGate 1e-11 / transientNewtonMaxIter 60），`network.cpp` 三处 + `transient.cpp` 两处站点改用常量名、`binghamWallStress` 的保险帽并入同一管解帽政策，**零行为变化**；两相族门按声明范围留在 header 外。checker 26 判据：header ↔ 文档值互证（名字与值同处一行）、站点引用 + 旧裸字面量消失、六管闭式足迹 2.4e-13~4.9e-12（括号门名义 1e-9 的实际余量）、tol 1e-16 逐位不变（内门是地板）、maxIter 0 大声失败、瞬态 march 漂移非零 < 1e-9（worst 1.46e-12，§5.49 声明的可测形式）；`verify.solverGates`（Test #86，0.29 s） |
+| 2026-11-11 | A3 | §5.70 | 待补 hash | 2579.04 s / 124 | β（对流动量项）可声明化：管块可选键 `betaIn`/`betaOut`（缺省 1.0），瞬态行装 `dpConv = ρ(βOut−βIn)/A²·q\|q\|`——与 §5.43 接口装填的 `convective` 同一笔账，推广到 case 自己拥有；两条拒收（β < 1 "no profile is fuller than flat"、耦合管声明 β——接口独占那笔账）；app 条件打印 + 绑定 3 访问器，**零声明零行为变化**、`pipeFrictionPa` 未动。checker 16 判据：恒等哨兵（βIn=βOut=1.0 与不声明逐位相同）、三根几何全同管只差声明就分开（记账 −6.4e-4 / 退账 +6.4e-4，方向即物理）、501 态全部落在行的隐式二次方程闭式根上（记账正根 / 退账小根 + 判别式断言，最差 1.32e-9）、账随 q\|q\| 反号（反驱 \|q\| 逐位相同）、屈服 + β 一行（tw 空间二分）、held pipe 无账可报（Q=0 消掉 q\|q\|）、四条拒收；`verify.transientBetaMomentum`（Test #87，0.70 s）。关闭 §5.34①/§5.35②/§5.36②/§5.37②/§5.38③ 五处命名 |

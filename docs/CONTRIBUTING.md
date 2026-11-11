@@ -1225,6 +1225,23 @@ python3 tests/check_solver_gates.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/steadyBinghamYield/case.dict"
 
+# beta 动量通量因子可声明化（5.70 / A3）：管块可选键 betaIn/betaOut（缺省
+# 1.0 = 零行为变化），瞬态行装 dpConv = rho*(betaOut-betaIn)/A^2 * q|q|——
+# 与耦合边接口装填的 convective（5.43）同一笔账，推广到 case 自己拥有。
+# beta = <v^2>/<v>^2 >= 1（Cauchy-Schwarz，平剖面 = 1、Poiseuille = 1.2）。
+# 判据的锋利处：三根几何全同的管只差声明就分开——记账（betaOut > betaIn）
+# 压低速率 6.4e-4 相对、退账（betaIn > betaOut）抬高 6.4e-4，方向即物理；
+# 501 态全部落在行的隐式二次方程闭式根上（记账正根 / 退账小根 + 每步判别式
+# > 0 断言：退账跑不过行自己的斜率）；账随 q|q| 反号（反驱 |q| 逐位相同）；
+# 屈服 + beta 一行（tw 空间二分）；held pipe 无账可报（Q=0 消掉 q|q|，5.50
+# 的陈述——beta 与静止支同台这一格关掉）。
+# 拒收：beta < 1、耦合管声明 beta（接口独占那笔账，声明会被沉默覆盖）。
+# 16 判据；checker 全程 0.70 s（ctest verify.transientBetaMomentum）
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientBetaMomentum/case.dict
+python3 tests/check_transient_beta_momentum.py \
+    "$PWD/build/src/1d/apps/chflow-1d-transient" \
+    "$PWD/tests/cases/transientBetaMomentum/case.dict"
+
 
 
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件

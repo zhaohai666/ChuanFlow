@@ -230,7 +230,10 @@ PYBIND11_MODULE(chflow_core, m)
         .def("liquid_fractions", &cf::TransientNetwork::liquidFractions)
         .def("hydrate_fractions", &cf::TransientNetwork::hydrateFractions)
         .def("liquid_volumes", &cf::TransientNetwork::liquidVolumes)
-        .def("hydrate_volumes", &cf::TransientNetwork::hydrateVolumes);
+        .def("hydrate_volumes", &cf::TransientNetwork::hydrateVolumes)
+        .def("pipe_convective", &cf::TransientNetwork::pipeConvectiveOf)
+        .def("pipe_beta_in", &cf::TransientNetwork::pipeBetaInOf)
+        .def("pipe_beta_out", &cf::TransientNetwork::pipeBetaOutOf);
 
     m.def("hydrate_kinetics_step",
           [](double liquidVolume, double hydrateVolume, double rate, double dt)

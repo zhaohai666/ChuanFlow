@@ -75,6 +75,17 @@ struct TransientPipeConfig
     double flowIndex = 0;      // n; 0 = Newtonian (the fluid's own mu)
     double consistency = 0;    // K, Pa.s^n; required when flowIndex > 0
     double yieldStress = 0;    // Pa; 0 = no threshold, the row always has a law
+    // Momentum-flux factors of the pipe's end profiles (5.70 / A3): the
+    // area-averaged shape factor beta = <v^2>/<v>^2, >= 1 by Cauchy-Schwarz.
+    // betaIn = 1 (flat) and betaOut = 1 are the defaults and leave the row
+    // untouched. The row charges rho*(betaOut - betaIn)/A^2 * q|q| -- the same
+    // account a coupled interface installs as its convective coefficient
+    // (5.43), now declarable on a pipe whose own geometry (a section change at
+    // a node, an imposed profile) owns the imbalance. On a held pipe the term
+    // dies with the rate, exactly like the valve's (5.50): a static wall
+    // carries no momentum flux to report.
+    double betaIn = 1.0;       // shape factor of the upstream end profile
+    double betaOut = 1.0;      // shape factor of the downstream end profile
 };
 
 struct TransientSource
@@ -177,6 +188,18 @@ public:
     /// The convective coefficient (Pa.s2/m6) pipe `k`'s momentum row carries.
     double coupledConvectiveOf(label k) const;
 
+    /// The momentum-flux account pipe `k`'s row actually carries, whatever its
+    /// source: the case's own betaIn/betaOut declaration (5.70) or the number
+    /// a coupled interface installed. Pa when multiplied by q|q|.
+    double pipeConvectiveOf(label k) const;
+
+    /// The declared end-profile shape factors of pipe `k` (1.0 when the case
+    /// declares nothing). The app reports the convective account only when
+    /// these differ, so a case that asks for the momentum-flux term can be
+    /// seen asking for it.
+    double pipeBetaInOf(label k) const;
+    double pipeBetaOutOf(label k) const;
+
     /// True while `pipe k` is handed to a partner model.
     bool pipeCoupled(label k) const;
 
@@ -233,8 +256,13 @@ private:
         // rho*(betaOut - betaIn)/A^2 (Pa.s2/m6), charged by a partner region whose
         // own profile changes shape across it. Multiplied by |Q|*Q in the row, so
         // it is the momentum-flux imbalance of the shape, not a friction. Zero
-        // unless a coupled interface measures it and installs it.
+        // unless the case declares betaIn/betaOut (5.70) or a coupled interface
+        // measures it and installs it.
         double convective = 0;
+        // The declared end-profile shape factors, kept so the app and the
+        // bindings can report what the case asked for (1.0 when it asked for
+        // nothing).
+        double betaIn = 1.0, betaOut = 1.0;
         // True for this step when a yielded pipe sits at rest under a drive the
         // static wall can hold: the row is then `Q = 0` and reads no wall law.
         // Latched at step entry from the committed state, so re-solving the same

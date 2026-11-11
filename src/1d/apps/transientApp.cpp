@@ -112,6 +112,18 @@ int main(int argc, char** argv)
             for (std::size_t k = 0; k < q.size(); ++k)
             {
                 log::info("pipe ", s.pipeNames()[k], " Q ", num(q[k]));
+                // The momentum-flux account the row charges, printed only for
+                // a pipe whose case declares betaIn/betaOut (5.70): the value
+                // is convective * q|q|, the same account a coupled app prints
+                // as dpConv (5.42). A case that asks for nothing prints
+                // nothing, so untouched traces are unchanged.
+                if (s.pipeBetaInOf(static_cast<label>(k))
+                        != s.pipeBetaOutOf(static_cast<label>(k)))
+                {
+                    const double cc = s.pipeConvectiveOf(static_cast<label>(k))
+                                    * q[k] * std::abs(q[k]);
+                    log::info("pipe ", s.pipeNames()[k], " dpConv ", num(cc));
+                }
                 // The latch the step that produced this sample started with: 1
                 // means this rate is the row's own `Q = 0`, not the value a wall
                 // law was solved for. At t 0 no step has been solved yet, so the

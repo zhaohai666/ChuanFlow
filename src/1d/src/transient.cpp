@@ -257,6 +257,22 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         if (pc.coupledResistance > 0)
             requireNoValve(pc.name, pc.valveK, pc.valveCloseStart,
                            pc.valveOpenStart);
+        // 5.70 / A3: the momentum-flux factors. beta is an area average of
+        // v^2 / vbar^2, so it cannot sit below 1 (Cauchy-Schwarz); and on a
+        // coupled pipe the account belongs to the interface -- it measures the
+        // imbalance across the region's own stations and installs the
+        // coefficient (5.43), so a declaration here would be silently
+        // overwritten.
+        if (pc.betaIn < 1.0 || pc.betaOut < 1.0)
+            cfFatal("transient: pipe '" + pc.name + "' declares a momentum"
+                    " flux factor below 1: beta = <v^2>/<v>^2 is an area"
+                    " average, and no profile is fuller than flat");
+        if (pc.coupledResistance > 0
+            && (pc.betaIn != 1.0 || pc.betaOut != 1.0))
+            cfFatal("transient: pipe '" + pc.name + "' is a coupled pipe"
+                    " declaring betaIn/betaOut: the momentum-flux account of"
+                    " a partner region belongs to the interface, which"
+                    " measures it and installs the coefficient (5.43)");
         // The 1D momentum row of a coupled pipe charges `R*q` and nothing
         // else. Move the declaration onto `partnerRheology` and clear the
         // wall-law fields: otherwise `holdsStatic` would latch a Q = 0 row on
@@ -275,6 +291,13 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         d.geo = net_.pipes.back();
         d.qPrev = pc.initialFlow;
         d.inertia = fluid_.rho * d.geo.length / pipeArea(d.geo.diameter);
+        // The declared momentum-flux account: rho*(betaOut - betaIn)/A^2, the
+        // same shape of term the coupled interface installs. Zero when the
+        // case declares nothing, so an untouched case is bit-identical.
+        d.convective = fluid_.rho * (pc.betaOut - pc.betaIn)
+                     / (pipeArea(d.geo.diameter) * pipeArea(d.geo.diameter));
+        d.betaIn = pc.betaIn;
+        d.betaOut = pc.betaOut;
         d.closeStart = pc.valveCloseStart;
         d.closeEnd = pc.valveCloseEnd;
         d.kClosed = pc.valveKClosed;
@@ -683,6 +706,27 @@ double TransientNetwork::coupledConvectiveOf(label k) const
     return pipes_[static_cast<std::size_t>(k)].convective;
 }
 
+double TransientNetwork::pipeConvectiveOf(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].convective;
+}
+
+double TransientNetwork::pipeBetaInOf(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].betaIn;
+}
+
+double TransientNetwork::pipeBetaOutOf(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return pipes_[static_cast<std::size_t>(k)].betaOut;
+}
+
 void TransientNetwork::setCoupledResistance(label k, double resistance)
 {
     if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
@@ -879,6 +923,8 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
         p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
         p.flowIndex = pd.getScalarOr("flowIndex", 0.0);
         p.consistency = pd.getScalarOr("consistency", 0.0);
+        p.betaIn = pd.getScalarOr("betaIn", 1.0);
+        p.betaOut = pd.getScalarOr("betaOut", 1.0);
         p.yieldStress = pd.getScalarOr("yieldStress", 0.0);
         if (pd.has("valveClose"))
         {

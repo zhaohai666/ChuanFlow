@@ -4029,6 +4029,34 @@ checker `check_solver_gates.py`（CTest `verify.solverGates`），**26 判据 0 
 
 **成本**：内核 0 行为变化（常量化 + 两处 include）+ 1 checker + 1 条 `add_test`，26 判据；checker 全程 **0.29 s**（Test #86）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.70 β（对流动量项）可声明化（A3）：**1D 瞬态行第一次认识 beta**——`betaIn`/`betaOut` 两个可选键把 §5.43 的账从"接口装填"推广到"case 自己拥有"，零声明零行为变化，与静止支同台
+
+**这一格从哪来**：被命名 **5 次**（§5.34 边界①、§5.35/§5.36/§5.37 边界②）的同一格——"接口交了形状（块读回的 `betaIn`/`betaOut`），但 1D 那一行不为形状的动量后果负责"；§5.38 边界③ 又补了后半格——"`beta` 与静止支同台仍是空白"。§5.42/§5.43 已把耦合边的账收进行里（`convective` 系数由接口装填），所以 A3 剩下的就是**非耦合管的声明路径**。`docs/gap_analysis.md` 编为 **A3**（旧文写的"节点行加 Σ s_i β_i A_i v_i²"是初稿记法，真实落点是管行——与耦合边 `dpConv` 同一形状），估 1 增量，实测 ~0.7。
+
+**物理**：β = ⟨v²⟩/⟨v⟩² 是面积平均的动量通量因子，Cauchy–Schwarz 给 **β ≥ 1**（平剖面 = 1，Poiseuille = 1.2）。两端剖面不同的管欠动量平衡一笔差：
+
+    dpConv = rho·(betaOut − betaIn)/A² · q|q|
+
+这是**动量通量不平衡，不是壁面力**：随 q|q| 标度（与阀 `K ρv²/2` 同型，§5.50）、held pipe 上随速率一起消失（静止的壁没有可报的通量）、与 §5.43 接口装填的 `convective` 是**同一笔账**——现在 case 可以声明它，因为节点处的截面突变或给定的入口剖面属于 case，不属于伙伴。
+
+**语法与拒收**：管块可选键 `betaIn <x>; betaOut <y>;`（缺省 1.0 = 零行为变化）。两条拒收：**β < 1**（"no profile is fuller than flat"——面积平均不可能比平剖面更满）与**耦合管声明 β**（伙伴区域的账属于接口，接口测量后装填系数，声明会被沉默覆盖——拒绝沉默无效声明）。`transientApp` 只对 `betaIn ≠ betaOut` 的管打印 `dpConv` 字段（`convective·q|q|`），不声明的 case 输出逐位不变；Python 绑定暴露 `pipe_convective`/`pipe_beta_in`/`pipe_beta_out`。
+
+**case 与判据**：`tests/cases/transientBetaMomentum`（7 臂，全 d=0.04/L=20、ρ=850/μ=0.1、drive 1e4、dt 0.002、endTime 1.0、501 态）。判据的锋利处在**三根几何全同的管只差声明就分开**：`c = ρ·0.2/A² = 1.0766e8`，Flat 3.1400e-4 → Bump（记账，βOut>βIn）**−6.4e-4 相对**、Recover（退账，βIn>βOut）**+6.4e-4 相对**——方向是物理的陈述：记账压低速率、退账抬高速率。
+
+checker `check_transient_beta_momentum.py`（CTest `verify.transientBetaMomentum`），**16 判据 0 失败**：
+
+- **恒等哨兵**：`betaIn 1.0; betaOut 1.0` 与不声明逐位相同（501 态两根对照管）——声明加的是一项，不是一个分支；
+- **闭式复现**：隐式步 `M/dt(q−q_prev) − drive + Rq + c·q|q| = 0` 在每个流动分支上是二次方程——记账行取正根 `q = (−b+√(b²+4ca))/(2c)`，退账行取小根（每步判别式 > 0 是断言：退账永远跑不过行自己的斜率，行保持单调、根唯一）；Bump 最差 8.68e-10、Recover 1.32e-9、反向臂与屈服臂 2.06e-10，全部 < 5e-9（§5.49 以来 march checker 的门）；
+- **账读回**：`dpConv == convective·q|q|` 在三根记账管的每个报告态成立（打印精度）；
+- **方向奇偶性**：同一声明反驱，|q| 与正向管**逐位相同**、`dpConv` 反号——项对方向是偶的、对通量是奇的，这就是 q|q| 的含义；
+- **屈服 + β 一行**：Buckingham 壁与通量账一起的隐式根（tw 空间二分，§5.50 checker 的形状）；
+- **静止支同台**：held pipe（阈值 12000 > drive 10000）全部状态恰为 Q = 0、`static hold 1`（t=0 按 app 惯例打 0——还没有步，没有闩锁），且**无账可报**（q|q| 项随 Q 消失）；
+- 四条拒收（β 0.9 / βIn 0.5 / β −1 / 耦合管 + β）。
+
+**本增量的边界**：① β 只进**瞬态行**——稳态网络的 loss 方向没有动量方程，β 项不属于那里（`pipeFrictionPa` 未动，gap_analysis 原文）；这意味着瞬态极限 t→∞ 与稳态内核在 βOut ≠ βIn 的管上**有意不同**（瞬态多收一笔通量账），声明哪种极限属于 case。② β 是**声明**的剖面因子，不是从几何推的——节点处截面突变的自动 β（由两端管径算一个无损失合流的动量账）是另一格。③ β < 1 拒收，β = 1（平剖面）是下界——湍流剖面 β ≈ 1.02（§5.36 实测）在声明范围内。④ 耦合边的账仍由接口独占：case 声明与接口装填互斥（拒收），§5.43 的语义不动。
+
+**成本**：内核 ~35 行（config 两字段 + loader 两键 + 两条拒收 + 装填一行 + app 条件打印 + 三个绑定访问器）+ 1 case 文件 + 1 checker + 1 条 `add_test`，16 判据；checker 全程 **0.70 s**（Test #87）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

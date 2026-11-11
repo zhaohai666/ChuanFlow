@@ -1,0 +1,88 @@
+# 5.70 / A3 the momentum-flux factors betaIn/betaOut, declarable on a
+# non-coupled pipe: the 1D transient row learns beta (5.34 boundary 1,
+# 5.35 boundary 2, 5.36 boundary 2, 5.37 boundary 2 -- the same cell named
+# five times), and the term lands on the SAME row as the static wall
+# (5.38 boundary 3, the last half of that cell).
+#
+# The physics: beta = <v^2>/<v>^2 is the area-averaged momentum-flux factor,
+# >= 1 by Cauchy-Schwarz (flat profile = 1, Poiseuille = 1.2). A pipe whose
+# two end profiles differ owes its momentum balance the difference
+#
+#     dpConv = rho*(betaOut - betaIn)/A^2 * q|q|
+#
+# which is a momentum-flux imbalance, not a wall force: it scales with q|q|
+# exactly like the valve's K*rho*v^2/2 (5.50), it dies on a held pipe (a
+# static wall carries no flux to report), and it is the SAME account a
+# coupled interface measures and installs as its convective coefficient
+# (5.43) -- here it is declarable, because a section change at a node or an
+# imposed profile belongs to the case, not to a partner.
+#
+# The numbers: rho = 850, mu = 0.1, d = 0.04, L = 20, drive 1.0e4 Pa
+# (A 3e4 -> B 2e4), dt 0.002, endTime 1.0 (500 steps, 501 states). Then
+#     A = 1.256637e-3 m2,  R = 3.183099e7 Pa/(m3/s),  M/dt = 6.763878e9
+#     c = rho*0.2/A^2 = 1.076570e8 Pa.s2/m6   (betaOut 1.2 - betaIn 1.0)
+# and the steady point of the row R q + c q^2 = drive moves by the ACCOUNT
+# ALONE: three geometrically identical pipes at three beta declarations land
+# on three different rates -- Flat 3.1400e-4, Bump (billed, betaOut > betaIn)
+# 2.9727e-4 (-5.3%), Recover (refunded, betaIn > betaOut) 3.1885e-4 (+1.5%).
+# Direction is the statement: billing lowers the rate, refunding raises it.
+#
+# The checker re-derives every state in closed form. The implicit step
+#     M/dt (q - q_prev) - drive + R q + c q|q| = 0
+# is a quadratic on each flow branch: billed rows take the positive root
+# q = (-b + sqrt(b^2 + 4 c a)) / (2c) with a = drive + (M/dt) q_prev,
+# b = R + M/dt; refunded rows take the small root of -|c| q^2 + b q - a = 0
+# (the discriminant b^2 - 4|c|a >= 2.7e19 > 0 here: the refund can never
+# outrun the row's own slope, which is why the row stays monotone and the
+# root unique). The yielded pipe is bisected in wall-stress space like
+# 5.50's checker, with the convective term along for the ride.
+#
+# Held arm: yieldStress 6 on d = 0.04 is a threshold of 12000 Pa > drive,
+# so the pipe sits static from step 0 -- and reports NO convective account
+# (Q = 0 kills the q|q| term, the same statement as 5.50's valveless
+# static wall). Reversed arm: the billed pipe driven backwards carries the
+# SAME declaration and the account flips sign with q|q| -- the term is even
+# in the direction, odd in the flux.
+
+solver
+{
+    type transientNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.1;
+}
+
+time
+{
+    dt 0.002;
+    endTime 1.0;
+    reportEvery 1;
+}
+
+nodes
+{
+    A    { fixedPressure 3.0e4; }
+    B    { fixedPressure 2.0e4; }
+    RevA { fixedPressure 2.0e4; }
+    RevB { fixedPressure 3.0e4; }
+}
+
+pipes
+{
+    Flat    { from A; to B; length 20; diameter 0.04; }
+    # the sentinel: declaring the identity is declaring nothing
+    Identity { from A; to B; length 20; diameter 0.04; betaIn 1.0; betaOut 1.0; }
+    # billed: the outlet profile is fuller, the row owes the flux difference
+    Bump    { from A; to B; length 20; diameter 0.04; betaOut 1.2; }
+    # refunded: the inlet was the fuller one, the row gets the difference back
+    Recover { from A; to B; length 20; diameter 0.04; betaIn 1.2; betaOut 1.0; }
+    # the same bill, driven backwards: the sign of the account follows q|q|
+    BumpRev { from RevA; to RevB; length 20; diameter 0.04; betaOut 1.2; }
+    # yield + beta on one row, moving: Buckingham wall AND the flux bill
+    YieldMove { from A; to B; length 20; diameter 0.04; yieldStress 1; betaOut 1.2; }
+    # yield + beta, static: threshold 12000 > drive, held from step 0
+    Held    { from A; to B; length 20; diameter 0.04; yieldStress 6; betaOut 1.2; }
+}

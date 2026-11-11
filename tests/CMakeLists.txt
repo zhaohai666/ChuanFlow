@@ -934,6 +934,23 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyBinghamYield/case.dict)
 
+# 5.70 / A3 the momentum-flux factors betaIn/betaOut, declarable on a
+# non-coupled transient pipe: the row charges rho*(betaOut - betaIn)/A^2 *
+# q|q| -- the same account a coupled interface installs (5.43), now owned by
+# the case. Three geometrically identical pipes separate by the declaration
+# alone (billed slower, refunded faster, every state on the implicit row's
+# quadratic in closed form), the term flips sign with q|q| (driven backwards
+# bit-identical in |q|), yield + beta share one row (bisection in wall
+# stress), a held pipe reports NO account (Q = 0 kills it, 5.50's statement),
+# and a factor below 1 or a coupled pipe declaring beta is refused. No
+# declaration means the old row bit for bit.
+add_test(
+    NAME verify.transientBetaMomentum
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_beta_momentum.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientBetaMomentum/case.dict)
+
 
 # 5.51 the published laminar-turbulent locus of a yielded pipe, read off the
 # pipe's own wall law. The turbulent-yield FRICTION closure could not be

@@ -1112,6 +1112,38 @@ add_test(
         $<TARGET_FILE:chflow-1d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldIndexValveRelatch/case_5.dict)
 
+# 5.60: the tau_0 x flowIndex cross 5.57 and 5.59 both left empty -- 4 arms x 3
+# tiers = 12 cells, strong wall tau_0 = 1.75 / 2.0 / 2.25 / 2.5 against a 1.5
+# neighbour, 12 pipes / 6 nodes / 2001 states per file, NO kernel change
+# (threshold :28-:31, desk :40-:43, clamp :353-:355, node row :395-:416).
+# The desk is blind to BOTH axes: all twelve weak walls release at step 180 in
+# all three tiers, and the four arms of a tier are the same strings until the
+# earliest strong wake (239 / 240 / 241).  The re-latch is a WINDOW in tau_0, not
+# a half-line: the census is 4 SLEPT (n = 1 / 2 at tau_0 1.75 and 2.0), 2 AWAKE
+# never asked (n = 0.5 at 1.75 / 2.0, smallest entry drive 7005.6287 / 8001.7883),
+# 1 LATE (n = 0.5 at 2.25 wakes at 1479, 129 steps AFTER the seal broke) and
+# 5 NEVER (tau_0 2.25 / 2.5 at n = 1 / 2, 2.5 at n = 0.5).  The two axes buy
+# different things: tau_0 moves the release pressure 3000 Pa and the sealed
+# window's best node only 51.36260 / 45.20672 / 44.18058 Pa, while n moves the
+# best node 2138.60589 / 2143.68512 / 2145.78792 / 2145.78792 Pa at fixed release
+# -- a ratio of 41.6, and the four n-spreads agree within 7.18202 Pa.  A positive
+# margin is NOT a sleep: n = 0.5 arm c tops out 397.040 Pa ABOVE its release
+# pressure and still never sleeps, because it was held for all 851 sealed states.
+# The coast is the law's AND the threshold's: lag 0 / 0 at n = 1, 5 / 7 at n = 2.
+# Every unheld step with a root is the HB section integral (worst 1.876e-06
+# relative, n = 1 arm a at 961) and the only sub-yield unheld step in a sleeping
+# cell is the one before the clamp (962 / 506 / 708 / 471).  Arm b is 5.59's arm a
+# in a new file: identical flags and ladders, nodes within 1.0e-07 Pa, rates worst
+# 1.780e-08 relative; all 12 node rows close on printed tokens alone to
+# 4.9661e-14 m3/s, all 24 t = 0 flags read 0, smallest decision gap 129 steps.
+# 146 judgments, three case files, 0 kernel lines
+add_test(
+    NAME verify.transientYieldTauIndexRelatch
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_tau_index_relatch.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldTauIndexRelatch/case_5.dict)
+
 
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation

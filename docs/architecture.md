@@ -3957,6 +3957,28 @@ V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
 
 **成本**：核心 `transient.cpp` 循环 ~10 行 + app 同构 + 1 case 文件 + 1 checker + 1 条 `add_test`，40 判据；checker 全程 **0.75 s**（Test #83）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.67 三张逐边表 × 逐边 `profile` 同台：**quasi + slab + charge 三表叠一边**——quasi 边的行用 slab 的 `M` 付 `M·dq/dt`、同时让出 `dpConv`、grade 恒 0，三个声明互不越界
+
+**这一格从哪来**：耦合语法的每一格都被单独问过——§5.40/5.41 把 `ddtFrom` + `inertiaFrom` + 逐边 `profile` 放进一份 case，§5.43/5.44 把 `inertiaFrom` + `convectiveToRow` + `profile` 放进另一份——但**没有任何一份 case 同时携带三张表**。`docs/gap_analysis.md` 编为 **B5**，估 1 增量、内核改动"无（三张表两两已交叉）"。实测**零内核改动**，实际成本 ~0.5：三张表都在时间循环之前安装、互不知晓，合在一起只是从未被写过。
+
+**case**：`tests/cases/transientCoupledMultiTurbulentTripleTable`，拓扑/网格/探针/`dt`/seeds（1.4e7 / 1.36e7）全部复用 §5.41——每个臂都有已发布的孪生。5 臂：
+
+| 臂 | `ddtFrom` | `inertiaFrom` | `convectiveToRow` | 出处 |
+|---|---|---|---|---|
+| `base` | Euler, Euler | network, network | report, report | §5.41 `p_net` |
+| `mix` | Euler, **steady** | network, **slab** | report, report | §5.41 `p_mix` |
+| `mix_charge` | Euler, **steady** | network, **slab** | report, **charge** | **新格** |
+| `pin` | **steady**, Euler | network, **slab** | report, report | §5.41 `p_pin` |
+| `both_chr` | Euler, Euler | network, **slab** | report, **charge** | §5.44 `s_chr` |
+
+全部臂 `profile parabolic`（逐边字段，保持不动）。唯一的新格 `mix_charge` 把三张表叠在同一根 quasi 边上——运行回答了「quasi 边能不能同时被 charge」：能。它的行用 slab 的 `M = ρL_probe/A = 2.1875e6 kg/m4` 付 `M·dq/dt`，`rowBeta = dpConv ≠ 0` 在全部 8 层成立（最小 283.67 Pa），而 `rowError` 恒 0（quasi 边没有可评的账）。
+
+**21 判据、0 失败**（checker `check_transient_coupled_multi_turbulent_triple_table.py`）：① 三张表 + 形状逐臂逐边从日志读回（scheme 从每个状态的 `unsteady` 标志、inertia/profile 从臂行、charge 从 `rowBeta`），臂序与声明一致；② 每个 rung 在 80 个状态上装它声明的闭式 `M`（drawing `ρL/A`、slab `ρL_probe/A`）；③ 24 个 quasi 态是真 quasi（`rowError 0`、`dpInertia 0`、`dpFriction == dpBlock`）；④ 新格三表同边成立 + `mix` 孪生（差一个词）`rowBeta 0` 且 `dpBlock/dpConv/dpFriction/dpInertia/M` 逐位相同——**charge 只动一行的一项**；⑤ charge 不及邻居（`mix_charge` 的 X1 与 `mix` 的 X1 17 字段 × 8 层逐位相同）；⑥ 80 状态 row 闭合 `dpNetwork + M·dq/dt + rowBeta` **slack 恰 0**、`rowBeta` 账户逐态跟随表；⑦ chord 在容差内（最差 8.9123e-4 对 1e-3）；⑧ `base` 1e-12 复现 §5.41 p_net 的 level-1/level-8 状态与 pass 序列 `[3,6,5,5,4,4,4,4]`；⑨ X2 速率钉在 6.0e-5（1e-12，`pin` 的 level-1 分流差 1 ulp 是 quasi 自由边对 split 的正常扰动）；⑩ 支路闭合 6.78e-21；⑪ charge 不多买 block 功（mix 与 mix_charge 同为 72 次、base 与 both_chr 同为 70；pin 的 34 是 quasi X1 让谈判更早结束）。
+
+**本增量的边界**：① 三张表**安装期互不知晓**是设计而非巧合——`ddtFrom` 定 scheme、`inertiaFrom` 定 M、`convectiveToRow` 定行内 `rowBeta`，三者分别写行的不同字段，所以叠加不需要新的交互代码；② quasi 边 + slab + charge 的组合此前从未运行，本案证明它可行但**不证明它最优化**——quasi 边 grade 恒 0，charged 的 dpConv 只进网络行不进谈判弦；③ 全部臂同形状（parabolic），形状轴在本案是**保持项**不是变量——形状 × 三表的完整交叉仍属各原型小节；④ 运行成本 ~5.5 分钟（5 臂 × 8 层 × RANS SIMPLE），是全量回归里最贵的单项之一。
+
+**成本**：0 内核改动；1 case 文件 + 1 checker + 1 条 `add_test`，21 判据；checker 复跑（含求解）约 **5.5 分钟**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|
@@ -4476,4 +4498,11 @@ V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
   （Newtonian 闭式、Bingham 在 tw 空间二分，最差 3.27e-11）、末步裁剪落在
   endTime 精确、reportEvery 3/5 仍落末态且与 report 1 逐位相同、近整除
   0.12/0.03 不误计、endTime 整倍数向后逐位兼容、endTime 0 拒收；
+- `tests/check_transient_coupled_multi_turbulent_triple_table.py`
+  （CTest `verify.transientCoupledMultiTurbulentTripleTable`，§5.67 / B5）：
+  5 臂，**21** 条判据、0 内核改动——三张逐边表（`ddtFrom`/`inertiaFrom`/
+  `convectiveToRow`）+ 逐边 profile 首次同台；quasi+slab+charge 三表叠一边的
+  新格可行（row 用 slab 的 M 付 M·dq/dt 且 `rowBeta == dpConv`）；base 臂
+  1e-12 复现 §5.41 p_net 的 level-1/8 状态与 pass 序列；80 状态 row 闭合
+  slack 恰 0、charge 只动一行的一项（邻居逐位相同）、chord 在容差内；
 - 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`

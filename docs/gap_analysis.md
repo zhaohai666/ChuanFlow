@@ -34,7 +34,7 @@
      BLOCKED  ──（阻塞解除）──► IN_PROGRESS
 ```
 
-> **落点编号说明（2026-11-11 审计）**：带「（预估）」的 §5.x 落点只是**占位编号**，实际按增量关闭顺序分配，不预留。架构文档当前已用到 **§5.66**（§5.63 = C1/A4，§5.64 = B6，§5.65 = C2，§5.66 = C4）；因此 A2 原写 §5.63、A3 原写 §5.64 均已被占用，C3 原写 §5.66 与 A6 的 §5.67 也不一致。这三条在本轮审计里改为「待分配 / 顺延」，其余预估编号维持不动，等该项真正启动时再定。
+> **落点编号说明（2026-11-11 审计）**：带「（预估）」的 §5.x 落点只是**占位编号**，实际按增量关闭顺序分配，不预留。架构文档当前已用到 **§5.67**（§5.63 = C1/A4，§5.64 = B6，§5.65 = C2，§5.66 = C4，§5.67 = B5）；因此 A2 原写 §5.63、A3 原写 §5.64 均已被占用，C3 原写 §5.66 与 A6 的 §5.67 也不一致。这三条在本轮审计里改为「待分配 / 顺延」，其余预估编号维持不动，等该项真正启动时再定。
 
 ## 1. A 类 —— 已命名且已记录的 open cell
 
@@ -186,12 +186,13 @@
 ### B5. 三张独立的逐边表 × 逐边 `profile` 同台
 
 - **参考工具**：Fluent system coupling 全特性
-- **当前状态**：`OPEN`（**2026-11-11 审计收窄口径**；原标题把 `profile` 也算作"表"，与 §5.41 已落地的算例冲突）
+- **当前状态**：`CLOSED`（2026-11-11，§5.67）
 - **口径**：`profile` 是 `starts.<arm>` 里的**字段**，不是独立表块。真正的第三张表是 §5.43 的 `convectiveToRow{ <臂>{ <边> charge|report } }`。本格要的是 `ddtFrom` + `inertiaFrom` + `convectiveToRow` **三张独立逐边表**连同逐边 `profile` 进**同一份 case**。
-- **已落地但仍不够**：`tests/cases/transientCoupledMultiTurbulentProfileInertia/case.dict:114/125/134`（§5.41）已有 `ddtFrom` + `inertiaFrom` + 逐边 `profile`；`tests/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict:137`（§5.44）已有 `inertiaFrom` + `convectiveToRow` + `profile`。全仓**没有**一份 case 同时含三张表（审计核对了所有 `case*.dict`）。
+- **已落地但仍不够**：`tests/cases/transientCoupledMultiTurbulentProfileInertia/case.dict`（§5.41）已有 `ddtFrom` + `inertiaFrom` + 逐边 `profile`；`tests/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict`（§5.44）已有 `inertiaFrom` + `convectiveToRow` + `profile`。审计时全仓无一份 case 同时含三张表。
 - **内核改动**：无（三张表两两已交叉：§5.40 / §5.41 / §5.44）
-- **成本估计**：1 增量
-- **落点**：architecture.md §5.76（预估）
+- **成本估计**：1 增量（实际 ~0.5：1 case 文件 + 1 checker，拓扑/网格/dt/seeds 全部复用 §5.41）
+- **落点**：architecture.md §5.67
+- **实测（2026-11-11）**：`tests/cases/transientCoupledMultiTurbulentTripleTable`，5 臂（base / mix / mix_charge / pin / both_chr）——4 臂是 §5.41/§5.44 的已发布格子，唯一新格 `mix_charge` 是**quasi + slab + charge 三表叠一边**（quasi 边的行用 slab 的 M 付 M·dq/dt、同时让出 dpConv、grade 恒 0，运行验证可行）；base 臂 1e-12 复现 §5.41 p_net 的 level-1/level-8 状态与 pass 序列；80 状态 row 闭合 slack 恰 0；charge 只动一行的一项（mix 的 X1 与 mix_charge 的 X1 17 字段 × 8 层逐位相同）；chord 保持在容差内（最差 8.9e-4）；21 判据 0 失败，`verify.transientCoupledMultiTurbulentTripleTable`。
 
 ### B6. 全网络每条边都低于自家阈值（稳态）
 
@@ -323,7 +324,7 @@
 4. ~~**C1 / A4**~~ — **CLOSED**（§5.63）：流变进入耦合边，稳态 + 瞬态 + 3D 逐面黏度同台；实测 1 增量而非 2.5。
 5. **A1** —— 任务 #84，β 项被第三方文献确认后启动（仍 `BLOCKED`）。
 6. **D5** — 自适应时间步。A1 阻塞期间**这是 D 类里钩子最小的第一项**；按 §2 的标准，零内核改动的 B 类项（B5 / C2 / C4）风险更低，应优先穿插，不要因为这条编号就跳过它们。（2026-11-11 审计澄清：原文"可执行的第一项"与 §2「首选从 B 类开始」相互冲突。）
-7. ~~**B6**~~ — **CLOSED**（§5.64）；~~**C2**~~ — **CLOSED**（§5.65，HB × 无日程阀 K，阀的分成由壁律指数决定）；~~**C4**~~ — **CLOSED**（§5.66，ceil + 末步裁剪 + 末态恒打印，endTime 为 dt 整倍数时逐位兼容）；**B5 / C3** — 按需要穿插。
+7. ~~**B6**~~ — **CLOSED**（§5.64）；~~**C2**~~ — **CLOSED**（§5.65，HB × 无日程阀 K，阀的分成由壁律指数决定）；~~**C4**~~ — **CLOSED**（§5.66，ceil + 末步裁剪 + 末态恒打印，endTime 为 dt 整倍数时逐位兼容）；~~**B5**~~ — **CLOSED**（§5.67，三张逐边表 × 逐边 profile 同台，quasi+slab+charge 三表叠一边）；**C3** — 按需要穿插。
 8. **A2 / A3 / A5 / A6 / A7 / A8 / A9 / A10 / A11** — 按引用热度排。
 9. **D1 / D2 / D3 / D4 / D6 / D7 / D8 / D9** — 大型能力块，按产品规划排期。
 
@@ -345,3 +346,4 @@
 | 2026-11-11 | B6 | §5.64 | a7a3a0d | 714.41 s / 118 | 全网络全死支的 0 迭代不动点：0 内核改动，2 份入库 dict + 4 个临时派生臂、45 判据；E 随定压均值 25000→25500、阈值刀刃 Q 仍为 0、单管放开时 iterations 仍为 0、注入臂 Newton 19 步且 E = 33978.9475076 Pa 与 Buckingham 闭式反解一致；`verify.steadyAllBelowThreshold`（Test #45，全量里 0.88 s）、全量 **118/118 绿** |
 | 2026-11-11 | C2 | §5.65 | fb09958 | 885.06 s / 120 | HB 壁 × 无日程阀 K（`flowIndex`/`consistency`/`yieldStress`/`valve` 同一根管），**0 内核改动**：2 case 文件 + 1 checker、56 判据；16 管 × 2001 状态被「HB 剖面积分 + K ρ\|Q\|Q/2A²」递推复现（最差 4.347e-10）；同一 K=500 在 n=0.5 管拿 2.33 Pa、n=1.5 管拿 308.76 Pa（133×，阀分成由壁律指数决定）；三停止迹第 9/9/5 步逐状态复现；稳态核对同根会合；`verify.transientYieldIndexValveK` |
 | 2026-11-11 | C4 | §5.66 | eb794d9 | 885.06 s / 120 | `reportEvery` 与 `endTime` 解耦：步数 `ceil(endTime/dt − 1e-9)`、末步 `h = min(dt, endTime − (i−1)dt)`、`tPrev` 用步索引、末态恒打印、dt/endTime 拒收 0；1 case 文件 + 1 checker、40 判据（六臂 + 拒收）；0.1/0.03 → 0.03/0.03/0.03/0.01 五态落在 t=0.1 精确、0.12/0.03（浮点 4.000000000000001）不误计、endTime 整倍数时 `transientYieldValve` 仍 2001 状态逐位兼容；全序列隐式欧拉递推复现最差 3.27e-11（Bingham 臂）；`verify.transientTimeDecoupled`（Test #83）。**checker 首跑 21 失败根因**：头注释里的示例字样（`endTime 0.1`、`reportEvery 3 and 5`）被 END/REPORT 正则先命中——键提取必须先剥 `//` 注释再读活字典文本 |
+| 2026-11-11 | B5 | §5.67 | 待补 hash | 待全量回归 | 三张独立逐边表（`ddtFrom` + `inertiaFrom` + `convectiveToRow`）× 逐边 `profile` 同台，**0 内核改动**：1 case 文件 + 1 checker、21 判据；5 臂（base/mix/mix_charge/pin/both_chr，拓扑/网格/dt/seeds 复用 §5.41），4 臂是 §5.41/§5.44 的已发布格子，唯一新格 `mix_charge` = quasi + slab + charge 三表叠一边（quasi 边的行用 slab 的 M 付 M·dq/dt、同时让出 dpConv、grade 恒 0——运行验证可行）；base 臂 1e-12 复现 §5.41 p_net 的 level-1/8 状态与 pass 序列；80 状态 row 闭合 slack 恰 0；charge 只动一行的一项（mix 与 mix_charge 的 X1 逐位相同）；chord 最差 8.9e-4 在容差内；`verify.transientCoupledMultiTurbulentTripleTable` |

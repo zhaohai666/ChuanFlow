@@ -1,0 +1,152 @@
+# transientCoupledMultiTurbulentTripleTable (B5, gap_analysis): the three
+# per-edge tables and the per-edge profile land in ONE case.
+#
+#   Src -> A -> { X1 (3D RANS duct) || By (1D pipe) } -> X2 (3D RANS duct) -> B -> Snk
+#
+# Every cell of the (ddtFrom, inertiaFrom, convectiveToRow, profile) board has
+# been visited somewhere -- 5.40/5.41 ran ddtFrom + inertiaFrom + profile,
+# 5.43/5.44 ran inertiaFrom + convectiveToRow + profile -- but no single case
+# ever carried all three tables at once, which is the one thing a user of the
+# full coupling grammar writes and nothing in the tree exercised. This case is
+# that case. Zero new keys, zero kernel change: the three tables were installed
+# before the time loop and never met.
+#
+# The topology, the two meshes, the probes, the wall functions, the operating
+# point, the mis-stated proxy bores, dt 0.2 over eight levels and the seeds
+# (1.4e7 / 1.36e7, the control's own secants) are 5.40/5.41's, so every arm has
+# published twins and the only variables are the three tables.
+#
+# Five arms. X1 is the parallel edge (its rate is what the split relaxes), X2
+# the series edge (its rate is pinned by topology to the injected flow):
+#
+#   base        all Euler; network, network; report, report; parabolic
+#               (= 5.41's p_net control, shipped states)
+#   mix         X2 quasi via ddtFrom; X2 slab via inertiaFrom; report both
+#               (= 5.41's p_mix: two tables stacked on one edge, shipped)
+#   mix_charge  mix + convectiveToRow.X2 charge -- THE new cell: all three
+#               tables stacked on ONE quasi edge, whose row pays M*dq/dt with
+#               the slab's number, gives up dpConv out of its chord, and whose
+#               grade is 0 by definition
+#   pin         X1 quasi via ddtFrom, X2 stepping on its slab; report both
+#               (= 5.41's p_pin: the mirror, shipped)
+#   both_chr    all Euler; X2 slab; X2 charge (= 5.44's s_chr: the same stack
+#               with a STEPPING edge, shipped)
+#
+# What the checker asserts: all three tables are read back per arm and per edge
+# from the log (scheme from the partner line, inertia source and shape from the
+# arm lines, the charge account from the edge line's rowBeta); the quasi edge's
+# row still carries its M*dq/dt and hands back dpConv exactly where charged;
+# the row closes as dpNetwork + M*dq/dt + rowBeta with no slack anywhere; a
+# quasi edge grades 0 by definition; the published twins reproduce (base ==
+# 5.41 p_net, both_chr == 5.44 s_chr); and the branch still closes.
+#
+# verified by tests/check_transient_coupled_multi_turbulent_triple_table.py
+# (ctest verify.transientCoupledMultiTurbulentTripleTable).
+
+fluid { rho 1000; mu 1.0e-3; }
+
+nodes {
+    Src  { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J1   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J2   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    J3   { volume 1.0; liquidFraction 0.5; pressure 1.0e6; }
+    Snk  { fixedPressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 6.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 0.3;  diameter 0.02; }
+    X1 { from J1; to J2; length 0.2;  diameter 0.005;
+         coupledResistance 1.4e7; }
+    By { from J1; to J2; length 0.3; diameter 0.008; }
+    X2 { from J2; to J3; length 0.24; diameter 0.006;
+         coupledResistance 1.36e7; }
+    B  { from J3; to Snk; length 0.3; diameter 0.02; }
+}
+
+time { dt 0.2; endTime 1.6; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    tolerance 1e-3;
+    maxSubIterations 12;
+    accelerates ( 0 0 0 0 0 );
+    ddts        ( Euler Euler Euler Euler Euler );
+    ddtFrom {
+        mix        { X1 Euler;  X2 steady; }
+        mix_charge { X1 Euler;  X2 steady; }
+        pin        { X1 steady; X2 Euler;  }
+    }
+    inertias    ( network network network network network );
+    inertiaFrom {
+        mix        { X1 network; X2 slab;    }
+        mix_charge { X1 network; X2 slab;    }
+        pin        { X1 network; X2 slab;    }
+        both_chr   { X1 network; X2 slab;    }
+    }
+    starts {
+        base       { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        mix        { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        mix_charge { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        pin        { X1 1.4e7; X2 1.36e7; profile parabolic; }
+        both_chr   { X1 1.4e7; X2 1.36e7; profile parabolic; }
+    }
+    convectiveToRow {
+        mix_charge { X1 report; X2 charge; }
+        both_chr   { X1 report; X2 charge; }
+    }
+}
+
+details {
+    # X1: 0.2 x 0.005 x 0.005 m, 8 cells across the gap; probe = the last
+    # 0.07 m, so its slab inertance is 0.35 of the region's.
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.12; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_triple_table_X1.vtu;
+    }
+
+    # X2: 0.24 x 0.004 x 0.008 m; probe = the last 0.07 m, slab 0.291667 of
+    # the region's inertance.
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.24 0.004 0.008);
+            cells (24 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.16; max 0.23; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 2.4e-4;
+                     relaxation 0.7; }
+        schemes { ddt Euler; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 3e-3; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_triple_table_X2.vtu;
+    }
+}

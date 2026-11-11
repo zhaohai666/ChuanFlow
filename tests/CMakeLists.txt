@@ -883,6 +883,24 @@ add_test(
         $<TARGET_FILE:chflow-1d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientTimeDecoupled/case.dict)
 
+# B5 the full coupling grammar in ONE case: ddtFrom + inertiaFrom +
+# convectiveToRow and the per-edge profile have never met in a single file
+# before (5.40/5.41 carried two tables + profile, 5.43/5.44 the other two).
+# Five arms on 5.41's topology, meshes, dt and seeds; the new cell is
+# mix_charge -- quasi AND slab AND charged on one edge at once -- whose row
+# pays M*dq/dt with the slab's number and hands back dpConv exactly where the
+# charge table says. The base arm reproduces 5.41's published p_net states and
+# pass sequence field for field, the row closes with zero slack in all 80
+# states, the charge moves exactly one term of one row (the neighbour is
+# bit-identical), and the chord stays inside the interface tolerance.
+add_test(
+    NAME verify.transientCoupledMultiTurbulentTripleTable
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_turbulent_triple_table.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentTripleTable/case.dict)
+
+
 # 5.51 the published laminar-turbulent locus of a yielded pipe, read off the
 # pipe's own wall law. The turbulent-yield FRICTION closure could not be
 # transcribed with its constants intact, so nothing is re-priced here: what

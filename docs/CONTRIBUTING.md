@@ -1174,6 +1174,23 @@ python3 tests/check_transient_time_decoupled.py \
     "$PWD/build/src/1d/apps/chflow-1d-transient" \
     "$PWD/tests/cases/transientTimeDecoupled/case.dict"
 
+# 三张逐边表 x 逐边 profile 同台（5.67 / B5）：ddtFrom + inertiaFrom +
+# convectiveToRow 三张独立逐边表第一次进同一份 case，零内核改动。
+# 5 臂复用 5.41 的拓扑/网格/dt/seeds：base/mix/pin/both_chr 是 5.41/5.44 的
+# 已发布格子，唯一新格 mix_charge = quasi + slab + charge 三表叠一边——quasi
+# 边的行用 slab 的 M 付 M*dq/dt、同时让出 dpConv（rowBeta == dpConv）、grade
+# 恒 0（quasi 无可评的账）。checker 逐臂逐边读回三张表（scheme 从 unsteady
+# 标志、M 闭式逐态、rowBeta 账户逐态、row 闭合 slack 恰 0、邻居 17 字段逐位
+# 相同、chord 容差内、base 1e-12 复现已发布 p_net 状态与 pass 序列）。
+# 注意：运行 ~5.5 分钟（5 臂 x 8 层 x RANS SIMPLE），是全量回归里最贵的单项之一。
+# 21 判据（ctest verify.transientCoupledMultiTurbulentTripleTable）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi \
+    tests/cases/transientCoupledMultiTurbulentTripleTable/case.dict
+python3 tests/check_transient_coupled_multi_turbulent_triple_table.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiTurbulentTripleTable/case.dict"
+
+
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
 # （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增
 # yieldedTransitionOf（network.cpp:413）+ PipeFlowResult::transition，solvePipeFlow 逐管填一次（:501），

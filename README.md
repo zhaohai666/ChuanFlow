@@ -20,7 +20,8 @@
 - **耦合边流变与 3D 广义牛顿黏度**：一维管网的耦合边可用 `flowIndex` / `consistency` / `yieldStress` 声明其三维详细区内的流体（幂律 / Herschel-Bulkley），3D 块把动量扩散项换成逐面表观黏度 `K·γ̇^(n−1) + τ₀(1−e^(−mγ̇))/γ̇`（壁面用离散剪切率定值）；1D 侧仍只装伙伴给出的 `R·q`，不重复计费，声明但牛顿档与未声明档逐位相同（§5.63）
 - **全网络全死支的零迭代不动点**：稳态管网每条 Bingham 管都低于自家阈值 `4τ₀L/d` 时，自由节点残差逐位是 `0 = 0`，求解器在初次求值后直接报告 `iterations=0 / residual=0 / converged`，所有 `Q = v = Re = f = 0`（死支仍有 Hagen-Poiseuille 电导帽，Jacobian 非奇异）；向自由节点注入速率后 Newton 立即进场并把节点压力抬到 Buckingham 闭式反解的位置——45 条判据、零内核改动（§5.64 / B6）
 - **HB 壁 × 无日程阀 K**：同一根管上 `flowIndex`/`consistency`/`yieldStress` 与常数阀 `valve K` 组合，补上（阀, 日程, 指数）表的最后一格；阀的分成由壁律指数决定——同一个 K=500 从 n=0.5 管拿 2.33 Pa、从 n=1.5 管拿 308.76 Pa（133×）——56 条判据、零内核改动（§5.65 / C2）
-- **`reportEvery` 与 `endTime` 解耦**：瞬态步进循环改为 `ceil(endTime/dt − 1e-9)` 步、末步裁剪到余量、`t` 用步索引落点、末态恒打印——endTime 不必再是 dt 的整倍数（0.1 s 配 dt 0.03 跑出 0.03/0.03/0.03/0.01 四步、末态精确落在 t=0.1），近整除陷阱（0.12/0.03 = 4.000000000000001）不被误计，整倍数旧 case 逐位兼容——41 条判据（§5.66 / C4）
+- **`reportEvery` 与 `endTime` 解耦**：瞬态步进循环改为 `ceil(endTime/dt − 1e-9)` 步、末步裁剪到余量、`t` 用步索引落点、末态恒打印——endTime 不必再是 dt 的整倍数（0.1 s 配 dt 0.03 跑出 0.03/0.03/0.03/0.01 四步、末态精确落在 t=0.1），近整除陷阱（0.12/0.03 = 4.000000000000001）不被误计，整倍数旧 case 逐位兼容——40 条判据（§5.66 / C4）
+- **耦合语法三张逐边表 × 逐边入口形状同台**：`ddtFrom` + `inertiaFrom` + `convectiveToRow` 与逐边 `profile` 第一次进同一份 case——quasi + slab + charge 三表叠一边的新格可行（quasi 边的行用 slab 的 M 付 M·dq/dt、同时让出 dpConv、grade 恒 0），charge 只动一行的一项、row 闭合 slack 恰 0、base 臂 1e-12 复现已发布孪生——21 条判据、零内核改动（§5.67 / B5）
 - **多入口使用形态**：C++ 原生库 / Python API / CLI 命令行 / Tauri 桌面GUI，集群自动化、本地交互都支持
 - **标准IO兼容**：支持 Gmsh msh、VTK/VTU、HDF5，可导入 OpenFOAM 网格，结果直接用 ParaView 可视化
 

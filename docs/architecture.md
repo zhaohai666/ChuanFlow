@@ -3900,6 +3900,63 @@ V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
 
 **成本**：**0 内核改动**；2 个已入库 case dict（此前是未跟踪草稿）+ 1 个 checker + 1 条 `add_test`，45 判据；直跑约 **0.1 s**，`ctest -R` 单跑 **0.44 s**，`-j8` 全量里 **0.88 s**（Test #45）。**最终全量 `ctest -j8`（`CHFLOW_WITH_PYTHON=OFF`）：118/118 绿、714.41 s**；对照上一轮 117/117 / 375.04 s，本次机器负载较高，`verify.vofOscillating` 186.64 s、`verify.vofFit` 124.48 s。详见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.65 HB 壁 × 无日程阀 K：**阀的分成由壁律的指数决定**——同一个 `K = 500` 从 `n = 0.5` 那根管的 10000 Pa 里拿走 **2.33 Pa**，从 `n = 1.5` 那根管里拿走 **308.76 Pa**（133×）；持停管在五个数量级的 K 下逐 token 相同
+
+**这一格从哪来**：`(阀, 日程, 指数)` 表还剩一格没问过——§5.50 量的是 **Bingham 壁 + 无日程阀 K**，§5.58–5.62 量的是 **HB/屈服壁 + 带日程阀**；`docs/gap_analysis.md` 把「HB × 阀 K（无日程）」编成 **C2**，估 0.5 增量、内核改动"与 §5.50 相同路径，只是 key 换成 HB"。实测**零内核改动**：parser 自 §5.47 / §5.49 / §5.50 起就同时收一根管上的 `flowIndex` / `consistency` / `yieldStress` / `valve`，没有任何 guard 拒收这个组合——它只是从未被问过。这也让 C2 的成本估计从 0.5 降到实际 ~0.3（2 个 case 文件 + 1 个 checker + 1 条 `add_test`）。
+
+**同一根管上两项损失**：`ρL/A·(Q_new − Q_prev)/dt = drive − dp_wall(Q_new) − K ρ|Q|Q/(2A²)`，`dp_wall` 是 §5.47 剖面积分的反函数 `Q = q_hb(tw, n, K_cons)`。三项各自的边界在 HB 下全部照旧：静止时阀为 0（`dp_valve(0) = 0`）、阈值 `4τ₀L/d` 不含 n / K_cons / K、阀只在有速率可计时收费。
+
+| 臂组 | `(n, K_cons, τ₀)` | 阀 K | 实测 |
+|---|---|---|---|
+| `StuckRef/K500/K1e8` | (0.5, 1.0, 2.6)，阈值 10400 Pa | 0 / 500 / 1e8 | 2001 个状态**逐 token 相同**、全为 `Q 0` |
+| `RelHB05` 家族 | (0.5, 1.0, 1.0)，阈值 4000 Pa | 0 / 100 / 500 / 5000 | 末速 1.04050 / 1.04031 / 1.03958 / 1.03147 e-6，**严格单调**、各自落在自己的两损失根上 |
+| `RelHB15(/K500)` | (1.5, 0.02, 1.0)，阈值 4000 Pa | 0 / 500 | 末速 1.2544e-5（12.1×），K=500 的阀分成 **308.76 Pa 对 2.33 Pa** |
+| `HangHB05(/K500)` | (0.5, 1.0, 0.5)，elevation +1 | — / 500 | drive 1664.35 Pa < 2000 Pa：逐 token 相同、恒 `Q 0` |
+| `RollHB05(/K500)` | 同上，elevation −1 | — / 500 | drive 18335.65 Pa：各自落在含重力的两损失根上 |
+| `StopRef/K5000/K1e8` | (0.5, 1.0, 1.5)，initialFlow | 0 / 5000 / 1e8 | 分别在第 **9 / 9 / 5** 步停住，递推逐状态复现三条迹 |
+
+**指数才是这一格的内容**：阀项是二次的 `∝ Q²`，而 Q 由壁律定——同一根几何管、同一个 `τ₀`、同一个 `K = 500`，剪切增稠壁（n = 1.5, K_cons = 0.02）流 1.2544e-5 m³/s，阀拿走 308.76 Pa；剪切稀化壁（n = 0.5, K_cons = 1.0）只流 1.0405e-6 m³/s，阀只拿走 2.33 Pa。§5.50 的 Bingham 壁只有一条律，这个分成无从谈起。
+
+**七族判据、56 条、0 失败**：① `(flowIndex, consistency)` 逐位读回 + 阈值 `4τ₀L/d` 复算，且 `RelHB05` 与 `RelHB15` 打印**同一个**阈值；② 持停管在任何 K 下逐 token 相同（稳态核对无 `dpValve` 字段）；③ 11 根流动 / 停止管 × 2001 状态全部被「HB 剖面积分 + K ρ|Q|Q/2A²」的隐式 Euler 递推复现，最差 **4.347e-10**（`StopK1e8` 第 4 步）；④ 每根流动管的末速等于两损失根（checker 自己的 tw 空间二分），K 家族严格单调；⑤ 阀分成 133× 的指数效应（上一段）；⑥ 三条停止迹连同停止步被复现，闩锁在停住后的下一步接管；⑦ 稳态核对与行进行在同一个根上会合，打印的 `dp − ρg·dz − dpValve` 经 §5.47 反演读回打印的速率。
+
+**本增量的边界**：① 无日程是**声明的缺席**而非新分支——`valveClose`/`valveOpen` 与本格的组合由 §5.58–5.62 覆盖，本格补的是"常数 K"；② 阀 K 仍按几何项计（`K ρ|Q|Q/2A²`），不随流变变稠变稀——阀有自己的 K，流体有自己的 K_cons，两个 K 不混；③ 只验正向流（Hang 档证明反向即死）；④ 稳态核对里 `dp` 打印的只是压降部分，重力项要自己减回去（`dp − ρg·dz` 才是摩擦半区）——这是打印约定，不是新物理。
+
+**成本**：0 内核改动；2 个 case 文件 + 1 个 checker + 1 条 `add_test`，56 判据；transient app 16 管 × 2001 状态直跑约 **0.6 s**，checker 全程约 **9 s**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
+### 5.66 `reportEvery` 与 `endTime` 解耦：步数是 `ceil` 不是 `round`，末步裁到余量、`t` 用步索引落点、末态恒打印——endTime 不是 dt 整倍数的 case 第一次存在，而整倍数的 case 逐位不变
+
+**这一格从哪来**：§5.49 定下的 1D 瞬态循环是 `round(endTime/dt)` 步、固定 `dt`、只在 `i % reportEvery == 0` 采样——它悄悄要求 endTime 是 dt 的整倍数，也悄悄回避了"求解器自己的 `dt` 能不能跑在打印步之下"这个问题。`docs/gap_analysis.md` 编为 **C4**，估 0.25 增量。审计（2026-11-11）已记两处部分解耦：1D app 的 `|| i == nSteps` 末态打印、3D PISO 的末步 `dt = min(dt, endTime − t)` 裁剪（§5.34）；本项把二者补进 1D 核心的步进循环（`transient.cpp runTransient` + `transientApp.cpp`），parser 零改动。
+
+**新簿记**：
+
+- 步数 `nSteps = ceil(endTime/dt − 1e-9)`——容差是给近整除陷阱的：`0.12/0.03` 在 IEEE 双精度下是 **4.000000000000001**，没有容差就会跑出 5 步、末步裁成 0；
+- 末步 `h = min(dt, endTime − (i−1)·dt)`，隐式欧拉行把它当作自己的 `dt` 读（`I_h = ρL/(A·h)`），所以裁剪改的是**簿记**不是物理；
+- `tPrev = min((i−1)·dt, endTime)` 用**步索引**定位，不用累加器——末态的 `t` 精确落在 endTime 上（0.1 就是 0.1，不是 0.09999999999999999）；
+- 采样条件 `i % reportEvery == 0 || i == nSteps`——`reportEvery` 不再拥有末态；
+- `dt`/`endTime` 必须同时为正，否则 `cfFatal`（核心）/ 报错退出（app）。
+
+**case 与判据**：`tests/cases/transientTimeDecoupled`（dt 0.03、endTime 0.1，即 **0.03/0.03/0.03/0.01** 四步；三管 Wide d=0.04 Newtonian、Narrow d=0.008 Newtonian、Yield τ₀=1.0 Bingham，阈值 4000 Pa < drive 10000 Pa）。checker `check_transient_time_decoupled.py` 六臂 + 拒收、**40 判据**：
+
+| 臂 | 设定 | 断言 |
+|---|---|---|
+| `clamped` | endTime 0.1, report 1 | steps=4、5 态、t = 0/0.03/0.06/0.09/**0.1**（≤1e-12）、全 15 个报告态被逐步 `h` 的隐式欧拉行复现（Newtonian 闭式 `Q_new = (I_h·Q_prev + drive)/(R + I_h)`，Bingham 在 tw 空间二分；最差 **3.27e-11**） |
+| `report3` | report 3 | 4 步运行只出 3 态（步 0、3、末 4），末态 t = 0.1 |
+| `report5` | report 5 | 2 态（步 0 + 末态）——**4 % 5 ≠ 0 而末态仍在**，这就是解耦本身；且末态与 `clamped` 的第 4 步**逐位相同**（打印是同一次 march 的窗口） |
+| `exact` | endTime 0.12 | 4 步**恰好全为 dt**——近整除容差挡住 4.000000000000001 |
+| `compat` | endTime 0.12, report 2 | 3 态 t = 0/0.06/0.12，与旧固定步循环的采样集相同 |
+| `shortRun` | endTime 0.012 | **单步** h = 0.012 的裁剪运行，末态等于闭式 `Q_inf(1−a)` |
+| 拒收 | endTime 0 | 非零退出 + 指名消息 |
+
+**物理没有动**：第 5 族把 `clamped`/`exact`/`shortRun` 的 Newtonian 末态与整条 march 的闭式积 `Q_inf·(1 − Π a_i)` 对到 **1e-9**——6.40198e-05 / 7.5015e-05 / 8.6268e-06 各自落在自己的积上。裁剪只改簿记，一步不多、一步不少。
+
+**向后兼容**：endTime 为 dt 整倍数的旧 case 逐位不变——`transientYieldValve` 仍 2001 状态、13 管 × 每 14 行、`steps=2000`、末态 t=4。
+
+**checker 自己的坑（值得记）**：首跑 21 条失败的根因不在内核也不在模型，而在 checker 的键提取——case 头注释里写着示例字样（`endTime 0.1`、`reportEvery 3 and 5`），而 `re.search(r"endTime ([0-9.]+)")` 扫的是**整个文件**，第一个命中是注释。教训：**从 dict 里读键必须先剥 `//` 注释再正则**；同理步长序列只能用容差比较（`0.1 − 0.09` 是 `0.010000000000000002`，`0.12 − 0.09` 是 `0.030000000000000027`），不能对字面量。
+
+**本增量的边界**：① 这是**簿记解耦**，不是自适应时间步（D5 仍 OPEN）——`dt` 还是那一个 `dt`，只是末步允许更短；② 末步更短意味着 Newtonian 管的松弛因子 `a_i = I_h/(R+I_h)` 更接近 1，数值稳定性不受影响（隐式欧拉无条件稳定），但精度随 h 变化——1e-9 的闭式积判据实测不受扰动；③ 3D 侧 PISO 的末步裁剪（§5.34）语义与此一致但实现独立，本项不动 3D。
+
+**成本**：核心 `transient.cpp` 循环 ~10 行 + app 同构 + 1 case 文件 + 1 checker + 1 条 `add_test`，40 判据；checker 全程 **0.75 s**（Test #83）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|
@@ -4409,4 +4466,14 @@ V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
   **45** 条判据、0 内核改动——从 dict 重算 `4τ₀L/d` 与被问的 dp、全死档
   `iterations=0 residual=0`、E 随定压均值移动、严格阈值不等式、0 迭代不等于网络死了
   （单管仍按 Buckingham 闭式流动）、注入臂 19 步 Newton 后 E 与 dp 落在闭式反解上；
+- `tests/check_transient_yield_index_valve_k.py`（CTest `verify.transientYieldIndexValveK`，§5.65 / C2）：
+  16 管（持停三管 / 四阀家族 / n=0.5 对 n=1.5 / 重力对 / 三停止管）+ 稳态孪生，
+  **56** 条判据、0 内核改动——全部 2001 状态 × 11 根管被「HB 剖面积分 +
+  K ρ|Q|Q/2A²」的隐式 Euler 递推复现（最差 4.347e-10）、阀分成 133× 的指数效应、
+  三停止迹逐状态复现、稳态同根会合（打印分裂经 §5.47 反演读回速率）；
+- `tests/check_transient_time_decoupled.py`（CTest `verify.transientTimeDecoupled`，§5.66 / C4）：
+  6 臂 + 拒收，**40** 条判据——全部报告态被**逐步 h** 的隐式 Euler 行复现
+  （Newtonian 闭式、Bingham 在 tw 空间二分，最差 3.27e-11）、末步裁剪落在
+  endTime 精确、reportEvery 3/5 仍落末态且与 report 1 逐位相同、近整除
+  0.12/0.03 不误计、endTime 整倍数向后逐位兼容、endTime 0 拒收；
 - 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`

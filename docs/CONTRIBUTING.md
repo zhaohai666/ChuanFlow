@@ -1141,6 +1141,39 @@ python3 tests/check_transient_yield_valve.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/transientYieldValve/case.dict"
 
+# HB 壁 × 无日程阀 K（5.65 / C2）：零内核改动。同一根管上 flowIndex/consistency/
+# yieldStress + valve K（常数、无 valveClose/valveOpen），补上 (阀, 日程, 指数) 表的最后一格。
+# 16 管：持停三管（K 跨五个数量级逐 token 相同）、四阀家族（末速严格单调、各自落在两损失根）、
+# n=0.5 对 n=1.5（同一 K=500 的阀分成 2.33 Pa 对 308.76 Pa，133×——阀分成由壁律指数决定）、
+# 重力对（Hang 持停 / Roll 在含重力 drive 的根上）、三停止管（第 9/9/5 步）。
+# checker 在壁应力空间二分解隐式步，全部 2001 状态 × 11 根管复现（最差 4.347e-10）；
+# 稳态孪生 case_steady.dict 与行进行同根会合、打印分裂 dp − ρg·dz − dpValve 经 5.47 反演读回速率。
+# 注意：稳态 pipe 行的 dp 只是压降部分，重力项要自己减回去才是摩擦半区。
+# 56 判据；app 直跑 0.6 s，checker 全程约 9 s（ctest verify.transientYieldIndexValveK）
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientYieldIndexValveK/case.dict
+python3 tests/check_transient_yield_index_valve_k.py \
+    "$PWD/build/src/1d/apps/chflow-1d-transient" \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/transientYieldIndexValveK/case.dict" \
+    "$PWD/tests/cases/transientYieldIndexValveK/case_steady.dict"
+
+# reportEvery 与 endTime 解耦（5.66 / C4）：步进循环改为 ceil(endTime/dt - 1e-9)
+# 步、末步 h = min(dt, endTime - (i-1)dt) 裁剪、t 用步索引定位、末态恒打印、
+# dt/endTime 拒收 0。case transientTimeDecoupled 是第一个 endTime 不是 dt 整倍数
+# 的瞬态（dt 0.03 / endTime 0.1 -> 0.03/0.03/0.03/0.01 四步五态，末态 t 精确 0.1）。
+# checker 六臂 + 拒收、40 判据：全部报告态被逐步 h 的隐式欧拉行复现（Newtonian
+# 闭式、Bingham tw 空间二分，最差 3.27e-11）；reportEvery 3/5 在 4 步运行上仍落
+# 末态且末态与 report 1 逐位相同；0.12/0.03（浮点 4.000000000000001）不被误计；
+# endTime 整倍数的旧 case（transientYieldValve）仍 2001 状态逐位兼容。
+# 注意：checker 从 dict 提取键必须先剥 // 注释再正则——头注释里的示例字样
+# （endTime 0.1、reportEvery 3 and 5）会先被命中；步长序列只能容差比较
+# （0.1 - 0.09 是 0.010000000000000002）。
+# 40 判据；checker 全程 0.75 s（ctest verify.transientTimeDecoupled）
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientTimeDecoupled/case.dict
+python3 tests/check_transient_time_decoupled.py \
+    "$PWD/build/src/1d/apps/chflow-1d-transient" \
+    "$PWD/tests/cases/transientTimeDecoupled/case.dict"
+
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
 # （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增
 # yieldedTransitionOf（network.cpp:413）+ PipeFlowResult::transition，solvePipeFlow 逐管填一次（:501），

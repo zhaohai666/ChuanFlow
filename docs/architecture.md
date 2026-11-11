@@ -3877,6 +3877,29 @@ V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
 
 **成本**：1 个新 case 文件、1 个新 checker、3 个新源文件 / 头（common `Rheology.h` + 3D `GeneralizedNewtonian.h/.cpp`）、24 个既有文件的局部改动（含 4 个旧负例 case 头注释与 4 个旧 checker 的判据迁移）；5 稳态臂约 **63 s**、瞬态臂约 **43 s**、4 个拒收 case 可忽略；`verify.coupledRheology`（Test #49）直跑约 **110 s**，`-j8` 全量里两次分别 **93.63 s / 160.54 s**（并发争用）。**最终全量 `ctest -j8`（`CHFLOW_WITH_PYTHON=OFF`）：117/117 绿、375.04 s**；四个迁移过的旧测试 0.23 / 0.34 / 3.98 / 152.57 s 全通过。详见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.64 全网络每条边都低于自家阈值：**0 次 Newton 迭代、`residual = 0` 的死不动点**——那个零是自由节点的 `0 = 0` 而不是"网络死了"；在自由节点注入 1e-6 m³/s 后 Newton 跑 **19** 步、E 升到 **33978.9475076 Pa**，恰是 Buckingham 闭式反解
+
+**这一格从哪来**：§5.49 边界⑧ 只记了一句「HP 帽让 Jacobian 非奇异」，从没立过判据；`docs/gap_analysis.md` 把它编成 **B6**，状态 `OPEN`、零内核改动、成本 0.5 增量。工作区里曾留下一份自称"已由 checker 验证 / ctest 注册"的 `case.dict` + `probe.dict`，实际上两个文件都未被 CMake 或任何脚本引用，头注释还把 Jacobian 自由节点行写成"全零"——**与 `network.cpp:519` 的 Hagen-Poiseuille 电导帽相反**。本案把这份草稿补成正式算例，并同时修掉这两处错误陈述。
+
+**为什么是 0 次迭代**：`solveSteadyNetwork` 把自由节点初始化为**全部定压节点的平均值**（`network.cpp:538-547`，本例 `(30000+20000)/2 = 25000 Pa`），随后在 `network.cpp:633` 先 `evaluate()` 一次；所有管都 `Q = 0`、无外部速率，故自由节点残差逐位是 0，`relativeResidual = 0 / 1e-300 = 0`，`network.cpp:638` 的 `while (relativeResidual > tol && iter < maxIter)` 根本不进入，`iterations = 0`、`converged`。死支的电导在 `:519` 回落到 `laminarConductance`，所以 **Jacobian 自由节点行不是零行、矩阵非奇异**；它只是没被要求求逆。
+
+| 臂 | 改法（同一份 dict 在临时目录派生） | 实测 |
+|---|---|---|
+| `allDead` | 原案：5 根 Bingham 管，`4τ₀L/d` = 12000 / 16000 / 20000 Pa | 全部 `Q = v = Re = f = 0`，`iterations=0 residual=0 converged`，E = 25000 |
+| `topology` | `probe.dict`：4 根管（去掉 Stk3） | 同一个死不动点，E = 25000，`iterations=0` |
+| `shifted` | p(A) 3.0e4 → 3.1e4 | E = **25500**（新平均值）、并行 dp 11000、串联 5500，仍 `iterations=0` |
+| `knifeEdge` | Stk1 τ₀ 3.0 → 2.5，使 `dpStatic == dp == 10000` | Q **仍逐位为 0**：放开判据是 `dp > dpStatic` 的严格不等式 |
+| `oneFlowing` | Stk1 τ₀ 3.0 → 2.0，阈值 8000 < 10000 | Stk1 `Q = 1.37182879207e-6`（Buckingham 闭式同值），其余四管仍 0，**`iterations` 仍是 0** |
+| `injected` | 在 E 注入 1e-6 m³/s、A 取出同量 | `iterations = 19`、`residual = 4.23516473627e-15`；E = **33978.9475076**、仅 Sr1b 流出 1e-6、其 `dp = 13978.9475076` |
+
+**闭式不是拟合**：`dpStatic = 4τ₀L/d`，`Q = Q_HP·g(ξ)`，`Q_HP = πd⁴dp/(128μL)`，`ξ = dpStatic/dp`，`g(ξ) = 1 − 4ξ/3 + ξ⁴/3`（§5.46）。checker 从 dict 自己读出 `L / d / τ₀ / 定压` 重算阈值、各管的受力压降与 `pInit`；`oneFlowing` 正向用闭式核对 `Q` 与 `f·Re·g(ξ) = 64`；`injected` 在 `dp` 上**二分反解** `Q(dp) = 1e-6` 得 `dp = 13978.94750765034 Pa`、`E = p(B) + dp = 33978.94750765034 Pa`，与打印值在 1e-9 相对内相同。注入臂因此不是"看它动没动"，而是把升高的自由节点压力读回本构自己的反函数；Sr1a 只被反向推 3978.9 Pa，仍低于 12000 Pa 阈值而保持 `Q = 0`。
+
+**五族判据、45 条、0 失败**：① 从 dict 重算「每条边的 `4τ₀L/d > 被问的 dp`」，而不是记住一张表；② 三个全死档的 `iterations=0 / residual=0 / 全字段恰为 0 / 各管 dp 恰为受力压降 / E 恰为定压均值`，并用 `shifted` 排除"E 硬编码 25000"；③ 阈值相等刀刃仍 `Q = 0`；④ `oneFlowing` 证明 **0 迭代 ≠ 网络死了**（一根管在流、Newton 仍未进场，因为自由节点只连着两根死管），且该管的闭式与 `f·Re·g(ξ)` 同时成立；⑤ 注入臂的 19 步 Newton 不发散、唯一流动管与源速率相等、`dp/E` 为闭式反解、反向管仍被阈值锁住——这是 HP 帽那条记录第一次变成可失败的判据。
+
+**本增量的边界**：① 全死时自由节点压力**不可辨识**——方程是 `0 = 0`，任意 p 都满足，报出的 25000 / 25500 只是**初始化值**，不是解出来的物理量；不要把它当"凝胶管线的静止压力分布"。② 0 迭代只在**零外部速率**下成立，注入臂立刻让循环跑起来。③ 死支的 HP 帽保证矩阵可逆，但**不等于**该网络能凭空造出流量：注入臂是靠把 E 抬到 33978.9 Pa 让 Sr1b 越过阈值才找到解，这正是 A2 说的"重启压力"缺席的证据，不是亚阈值蠕变。④ 本次只验 Bingham（`n = 1`）；HB 阈值与 n 无关（§5.47）但未在本拓扑上单列一臂。⑤ 稳态专用，瞬态行的 `holdsStatic` 是另一套判据（§5.49），不在这里。
+
+**成本**：**0 内核改动**；2 个已入库 case dict（此前是未跟踪草稿）+ 1 个 checker + 1 条 `add_test`，45 判据；直跑约 **0.1 s**，`ctest -R` 单跑 **0.44 s**，`-j8` 全量里 **0.88 s**（Test #45）。**最终全量 `ctest -j8`（`CHFLOW_WITH_PYTHON=OFF`）：118/118 绿、714.41 s**；对照上一轮 117/117 / 375.04 s，本次机器负载较高，`verify.vofOscillating` 186.64 s、`verify.vofFit` 124.48 s。详见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|
@@ -4381,4 +4404,9 @@ V/B (pF − pF')        = Q_s + Q_inj(t) − Q_d                (node F)
   `|probeSlope|·H/2 == τ_w`、`dp` 对同一本构的平面渠道闭式（含塞流积分）、
   逐趟界面残差 `|R·q − dpBlock|/dpBlock`、1D `Re` 仍逐位是 `ρvd/μ`、
   瞬态每步动量行与末态落点、四条拒收边界；
+- `tests/check_steady_all_below_threshold.py`（CTest `verify.steadyAllBelowThreshold`，§5.64 / B6）：
+  2 份入库 dict + 4 个临时派生臂（移位定压 / 阈值相等 / 单管放开 / 自由节点注入），
+  **45** 条判据、0 内核改动——从 dict 重算 `4τ₀L/d` 与被问的 dp、全死档
+  `iterations=0 residual=0`、E 随定压均值移动、严格阈值不等式、0 迭代不等于网络死了
+  （单管仍按 Buckingham 闭式流动）、注入臂 19 步 Newton 后 E 与 dp 落在闭式反解上；
 - 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`

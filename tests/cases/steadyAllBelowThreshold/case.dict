@@ -1,0 +1,63 @@
+// 5.64 / B6 -- all pipes below threshold: the steady network's whole-network
+// dead fixed point (docs/gap_analysis.md B6, §5.49 边界⑧).
+//
+// Every pipe has dp < dpStatic = 4 tau0 L / d, so every Q is exactly 0 and each
+// free node's balance is 0 = 0 whatever its pressure. The kernel initialises a
+// free node to the MEAN of the fixed pressures (network.cpp:538-547) and evaluates
+// the residual before entering Newton; here that residual is exactly zero, so the
+// solve reports iterations = 0, residual = 0, converged. A dead branch gets the
+// Hagen-Poiseuille conductance cap (network.cpp:519), so the Jacobian's free-node
+// row is NOT singular -- it simply is never asked to invert. The checker's source
+// arm proves the other half: with an injected rate the loop does run (19 steps)
+// and converges, so the matrix really is invertible.
+//
+// Topology: 2 fixed-pressure nodes (A 3e4, B 2e4, dp = 1e4 Pa) + one free node E
+// (initialised to 2.5e4 = mean of A and B). Five Bingham pipes:
+//
+//   pipe  from  to    tau0   threshold 4 tau0 L/d   dp offered   stuck?
+//   Stk1   A    B     3.0        12000 Pa            10000 Pa      yes (dp < threshold)
+//   Stk2   A    B     4.0        16000 Pa            10000 Pa      yes
+//   Stk3   A    B     5.0        20000 Pa            10000 Pa      yes
+//   Sr1a   A    E     3.0        12000 Pa             5000 Pa      yes (series pair)
+//   Sr1b   E    B     3.0        12000 Pa             5000 Pa      yes
+//
+// Constants: L 20, d 0.02, rho 850, mu 0.1.
+//
+// Arm 1 of 6; the 4-pipe topology twin is probe.dict. The other four arms are
+// derived from this file in a temp dir by the checker:
+//   shifted    p(A) 3.1e4 -> E = 25500 (mean, not a hardcoded 25000)
+//   knifeEdge  Stk1 tau0 2.5 -> dp == dpStatic, Q still exactly 0
+//   oneFlowing Stk1 tau0 2.0 -> Q = 1.37182879207e-6 (Buckingham), iterations 0
+//   injected   source 1e-6 at E -> E = 33978.9475076, Sr1b dp = 13978.9475076
+//              = Buckingham's inverse at that rate, Newton 19 steps
+//
+// verified by tests/check_steady_all_below_threshold.py (45 checks),
+// ctest verify.steadyAllBelowThreshold. Zero kernel changes.
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+    E {};
+}
+
+pipes
+{
+    Stk1 { from A; to B; length 20; diameter 0.02; yieldStress 3.0; }
+    Stk2 { from A; to B; length 20; diameter 0.02; yieldStress 4.0; }
+    Stk3 { from A; to B; length 20; diameter 0.02; yieldStress 5.0; }
+
+    Sr1a { from A; to E; length 20; diameter 0.02; yieldStress 3.0; }
+    Sr1b { from E; to B; length 20; diameter 0.02; yieldStress 3.0; }
+}

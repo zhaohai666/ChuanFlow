@@ -369,6 +369,24 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyBinghamYield/case.dict)
 
+# 5.64 / B6: close the "every edge below its own threshold" cell of 5.49. Zero
+# kernel changes -- two checked-in dicts (5 pipes / 4 pipes) plus four arms
+# derived in a temp dir. Thresholds 4 tau0 L/d, offered drops, the free-node
+# initial guess (mean of fixed pressures) and Buckingham's Q are all re-derived
+# from the dict by the checker: iterations=0 residual=0 converged on the dead
+# network; p(A) shifted moves E 25000 -> 25500; dp == dpStatic still gives Q=0;
+# one released parallel pipe flows at Buckingham's exact Q while iterations is
+# STILL 0 (the zero is the free node's residual, not a dead-network shortcut);
+# a 1e-6 source at the free node forces Newton to run 19 steps and raises E to
+# p(B) + dp, where dp is Buckingham's inverse at that rate -- the HP cap on a
+# dead branch is what keeps the Jacobian invertible there.
+add_test(
+    NAME verify.steadyAllBelowThreshold
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_all_below_threshold.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyAllBelowThreshold/case.dict)
+
 # 5.47 Herschel-Bulkley in the same network -- tau = tau_0 + K gdot^n, the branch
 # 5.46 refused. One closed form is the laminar profile integral,
 # Q = pi R^3 tw^-3 K^(-1/n) n D^(1+1/n) [tau0^2/(n+1) + 2 tau0 D/(2n+1) +

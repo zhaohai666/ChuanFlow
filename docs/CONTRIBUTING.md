@@ -961,6 +961,19 @@ python3 tests/check_steady_bingham_yield.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/steadyBinghamYield/case.dict"
 
+# 全网络全死支（5.64 / B6）：零内核改动。case.dict（5 管）与 probe.dict（4 管）是前两臂，
+# checker 再在临时目录派生 4 臂：p(A) 3.0e4→3.1e4、Stk1 tau_0 2.5（阈值相等刀刃）、
+# Stk1 tau_0 2.0（单管放开）、在自由节点 E 注入 1e-6 m3/s。阈值 4*tau_0*L/d、各管受力压降、
+# 自由节点初值（定压均值）、Buckingham 的 Q 与反解 dp 全部由 checker 从 dict 重算，不记打印数。
+# 看什么：全死档 iterations=0 residual=0；E 随均值 25000→25500；dp == dpStatic 仍 Q=0；
+# 单管按闭式流出 1.37182879207e-6 但 iterations 仍是 0（零是自由节点残差，不是"网络死了"）；
+# 注入臂 Newton 19 步、E=33978.9475076 Pa 与闭式反解一致（死支 HP 电导帽保证矩阵可逆）。
+# 边界：全死时自由节点压力不可辨识（0=0），报出的 E 只是初始化值，不是解出来的物理量。
+# 45 条判据，直跑约 0.1 s（ctest verify.steadyAllBelowThreshold）
+python3 tests/check_steady_all_below_threshold.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyAllBelowThreshold/case.dict"
+
 # Herschel-Bulkley（5.47）：新算例 steadyHerschelBulkley，三个 case 文件。这一格是 5.46 在解析期拒收的那一支——
 # 阈值 + 指数同时声明。内核新增的是**一条律的两个方向**，不是一个分支：正定律 src/1d/src/network.cpp:173-:185 是剖面
 # 积分的逐项闭式（tw = dp d/4L、D = tw - tau_0）

@@ -1,0 +1,33 @@
+// 5.64 / B6, arm 2 (topology twin): the same whole-network dead fixed point on
+// 4 pipes instead of 5 (Stk3 removed). Three parallel/series Bingham walls all
+// stay below their own dpStatic = 4 tau0 L/d, so E sits at the mean of the fixed
+// pressures (25000 Pa), iterations = 0, residual = 0, converged. Read together
+// with case.dict by tests/check_steady_all_below_threshold.py.
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.1;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    B { pressure 2.0e4; }
+    E {};
+}
+
+pipes
+{
+    // Parallel: all stuck (threshold > dp = 1e4)
+    Stk1 { from A; to B; length 20; diameter 0.02; yieldStress 3.0; }
+    Stk2 { from A; to B; length 20; diameter 0.02; yieldStress 4.0; }
+
+    // Series pair via free node E: both stuck
+    Sr1a { from A; to E; length 20; diameter 0.02; yieldStress 3.0; }
+    Sr1b { from E; to B; length 20; diameter 0.02; yieldStress 3.0; }
+}

@@ -65,7 +65,17 @@ int main(int argc, char** argv)
         }
 
         const int report = tc.reportEvery > 0 ? tc.reportEvery : 1;
-        const int nSteps = static_cast<int>(std::round(tc.endTime / tc.dt));
+        // 5.66 / C4: same bookkeeping as runTransient -- ceil(endTime/dt) with
+        // a near-multiple tolerance, last step clamped to the remainder, and
+        // the final state always emitted. A case whose endTime IS a multiple
+        // of dt prints exactly what it printed before.
+        if (!(tc.dt > 0) || !(tc.endTime > 0))
+        {
+            log::error("transient: dt and endTime must both be positive");
+            return 1;
+        }
+        const int nSteps =
+            static_cast<int>(std::ceil(tc.endTime / tc.dt - 1e-9));
 
         auto emit = [&](const TransientNetwork& s)
         {
@@ -96,7 +106,9 @@ int main(int argc, char** argv)
         emit(sim);
         for (int i = 1; i <= nSteps; ++i)
         {
-            const double res = sim.step(tc.dt);
+            const double tPrev = std::min((i - 1) * tc.dt, tc.endTime);
+            const double h = std::min(tc.dt, tc.endTime - tPrev);
+            const double res = sim.step(h);
             if (i % report == 0 || i == nSteps) emit(sim);
             if (!std::isfinite(res))
             {

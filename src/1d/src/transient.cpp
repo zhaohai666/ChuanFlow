@@ -736,11 +736,22 @@ TransientSeries runTransient(const TransientCase& c, double dt,
 
     sample();
     const int report = std::max(1, reportEvery);
-    const int nSteps = static_cast<int>(std::round(endTime / dt));
+    // 5.66 / C4: endTime no longer has to be a multiple of dt. The step count
+    // is ceil(endTime/dt) with a tolerance so a floating-point near-multiple
+    // (0.12/0.03 == 4.000000000000001) still counts as its integer, and the
+    // LAST step is clamped to the remainder h = endTime - (n-1) dt, which the
+    // implicit row reads through its own dt argument. tPrev is indexed, not
+    // accumulated, so the clamp is exact. A case whose endTime IS a multiple
+    // of dt gets h == dt on every step and the same sample set as before.
+    if (!(dt > 0) || !(endTime > 0))
+        cfFatal("transient: dt and endTime must both be positive");
+    const int nSteps = static_cast<int>(std::ceil(endTime / dt - 1e-9));
     for (int i = 1; i <= nSteps; ++i)
     {
-        sim.step(dt);
-        if (i % report == 0) sample();
+        const double tPrev = std::min((i - 1) * dt, endTime);
+        const double h = std::min(dt, endTime - tPrev);
+        sim.step(h);
+        if (i % report == 0 || i == nSteps) sample();
     }
     return out;
 }

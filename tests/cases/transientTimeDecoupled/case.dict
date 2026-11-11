@@ -1,0 +1,58 @@
+// transientTimeDecoupled (C4, gap_analysis): `reportEvery` and `endTime`
+// decoupled. Since 5.49 every transient case stepped `round(endTime/dt)` times
+// with a fixed dt and sampled only when `i % reportEvery == 0`, which silently
+// required endTime to be a multiple of dt -- and hid the question of whether
+// the row's own dt can run below the printed step. This file is the first case
+// whose endTime is NOT a multiple of dt:
+//
+//     dt 0.03, endTime 0.1  ->  ceil(0.1/0.03) = 4 steps of 0.03/0.03/0.03/0.01,
+//     the last step clamped to the remainder the implicit row reads as its own
+//     dt; t lands on 0.1 exactly because the step index, not an accumulator,
+//     positions each step.
+//
+// The three pipes are one law each so the recursion stays closed-form:
+//
+//     Wide    Newtonian d = 0.04  (fast, tau ~ 0.43 s)
+//     Narrow  Newtonian d = 0.008 (slow, tau ~ 0.85 s)
+//     Yield   Bingham  tau_0 = 1.0, threshold 4000 Pa < drive 10000 Pa
+//
+// with the same 5.45-5.50 fluid and geometry (rho 850, mu 0.1, L 20). The
+// checker derives the arms in a temp dir and re-derives every reported state
+// from the implicit-Euler row with the PER-STEP h -- including the clamped
+// 0.01 s step -- in closed form for the Newtonian pipes and by bisection for
+// the yielded one; asserts reportEvery 3 and 5 on a 4-step run still end on
+// the final state; asserts a near-multiple endTime (0.12/0.03, which evaluates
+// to 4.000000000000001) is not miscounted; and asserts endTime 0 is refused.
+//
+// Zero new keys: `time { dt; endTime; reportEvery; }` is the same grammar; the
+// change is in the step loop (transient.cpp runTransient + transientApp.cpp),
+// and a case whose endTime IS a multiple of dt steps, samples and prints
+// exactly what it printed before.
+//
+// verified by tests/check_transient_time_decoupled.py (ctest
+// verify.transientTimeDecoupled).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+}
+
+pipes
+{
+    Wide   { from A; to B; length 20; diameter 0.04; }
+    Narrow { from A; to B; length 20; diameter 0.008; }
+    Yield  { from A; to B; length 20; diameter 0.02; yieldStress 1.0; }
+}
+
+time
+{
+    dt 0.03;
+    endTime 0.1;
+    reportEvery 1;
+}

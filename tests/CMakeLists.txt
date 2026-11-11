@@ -845,6 +845,44 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValve/case.dict)
 
+# 5.65 / C2 (gap_analysis): the missing cell of the (valve, schedule, index)
+# table -- the HB wall (5.47's flowIndex + consistency + yieldStress) and the
+# BARE valve K (no schedule, 5.50's other half) on one row. Zero kernel changes:
+# the parser has taken all four keys on one pipe since 5.50; nothing was refused,
+# it was only never asked. What the index adds is that the valve's share of the
+# asked drop is set by the wall law: the checker re-derives all 2001 states of
+# all 16 pipes from the HB profile integral + K rho|Q|Q/2A^2 (worst 4.3e-10),
+# asserts five decades of K on a held wall print one trace, one tau_0 prints one
+# threshold at n = 0.5 and n = 1.5, the four-K family lands on its own roots
+# monotone in K, the same K = 500 takes 2.33 Pa of the n = 0.5 pipe's drop but
+# 308.76 Pa of the n = 1.5 pipe's (133x), the three stop paths are reproduced
+# step for step, and the steady kernel meets the marched row on the same
+# two-term root with the printed split read back through the inversion
+add_test(
+    NAME verify.transientYieldIndexValveK
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_index_valve_k.py
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldIndexValveK/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldIndexValveK/case_steady.dict)
+
+# 5.66 endTime and reportEvery are decoupled: the loop takes
+# ceil(endTime/dt - 1e-9) steps whose last one is clamped to the remainder and
+# always reports the final state, so a case whose endTime is NOT a multiple of
+# dt (0.1 with dt 0.03 -> 0.03/0.03/0.03/0.01) lands on endTime exactly, a
+# near-multiple endTime (0.12/0.03 = 4.000000000000001) is not miscounted, and
+# a multiple-of-dt case prints the same sample set the old fixed-step loop did.
+# Every reported state is re-derived from the implicit-Euler row with the
+# per-step h -- closed form for the Newtonian pipes, bisection in wall-stress
+# space for the yielded one.
+add_test(
+    NAME verify.transientTimeDecoupled
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_time_decoupled.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientTimeDecoupled/case.dict)
+
 # 5.51 the published laminar-turbulent locus of a yielded pipe, read off the
 # pipe's own wall law. The turbulent-yield FRICTION closure could not be
 # transcribed with its constants intact, so nothing is re-priced here: what

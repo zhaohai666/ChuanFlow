@@ -275,8 +275,12 @@ private:
     bool pending_ = false;
 };
 
-/// Advance the case by endTime/dt steps, sampling every reportEvery steps
-/// (sample 0 is the initial state).
+/// Advance the case from t = 0 to endTime in ceil(endTime/dt) steps of at most
+/// dt -- the last step is clamped to the remainder, so endTime need not be a
+/// multiple of dt (5.66 / C4). A sample is emitted every reportEvery steps AND
+/// at the final step (sample 0 is the initial state); when endTime IS a
+/// multiple of dt the step sizes and the sample set are exactly what the old
+/// fixed-step loop produced.
 TransientSeries runTransient(const TransientCase& c, double dt,
                              double endTime, int reportEvery);
 

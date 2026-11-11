@@ -1,0 +1,125 @@
+// transientYieldIndexValveRelatch (case n = 1.0, K = 0.1): 5.54's two-way latch
+// moved onto an HB wall. 5.54 proved the re-latch with Bingham rows only, and
+// 5.57/5.58 proved that the *desk* -- threshold 4 tau_0 L / d, the `<=` in
+// holdsStatic, the in-step clamp before kv is read -- never looks at `n`. Those
+// two results together make a sharper question than "does HB change the dead
+// band": a wall that is already flowing can be put back to sleep only by its own
+// node, and that node is moved by the *wall law*, which does read `n`. So the
+// threshold should be index-blind while the STEP the latch fires on should not.
+//
+// The row per arm is 5.54's, with `tw` now Herschel-Bulkley:
+//
+//   rho L/A (Qk - Qk')/dt = (pA - pF) - 4 L tw_k / d - Kk rho|Qk|Qk/(2A^2)
+//   rho L/A (Qd - Qd')/dt = (pF - pB) - R Qd - Kd(t) rho|Qd|Qd/(2A^2)
+//   V/BC (pF - pF')        = sum_k Qk - Qd
+//
+// Nothing here needed a kernel change: the threshold (transient.cpp:28-:31), the
+// entry latch (:40-:43), the in-step clamp (:353-:355) and the degree-generic
+// node row (:395-:416) are the same four lines 5.54 used.
+//
+// Every free node starts at 2.7e4 Pa against A = 3.0e4, so the drive on offer is
+// 3000 Pa and both walls start held. The two thresholds used are
+// 4 tau_0 L / d = 8000 Pa (tau_0 = 2.0) and 6000 Pa (tau_0 = 1.5), i.e. release
+// pressures pA - threshold = 22000 and 24000 Pa. The drain that empties the node
+// closes 0.8 -> 1.0 s to closedK = 1e8 and reopens 2.5 -> 2.7 s in every arm.
+//
+//   * `a` -- 8000 over 6000: the two-way latch. The weaker wall releases first,
+//     the stronger one on the way down, the drain seals, the weaker wall fills
+//     the node back over 22000 Pa and the stronger wall is put back to sleep
+//     while the weaker one is still flowing.
+//   * `s` -- `a` without its 8000 row: what a held wall contributes to node
+//     continuity, which should be nothing, so the 6000 wall's tokens here should
+//     reproduce `a`'s through the whole sleep window.
+//   * `u` -- 8000 alone: 5.53's one-way arm on this starting pressure, the
+//     control that shows the sleep in `a` is bought by the neighbour.
+//   * `p` -- 8000 + a Newtonian feed: a neighbour whose flow does not vanish at
+//     the wall's own pressure, so the node has a ceiling and this wall should
+//     never be asked to sleep at all.
+//
+// Constants are 5.57's/5.58's: L 20, d 0.02, rho 850, mu 0.1, dt 0.002,
+// endTime 4.0 (2001 states), volume 0.1, bulkModulus 1e8. This tier is
+// (flowIndex, consistency) = (1.0, 0.1), i.e. exactly 5.54's Bingham wall written
+// in HB -- n = 1 with K = mu -- so its tokens must reproduce 5.54's case file
+// for arm a / s / u / p. case_5.dict is (0.5, 1.0) and case_2.dict is (2.0, 0.02).
+//
+// verified by tests/check_transient_yield_index_valve_relatch.py
+// (ctest verify.transientYieldIndexValveRelatch).
+//
+// Measured at (n, K) = (1.0, 0.1), 2001 states:
+//
+//   * the full ladder is [1, 333, 507, 1530] -- release 333 (0.666 s) on entry
+//     drive 8006.1182 (7998.6378 one step earlier, print 6.72243e-11 m3/s), sleep
+//     507, second release 1530 (entry drive 8001.0644, previous 7994.9293).
+//   * the sleep is a one-step decision here: the entry drive first falls under
+//     8000 Pa at step 507 (7996.9049) and the flag flips at 507 too -- coast 0.
+//     The clamp still needs its own half: at 506 the row is unheld, its implied
+//     wall stress is already under tau_0, and the rate prints exactly 0.
+//   * the refill wins by 1192.446 Pa: supply vs leak at step 500 is
+//     1.83744e-06 against 6.73837e-08 m3/s (ratio 27.268), the node climbs
+//     1210.4094 Pa from 21982.03676 and its best across [500, 1350] is
+//     23192.44613 Pa vs the 22000 Pa it needs.
+//   * the sleep window [507, 1530) is 1023 states of exactly 0 in one continuous
+//     block, and 506 is the ONLY unheld step in the run whose row implies a
+//     sub-yield stress.
+//   * this is 5.54's wall written in HB, and it reproduces it: hold flags equal
+//     in all 2001 states for Sa / Wa / Su / Sp, ladders [1, 333, 507, 1530] and
+//     [1, 318] identical, node Fa / Fu within 1.0e-07 Pa (1920 / 1643 of 2001
+//     tokens are the same string), rates within 7.2e-09 relative, and on arm p --
+//     whose wall never wakes -- every one of the 2001 tokens is bit-identical.
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A { fixedPressure 3.0e4; }
+    B { fixedPressure 2.0e4; }
+
+    Fa { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fs { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fu { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+    Fp { volume 0.1; bulkModulus 1.0e8; pressure 2.7e4; }
+}
+
+pipes
+{
+    // --- the two-way latch on HB walls: 8000 below 6000 ---------------------
+    Sa { from A; to Fa; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 2.0; }
+    Wa { from A; to Fa; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 1.5; }
+    Da { from Fa; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+
+    // --- `a` with its strong row taken out ----------------------------------
+    Ws { from A; to Fs; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 1.5; }
+    Ds { from Fs; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+
+    // --- one wall only, the control for `a` ---------------------------------
+    Su { from A; to Fu; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 2.0; }
+    Du { from Fu; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+
+    // --- a Newtonian neighbour instead of a second wall ---------------------
+    Sp { from A; to Fp; length 20; diameter 0.02;
+         flowIndex 1.0; consistency 0.1; yieldStress 2.0; }
+    Np { from A; to Fp; length 20; diameter 0.02; }
+    Dp { from Fp; to B; length 20; diameter 0.02; valve 0;
+         valveClose { start 0.8; end 1.0; closedK 1.0e8; }
+         valveOpen  { start 2.5; end 2.7; } }
+}
+
+time
+{
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

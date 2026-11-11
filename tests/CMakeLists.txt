@@ -1068,13 +1068,49 @@ add_test(
 # re-arms -- smallest rate 8.1797e-18 / 4.8957e-13 / 2.6280e-11 m3/s.  Mirror e/f
 # is token-for-token exact (nodes sum to 50000 within 0.0e+00, 2001/2001 rates
 # identical) because |Q|Q is odd, all 20 t = 0 flags read 0, and every node row
-# closes on the printed tokens alone to 4.9163e-14 / 4.9640e-14 / 4.9382e-14 m3/s
+# closes on the printed tokens alone to 4.9163e-14 / 4.9640e-14 / 4.9382e-14 m3/s.
 add_test(
     NAME verify.transientYieldIndexValveBand
     COMMAND ${Python3_EXECUTABLE}
         ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_index_valve_band.py
         $<TARGET_FILE:chflow-1d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldIndexValveBand/case_5.dict)
+
+
+# 5.59: the re-latch moved onto an HB wall -- 5.54's two-way latch rewritten with
+# (n, K) = (0.5, 1.0) / (1.0, 0.1) / (2.0, 0.02), 4 arms x 10 pipes x 6 nodes,
+# 2001 states, and NO kernel change (threshold :28-:31, holdsStatic :40-:43,
+# in-step clamp :353-:355, degree-generic node row :395-:416).  The desk is as
+# index-blind as 5.57 said: Wa's flag changes at 1 and 180, arm u's lone wall at
+# 1 and 318, arm p's at 1 only -- the same three integers in all three tiers --
+# and Fa / Fu print ONE token for their first 180 / 318 states in all three files.
+# The arrival is not: arm a's 8000 Pa wall wakes at step 318 / 333 / 343
+# (0.636 / 0.666 / 0.686 s, a 25-step spread) on entry drives 8001.7883 /
+# 8006.1182 / 8000.6927 Pa, each the first above the threshold and each within
+# 80 Pa of a number no tier can see the inside of.  A sleep needs BOTH halves of
+# :340-:360, and the coast between them is the law's: at n = 1 the drive falls
+# under 8000 at step 507 and the flag flips there (lag 0); at n = 2 the drive is
+# already under at 465 while the row still prints 7.28766e-09 m3/s and the flip
+# only comes 7 steps (1.4e-02 s) later.  At n = 0.5 the desk is never asked -- the
+# smallest entry drive after the wake is 8001.7883, and the sealed window's best
+# node is 21400.49321 Pa against the 22000 Pa release pressure, 599.507 Pa short,
+# while n = 1 / n = 2 overshoot by 1192.446 / 1544.178 Pa.  The race is supply
+# vs leak at the first sealed state: 1.30083e-07 / 1.83744e-06 / 2.0945e-06 m3/s
+# against 5.43469e-08 / 6.73837e-08 / 7.0236e-08, ratio 2.394 / 27.268 / 29.821,
+# and the node climbs 108.2611 / 1210.4094 / 1391.8863 Pa before the reopened
+# drain takes over.  Every unheld step with a root closes on the HB section
+# integral (worst 1.957e-08 / 4.561e-07 / 4.429e-08 relative on Sa) and in the
+# whole run EXACTLY ONE unheld step implies a sub-yield stress -- step 506 / 471,
+# one before the clamp -- so holding is a lost root, not a residual.  n = 1 with
+# K = mu is 5.54's wall written twice: identical flags, ladders [1, 333, 507, 1530]
+# and [1, 318] in both files, nodes within 1.0e-07 Pa, and bit-identical tokens on
+# the arm whose wall never wakes.  87 judgments, three case files, 0 kernel lines
+add_test(
+    NAME verify.transientYieldIndexValveRelatch
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_yield_index_valve_relatch.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldIndexValveRelatch/case_5.dict)
 
 
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity

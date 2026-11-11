@@ -1,0 +1,60 @@
+solver { type steadyNetwork; }
+
+// transientYieldIndexValveK (C2) steady twin: the same network at rest, for the
+// cross-kernel meeting -- the marched row at t = 4 against the steady kernel's
+// own root of the same two-term loss (5.47's HB profile integral + §4.2's
+// valve K), and the printed split dpWall + dpValve == dp read back through the
+// inversion. A2's pipes start from rest here, so the three Stop pipes sit on
+// the static branch (drive 4000 Pa < 12000 Pa) and must print Q 0 with no
+// dpValve field at all.
+
+fluid { rho 850; mu 0.1; }
+
+nodes
+{
+    A  { pressure 3.0e4; }
+    B  { pressure 2.0e4; }
+    A2 { pressure 2.4e4; }
+}
+
+pipes
+{
+    StuckRef  { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                consistency 1.0; yieldStress 2.6; }
+    StuckK500 { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                consistency 1.0; yieldStress 2.6; valve 500; }
+    StuckK1e8 { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                consistency 1.0; yieldStress 2.6; valve 1.0e8; }
+
+    RelHB05      { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                   consistency 1.0; yieldStress 1.0; }
+    RelHB05K100  { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                   consistency 1.0; yieldStress 1.0; valve 100; }
+    RelHB05K500  { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                   consistency 1.0; yieldStress 1.0; valve 500; }
+    RelHB05K5000 { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                   consistency 1.0; yieldStress 1.0; valve 5000; }
+
+    RelHB15      { from A; to B; length 20; diameter 0.02; flowIndex 1.5;
+                   consistency 0.02; yieldStress 1.0; }
+    RelHB15K500  { from A; to B; length 20; diameter 0.02; flowIndex 1.5;
+                   consistency 0.02; yieldStress 1.0; valve 500; }
+
+    HangHB05     { from A; to B; length 20; diameter 0.02; elevation 1.0;
+                   flowIndex 0.5; consistency 1.0; yieldStress 0.5; }
+    HangHB05K500 { from A; to B; length 20; diameter 0.02; elevation 1.0;
+                   flowIndex 0.5; consistency 1.0; yieldStress 0.5; valve 500; }
+    RollHB05     { from A; to B; length 20; diameter 0.02; elevation -1.0;
+                   flowIndex 0.5; consistency 1.0; yieldStress 0.5; }
+    RollHB05K500 { from A; to B; length 20; diameter 0.02; elevation -1.0;
+                   flowIndex 0.5; consistency 1.0; yieldStress 0.5; valve 500; }
+
+    StopRef   { from A2; to B; length 20; diameter 0.02; flowIndex 0.5;
+                consistency 1.0; yieldStress 1.5; }
+    StopK5000 { from A2; to B; length 20; diameter 0.02; flowIndex 0.5;
+                consistency 1.0; yieldStress 1.5; valve 5000; }
+    StopK1e8  { from A2; to B; length 20; diameter 0.02; flowIndex 0.5;
+                consistency 1.0; yieldStress 1.5; valve 1.0e8; }
+}
+
+solve { maxIter 50; tol 1e-12; }

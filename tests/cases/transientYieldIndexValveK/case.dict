@@ -1,0 +1,123 @@
+// transientYieldIndexValveK (C2, gap_analysis): the Herschel-Bulkley wall
+// (5.47's `flowIndex` + `consistency` + `yieldStress`) and the local loss the
+// M2 transient row has carried since architecture §4.2 (`valve K`) on the same
+// momentum row, with NO schedule -- the one combination of the three that no
+// earlier case measured. 5.50 did Bingham + bare valve (§5.50), 5.58-5.62 did
+// Bingham/HB + scheduled valves; this file is the missing cell: n != 1 and a
+// K that is a constant, so the valve's share of the asked drop is set by the
+// wall law's own index, not by a calendar.
+//
+// The row is, per pipe (both ends pinned unless noted),
+//
+//     rho L/A * (Q_new - Q_prev)/dt = drive - dp_wall(Q_new) - K rho |Q| Q / (2 A^2),
+//     drive = pFrom - pTo - rho g dz
+//
+// and dp_wall is 5.47's profile integral inverted: Q = q_hb(tw, n, K_cons) with
+// tau_0 inside, tw = dp_wall d / (4L). Three claims, mirroring 5.50 but now
+// indexed by n:
+//
+//   * A held pipe has no valve drop to report: dp_valve(0) = 0, so StuckRef /
+//     StuckK500 / StuckK1e8 (n = 0.5, tau_0 = 2.6, threshold 10400 Pa > drive
+//     10000 Pa) print the same string in all 2001 states at five decades of K,
+//     and the steady kernel prints no `dpValve` field for any Q = 0 pipe. The
+//     static-hold threshold line carries no n, no K_cons and no K -- RelHB05
+//     and RelHB15 print the SAME threshold (same tau_0, different index).
+//   * Where the wall law IS read the valve is charged, so the rate is the root
+//     of drive = dp_wall_HB(Q) + K rho Q^2/(2 A^2). RelHB05 (+K100/K500/K5000)
+//     is one (n, K_cons, tau_0) with four valve K's: monotone in K, each on its
+//     own root; RelHB15 / RelHB15K500 hold the same tau_0 and the same valve K
+//     as the n = 0.5 pair, so the valve's share moves with the wall law's index
+//     and not only with the valve.
+//   * The stop is the row's arithmetic: StopRef / StopK5000 / StopK1e8 start in
+//     motion (initialFlow 2e-6 / 2e-6 / 2e-4) under a drive 8000 Pa short of
+//     their own 12000 Pa threshold, and the checker reproduces all three traces
+//     from the HB law and the valve term written out in Python, stop steps
+//     included. The gravity pair carries the same split: HangHB05(+K500) hangs
+//     at drive 1664.35 Pa < 2000 Pa whatever K says, RollHB05(+K500) rolls down
+//     18335.65 Pa and must differ, each on the implicit root of that drive.
+//
+// case_steady.dict is the same network with `solver { type steadyNetwork; }`
+// for the cross-kernel meeting: the marched row at t = 4 against the steady
+// kernel's own root of the same two-term loss, plus the printed split
+// dpWall + dpValve == dp read back through 5.47's inversion.
+//
+// Geometry, fluid and time are 5.45-5.50's again (L = 20 m, d = 0.02 m,
+// rho = 850 kg/m3, mu = 0.1 Pa.s, dt = 0.002 s, endTime = 4.0 s) and every wall
+// stress stays under 5 Pa, so the yielded half of the law is the laminar
+// profile integral, not an extrapolation. Zero kernel changes: the parser has
+// taken `flowIndex` / `consistency` / `yieldStress` / `valve` on one pipe since
+// 5.47 / 5.49 / 5.50; nothing here was refused, it was only never asked.
+//
+// verified by tests/check_transient_yield_index_valve_k.py (ctest
+// verify.transientYieldIndexValveK).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    A  { fixedPressure 3.0e4; }
+    B  { fixedPressure 2.0e4; }
+    A2 { fixedPressure 2.4e4; }
+}
+
+pipes
+{
+    // --- a held pipe has no valve drop to report (five decades of K) --------
+    StuckRef  { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                consistency 1.0; yieldStress 2.6; }
+    StuckK500 { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                consistency 1.0; yieldStress 2.6; valve 500; }
+    StuckK1e8 { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                consistency 1.0; yieldStress 2.6; valve 1.0e8; }
+
+    // --- one HB wall, four valve K's, each on its own root -----------------
+    RelHB05      { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                   consistency 1.0; yieldStress 1.0; }
+    RelHB05K100  { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                   consistency 1.0; yieldStress 1.0; valve 100; }
+    RelHB05K500  { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                   consistency 1.0; yieldStress 1.0; valve 500; }
+    RelHB05K5000 { from A; to B; length 20; diameter 0.02; flowIndex 0.5;
+                   consistency 1.0; yieldStress 1.0; valve 5000; }
+
+    // --- the same tau_0 and valve K under a different index ----------------
+    RelHB15      { from A; to B; length 20; diameter 0.02; flowIndex 1.5;
+                   consistency 0.02; yieldStress 1.0; }
+    RelHB15K500  { from A; to B; length 20; diameter 0.02; flowIndex 1.5;
+                   consistency 0.02; yieldStress 1.0; valve 500; }
+
+    // --- gravity on both sides of the HB wall, with and without a valve ----
+    HangHB05     { from A; to B; length 20; diameter 0.02; elevation 1.0;
+                   flowIndex 0.5; consistency 1.0; yieldStress 0.5; }
+    HangHB05K500 { from A; to B; length 20; diameter 0.02; elevation 1.0;
+                   flowIndex 0.5; consistency 1.0; yieldStress 0.5; valve 500; }
+    RollHB05     { from A; to B; length 20; diameter 0.02; elevation -1.0;
+                   flowIndex 0.5; consistency 1.0; yieldStress 0.5; }
+    RollHB05K500 { from A; to B; length 20; diameter 0.02; elevation -1.0;
+                   flowIndex 0.5; consistency 1.0; yieldStress 0.5; valve 500; }
+
+    // --- the stop: the path decides the step, the HB wall decides the stop -
+    StopRef   { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-6;
+                flowIndex 0.5; consistency 1.0; yieldStress 1.5; }
+    StopK5000 { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-6;
+                flowIndex 0.5; consistency 1.0; yieldStress 1.5; valve 5000; }
+    // A valve bigger than the whole drive on a decelerating row: 2.0e-4 m3/s
+    // through K = 1e8 asks for 1.72e10 Pa, four million times the 4000 Pa on
+    // offer, so the first step collapses the rate and the stop comes early.
+    StopK1e8  { from A2; to B; length 20; diameter 0.02; initialFlow 2.0e-4;
+                flowIndex 0.5; consistency 1.0; yieldStress 1.5; valve 1.0e8; }
+}
+
+time
+{
+    // Same reasoning as 5.49 / 5.50: dt small against the fastest transient in
+    // the file (the K = 1e8 pipe collapses its own 2.0e-4 m3/s over ~5 steps)
+    // and endTime long against the slowest, so every trace here is read after
+    // it has settled.
+    dt 0.002;
+    endTime 4.0;
+    reportEvery 1;
+}

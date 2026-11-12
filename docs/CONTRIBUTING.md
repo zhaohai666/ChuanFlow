@@ -1267,10 +1267,33 @@ python3 tests/check_transient_beta_momentum.py \
 # τ = MΣ/RΣ 用真实湍流弦（RΣ = 3.2e7）不是种子 2.5e7——τ 误判会让
 # dt 选错量级、轨迹扫宽窗照样炸块。
 # 122 判据；checker 全程 10.80 s（ctest verify.transientCoupledMultiBothSeries）
-./build/src/1d/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiBothSeries/case.dict
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiBothSeries/case.dict
 python3 tests/check_transient_coupled_multi_both_series.py \
-    "$PWD/build/src/1d/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
     "$PWD/tests/cases/transientCoupledMultiBothSeries/case.dict"
+
+# 行 M*dq/dt 双重计费准则成文（5.72 / A10）：「多少层才允许 rowError 低于 X」
+# 有解析答案——X 是两只括号的函数，不是层数的函数。零内核改动、零新 case：
+# checker 复用 5.44 的 ShapeAndInertiaSplit 算例（六臂因式表），把已发布的
+# 输出重读成政策：
+#   1) 账单 = (M_row - M_dyn)*dq/dt，M_dyn 是块的属性——三档臂在同一层读出
+#      同一个 2.143538e6 kg/m4（散布 4.7e-10），排他界 0 < M_dyn < M_partner
+#      （首层只有 region 的 28.6%，剖面才刚出生）；
+#   2) 首层阶梯界（按档）：图纸 <= 0.70、区域 <= 0.60、薄块 <= 0.006
+#      （实测 0.6635 / 0.5602 / 0.0046，严格排序、对已发表值 1e-9）；
+#   3) rung 在 dq = 0 处逐位不可见：钉死边层 2..7 三档 spread 恰 0.0，
+#      层 8 移 1.1e-4（块自己 dpInertia 的席位）；
+#   4) 塌缩日程：层 2 = 唯一超地板的沉降层（1.07e-2，块自己的 dpInertia
+#      8.0 Pa 在为 dq = 0 下仍发展的剖面付费），层 3 起全部 <= 1e-3
+#      （最差 8.07e-4）——答案 = 账单活着的层 + 一个沉降层 + 地板；
+#   5) slab 推荐选项成文：残账 = |M_probe - M_dyn|*dq/dt = 13.19 Pa
+#      （0.46%）。
+# 注意：M_dyn 的三档一致性判据要求 dq/dt 活着（层 1）——稳态层读不出它。
+# 18 判据；checker 全程 192.68 s（ctest verify.transientRowErrorCriterion）
+./build/src/coupling/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict
+python3 tests/check_transient_row_error_criterion.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict"
 
 
 

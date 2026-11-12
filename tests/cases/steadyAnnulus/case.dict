@@ -1,0 +1,67 @@
+# 5.73 / A6 环空截面第一次进稳态管网：同心环空的层流锚点是 Fredrickson-Bird
+# 1958 的精确解，湍流半区是 Churchill 换掉层流成员（C(kappa)/Re 替代 64/Re）
+# ——C(kappa) = 64 是 kappa -> 0 的成员，所以圆管分支一位不动。
+#
+# 几何（m）：dOuter 0.06，dInner 0.04（kappa = 2/3）与 0.006（kappa = 0.1）；
+# mu = 0.05 Pa.s，rho = 850，L = 10；A->B 定压对 dp = 1.0e4（层流档），
+# C->B 定压对 dp = 4.98e6（湍流档，Re ~ 8800 / 49000）。
+#
+# 层流闭式（checker 独立重算的锚）：
+#   Q = pi dp /(8 mu L) . G,  G = Ro^4 - Ri^4 - (Ro^2-Ri^2)^2 / ln(Ro/Ri)
+#   f . Re_Dh = C(kappa) = 16 Dh^2 (Ro^2-Ri^2) / G
+#   kappa = 2/3: C = 95.8..., kappa = 0.1: C = 89.3..., kappa -> 0: C -> 64
+# 幂律（n = 0.5, K = 30 Pa.s^0.5，厚到 Re_GP ~ 5 层流）：
+#   Q = (dp/(2 K L))^(1/n) . 2 pi . I,  lambda 由两壁剖面匹配方程二分
+#   f . Re_GP = C_pl = 4 Dh^(n+1) A^n / ((2 pi I)^n . 8^(n-1))   （K 相消）
+#   kappa -> 0 的成员是 64 . ((3n+1)/4n)^n = 71.55...（DM 的 Re_GP 不带
+#   Rabinowitsch 修正，圆管的层流常数是它的 64 乘那个因子）
+# 湍流档不验关联式（没有真值），验整条接线：打印的 Re == rho v Dh / mu、
+# dp == f (L/Dh) rho v^2 / 2、环空与圆管孪生管在此 dp 下分离。
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.05;
+}
+
+nodes
+{
+    A { pressure 3.0e4; }
+    C { pressure 5.0e6; }
+    B { pressure 2.0e4; }
+    E { pressure 30001; }
+    F { pressure 3.0e4; }
+}
+
+pipes
+{
+    # --- 层流档：A -> B，dp 恰为 1.0e4 Pa -----------------------------------
+    AnnLam       { from A; to B; length 10; diameter 0.06; dInner 0.04; }
+    CircLam      { from A; to B; length 10; diameter 0.06; }
+    KappaSmall   { from A; to B; length 10; diameter 0.06; dInner 0.006; }
+    AnnPow       { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                   flowIndex 0.5; consistency 30; }
+    CircPow      { from A; to B; length 10; diameter 0.06;
+                   flowIndex 0.5; consistency 30; }
+    KappaSmallPow{ from A; to B; length 10; diameter 0.06; dInner 0.006;
+                   flowIndex 0.5; consistency 30; }
+
+    # --- 湍流档：C -> B，dp 恰为 4.98e6 Pa ----------------------------------
+    TurbAnn      { from C; to B; length 10; diameter 0.06; dInner 0.04; }
+    TurbCirc     { from C; to B; length 10; diameter 0.06; }
+
+    # --- 深层流精确档：E -> F，dp 恰为 1.0 Pa（Re ~ 1e-2，Churchill 混合式
+    #     的湍流项 < 1e-12 相对，f.Re 退化为纯层流常数）。幂律不吃这一档：
+    #     n = 0.5 的 Re_GP 在 dp = 1 Pa 下落到内核 1e-12 的 Re 地板里，混合式
+    #     被地板扭曲——幂律的精确锚在 dp = 1e4 档（Re_GP ~ 1e-6，湍流项
+    #     < 1e-100 相对）---------------------------------------------------
+    AnnLamEx     { from E; to F; length 10; diameter 0.06; dInner 0.04; }
+    CircLamEx    { from E; to F; length 10; diameter 0.06; }
+    KappaSmallEx { from E; to F; length 10; diameter 0.06; dInner 0.006; }
+    KappaTinyEx  { from E; to F; length 10; diameter 0.06; dInner 6e-6; }
+}

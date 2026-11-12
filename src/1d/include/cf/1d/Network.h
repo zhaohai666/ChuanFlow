@@ -43,7 +43,11 @@ struct NetworkPipe
     label from = -1; // resolved by OneDNetwork::addPipe
     label to = -1;
     double length = 0;     // m, along the pipe
-    double diameter = 0;   // m
+    double diameter = 0;   // m; the OUTER bore when annulusInner > 0
+    double annulusInner = 0; // m; > 0 makes the bore a concentric annulus of
+                             // this inner diameter (5.73); 0 = circular pipe,
+                             // and every number below is bit-identical to the
+                             // circular branch
     double roughness = 0;  // m, absolute roughness
     double elevation = 0;  // m, z(to) - z(from); adds rho*g*dz to the drop
 
@@ -98,6 +102,15 @@ struct NetworkPipe
     // which is why a Herschel-Bulkley pipe reports the *apparent* Reynolds
     // number rho u d / (tw d / 8u) rather than a material one.
     double yieldStress = 0;    // Pa; 0 = no threshold
+
+    // Fredrickson-Bird (1958) power-law annulus, resolved once by addPipe
+    // when annulusInner > 0 and a flowIndex is declared: the zero-shear
+    // radius (m) and the dimensionless profile integral with
+    //     Q = (dp / (2 K L))^(1/n) . 2 pi . annulusDimQ.
+    // Both depend only on (kappa = dInner/dOuter, n), never on the rate, so
+    // they are solved once instead of inside every rate solve.
+    double annulusLambda = 0;
+    double annulusDimQ = 0;
 
     /// Coupled element (the 1D side of a 1D<->3D interface): when > 0 this
     /// pipe carries NO 1D resistance of its own – its whole loss is

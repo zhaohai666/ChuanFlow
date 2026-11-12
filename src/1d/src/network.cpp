@@ -19,9 +19,168 @@ namespace
 
 constexpr double kGravity = 9.80665;
 
+bool pipeIsAnnulus(const NetworkPipe& p) { return p.annulusInner > 0; }
+
 double pipeArea(const NetworkPipe& p)
 {
+    if (pipeIsAnnulus(p))
+        return 0.25 * M_PI * (p.diameter * p.diameter
+                              - p.annulusInner * p.annulusInner);
     return 0.25 * M_PI * p.diameter * p.diameter;
+}
+
+/// Hydraulic diameter 4A/P: for a concentric annulus exactly dOuter - dInner,
+/// for a circle the diameter itself. The Reynolds number, the relative
+/// roughness and the Darcy conversion L/Dh all read this -- which is why a
+/// circular pipe never moves (Dh == diameter, bit for bit).
+double pipeHydraulicDiameter(const NetworkPipe& p)
+{
+    return pipeIsAnnulus(p) ? p.diameter - p.annulusInner : p.diameter;
+}
+
+/// Fredrickson-Bird (1958) Newtonian laminar anchor of a concentric annulus,
+/// the exact biharmonic solution
+///     Q = pi dp /(8 mu L) . [Ro^4 - Ri^4 - (Ro^2 - Ri^2)^2 / ln(Ro/Ri)],
+/// which collapses onto Hagen-Poiseuille as kappa = Ri/Ro -> 0. Expressed as
+/// a conductance so it drops into the same slot the circle's does.
+double annulusLaminarConductance(const NetworkPipe& p,
+                                 const FluidProperties& fluid)
+{
+    const double ro = 0.5 * p.diameter, ri = 0.5 * p.annulusInner;
+    const double g = ro * ro * ro * ro - ri * ri * ri * ri
+                   - (ro * ro - ri * ri) * (ro * ro - ri * ri)
+                   / std::log(ro / ri);
+    return M_PI * g / (8.0 * fluid.mu * p.length);
+}
+
+/// The laminar constant of the annulus, C(kappa) = f . Re_Dh, from the same
+/// closed form: f = 2 Dh dp /(L rho v^2) and Re_Dh = rho v Dh / mu give
+///     f Re = 16 Dh^2 (Ro^2 - Ri^2) / [Ro^4 - Ri^4 - (Ro^2-Ri^2)^2/ln(Ro/Ri)],
+/// which is 64 at kappa = 0 -- so Churchill's laminar line is the kappa = 0
+/// member of this family, and the all-regime blend below only has to swap
+/// that member.
+double annulusLaminarConstant(const NetworkPipe& p)
+{
+    const double ro = 0.5 * p.diameter, ri = 0.5 * p.annulusInner;
+    const double g = ro * ro * ro * ro - ri * ri * ri * ri
+                   - (ro * ro - ri * ri) * (ro * ro - ri * ri)
+                   / std::log(ro / ri);
+    const double dh = p.diameter - p.annulusInner;
+    return 16.0 * dh * dh * (ro * ro - ri * ri) / g;
+}
+
+/// The power-law laminar constant of the annulus, C_pl(n, kappa) = f . Re_GP,
+/// built so the blend's laminar asymptote IS the FB profile: demanding
+/// f_lam . (L/Dh) . rho v^2 / 2 == 2 K L (Q/(2 pi I))^n with Q = v A and
+/// Re_GP = rho v^(2-n) Dh^n / (K 8^(n-1)) gives
+///     C_pl = 4 Dh^(n+1) A^n / ((2 pi I)^n . 8^(n-1)),
+/// in which K cancels -- f . Re_GP is a geometry + law constant, as it must
+/// be. At n = 1, I = G/8 collapses it onto annulusLaminarConstant exactly.
+double annulusPowerLawLaminarConstant(const NetworkPipe& p)
+{
+    const double n = p.flowIndex;
+    const double dh = p.diameter - p.annulusInner;
+    const double a = pipeArea(p);
+    const double twoPiI = 2.0 * M_PI * p.annulusDimQ;
+    return 4.0 * std::pow(dh, n + 1.0) * std::pow(a, n)
+         / (std::pow(twoPiI, n) * std::pow(8.0, n - 1.0));
+}
+
+/// Churchill (1977) with the laminar member swapped: identical parentheses,
+/// but the (8/Re)^12 term carries C/8 instead of 8 so the Re -> 0 asymptote
+/// is C/Re instead of 64/Re. C = 64 reproduces churchillFriction exactly
+/// (64/8 == 8 in IEEE), which is what makes the circular branch bit-still.
+double churchillAnnulusFriction(double reynolds, double relativeRoughness,
+                                double laminarC)
+{
+    const double re = std::max(reynolds, 1e-12);
+    const double a1 = std::pow(7.0 / re, 0.9) + 0.27 * relativeRoughness;
+    if (a1 <= 0) cfFatal("churchillAnnulusFriction: invalid Re/roughness");
+    const double a = std::pow(2.457 * std::log(1.0 / a1), 16.0);
+    const double b = std::pow(37530.0 / re, 16.0);
+    return 8.0 * std::pow(std::pow(laminarC / 8.0 / re, 12.0)
+                              + std::pow(a + b, -1.5), 1.0 / 12.0);
+}
+
+/// The two profile integrals of the Fredrickson-Bird (1958) power-law
+/// annulus, on the dimensionless variable s = r/Ro in (kappa, 1], with the
+/// zero-shear radius lam = lambda/Ro. tau(r) = (dp/(2L))(r - lambda^2/r) is
+/// the only stress field that balances the pressure force and vanishes at
+/// one radius; matching the profile integrals from the two walls,
+///     phi(lam) = int_kappa^lam (lam^2/s - s)^(1/n) ds
+///              - int_lam^1 (s - lam^2/s)^(1/n) ds = 0,
+/// has exactly one root (phi is increasing: the left side loses, the right
+/// gains), and the dimensionless rate follows by swapping integration order,
+///     I = 1/2 int_kappa^lam (lam^2/s - s)^(1/n) (lam^2 - s^2) ds
+///       + 1/2 int_lam^1 (s - lam^2/s)^(1/n) (s^2 - lam^2) ds,
+/// so Q = (dp/(2 K L))^(1/n) . 2 pi . I with I in m^(1+1/n) of the actual
+/// bore. At n = 1 the pair reduces to the Newtonian annulus (I = G/8 with
+/// the G above, the closed form annulusLaminarConductance uses).
+void annulusFbIntegrals(const NetworkPipe& p, int strips, double& lambda,
+                        double& dimQ)
+{
+    const double ro = 0.5 * p.diameter, ri = 0.5 * p.annulusInner;
+    const double n = p.flowIndex;
+    auto phi = [&](double lam)
+    {
+        double left = 0.0, right = 0.0;
+        const double h1 = (lam - ri) / strips, h2 = (ro - lam) / strips;
+        for (int i = 0; i <= strips; ++i)
+        {
+            const double s1 = ri + i * h1;
+            const double w1 = (i == 0 || i == strips) ? 1.0
+                            : (i % 2 ? 4.0 : 2.0);
+            left += w1 * std::pow(std::max(0.0, lam * lam / s1 - s1), 1.0 / n);
+        }
+        for (int i = 0; i <= strips; ++i)
+        {
+            const double s2 = lam + i * h2;
+            const double w2 = (i == 0 || i == strips) ? 1.0
+                            : (i % 2 ? 4.0 : 2.0);
+            right += w2 * std::pow(std::max(0.0, s2 - lam * lam / s2), 1.0 / n);
+        }
+        return left * h1 / 3.0 - right * h2 / 3.0;
+    };
+    double lo = ri * (1.0 + 1e-12), hi = ro * (1.0 - 1e-12);
+    for (int it = 0; it < 200; ++it)
+    {
+        const double mid = 0.5 * (lo + hi);
+        if (phi(mid) < 0.0) lo = mid;
+        else hi = mid;
+        if (std::abs(hi - lo) <= 2.0 * std::numeric_limits<double>::epsilon()
+                                      * hi)
+            break;
+    }
+    lambda = 0.5 * (lo + hi);
+
+    auto dimLess = [&](double lam)
+    {
+        double inner = 0.0, outer = 0.0;
+        const double h1 = (lam - ri) / strips, h2 = (ro - lam) / strips;
+        for (int i = 0; i <= strips; ++i)
+        {
+            const double s1 = ri + i * h1;
+            const double w1 = (i == 0 || i == strips) ? 1.0
+                            : (i % 2 ? 4.0 : 2.0);
+            inner += w1
+                   * std::pow(std::max(0.0, lam * lam / s1 - s1), 1.0 / n)
+                   * (lam * lam - s1 * s1);
+        }
+        for (int i = 0; i <= strips; ++i)
+        {
+            const double s2 = lam + i * h2;
+            const double w2 = (i == 0 || i == strips) ? 1.0
+                            : (i % 2 ? 4.0 : 2.0);
+            outer += w2
+                   * std::pow(std::max(0.0, s2 - lam * lam / s2), 1.0 / n)
+                   * (s2 * s2 - lam * lam);
+        }
+        return 0.5 * (inner * h1 / 3.0 + outer * h2 / 3.0);
+    };
+    // I is dimensional: the profile carries (dp/(2 K L))^(1/n) times
+    // m^(1+1/n), so the integral over the actual bore is returned as-is and
+    // Q = (dp/(2 K L))^(1/n) . 2 pi . dimQ.
+    dimQ = dimLess(lambda);
 }
 
 /// Hagen-Poiseuille slope pi D^4 / (128 mu L): the maximum conductance of a
@@ -29,6 +188,7 @@ double pipeArea(const NetworkPipe& p)
 /// degenerates at dp ~ 0.
 double laminarConductance(const NetworkPipe& p, const FluidProperties& fluid)
 {
+    if (pipeIsAnnulus(p)) return annulusLaminarConductance(p, fluid);
     return M_PI * std::pow(p.diameter, 4) / (128.0 * fluid.mu * p.length);
 }
 
@@ -108,13 +268,22 @@ double generalizedReynolds(const NetworkPipe& pipe, const FluidProperties& fluid
                                            speed * pipeArea(pipe));
         return 8.0 * fluid.rho * speed * speed / tw;
     }
+    // Both branches read the hydraulic diameter: for a circle it IS the
+    // diameter, so the circular numbers never move. A power-law annulus keeps
+    // Dodge-Metzner's own form on Dh -- NO Rabinowitsch factor: the (3n+1)/4n
+    // wall rate is a circular-geometry statement, and the annulus laminar
+    // anchor is the FB profile itself (5.73), not a 64/Re line that would
+    // need re-priceing.
+    const double dh = pipeHydraulicDiameter(pipe);
     if (!(pipe.flowIndex > 0))
-        return fluid.rho * speed * pipe.diameter / fluid.mu;
+        return fluid.rho * speed * dh / fluid.mu;
     const double n = pipe.flowIndex;
-    const double kp = pipe.consistency
-                    * std::pow((3.0 * n + 1.0) / (4.0 * n), n);
-    return fluid.rho * std::pow(speed, 2.0 - n) * std::pow(pipe.diameter, n)
-         / (kp * std::pow(8.0, n - 1.0));
+    const double k = pipeIsAnnulus(pipe)
+                   ? pipe.consistency
+                   : pipe.consistency
+                     * std::pow((3.0 * n + 1.0) / (4.0 * n), n);
+    return fluid.rho * std::pow(speed, 2.0 - n) * std::pow(dh, n)
+         / (k * std::pow(8.0, n - 1.0));
 }
 
 /// Buckingham (1921) exact laminar solution for a Bingham plastic, inverted
@@ -276,6 +445,14 @@ double pipeFrictionReport(const NetworkPipe& pipe, const FluidProperties& fluid,
         return 8.0 * yieldedWallStress(pipe, fluid, speed * pipeArea(pipe))
              / (fluid.rho * speed * speed);
     }
+    if (pipeIsAnnulus(pipe))
+    {
+        const double dh = pipeHydraulicDiameter(pipe);
+        const double cLam = pipe.flowIndex > 0
+            ? annulusPowerLawLaminarConstant(pipe)
+            : annulusLaminarConstant(pipe);
+        return churchillAnnulusFriction(reynolds, pipe.roughness / dh, cLam);
+    }
     return churchillFriction(reynolds, pipe.roughness / pipe.diameter);
 }
 
@@ -398,6 +575,23 @@ double pipeFrictionPa(const NetworkPipe& pipe, const FluidProperties& fluid,
              / pipe.diameter;
     const double v = q / pipeArea(pipe);
     const double re = generalizedReynolds(pipe, fluid, std::abs(v));
+    if (pipeIsAnnulus(pipe))
+    {
+        // 5.73: the same all-regime blend on Dh, with the laminar member
+        // swapped for the geometry's own constant -- the FB closed form for a
+        // Newtonian fluid, the FB profile integral for a power law. The
+        // power-law laminar drop reads back as
+        //     dp = 2 K L (Q / (2 pi I))^n
+        // exactly, because the constant was BUILT from that profile (see the
+        // C_pl derivation in the header of annulusFbIntegrals users).
+        const double dh = pipeHydraulicDiameter(pipe);
+        const double cLam = pipe.flowIndex > 0
+            ? annulusPowerLawLaminarConstant(pipe)
+            : annulusLaminarConstant(pipe);
+        const double f = churchillAnnulusFriction(re, pipe.roughness / dh,
+                                                  cLam);
+        return (f * pipe.length / dh) * fluid.rho * v * v / 2.0;
+    }
     const double f = churchillFriction(re, pipe.roughness / pipe.diameter);
     return (f * pipe.length / pipe.diameter) * fluid.rho * v * v / 2.0;
 }
@@ -472,6 +666,35 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
     if (p.from == p.to) cfFatal("network: pipe '" + p.name + "' connects a node to itself");
     if (!(p.diameter > 0) || !(p.length > 0))
         cfFatal("network: pipe '" + p.name + "' needs positive length and diameter");
+    if (pipeIsAnnulus(p))
+    {
+        // 5.73's declaration scope: the annulus is a single-phase
+        // Newtonian / power-law steady section. Everything else is refused
+        // loudly rather than silently read as a circle.
+        if (!(p.annulusInner > 0) || p.annulusInner >= p.diameter)
+            cfFatal("network: pipe '" + p.name
+                    + "' needs 0 < annulusInner < diameter");
+        if (p.yieldStress > 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' declares an annulus with a yield stress: the yielded "
+                      "locus and wall stress are circular-geometry laws; the "
+                      "annulus takes no threshold in this increment");
+        if (p.coupledResistance > 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' declares an annulus on a coupled edge: the partner "
+                      "owns that edge's geometry");
+        if (p.flowIndex > 0)
+        {
+            annulusFbIntegrals(p, 1024, p.annulusLambda, p.annulusDimQ);
+            // lambda and the integral are RADIUS-based: the walls sit at
+            // 0.5 * annulusInner and 0.5 * diameter.
+            if (!(p.annulusDimQ > 0)
+                || !(p.annulusLambda > 0.5 * p.annulusInner)
+                || !(p.annulusLambda < 0.5 * p.diameter))
+                cfFatal("network: pipe '" + p.name
+                        + "' failed to resolve its Fredrickson-Bird profile");
+        }
+    }
     pipes.push_back(p);
     return static_cast<label>(pipes.size()) - 1;
 }
@@ -818,6 +1041,9 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
                            const pvt::BlackOilFluid& fluid, double pFrom,
                            double pTo, PipeFlowResult& out)
 {
+    if (pipeIsAnnulus(pipe))
+        cfFatal("twoPhase: pipe '" + pipe.name + "' declares an annulus: the "
+                "black-oil march is a circular-bore correlation chain");
     out = PipeFlowResult{};
     out.name = pipe.name;
     out.regime = -1;
@@ -911,6 +1137,9 @@ struct PvtMarchOut
 PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
                          double qIn, double pUp, double sinFlow, int nSeg)
 {
+    if (pipeIsAnnulus(pipe))
+        cfFatal("pvtMarch: pipe '" + pipe.name + "' declares an annulus: the "
+                "PVT march is a circular-bore correlation chain");
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
     const double massRate = fluid.density(pUp) * qIn;
     const double ds = pipe.length / nSeg;
@@ -1166,6 +1395,9 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.pumpRate = pd.getScalarOr("pumpRate", 0.0);
         p.pumpShutoffHead = pd.getScalarOr("pumpShutoffHead", p.pumpHead);
         p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
+        p.annulusInner = pd.getScalarOr("dInner", 0.0);
+        if (p.annulusInner < 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' has a negative dInner");
         p.flowIndex = pd.getScalarOr("flowIndex", 0.0);
         p.consistency = pd.getScalarOr("consistency", 0.0);
         p.yieldStress = pd.getScalarOr("yieldStress", 0.0);

@@ -968,6 +968,19 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyBinghamYield/case.dict)
 
+# 5.73 / A6 the annulus cross-section: FB 1958 laminar anchor (f.Re = C(kappa)
+# closed to 1e-9, Q to 1e-9), a monotone kappa ladder falling to the circular
+# 64, the power-law FB profile (lambda by wall matching) with its own C_pl
+# ladder toward 64((3n+1)/4n)^n, Dh-consistent reports at 1e-9 on every tier,
+# and loud rejections outside the declaration scope. The circular branch is
+# bit-still: the whole pre-existing suite is the witness.
+add_test(
+    NAME verify.steadyAnnulus
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_annulus.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyAnnulus/case.dict)
+
 # 5.70 / A3 the momentum-flux factors betaIn/betaOut, declarable on a
 # non-coupled transient pipe: the row charges rho*(betaOut - betaIn)/A^2 *
 # q|q| -- the same account a coupled interface installs (5.43), now owned by

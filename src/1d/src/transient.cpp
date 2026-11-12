@@ -916,6 +916,10 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
         p.toName = pd.getWord("to");
         p.length = pd.getScalar("length");
         p.diameter = pd.getScalar("diameter");
+        if (pd.has("dInner"))
+            cfFatal("transient: pipe '" + name + "' declares dInner: the "
+                    "annulus section (5.73) is a steady-network declaration; "
+                    "the transient row does not take one yet");
         p.roughness = pd.getScalarOr("roughness", 0.0);
         p.elevation = pd.getScalarOr("elevation", 0.0);
         p.initialFlow = pd.getScalarOr("initialFlow", 0.0);

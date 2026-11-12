@@ -1,0 +1,59 @@
+// 5.77 sibling: the held ROW inside the branch-network Newton. Two equal
+// spans A and B meet at junction J; A's far inlet is fixed at 300 Pa, B's
+// far outlet at 0 Pa. Each span has dp_y = 4 tau_0 L / d = 400 Pa, so no
+// split of the 300 Pa total can yield either wall: both rows become u = 0.
+// The junction volume balance stays in the system (continuity sees the
+// forced zeros) while the held rows lose THEIR columns into the junction
+// pressure, which therefore stays at its step-start value instead of
+// oscillating. `static hold A` / `static hold B` report 1 after t = 0.
+// The checker also mutates the inlet to 1200 Pa: the solve must then lift
+// J's pressure past B's wall, RELEASE B's stale start-of-step latch and
+// let both spans flow (the one-way unlatch ratchet), rather than freezing
+// the network at rest forever.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.1;
+    muG  1e-5;
+    yieldStress 1;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    water 0;
+}
+
+network
+{
+    pipes
+    {
+        A { length 2; diameter 0.02; roughness 0; angleDeg 0; sections 4; }
+        B { length 2; diameter 0.02; roughness 0; angleDeg 0; sections 4; }
+    }
+
+    junctions
+    {
+        J { ends ( A.outlet B.inlet ); }
+    }
+
+    boundaries
+    {
+        A.inlet   { type fixedPressure; p 300; alpha 1; waterFraction 0; }
+        B.outlet  { type fixedPressure; p 0; }
+    }
+}
+
+time
+{
+    dt 0.005;
+    endTime 0.4;
+    reportEvery 20;
+}

@@ -66,6 +66,11 @@ int main(int argc, char** argv)
                     const TwoFluidPipe& s = n.pipe(pn);
                     log::info("pipe ", pn, " vm ", num(s.mixtureVelocity()),
                               " dp ", num(s.pressureDrop()));
+                    // 5.77: the per-pipe latch flag, same wording as the
+                    // serial report but named (a network has many rows)
+                    if (nc.perPipe.fluid.yieldStress > 0)
+                        log::info("static hold ", pn, " ",
+                                  s.staticHold() ? 1 : 0);
                     const std::vector<double> p = s.nodePressure();
                     for (std::size_t q = 0; q < p.size(); ++q)
                         log::info("pnode ", pn, " ", q, " p ", num(p[q]));
@@ -129,6 +134,12 @@ int main(int argc, char** argv)
         {
             log::info("t ", num(s.time()), " vm ", num(s.mixtureVelocity()),
                       " dp ", num(s.pressureDrop()));
+            // 5.77: the latch the step that produced this sample started
+            // with -- 1 means this velocity is the row's own u = 0, not a
+            // value the moving-wall law was solved for. At t = 0 no step
+            // has been taken, so the flag reads 0 even for a held case.
+            if (c.fluid.yieldStress > 0)
+                log::info("static hold ", s.staticHold() ? 1 : 0);
             const std::vector<double> p = s.nodePressure();
             for (std::size_t j = 0; j < p.size(); ++j)
                 log::info("node ", j, " p ", num(p[j]));

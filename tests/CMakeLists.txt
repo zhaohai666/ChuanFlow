@@ -1419,7 +1419,8 @@ add_test(
 
 # drift-flux holdup (Wallis and Zuber closures), sealed-pipe gravity
 # segregation, laminar pressure-driven start-up, dynamic-slip segregation
-# and holdup (transported slip state + interfacial drag)
+# and holdup (transported slip state + interfacial drag), liquid wall
+# rheology (5.75) and the distributed static-wall latch (5.77)
 foreach(tcase twoFluidFront twoFluidSteadyHoldupWallis
               twoFluidSteadyHoldupZuber twoFluidSettling
               twoFluidPressureLaminar twoFluidDynamicSlipSettling
@@ -1428,7 +1429,7 @@ foreach(tcase twoFluidFront twoFluidSteadyHoldupWallis
               twoFluidJunction twoFluidNetworkSpan
               twoFluidEntrained twoFluidFullMomentum
               twoFluidSlugPulse twoFluidPressureFull
-              twoFluidRheology)
+              twoFluidRheology twoFluidPressureYield)
     string(REGEX REPLACE "^twoFluid" "" mode ${tcase})
     string(TOLOWER ${mode} mode)
     add_test(

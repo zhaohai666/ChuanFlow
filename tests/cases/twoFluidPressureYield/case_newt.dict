@@ -1,0 +1,50 @@
+// 5.77 sibling: ZERO DECLARATION. No yieldStress key at all, so the held
+// set is empty, the wall keeps its old Churchill expression verbatim and
+// `static hold` is not even reported. This is the bit-for-bit witness for
+// the standing two-fluid suite: the checker reproduces the 5.42 laminar
+// pressure-driven start-up recursion
+//   I (u - u_old)/dt + fr(u) - dp = 0,  I = rho L,  K = 32 mu L / d^2,
+// with dp = 300 Pa, and compares vm and dp at EVERY reported frame.
+// The undeclared steady velocity is dp d^2/(32 mu L) = 0.01875 m/s
+// (against the yielded arm's (dp - dp_y) d^2/(32 mu L) = 0.0125 at dp 600).
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.1;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 2;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 4;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type fixedPressure; p 300; alpha 1; waterFraction 0; }
+    outlet { type fixedPressure; p 0; }
+}
+
+time
+{
+    dt 0.005;
+    endTime 0.4;
+    reportEvery 20;
+}

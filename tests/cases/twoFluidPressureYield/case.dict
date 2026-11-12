@@ -1,0 +1,89 @@
+// 5.77 / A5 (increment 3): the distributed two-fluid row takes a STATIC
+// WALL. Only the liquid share of each cell's wall can yield, so the drop
+// the column can hold without moving is the distributed sum
+//
+//   dp_y = sum_i (4 dx_i / d) alpha_i tau_0,
+//
+// and the drive the wall has to resist is dp_drive - sum_i rho_m,i g sinT_i dx_i
+// (zero gravity here, horizontal). At a uniform alpha this is exactly the
+// single-phase 4 tau_0 L / d of 5.49 scaled by alpha: neither n nor K
+// enters the threshold. The moving wall stress gains + alpha tau_0, so as
+// u -> 0+ the laminar member tends to dp_y from ABOVE -- a sub-threshold
+// drive would otherwise be answered by an equal REVERSE flow, the exact
+// error 5.49 refused in the lumped row. Instead the held row is replaced
+// by `u = 0`, latched once at the start of the step.
+//
+// THE ARM: pure liquid (alpha = 1 everywhere), horizontal, Wallis us = 0,
+// L = 2, d = 0.02, N = 4 sections, muL = 0.1, tau_0 = 1 Pa, dp = 300 Pa.
+//   dp_y = 4 * 1 * 2 / 0.02 = 400 Pa  >  dp = 300 Pa   -> HELD.
+// Both ends are fixedPressure, so the momentum row is Newton-solved and
+// the latch is the only thing that can hold it. The whole run must report
+// vm = 0 with `static hold 1` on every sample after t = 0 (at t = 0 no
+// step has been taken, so the constructor's 0 is reported).
+//
+// `dp` in the report is the FRICTION + GRAVITY loss the node-pressure march
+// integrates, not the total drop: a held column reads no wall law, so it
+// reports dp = 0 while the static wall silently supports all 300 Pa.
+//
+// siblings (same geometry/fluid, checker runs them itself):
+//   case_open.dict    p 600  -> super-threshold; implicit-Euler recursion
+//                              onto (p - dp_y) d^2 / (32 muL L) = 0.0125 m/s
+//   case_graded.dict  fills make only the LAST HALF of the pipe liquid:
+//                              dp_y = 200 Pa, so the SAME p 300 now opens.
+//                              This is the distributed witness -- a
+//                              geometry-only 400 Pa threshold would hold it.
+//   case_newt.dict    yieldStress 0 -> zero declaration; the checker
+//                              reproduces the 5.42 laminar start-up
+//                              recursion frame by frame (bit-for-bit path)
+//   case_cross.dict   initial vm 0.01 -> a MOVING column parks at u = 0 on
+//                              the crossing witness, then the latch owns it
+//   case_hb.dict      flowIndex 0.5 + consistency 0.1 + yieldStress 1:
+//                              threshold is still 400 Pa (geometry only),
+//                              the moving wall is Herschel-Bulkley
+//   case_network.dict branch network: two spans, all branches held, the
+//                              junction balance and the replaced rows coexist
+// The checker also mutates this file in-place (under a probe name) for the
+// band-edge p = 400, the graded band edges p = 199 / 201, a super-threshold
+// network start-up that must RELEASE the latch, and the loud rejections.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.1;
+    muG  1e-5;
+    yieldStress 1;
+}
+
+pipe
+{
+    length 2;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 4;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type fixedPressure; p 300; alpha 1; waterFraction 0; }
+    outlet { type fixedPressure; p 0; }
+}
+
+time
+{
+    dt 0.005;
+    endTime 0.4;
+    reportEvery 20;
+}

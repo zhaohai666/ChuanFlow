@@ -25,7 +25,9 @@
 //   case_n1.dict    flowIndex 1, K = muL  -- declared-Newtonian identity
 //   case_liq.dict   vsg 0 (alpha* = 1)    -- pure liquid: the wall stress is
 //                    K' gamma^n, the exact Metzner-Reed pipe law
-// A yield stress is refused loudly (see the loader), its own increment.
+// A yield stress was refused here at 5.75; 5.77 (A5 increment 3) opened
+// it up for this row with the distributed latch, and a NEGATIVE one is
+// now the loud rejection this checker probes (see check_two_fluid.py).
 fluid
 {
     rhoL 1000;

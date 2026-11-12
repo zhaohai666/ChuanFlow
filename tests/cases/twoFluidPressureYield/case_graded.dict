@@ -1,0 +1,61 @@
+// 5.77 sibling: the DISTRIBUTED threshold. Same fluid and geometry as the
+// main case, but the holdup field is not uniform: sections 0..1 are gas
+// (alpha = 0) and sections 2..3 are liquid (alpha = 1). The inlet ghost
+// injects gas, so with vm ~ 0.012 m/s and dt*steps = 0.4 s the liquid front
+// has moved only ~0.005 m -- far less than the 0.5 m cell width -- and the
+// alpha field (hence the threshold) is frozen for the whole run.
+//
+//   dp_y = sum_i (4 dx_i / d) alpha_i tau_0
+//        = 2 liquid cells * (4 * 0.5 / 0.02) * 1 * 1 = 200 Pa.
+//
+// The main case holds dp = 300 Pa (its uniform threshold is 400 Pa); THIS
+// case must OPEN on exactly the same 300 Pa. A geometry-only threshold, a
+// threshold read from the inlet cell, or one taken from the outlet cell
+// would all give the wrong answer here. The checker also mutates dp to 199
+// (held) and 201 (open), pinning the band edge at 200 Pa to +/- 1 Pa.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.1;
+    muG  1e-5;
+    yieldStress 1;
+}
+
+pipe
+{
+    length 2;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 4;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0;
+    water 0;
+    fills
+    {
+        backHalf { from 1; to 2; alpha 1; }
+    }
+}
+
+boundaries
+{
+    inlet  { type fixedPressure; p 300; alpha 0; waterFraction 0; }
+    outlet { type fixedPressure; p 0; }
+}
+
+time
+{
+    dt 0.005;
+    endTime 0.4;
+    reportEvery 20;
+}

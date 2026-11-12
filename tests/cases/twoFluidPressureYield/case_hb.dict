@@ -1,0 +1,55 @@
+// 5.77 sibling: yield stress on TOP of a power-law liquid
+// (Herschel-Bulkley). flowIndex 0.5, consistency 0.1 Pa s^n, tau_0 = 1 Pa,
+// dp = 600 Pa, alpha = 1. The threshold is unchanged at 400 Pa -- it is
+// geometry + holdup only and knows neither n nor K -- while the moving wall
+// is
+//   tau_w = K' gamma^n + tau_0,  K' = K ((3n+1)/4n)^n = 0.1 * 1.25^0.5,
+// so the steady balance (4L/d)(K' sqrt(gamma) + tau_0) = 600 gives
+// K' sqrt(gamma) = 0.5, gamma = 20 1/s, vm* = gamma d/8 = 0.05 m/s.
+// endTime 6 s (the inertia/friction time constant is ~1 s) lets the last
+// frames land on that closed form; the checker still integrates the
+// implicit-Euler recursion with the FULL Churchill blend frame by frame.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.1;
+    muG  1e-5;
+    flowIndex 0.5;
+    consistency 0.1;
+    yieldStress 1;
+}
+
+pipe
+{
+    length 2;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 4;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type fixedPressure; p 600; alpha 1; waterFraction 0; }
+    outlet { type fixedPressure; p 0; }
+}
+
+time
+{
+    dt 0.005;
+    endTime 6;
+    reportEvery 100;
+}

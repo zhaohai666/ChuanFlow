@@ -1,0 +1,53 @@
+// 5.77 sibling: the SAME yielded line with a super-threshold drive.
+// dp_y = 4 tau_0 L / d = 400 Pa, dp = 600 Pa -> the static wall gives way.
+// Steady state (deep laminar, alpha = 1, horizontal):
+//   dp = (4L/d) (muL gamma + tau_0),  gamma = 8 vm / d
+//   => vm* = (dp - dp_y) d^2 / (32 muL L)
+//          = 200 * 0.0004 / (32 * 0.1 * 2) = 0.0125 m/s,
+// gamma* = 5 1/s, mu_eff = (0.1*5 + 1)/5 = 0.3, Re = 0.833.
+// The checker does NOT just read the last frame: it replicates the
+// implicit-Euler recursion  I (u - u_old)/dt + fr(u) - dp = 0,
+// I = rho_m L = 2000, with fr(u) rebuilt through the FULL Churchill blend
+// on the yielded apparent viscosity, and compares vm and dp frame by frame.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.1;
+    muG  1e-5;
+    yieldStress 1;
+}
+
+pipe
+{
+    length 2;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 4;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type fixedPressure; p 600; alpha 1; waterFraction 0; }
+    outlet { type fixedPressure; p 0; }
+}
+
+time
+{
+    dt 0.005;
+    endTime 0.4;
+    reportEvery 20;
+}

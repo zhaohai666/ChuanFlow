@@ -1,0 +1,53 @@
+// 5.77 sibling: the CROSSING witness. The column starts MOVING at
+// vm = 0.01 m/s (initial{} key vm) under a sub-threshold dp = 300 Pa
+// (dp_y = 400 Pa), so the step-start latch cannot hold it -- only a
+// moving column can cross. The yielded wall law's friction never drops
+// below 400 Pa, so the residual drive is negative and the velocity decays;
+// when the Newton iterate would go through zero to a REVERSE flow, the
+// crossing witness parks the step at u = 0. The NEXT step sees vMOld_ = 0
+// and the latch takes over, so `static hold` flips to 1 and stays there.
+// The checker asserts: no negative vm anywhere, a finite parking time,
+// vm = 0 with hold = 1 for every later sample, and holdup still 1.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.1;
+    muG  1e-5;
+    yieldStress 1;
+}
+
+pipe
+{
+    length 2;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 4;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    water 0;
+    vm 0.01;
+}
+
+boundaries
+{
+    inlet  { type fixedPressure; p 300; alpha 1; waterFraction 0; }
+    outlet { type fixedPressure; p 0; }
+}
+
+time
+{
+    dt 0.005;
+    endTime 0.4;
+    reportEvery 4;
+}

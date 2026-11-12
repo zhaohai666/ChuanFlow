@@ -137,9 +137,13 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         }
     }
     // incompressible phases: an imposed rate is felt along the whole pipe
-    // from t = 0; pressure-driven and sealed pipes start from rest
+    // from t = 0; pressure-driven and sealed pipes start from rest unless
+    // 5.77 gave the case an explicit initial velocity (network members own
+    // their velocity through the junction Newton, so vm0 is serial-only)
     if (cfg_.inlet.type == TwoFluidBoundary::Type::phaseRates)
         vM_ = vMOld_ = cfg_.inlet.vsl + cfg_.inlet.vsg;
+    else if (!cfg_.networkMode && cfg_.vm0 != 0.0)
+        vM_ = vMOld_ = cfg_.vm0;
 
     // vertical drop of each cell centre from the chain inlet (geothermal
     // depth), accumulated along the per-segment slopes
@@ -336,13 +340,13 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     const TwoFluidFluid& f = cfg_.fluid;
     const double a = alpha_[i];
     const double rho = mixtureRhoCell(i);
-    const double mu = mixtureMu(f, a);
     const double v = std::abs(vM);
     if (v == 0) return 0.0;
-    if (f.flowIndex <= 0)
+    if (f.flowIndex <= 0 && !(f.yieldStress > 0))
     {
-        // 5.75: the undeclared branch is the old law verbatim -- the whole
-        // standing two-fluid suite is its bit-for-bit witness.
+        // 5.75/5.77: the undeclared branch is the old law verbatim -- the
+        // whole standing two-fluid suite is its bit-for-bit witness.
+        const double mu = mixtureMu(f, a);
         const double re = rho * v * diameter_ / mu;
         const double fr = churchillFriction(re, relrough_[i])
                         * (dxs_[i] / diameter_) * 0.5 * rho * v * v;
@@ -356,13 +360,42 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     // blend, whose laminar member f = 64/Re reads back exactly
     // (4 dx/d) tau_w -- the same identity the undeclared branch has always
     // had, now with a rate-dependent viscosity.
+    // 5.77: the liquid share also carries the static wall stress tau_0.
+    // As v -> 0+ the apparent viscosity tau_w/gamma diverges, so the
+    // laminar member tends to (4 dx/d) (alpha tau_0) from ABOVE -- the
+    // moving-wall law's q = 0 limit is exactly the distributed threshold
+    // the held row replaces, the same shape 5.49 gave the lumped row.
     const double gamma = 8.0 * v / diameter_;
-    const double kp = f.consistency * std::pow(
-        (3.0 * f.flowIndex + 1.0) / (4.0 * f.flowIndex), f.flowIndex);
-    const double tau = a * kp * std::pow(gamma, f.flowIndex)
-                     + (1.0 - a) * f.muG * gamma;
+    double tau;
+    if (f.flowIndex > 0)
+    {
+        const double kp = f.consistency * std::pow(
+            (3.0 * f.flowIndex + 1.0) / (4.0 * f.flowIndex), f.flowIndex);
+        tau = a * kp * std::pow(gamma, f.flowIndex)
+            + (1.0 - a) * f.muG * gamma;
+    }
+    else
+    {
+        // Newtonian liquid with a yield stress (Bingham-style): keep the
+        // muL gamma share, add tau_0 below. flowIndex > 0 with tau_0 = 0
+        // keeps the 5.75 expression verbatim.
+        tau = a * f.muL * gamma + (1.0 - a) * f.muG * gamma;
+    }
+    if (f.yieldStress > 0) tau += a * f.yieldStress;
     const double muEff = tau / gamma;
     const double re = rho * v * diameter_ / muEff;
+    if (f.yieldStress > 0 && re < 1e-9)
+    {
+        // 5.77: churchillFriction clamps Re at 1e-12. A yielded fluid's
+        // mu_eff = tau_w/gamma diverges as v -> 0, so Re ~ v^2 dives
+        // below that clamp and the frozen f = 64/1e-12 makes the wall
+        // loss vanish with v^2 -- losing the very threshold the static
+        // wall is made of. In that neighbourhood the laminar member IS
+        // the whole law, and its exact identity (4 dx/d) tau_w is finite
+        // and independent of v. Above it the normal Churchill blend is
+        // bit-for-bit what 5.75 already used.
+        return 4.0 * (dxs_[i] / diameter_) * tau;
+    }
     const double fr = churchillFriction(re, relrough_[i])
                     * (dxs_[i] / diameter_) * 0.5 * rho * v * v;
     return fr;
@@ -378,6 +411,82 @@ std::vector<double> TwoFluidPipe::cellPressureLosses(double vM) const
         loss[i] = (vM >= 0 ? cellFriction(i, vM) : -cellFriction(i, vM)) + grav;
     }
     return loss;
+}
+
+// 5.77 (A5 increment 3): the distributed static wall. The single-phase row
+// of 5.49 holds 4 tau_0 L / d; here only the LIQUID share of each cell's
+// wall can yield, and each section contributes its own arc length, so the
+// threshold is a sum over the frozen holdup field rather than a geometry
+// constant. It is still geometry + holdup only: neither n nor K enters.
+double TwoFluidPipe::gravityHeadPa() const
+{
+    double sum = 0;
+    for (int i = 0; i < n_; ++i)
+        sum += mixtureRhoCell(i) * kGravity * sinT_[i] * dxs_[i];
+    return sum;
+}
+
+double TwoFluidPipe::yieldThresholdPa() const
+{
+    if (!(cfg_.fluid.yieldStress > 0)) return 0.0;
+    double sum = 0;
+    for (int i = 0; i < n_; ++i)
+        sum += 4.0 * dxs_[i] / diameter_ * alpha_[i]
+             * cfg_.fluid.yieldStress;
+    return sum;
+}
+
+void TwoFluidPipe::latchStaticHold(double dpDrive)
+{
+    driveLatch_ = dpDrive - gravityHeadPa();
+    const double thr = yieldThresholdPa();
+    if (!(thr > 0))
+    {
+        held_ = false;
+        return;
+    }
+    // 5.49: decide once, from the state the step STARTS in, so the drive a
+    // held pipe sees cannot flip the row while the same solve is moving the
+    // node pressures. A column already held stays held until the drive
+    // exceeds the wall; a moving column is NOT held here -- it parks on the
+    // crossing witness and this latch takes over on the next step.
+    held_ = (vMOld_ == 0.0 || held_)
+         && std::abs(driveLatch_) <= thr;
+}
+
+double TwoFluidPipe::restResidualPa(double dt, double dpDrive) const
+{
+    // the exact u -> 0 limit of momentumResidual on the branch vMOld_
+    // came from: friction does not vanish, it tends to the SIGNED
+    // distributed threshold (the wall law is not a function at rest).
+    double rhoBar = 0;
+    double slipInertia = 0;
+    for (int i = 0; i < n_; ++i)
+    {
+        rhoBar += mixtureRhoCell(i);
+        slipInertia += alpha_[i] * (1.0 - alpha_[i])
+                     * (cellGasDensity(i) - cfg_.fluid.rhoL) * sDotOld_[i]
+                     * dxs_[i];
+    }
+    rhoBar /= n_;
+    const double fr = std::copysign(yieldThresholdPa(), vMOld_);
+    return rhoBar * length_ * (0.0 - vMOld_) / dt
+         - slipInertia + fr + gravityHeadPa() - dpDrive;
+}
+
+bool TwoFluidPipe::yieldCrossing(double dt, double u, double dpDrive) const
+{
+    if (!(cfg_.fluid.yieldStress > 0) || vMOld_ == 0.0) return false;
+    const double drive = dpDrive - gravityHeadPa();
+    if (std::abs(drive) > yieldThresholdPa()) return false;
+    // 5.49's crossing, stated on the residual: on the old branch friction
+    // is bounded below by the threshold, so a sub-threshold drive leaves
+    // no root once the old velocity is small enough. The plain witness
+    // (an iterate that went through zero) is kept for the network Newton,
+    // whose unknown really can change sign.
+    if (u * vMOld_ <= 0.0) return true;
+    const double r0 = restResidualPa(dt, dpDrive);
+    return vMOld_ > 0 ? r0 >= 0.0 : r0 <= 0.0;
 }
 
 double TwoFluidPipe::momentumScale(double dt) const
@@ -415,8 +524,21 @@ double TwoFluidPipe::momentumResidual(double dt, double u,
                      * dxs_[i];
     }
     double fr = 0;
-    for (int i = 0; i < n_; ++i)
-        fr += (u >= 0 ? cellFriction(i, u) : -cellFriction(i, u));
+    if (u == 0.0 && cfg_.fluid.yieldStress > 0)
+    {
+        // 5.77: the u -> 0 limit of the yielded wall law is the SIGNED
+        // distributed threshold, not zero -- the same convention 5.49's
+        // frictionDp(q = 0, drive) uses. The held row replaces this
+        // equation altogether, so the value only feeds Newton's stencil
+        // at the rest point. With zero declaration the branch is not
+        // entered and the old fr = 0 stands bit for bit.
+        fr = std::copysign(yieldThresholdPa(), dpDrive - gravSum);
+    }
+    else
+    {
+        for (int i = 0; i < n_; ++i)
+            fr += (u >= 0 ? cellFriction(i, u) : -cellFriction(i, u));
+    }
     return inertia * (u - vMOld_) / dt - slipInertia + fr + gravSum
          - dpDrive;
 }
@@ -428,17 +550,40 @@ void TwoFluidPipe::momentumSolve(double dt)
 
     if (in.type == TwoFluidBoundary::Type::phaseRates)
     {
+        // a rate boundary imposes the velocity: no static wall to ask
+        clearStaticHold();
         vM_ = in.vsl + in.vsg;
         return;
     }
     if (in.type == TwoFluidBoundary::Type::sealed)
     {
         // sealed both ends: the mixture volume flux vanishes identically
+        clearStaticHold();
         vM_ = 0.0;
         return;
     }
 
     const double dpDrive = in.pressure - out.pressure;
+    // 5.77: latch the held set once from the step's starting state. The
+    // held row is `u = 0`, NOT an inversion of the moving-wall law: at
+    // u -> 0+ that law tends to the threshold from above, so a
+    // sub-threshold drive would otherwise be answered by an equal reverse
+    // flow (the exact error 5.49 refused in the lumped row).
+    latchStaticHold(dpDrive);
+    if (held_)
+    {
+        vM_ = 0.0;
+        return;
+    }
+    // 5.77: if the moving branch has no root left, stop BEFORE asking a
+    // Newton whose central difference would straddle the threshold jump
+    // (5.49's frictionSlope note). Otherwise the iterate oscillates just
+    // above rest forever instead of parking.
+    if (yieldCrossing(dt, vMOld_, dpDrive))
+    {
+        vM_ = 0.0;
+        return;
+    }
     auto residual = [&](double u)
     {
         return momentumResidual(dt, u, dpDrive);
@@ -451,13 +596,30 @@ void TwoFluidPipe::momentumSolve(double dt)
         const double r = residual(u);
         if (std::abs(r) <= 1e-12 * scale) break;
         const double h = std::max(1e-6 * std::max(std::abs(u), 1e-3), 1e-12);
-        const double slope = (residual(u + h) - residual(u - h)) / (2.0 * h);
+        double slope;
+        if (std::abs(u) <= h && cfg_.fluid.yieldStress > 0)
+        {
+            // 5.77: stay on ONE side of rest. The yielded wall law is
+            // continuous on each side but jumps across u = 0, so a
+            // centred stencil would put the threshold jump itself into
+            // the quotient (5.49's frictionSlope note). With the rest
+            // value above, this quotient is the true viscous slope.
+            const double u2 = u + (u >= 0 ? h : -h);
+            slope = (residual(u2) - r) / (u2 - u);
+        }
+        else
+        {
+            slope = (residual(u + h) - residual(u - h)) / (2.0 * h);
+        }
         if (!(slope > 0))
             cfFatal("twoFluid: non-monotone momentum residual");
         u -= r / slope;
     }
     if (!std::isfinite(u)) cfFatal("twoFluid: momentum solve diverged");
-    vM_ = u;
+    // 5.77: a moving column whose iterate crossed zero under a
+    // sub-threshold drive stops this step; the next step's latch sees
+    // vMOld_ == 0 and takes it onto the held branch.
+    vM_ = yieldCrossing(dt, u, dpDrive) ? 0.0 : u;
 }
 
 void TwoFluidPipe::slipStep(double dt)
@@ -1255,11 +1417,15 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
     c.fluid.cL = fd.getScalarOr("cL", 0.0);
     c.fluid.cG = fd.getScalarOr("cG", 0.0);
     c.fluid.gasR = fd.getScalarOr("gasR", 0.0);
-    // 5.75 (A5): the liquid phase may declare a power-law rheology. The
-    // declarations that would be silently ignored are refused instead --
-    // the worst kind of silent number is one the file seems to ask for.
+    // 5.75 / 5.77 (A5): the liquid phase may declare a power-law rheology
+    // and/or a yield stress. The declarations that would be silently
+    // ignored are refused instead -- the worst kind of silent number is
+    // one the file seems to ask for. A zero declaration is the undeclared
+    // law verbatim (the held set is empty and the wall keeps its old
+    // Churchill expression bit for bit).
     c.fluid.flowIndex = fd.getScalarOr("flowIndex", 0.0);
     c.fluid.consistency = fd.getScalarOr("consistency", 0.0);
+    c.fluid.yieldStress = fd.getScalarOr("yieldStress", 0.0);
     if (c.fluid.flowIndex < 0)
         cfFatal("twoFluid: fluid has a negative flowIndex (0 means a"
                 " Newtonian liquid)");
@@ -1271,11 +1437,10 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         cfFatal("twoFluid: fluid declares a consistency without a"
                 " flowIndex: without n the consistency is not a quantity"
                 " the wall law reads");
-    if (fd.has("yieldStress"))
-        cfFatal("twoFluid: fluid declares yieldStress: the distributed"
-                " mixture row does not take a threshold yet (a sub-threshold"
-                " distributed column needs the latch the single-phase row"
-                " got in 5.49, its own increment)");
+    if (c.fluid.yieldStress < 0)
+        cfFatal("twoFluid: fluid has a negative yieldStress: the static"
+                " wall cannot hold less than zero (a negative threshold"
+                " would make the held set empty)");
 
     if (!caseDict.has("closure"))
         cfFatal("twoFluid: case has no closure{} block");
@@ -1297,6 +1462,8 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
     c.alpha0 = id.getScalarOr("alpha", 0.0);
     c.water0 = id.getScalarOr("water", 0.0);
     c.temperature0 = id.getScalarOr("temperature", 300.0);
+    // 5.77: optional starting velocity of a pressure-driven pipe
+    c.vm0 = id.getScalarOr("vm", 0.0);
     if (c.alpha0 < 0 || c.alpha0 > 1 || c.water0 < 0 || c.water0 > 1)
         cfFatal("twoFluid: initial alpha/water must be in [0,1]");
     if (id.has("fills"))
@@ -1727,14 +1894,35 @@ void TwoFluidNetwork::solveNetwork(double dt)
         return freePipe[i] ? xv[pos[i]] : uImposed[i];
     };
 
+    // 5.77: latch each pressure-driven pipe ONCE from the step's STARTING
+    // junction pressures (the same anti-oscillation rule as 5.49 -- the
+    // drive a held pipe sees depends on node pressures this very solve is
+    // moving). Rate-driven and sealed legs never hold.
+    for (int i = 0; i < np; ++i)
+    {
+        if (freePipe[i])
+            pipes_[i]->latchStaticHold(pEnd(i, true, x) - pEnd(i, false, x));
+        else
+            pipes_[i]->clearStaticHold();
+    }
+
     std::vector<double> r(nf + nj, 0.0), scale(nf + nj, 0.0);
+    // 5.77: a held (or crossing) pipe's row becomes `u = 0`. Its own
+    // columns into the junction pressures go away with it -- a held pipe
+    // does not answer to the drive, it refuses it -- while the junction
+    // balance rows keep their velocity column, so continuity still sees
+    // the forced zero and the volume the pipe occupies stays sealed.
+    std::vector<bool> heldRow(nf, false);
     auto residuals = [&](const std::vector<double>& xv)
     {
         for (int i = 0; i < np; ++i)
         {
             if (!freePipe[i]) continue;
-            r[pos[i]] = pipes_[i]->momentumResidual(
-                dt, xv[pos[i]], pEnd(i, true, xv) - pEnd(i, false, xv));
+            if (heldRow[pos[i]])
+                r[pos[i]] = xv[pos[i]];
+            else
+                r[pos[i]] = pipes_[i]->momentumResidual(
+                    dt, xv[pos[i]], pEnd(i, true, xv) - pEnd(i, false, xv));
         }
         for (int j = 0; j < nj; ++j)
         {
@@ -1760,9 +1948,42 @@ void TwoFluidNetwork::solveNetwork(double dt)
         scale[pBase + j] = qs;
     }
 
+    // 5.77: unlike a serial pipe, a branch's far-end pressure is a Newton
+    // UNKNOWN (the junction pressure). A latch taken from the step's
+    // starting junction state can be stale during start-up: the solve
+    // itself may lift that drive past the wall. Releasing is one-way
+    // within the step (unlatched[]), which is what keeps the switch from
+    // oscillating -- the ratchet 5.49 buys with the latch, preserved on
+    // the branch that actually needs it.
+    std::vector<bool> unlatched(np, false);
     bool ok = false;
     for (int it = 0; it < 60; ++it)
     {
+        // 5.77: re-read the crossing witness on the current iterate. A
+        // moving column that has gone through zero under a sub-threshold
+        // drive parks at u = 0 for this step, exactly like 5.49's
+        // `pd.held || crossing` row; the latched held pipes are parked
+        // with it. Once parked, u * vMOld_ == 0 keeps it parked.
+        for (int i = 0; i < np; ++i)
+        {
+            if (!freePipe[i]) continue;
+            TwoFluidPipe& p = *pipes_[i];
+            const double dp = pEnd(i, true, x) - pEnd(i, false, x);
+            if (p.staticHold() && !unlatched[i]
+                && std::abs(dp - p.gravityHeadPa())
+                       > p.yieldThresholdPa())
+            {
+                p.clearStaticHold();
+                unlatched[i] = true;
+            }
+            const bool crossing = p.yieldCrossing(dt, x[pos[i]], dp);
+            if (crossing || p.staticHold())
+            {
+                x[pos[i]] = 0.0;
+                heldRow[pos[i]] = true;
+            }
+            else heldRow[pos[i]] = false;
+        }
         residuals(x);
         ok = true;
         for (int q = 0; q < nf + nj; ++q)
@@ -1775,13 +1996,33 @@ void TwoFluidNetwork::solveNetwork(double dt)
         {
             if (!freePipe[i]) continue;
             TwoFluidPipe& p = *pipes_[i];
+            if (heldRow[pos[i]])
+            {
+                // the forced row has slope 1 in its own velocity and no
+                // sensitivity to the junction pressures it refuses
+                J[pos[i]][pos[i]] = 1.0;
+                continue;
+            }
             const double u = x[pos[i]];
             const double dp = pEnd(i, true, x) - pEnd(i, false, x);
             const double h
                 = std::max(1e-6 * std::max(std::abs(u), 1e-3), 1e-12);
-            const double slope
-                = (p.momentumResidual(dt, u + h, dp)
-                   - p.momentumResidual(dt, u - h, dp)) / (2.0 * h);
+            double slope;
+            if (std::abs(u) <= h && p.yieldThresholdPa() > 0)
+            {
+                // 5.77: one-sided slope at rest (see momentumSolve). The
+                // network Newton's centred stencil would otherwise feed
+                // the threshold jump into the global Jacobian and make
+                // the junction pressure column singular.
+                const double u2 = u + (u >= 0 ? h : -h);
+                slope = (p.momentumResidual(dt, u2, dp) - r[pos[i]])
+                      / (u2 - u);
+            }
+            else
+            {
+                slope = (p.momentumResidual(dt, u + h, dp)
+                       - p.momentumResidual(dt, u - h, dp)) / (2.0 * h);
+            }
             if (!(slope > 0))
                 cfFatal("twoFluid: non-monotone pipe momentum at pipe '"
                         + cfg_.pipes[i].name + "'");

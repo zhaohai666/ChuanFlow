@@ -224,6 +224,26 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             slug detection statistics against the replicated fields, the
             observed coalescence, and the uniform steady state with the
             pnode march from the outlet anchor.
+
+  mode = pressureyield  : 5.77 / A5 increment 3 -- the distributed row's
+            static wall. Only the LIQUID share of each cell's wall yields,
+            so the column holds sum_i (4 dx_i/d) alpha_i tau_0 and the
+            drive it resists is dp_drive - sum_i rho_m,i g sinT_i dx_i.
+            A pressure-driven arm offered less than that is HELD (row
+            replaced by u = 0), latched once at the step start; a moving
+            column under a sub-threshold drive parks on the crossing
+            witness, whose rest residual is the signed threshold because
+            the yielded wall law is not a function at u = 0. The checker
+            rebuilds the fully-blended Churchill wall loss and the
+            implicit-Euler recursion independently, then checks: the
+            sub-threshold hold (vm = 0, `static hold 1`, dp = 0), the
+            super-threshold arm frame by frame, the DISTRIBUTED threshold
+            on a graded holdup field with a +/- 1 Pa band edge, the
+            zero-declaration twin (bit-for-bit laminar start-up), the
+            moving -> held crossing, a Herschel-Bulkley arm whose
+            threshold is unchanged by n and K, the branch-network held
+            rows plus a super-threshold start-up that must RELEASE the
+            latch, and the loud rejections.
 """
 import math
 import subprocess
@@ -250,7 +270,8 @@ if mode in ("junction", "networkspan"):
         if tok[0] == "t":
             times.append(float(tok[1]))
             frames.append({"t": float(tok[1]), "junctions": {},
-                           "pipes": {}, "pnode": {}, "pcell": {}})
+                           "pipes": {}, "pnode": {}, "pcell": {},
+                           "hold": {}})  # 5.77: per-pipe static hold
             continue
         if not frames:
             continue
@@ -258,6 +279,8 @@ if mode in ("junction", "networkspan"):
         if tok[0] == "junction":
             f["junctions"][tok[1]] = {"p": float(tok[3]),
                                       "net": float(tok[5])}
+        elif tok[0] == "static" and tok[1] == "hold":
+            f["hold"][tok[2]] = int(tok[3])
         elif tok[0] == "pipe":
             f["pipes"][tok[1]] = {"vm": float(tok[3]), "dp": float(tok[5])}
         elif tok[0] == "pnode":
@@ -275,21 +298,24 @@ else:
     cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = None, None, None, [], []
     cur_qwall, cur_qinlet = 0.0, 0.0
     cur_slug_count, cur_bodies = 0, []
+    cur_hold = 0  # 5.77: the serial pipe's static-hold flag
 
     def flush():
         global cur_t, cur_vm, cur_dp, cur_nodes, cur_cells
         global cur_qwall, cur_qinlet, cur_slug_count, cur_bodies
+        global cur_hold
         if cur_t is not None:
             times.append(cur_t)
             frames.append({"t": cur_t, "vm": cur_vm, "dp": cur_dp,
                            "nodes": cur_nodes, "cells": cur_cells,
                            "qwall": cur_qwall, "qinlet": cur_qinlet,
                            "slug_count": cur_slug_count,
-                           "bodies": cur_bodies})
+                           "bodies": cur_bodies, "hold": cur_hold})
             cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = \
                 None, None, None, [], []
             cur_qwall, cur_qinlet = 0.0, 0.0
             cur_slug_count, cur_bodies = 0, []
+            cur_hold = 0
 
     for line in proc.stdout.splitlines():
         tok = line.replace("[chflow]", "").split()
@@ -300,6 +326,8 @@ else:
             cur_t, cur_vm, cur_dp = float(tok[1]), float(tok[3]), float(tok[5])
         elif tok[0] == "node":
             cur_nodes.append(float(tok[3]))
+        elif tok[0] == "static" and tok[1] == "hold":
+            cur_hold = int(tok[2])
         elif tok[0] == "thermal:":
             cur_qwall, cur_qinlet = float(tok[2]), float(tok[4])
         elif tok[0] == "slug" and tok[1] == "count":
@@ -2871,6 +2899,7 @@ elif mode == "rheology":
     #                     the exact single-phase Metzner-Reed pipe law
     import os
     import re as _re
+    import tempfile
 
     DI, L, N = 0.02, 2.0, 40
     DX = L / N
@@ -2978,10 +3007,12 @@ elif mode == "rheology":
     # ---- the rejections: loud, not silent defaults (probes mutate) ------
     text = open(case).read()
     probes = [
-        ("yieldStress in the two-fluid fluid block",
+        # 5.77 opened yieldStress up for this row; a NEGATIVE one is
+        # still refused loud (the static wall cannot hold less than zero).
+        ("negative yieldStress in the two-fluid fluid block",
          text.replace("    consistency 0.15;", "    consistency 0.15;\n"
-                      "    yieldStress 3;", 1),
-         "does not take a threshold"),
+                      "    yieldStress -3;", 1),
+         "negative yieldStress"),
         ("flowIndex without a consistency",
          text.replace("    consistency 0.15;", "", 1),
          "positive consistency"),
@@ -2992,11 +3023,367 @@ elif mode == "rheology":
          text.replace("    flowIndex 0.5;\n", "", 1),
          "not a quantity"),
     ]
-    for what, txt, needle in probes:
-        p = os.path.join(case_dir, "probe.dict")
-        open(p, "w").write(txt)
-        rr = subprocess.run([exe, p], capture_output=True, text=True)
-        os.remove(p)
+    # Scratch dicts live in the SYSTEM temp, never in the case directory:
+    # a probe must not leave an untracked file behind, not even while the
+    # test is running (the 5.76 convention; the 5.74 run.log lesson).
+    with tempfile.TemporaryDirectory(prefix="cf_rheology_") as td:
+        p = os.path.join(td, "probe.dict")
+        for what, txt, needle in probes:
+            open(p, "w").write(txt)
+            rr = subprocess.run([exe, p], capture_output=True, text=True)
+            ok = rr.returncode != 0 and needle in rr.stdout + rr.stderr
+            print(f"{'ok:  ' if ok else 'FAIL:'} rejecting {what}: non-zero "
+                  f"exit naming the reason ('{needle}')")
+            if not ok:
+                fails.append(f"rejection: {what}")
+
+elif mode == "pressureyield":
+    # 5.77 / A5 (increment 3): the distributed static wall. Every number
+    # below is rebuilt from the case files (not stored), including the
+    # fully-blended Churchill wall loss and the implicit-Euler recursion.
+    import os
+    import re as _re
+    import tempfile
+
+    def body_of(txt):
+        return "\n".join(line.split("//")[0] for line in txt.splitlines())
+
+    def scalar(txt, key, default=None):
+        m = _re.search(r"\b" + _re.escape(key)
+                       + r"\s+([-+0-9.eE]+)\s*;", body_of(txt))
+        return float(m.group(1)) if m else default
+
+    main_text = open(case).read()
+    RHO_L = scalar(main_text, "rhoL")
+    RHO_G = scalar(main_text, "rhoG")
+    MU_L = scalar(main_text, "muL")
+    MU_G = scalar(main_text, "muG")
+    TAU0 = scalar(main_text, "yieldStress")
+    L = scalar(main_text, "length")
+    DI = scalar(main_text, "diameter")
+    N = int(scalar(main_text, "sections"))
+    ROUGH = scalar(main_text, "roughness", 0.0)
+    DT = scalar(main_text, "dt")
+    DP = scalar(main_text, "p")
+    DX = L / N
+
+    def threshold(alphas, tau0):
+        return sum(4.0 * DX / DI * a * tau0 for a in alphas)
+
+    def rho_of(a):
+        return a * RHO_L + (1.0 - a) * RHO_G
+
+    def kprime(n, K):
+        return K * ((3.0 * n + 1.0) / (4.0 * n)) ** n if n > 0 else 0.0
+
+    def fr_total(u, alphas, tau0, n=0.0, K=0.0):
+        """The kernel's signed wall loss, rebuilt cell by cell."""
+        v = abs(u)
+        if v == 0.0:
+            return 0.0
+        kp = kprime(n, K)
+        total = 0.0
+        for a in alphas:
+            gamma = 8.0 * v / DI
+            tau_l = kp * gamma ** n if n > 0 else MU_L * gamma
+            tau = a * tau_l + (1.0 - a) * MU_G * gamma + a * tau0
+            mu_eff = tau / gamma
+            re = rho_of(a) * v * DI / mu_eff
+            if tau0 > 0 and re < 1e-9:
+                # churchillFriction clamps Re at 1e-12; below that the
+                # exact laminar identity (4 dx/d) tau_w IS the whole law
+                # and keeps the threshold finite as v -> 0 (5.77)
+                total += 4.0 * (DX / DI) * tau
+            else:
+                f = churchill(re, ROUGH / DI)
+                total += f * (DX / DI) * 0.5 * rho_of(a) * v * v
+        return total if u >= 0 else -total
+
+    def recursion(dp, alphas, tau0, n, K, vm0, frames_in):
+        """Independent implicit-Euler solve of the mixture momentum row."""
+        I = sum(rho_of(a) for a in alphas) / len(alphas) * L
+        u_old = vm0
+        steps = 0
+        out = []
+        for fr in frames_in:
+            want = int(round(fr["t"] / DT))
+            while steps < want:
+                lo, hi = -2.0, 2.0
+                for _ in range(120):
+                    mid = 0.5 * (lo + hi)
+                    r = (I * (mid - u_old) / DT
+                         + fr_total(mid, alphas, tau0, n, K) - dp)
+                    if r > 0:
+                        hi = mid
+                    else:
+                        lo = mid
+                u_old = 0.5 * (lo + hi)
+                steps += 1
+            out.append((u_old, fr_total(u_old, alphas, tau0, n, K)))
+        return out
+
+    def run_case(path):
+        r = subprocess.run([exe, path], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SystemExit(f"sibling {path} failed rc={r.returncode}\n"
+                             f"{r.stdout}\n{r.stderr}")
+        fs, cur = [], None
+        for line in r.stdout.splitlines():
+            tok = line.replace("[chflow]", "").split()
+            if not tok:
+                continue
+            if tok[0] == "t":
+                if cur is not None:
+                    fs.append(cur)
+                cur = {"t": float(tok[1]), "vm": None, "dp": None,
+                       "hold": None, "holdp": {}, "pipes": {},
+                       "junctions": {}, "cells": [],
+                       "net_mode": tok[2] == "net"}
+                if not cur["net_mode"] and len(tok) >= 6:
+                    cur["vm"], cur["dp"] = float(tok[3]), float(tok[5])
+            elif cur is None:
+                continue
+            elif tok[0] == "static" and tok[1] == "hold":
+                if len(tok) == 3:
+                    cur["hold"] = int(tok[2])
+                else:
+                    cur["holdp"][tok[2]] = int(tok[3])
+            elif tok[0] == "pipe" and len(tok) >= 6 and tok[2] == "vm":
+                cur["pipes"][tok[1]] = {"vm": float(tok[3]),
+                                        "dp": float(tok[5])}
+            elif tok[0] == "junction":
+                cur["junctions"][tok[1]] = {"p": float(tok[3]),
+                                            "net": float(tok[5])}
+            elif tok[0] == "cell":
+                cur["cells"].append({"alpha": float(tok[3]),
+                                     "water": float(tok[5])})
+        if cur is not None:
+            fs.append(cur)
+        return fs
+
+    case_dir = os.path.dirname(case)
+
+    def probe(text, tag, expect_hold, vm_of=None):
+        # Scratch dicts live in the SYSTEM temp, never in the case
+        # directory: a failing probe must not leave an untracked file
+        # behind (the 5.76 run.log lesson).
+        with tempfile.TemporaryDirectory(prefix="cf_yield_") as td:
+            p = os.path.join(td, "probe.dict")
+            open(p, "w").write(text)
+            fs = run_case(p)
+        last = fs[-1]
+        v = vm_of(last) if vm_of else last["vm"]
+        check(f"5.77 band probe {tag}: "
+              f"{'holds' if expect_hold else 'opens'}",
+              float((v == 0.0) == expect_hold), 1.0, 1e-12)
+        return fs
+
+    # ---- the held arm -------------------------------------------------
+    UNIFORM = [1.0] * N
+    DP_Y = threshold(UNIFORM, TAU0)
+    check("distributed threshold on uniform alpha = 4 tau_0 L / d",
+          DP_Y, 4.0 * TAU0 * L / DI, 1e-12)
+    check("the main arm's drive is strictly below that threshold",
+          float(DP < DP_Y), 1.0, 1e-12)
+    for k, fr in enumerate(frames):
+        check(f"held arm vm(t={fr['t']}) = 0", fr["vm"], 0.0, 1e-12, 1e-14)
+        check(f"held arm reads no wall law: dp(t={fr['t']}) = 0",
+              fr["dp"], 0.0, 1e-12, 1e-14)
+        want = 0 if k == 0 else 1
+        check(f"static hold(t={fr['t']}) = {want}", fr["hold"], want, 1e-12)
+        worst = max(abs(c["alpha"] - 1.0) for c in fr["cells"])
+        check(f"held arm holdup frozen (t={fr['t']})", worst, 0.0,
+              1e-12, 1e-12)
+    # the band edge belongs to the held set (5.49's `<=`)
+    probe(main_text.replace("p 300; alpha 1", "p 400; alpha 1"),
+          "band400", True)
+
+    # ---- super-threshold arm, frame by frame --------------------------
+    open_path = os.path.join(case_dir, "case_open.dict")
+    open_text = open(open_path).read()
+    open_fs = run_case(open_path)
+    DP_OPEN = scalar(open_text, "p")
+    rec = recursion(DP_OPEN, UNIFORM, TAU0, 0.0, 0.0, 0.0, open_fs)
+    for k, fr in enumerate(open_fs):
+        u, loss = rec[k]
+        check(f"super-threshold vm(t={fr['t']}) = independent implicit Euler",
+              fr["vm"], u, 1e-8, 1e-12)
+        check(f"super-threshold dp(t={fr['t']}) = the wall loss",
+              fr["dp"], loss, 1e-8, 1e-9)
+        check(f"super-threshold arm is not held (t={fr['t']})",
+              fr["hold"], 0, 1e-12)
+    vm_star = (DP_OPEN - DP_Y) * DI ** 2 / (32.0 * MU_L * L)
+    check("steady closed form (dp - dp_y) d^2 / (32 muL L)",
+          vm_star, 0.0125, 1e-12)
+    u_last = open_fs[-1]["vm"]
+    gamma_last = 8.0 * u_last / DI
+    tau_last = MU_L * gamma_last + TAU0
+    mu_eff = tau_last / gamma_last
+    re_last = RHO_L * u_last * DI / mu_eff
+    check("Churchill's laminar member reads f Re = 64",
+          churchill(re_last, ROUGH / DI) * re_last, 64.0, 1e-9)
+
+    # ---- the DISTRIBUTED threshold ------------------------------------
+    graded_path = os.path.join(case_dir, "case_graded.dict")
+    graded_text = open(graded_path).read()
+    graded_fs = run_case(graded_path)
+    fm = _re.search(
+        r"fills\s*\{.*?from\s+([-+0-9.eE]+)\s*;\s*to\s+([-+0-9.eE]+)\s*;"
+        r"\s*alpha\s+([-+0-9.eE]+)\s*;",
+        body_of(graded_text), _re.S)
+    f_from, f_to, f_alpha = (float(fm.group(i)) for i in (1, 2, 3))
+    GRADED = [f_alpha if f_from <= (i + 0.5) * DX <= f_to else 0.0
+              for i in range(N)]
+    DP_Y_GRADED = threshold(GRADED, TAU0)
+    check("graded threshold = 200 Pa (two liquid cells of four)",
+          DP_Y_GRADED, 200.0, 1e-12)
+    check("dp = 300 sits strictly between graded and uniform thresholds",
+          float(DP_Y_GRADED < DP < DP_Y), 1.0, 1e-12)
+    check("the graded arm OPENS on the drive the uniform arm holds",
+          float(graded_fs[-1]["vm"] > 0), 1.0, 1e-12)
+    check("the graded arm is never held",
+          float(max(f["hold"] for f in graded_fs) == 0), 1.0, 1e-12)
+    worst_graded = max(abs(c["alpha"] - GRADED[i])
+                       for f in graded_fs for i, c in enumerate(f["cells"]))
+    # Godunov's sharp front leaves a small numerical-diffusion wake at the
+    # inlet; 0.4 s at vm ~ 0.012 moves it ~0.005 m, far inside one 0.5 m
+    # cell. Bound the drift, then bound what it can do to the threshold:
+    # it must stay far below the +/- 1 Pa band edge probed below.
+    check("graded holdup drift stays inside numerical diffusion (< 0.01)",
+          worst_graded, 0.0, 1e-12, 1e-2)
+    drift_pa = sum(4.0 * DX / DI * abs(c["alpha"] - GRADED[i]) * TAU0
+                   for i, c in enumerate(graded_fs[-1]["cells"]))
+    check("graded threshold drift stays below the 1 Pa band margin",
+          drift_pa, 0.0, 1e-12, 5.0)
+    probe(graded_text.replace("p 300; alpha 0", "p 199; alpha 0"),
+          "graded199", True)
+    probe(graded_text.replace("p 300; alpha 0", "p 201; alpha 0"),
+          "graded201", False)
+
+    # ---- zero declaration / bit-for-bit sentinel ----------------------
+    newt_path = os.path.join(case_dir, "case_newt.dict")
+    newt_fs = run_case(newt_path)
+    check("zero declaration reports no static hold at all",
+          float(not any(f["hold"] is not None for f in newt_fs)), 1.0, 1e-12)
+    rec = recursion(DP, UNIFORM, 0.0, 0.0, 0.0, 0.0, newt_fs)
+    for k, fr in enumerate(newt_fs):
+        u, loss = rec[k]
+        check(f"zero-declaration vm(t={fr['t']}) = old laminar start-up",
+              fr["vm"], u, 1e-8, 1e-12)
+        check(f"zero-declaration dp(t={fr['t']}) = old Churchill loss",
+              fr["dp"], loss, 1e-8, 1e-9)
+    sentinel = probe(main_text.replace("yieldStress 1;", "yieldStress 0;", 1),
+                     "sentinel0", False)
+    check("yieldStress 0 is the undeclared twin bit for bit",
+          sentinel[-1]["vm"], newt_fs[-1]["vm"], 1e-12, 1e-14)
+
+    # ---- the moving -> held crossing ----------------------------------
+    cross_fs = run_case(os.path.join(case_dir, "case_cross.dict"))
+    check("crossing arm starts at the declared vm0", cross_fs[0]["vm"],
+          0.01, 1e-12)
+    check("crossing arm never reverses (no bogus reverse flow)",
+          float(all(f["vm"] >= 0.0 for f in cross_fs)), 1.0, 1e-12)
+    park = next((k for k, f in enumerate(cross_fs)
+                 if k > 0 and f["vm"] == 0.0), None)
+    check("crossing arm parks at u = 0 within the run",
+          float(park is not None), 1.0, 1e-12)
+    if park is not None:
+        check("crossing arm stays parked AND held afterwards",
+              float(all(f["vm"] == 0.0 and f["hold"] == 1
+                        for f in cross_fs[park:])), 1.0, 1e-12)
+        check("crossing arm decelerates monotonically before parking",
+              float(all(cross_fs[i]["vm"] > cross_fs[i + 1]["vm"]
+                        for i in range(0, park - 1))), 1.0, 1e-12)
+        check("crossing arm parks before the last sample",
+              float(park < len(cross_fs) - 1), 1.0, 1e-12)
+        check("crossing arm holdup stays all liquid",
+              max(abs(c["alpha"] - 1.0) for f in cross_fs
+                  for c in f["cells"]), 0.0, 1e-12, 1e-12)
+
+    # ---- Herschel-Bulkley: the threshold ignores n and K --------------
+    hb_path = os.path.join(case_dir, "case_hb.dict")
+    hb_text = open(hb_path).read()
+    N_POW = scalar(hb_text, "flowIndex")
+    K_POW = scalar(hb_text, "consistency")
+    DP_HB = scalar(hb_text, "p")
+    KP = kprime(N_POW, K_POW)
+    check("Rabinowitsch K' on the Herschel-Bulkley arm",
+          KP, K_POW * (2.5 / 2.0) ** 0.5, 1e-12)
+    check("the threshold ignores n and K (geometry + holdup only)",
+          threshold(UNIFORM, TAU0), DP_Y, 1e-12)
+    hb_fs = run_case(hb_path)
+    rec = recursion(DP_HB, UNIFORM, TAU0, N_POW, K_POW, 0.0, hb_fs)
+    for k, fr in enumerate(hb_fs):
+        u, _ = rec[k]
+        check(f"HB vm(t={fr['t']}) = independent implicit Euler",
+              fr["vm"], u, 1e-7, 1e-12)
+    gamma_n = (DP_HB / (4.0 * L / DI) - TAU0) / KP
+    gamma_star = gamma_n ** (1.0 / N_POW)
+    vm_hb = gamma_star * DI / 8.0
+    check("HB steady closed form vm* = gamma* d / 8", vm_hb, 0.05, 1e-12)
+    check("HB last frame lands on the closed form",
+          hb_fs[-1]["vm"], vm_hb, 2e-3)
+    check("HB arm is never held",
+          float(max(f["hold"] for f in hb_fs) == 0), 1.0, 1e-12)
+
+    # ---- branch network: held rows and the release ratchet ------------
+    net_path = os.path.join(case_dir, "case_network.dict")
+    net_text = open(net_path).read()
+    net_fs = run_case(net_path)
+    check("network: both held rows keep u = 0",
+          float(all(f["pipes"]["A"]["vm"] == 0.0
+                    and f["pipes"]["B"]["vm"] == 0.0 for f in net_fs)),
+          1.0, 1e-12)
+    check("network: junction volume balance stays closed",
+          max(abs(f["junctions"]["J"]["net"]) for f in net_fs),
+          0.0, 1e-12, 1e-12)
+    check("network: junction pressure stays finite and bounded",
+          float(all(math.isfinite(f["junctions"]["J"]["p"])
+                    and 0.0 <= f["junctions"]["J"]["p"] <= DP
+                    for f in net_fs)), 1.0, 1e-12)
+    check("network: both pipes report static hold 1 after t = 0",
+          float(all(f["holdp"].get("A") == 1 and f["holdp"].get("B") == 1
+                    for f in net_fs[1:])), 1.0, 1e-12)
+    net_super = probe(
+        net_text.replace("p 300; alpha 1", "p 1200; alpha 1"),
+        "net1200", False, vm_of=lambda f: f["pipes"]["A"]["vm"])
+    last_super = net_super[-1]
+    check("network: super-threshold start-up RELEASES the stale latch (A)",
+          float(last_super["pipes"]["A"]["vm"] > 0), 1.0, 1e-12)
+    check("network: B flows too (the junction balance is satisfiable)",
+          float(last_super["pipes"]["B"]["vm"] > 0), 1.0, 1e-12)
+    check("network: released branches report static hold 0",
+          float(all(f["holdp"].get("A", 0) == 0
+                    and f["holdp"].get("B", 0) == 0
+                    for f in net_super[1:])), 1.0, 1e-12)
+    check("network: the two equal spans carry the same velocity",
+          last_super["pipes"]["B"]["vm"], last_super["pipes"]["A"]["vm"],
+          1e-10)
+    check("network: each span lands on case_open's super-threshold speed",
+          last_super["pipes"]["A"]["vm"], open_fs[-1]["vm"], 1e-8)
+    check("network: released junction balance stays closed",
+          max(abs(f["junctions"]["J"]["net"]) for f in net_super),
+          0.0, 1e-12, 1e-12)
+
+    # ---- the rejections: loud, not silent defaults --------------------
+    reject_probes = [
+        ("a negative yieldStress",
+         main_text.replace("    yieldStress 1;", "    yieldStress -1;", 1),
+         "negative yieldStress"),
+        ("flowIndex without consistency",
+         main_text.replace("    yieldStress 1;",
+                           "    flowIndex 0.5;\n    yieldStress 1;", 1),
+         "positive consistency"),
+        ("consistency without flowIndex",
+         main_text.replace("    yieldStress 1;",
+                           "    consistency 0.1;\n    yieldStress 1;", 1),
+         "not a quantity"),
+    ]
+    for what, txt, needle in reject_probes:
+        with tempfile.TemporaryDirectory(prefix="cf_yield_") as td:
+            p = os.path.join(td, "probe.dict")
+            open(p, "w").write(txt)
+            rr = subprocess.run([exe, p], capture_output=True, text=True)
         ok = rr.returncode != 0 and needle in rr.stdout + rr.stderr
         print(f"{'ok:  ' if ok else 'FAIL:'} rejecting {what}: non-zero "
               f"exit naming the reason ('{needle}')")

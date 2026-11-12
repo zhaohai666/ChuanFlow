@@ -142,12 +142,17 @@ struct TwoFluidFluid
     // back the exact single-phase power-law pipe law, at n = 1 (and with no
     // declaration at all) the Newtonian mixture law this row has always
     // had. The apparent mixture viscosity tau_w/gamma drives the same
-    // Churchill blend. flowIndex 0 (the default) means Newtonian; a yield
-    // stress is refused loudly (a threshold in a distributed momentum row
-    // needs the same latch the single-phase row got in 5.49, its own
-    // increment).
+    // Churchill blend. flowIndex 0 (the default) means Newtonian.
+    // 5.77 (A5 increment 3): the liquid share of the wall can also carry a
+    // yield stress tau_0, so tau_w gains + alpha tau_0 and the distributed
+    // static-wall threshold becomes sum_i (4 dx_i/d) alpha_i tau_0. A
+    // pressure-driven column offered less than that is HELD at u = 0 by
+    // the latch 5.49 gave the single-phase row: the wall law is not a
+    // function at u = 0, so its row is replaced instead of inverted. Zero
+    // declaration keeps the old law verbatim (bit for bit).
     double flowIndex = 0;    // n; 0 = Newtonian liquid
     double consistency = 0;  // K, Pa s^n; must be positive when n > 0
+    double yieldStress = 0;  // tau_0, Pa; 0 = no static wall
 };
 
 struct TwoFluidGeo
@@ -305,6 +310,10 @@ struct TwoFluidCase
     TwoFluidBoundary outlet;
     double alpha0 = 0;    // uniform initial liquid fraction
     double water0 = 0;    // uniform initial water cut of the liquid
+    // 5.77: a pressure-driven pipe may start already moving, so the
+    // moving -> held crossing is observable without a time-varying
+    // boundary. 0 (the default) is "start from rest", exactly as before.
+    double vm0 = 0;       // initial mixture velocity, m/s
     std::vector<TwoFluidFill> fills; // sub-range overrides of alpha0
     bool thermalOn = false;      // energy equation solved (thermal{} present)
     double temperature0 = 300;   // K, uniform initial temperature
@@ -362,6 +371,13 @@ public:
 
     /// Signed mixture (total volume-flux) velocity, m/s.
     double mixtureVelocity() const { return vM_; }
+    /// 5.77 (A5 increment 3): 1 when the static wall held this pipe at
+    /// rest on the step just taken (its momentum row was replaced by
+    /// u = 0), 0 when the moving wall law was solved. Only pressure-driven
+    /// pipes can hold: a rate boundary imposes its velocity, a sealed pipe
+    /// is static by construction. At t = 0 no step has been taken, so the
+    /// flag reads 0 (the constructor state) even for a held case.
+    bool staticHold() const { return held_; }
     /// p(inlet) - p(outlet) from the momentum balance, Pa.
     double pressureDrop() const;
     /// Node pressures at the cell faces, Pa (size sections + 1). Gauge
@@ -423,6 +439,38 @@ public:
     /// Natural magnitude of that residual (Newton tolerance anchor):
     /// inertia (|uOld| + 1)/dt + |grav| + 1.
     double momentumScale(double dt) const;
+
+    // ---- distributed static wall (5.77 / A5 increment 3) ----
+
+    /// The drop the yielded wall can hold without moving, Pa:
+    ///   sum_i (4 dx_i / d) alpha_i tau_0.
+    /// Only the liquid share of each cell's wall yields, so a gas cell
+    /// contributes nothing and a non-uniform holdup field weights each
+    /// section by its own arc length. At uniform alpha this is exactly the
+    /// single-phase 4 tau_0 L / d of 5.49 scaled by alpha. Geometry and
+    /// holdup only -- the threshold knows neither n nor K.
+    double yieldThresholdPa() const;
+    /// Static gravity head sum_i rho_m,i g sinT_i dx_i, Pa. The drive the
+    /// static wall has to resist is dpDrive - this, the same quantity the
+    /// momentum residual moves.
+    double gravityHeadPa() const;
+    /// Latch the held set ONCE at the start of a step (5.49): the decision
+    /// reads the old velocity and the drive offered THEN, not the node
+    /// pressures the same solve is moving. dpDrive = p(inlet) - p(outlet).
+    void latchStaticHold(double dpDrive);
+    /// A moving column under a sub-threshold drive has NO root on its own
+    /// branch: friction is bounded below by the threshold there, so once
+    /// the old velocity is small enough even u -> 0 cannot balance the
+    /// drive. It parks at u = 0 for this step; the next step's latch
+    /// (old velocity now zero) owns it from there. This is 5.49's
+    /// `crossing` stated on the RESIDUAL, because the yielded wall law is
+    /// not a function at u = 0 and a Newton differencing through zero
+    /// would straddle the threshold jump (5.49's own frictionSlope note).
+    bool yieldCrossing(double dt, double u, double dpDrive) const;
+    /// Rate-driven and sealed pipes never hold: clear the flag so a pipe
+    /// whose boundary is rewritten by a network cannot inherit a stale
+    /// latch.
+    void clearStaticHold() { held_ = false; }
     /// State at the given end (atInlet = face 0, else face n): the
     /// boundary-cell holdup/water/hydrate/temperature/gas density the
     /// junction mixing draws from, and the pipe's own phase volume
@@ -515,6 +563,10 @@ private:
     }
     double cellFriction(int i, double vM) const; // sgn-agnostic |dp/dx| fric
     std::vector<double> cellPressureLosses(double vM) const; // fr + grav, Pa
+    /// Momentum residual in the u -> 0 limit on the branch the column
+    /// came FROM: friction tends to the signed distributed threshold, so
+    /// this is the exact rest value of the discontinuous wall law (5.77).
+    double restResidualPa(double dt, double dpDrive) const;
     double mixtureRhoCell(int i) const; // with the per-section gas density
     double cellGasDensity(int i) const; // guarded: constant rhoG when sealed
     double ghostGasDensity(const TwoFluidBoundary& b) const;
@@ -550,6 +602,8 @@ private:
     double vM_ = 0;   // current mixture velocity
     double vMOld_ = 0;
     double t_ = 0;
+    bool held_ = false;       // 5.77: the static wall owns this step's row
+    double driveLatch_ = 0;   // 5.77: dpDrive - gravityHead at latch time
     bool externalMomentum_ = false; // one-shot: the next step() skips
                                     // momentumSolve (junction branches)
 };
@@ -570,7 +624,10 @@ private:
 ///                                                 //      interfacialDrag 500;
 ///                                                 // or model full;
 ///                                                 //      interfacialDrag 500;
-///   initial { alpha 0; water 0; temperature 300; fills { ... } }
+///   initial { alpha 0; water 0; temperature 300; vm 0; fills { ... } }
+///         // vm: optional initial mixture velocity for a pressure-driven
+///         // pipe (0 = start from rest); useful to observe a moving column
+///         // stop under a sub-threshold drive (5.77)
 ///   boundaries
 ///   {
 ///       inlet { type phaseRates; vsl 1; vsg 0; waterFraction 0.25;

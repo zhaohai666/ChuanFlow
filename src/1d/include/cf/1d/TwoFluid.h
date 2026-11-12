@@ -135,6 +135,19 @@ struct TwoFluidFluid
     double gasR = 0;    // J/(kg K) specific gas constant; > 0 switches the
                         // ideal-gas EOS on and rhoG becomes the per-section
                         // state evolved by gas mass continuity
+    // 5.75 (A5): the LIQUID phase's power-law rheology. The mixture's wall
+    // stress becomes tau_w = alpha K' gamma^n + (1 - alpha) muG gamma on the
+    // Newtonian wall rate gamma = 8 vm/d, with K' = K ((3n+1)/4n)^n the
+    // Rabinowitsch-corrected consistency -- so at alpha = 1 the wall reads
+    // back the exact single-phase power-law pipe law, at n = 1 (and with no
+    // declaration at all) the Newtonian mixture law this row has always
+    // had. The apparent mixture viscosity tau_w/gamma drives the same
+    // Churchill blend. flowIndex 0 (the default) means Newtonian; a yield
+    // stress is refused loudly (a threshold in a distributed momentum row
+    // needs the same latch the single-phase row got in 5.49, its own
+    // increment).
+    double flowIndex = 0;    // n; 0 = Newtonian liquid
+    double consistency = 0;  // K, Pa s^n; must be positive when n > 0
 };
 
 struct TwoFluidGeo

@@ -339,7 +339,30 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     const double mu = mixtureMu(f, a);
     const double v = std::abs(vM);
     if (v == 0) return 0.0;
-    const double re = rho * v * diameter_ / mu;
+    if (f.flowIndex <= 0)
+    {
+        // 5.75: the undeclared branch is the old law verbatim -- the whole
+        // standing two-fluid suite is its bit-for-bit witness.
+        const double re = rho * v * diameter_ / mu;
+        const double fr = churchillFriction(re, relrough_[i])
+                        * (dxs_[i] / diameter_) * 0.5 * rho * v * v;
+        return fr;
+    }
+    // 5.75 (A5): a declared power-law liquid shares the wall with the gas.
+    // The liquid's share of the wall stress is Metzner-Reed in its own wall
+    // rate (K' = K ((3n+1)/4n)^n, so alpha = 1 reads back the exact
+    // single-phase power-law pipe law) and the gas share stays Newtonian;
+    // the apparent mixture viscosity tau_w/gamma drives the same Churchill
+    // blend, whose laminar member f = 64/Re reads back exactly
+    // (4 dx/d) tau_w -- the same identity the undeclared branch has always
+    // had, now with a rate-dependent viscosity.
+    const double gamma = 8.0 * v / diameter_;
+    const double kp = f.consistency * std::pow(
+        (3.0 * f.flowIndex + 1.0) / (4.0 * f.flowIndex), f.flowIndex);
+    const double tau = a * kp * std::pow(gamma, f.flowIndex)
+                     + (1.0 - a) * f.muG * gamma;
+    const double muEff = tau / gamma;
+    const double re = rho * v * diameter_ / muEff;
     const double fr = churchillFriction(re, relrough_[i])
                     * (dxs_[i] / diameter_) * 0.5 * rho * v * v;
     return fr;
@@ -1232,6 +1255,27 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
     c.fluid.cL = fd.getScalarOr("cL", 0.0);
     c.fluid.cG = fd.getScalarOr("cG", 0.0);
     c.fluid.gasR = fd.getScalarOr("gasR", 0.0);
+    // 5.75 (A5): the liquid phase may declare a power-law rheology. The
+    // declarations that would be silently ignored are refused instead --
+    // the worst kind of silent number is one the file seems to ask for.
+    c.fluid.flowIndex = fd.getScalarOr("flowIndex", 0.0);
+    c.fluid.consistency = fd.getScalarOr("consistency", 0.0);
+    if (c.fluid.flowIndex < 0)
+        cfFatal("twoFluid: fluid has a negative flowIndex (0 means a"
+                " Newtonian liquid)");
+    if (c.fluid.flowIndex > 0 && !(c.fluid.consistency > 0))
+        cfFatal("twoFluid: fluid declares a flowIndex without a positive"
+                " consistency: at n != 1 the fluid's muL is not the same"
+                " quantity as K (Pa.s^n)");
+    if (c.fluid.flowIndex == 0 && fd.has("consistency"))
+        cfFatal("twoFluid: fluid declares a consistency without a"
+                " flowIndex: without n the consistency is not a quantity"
+                " the wall law reads");
+    if (fd.has("yieldStress"))
+        cfFatal("twoFluid: fluid declares yieldStress: the distributed"
+                " mixture row does not take a threshold yet (a sub-threshold"
+                " distributed column needs the latch the single-phase row"
+                " got in 5.49, its own increment)");
 
     if (!caseDict.has("closure"))
         cfFatal("twoFluid: case has no closure{} block");

@@ -47,6 +47,11 @@ int main(int argc, char** argv)
             log::info("twoFluid network: ", nc.pipes.size(), " pipes ",
                       sections, " sections, ", nc.junctions.size(),
                       " junctions, dt=", num(dt), " endTime=", num(endTime));
+            // 5.75 (A5): same self-naming as the serial branch
+            if (nc.perPipe.fluid.flowIndex > 0)
+                log::info("twoFluid liquid rheology: flowIndex ",
+                          num(nc.perPipe.fluid.flowIndex), " consistency ",
+                          num(nc.perPipe.fluid.consistency));
 
             TwoFluidNetwork net(nc);
             auto emit = [&](const TwoFluidNetwork& n)
@@ -106,6 +111,17 @@ int main(int argc, char** argv)
         for (const TwoFluidGeo& g : c.pipes) sections += g.sections;
         log::info("twoFluid: ", sections, " sections, dt=", num(dt),
                   " endTime=", num(endTime));
+        // 5.75 (A5): a declared liquid rheology names itself and its
+        // Rabinowitsch-corrected consistency, so the report says which law
+        // the wall stress came from
+        if (c.fluid.flowIndex > 0)
+            log::info("twoFluid liquid rheology: flowIndex ",
+                      num(c.fluid.flowIndex), " consistency ",
+                      num(c.fluid.consistency), " (K' ",
+                      num(c.fluid.consistency * std::pow(
+                          (3.0 * c.fluid.flowIndex + 1.0)
+                              / (4.0 * c.fluid.flowIndex),
+                          c.fluid.flowIndex)), ")");
 
         TwoFluidPipe sim(c);
 

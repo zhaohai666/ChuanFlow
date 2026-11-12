@@ -1,0 +1,43 @@
+// 5.75 / A5 sibling case. See case.dict for the arm description.
+
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-4;
+}
+
+pipe
+{
+    length 2;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 40;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.04; vsg 0.01; waterFraction 0; }
+    outlet { type fixedPressure; p 1.0e5; }
+}
+
+time
+{
+    dt 0.1;
+    endTime 600;
+    reportEvery 100;
+}

@@ -195,6 +195,20 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             loss march from the inlet anchor landing exactly on the outlet
             pressure (the BVP closure), and the exact discrete fixed point.
 
+  mode = rheology         : 5.75 / A5 increment 1 -- the liquid phase
+            declares a power-law rheology (fluid{} keys flowIndex /
+            consistency) and the mixture wall stress becomes
+            tau_w = alpha K' gamma^n + (1-alpha) muG gamma on the Newtonian
+            wall rate gamma = 8 vm/d, K' = K((3n+1)/4n)^n, with the apparent
+            mixture viscosity tau_w/gamma driving the same Churchill blend.
+            The wallis us = 0 arm makes alpha* = vsl/vm a case constant; the
+            drop lands on the stated law (full blend) and the laminar closed
+            form (1e-9), the Rabinowitsch K' (not the textbook K) is on the
+            liquid share, flowIndex 1 / K = muL lands on the undeclared
+            twin, alpha* = 1 is the exact single-phase Metzner-Reed pipe
+            law, and yieldStress / inconsistent declarations are refused
+            loudly.
+
   mode = slugpulse      : coalescing packets under a piecewise-constant
             inlet rate schedule (horizontal incompressible pipe, Wallis
             closure). Fronts ride Rankine-Hugoniot shock speeds and fan
@@ -2840,6 +2854,154 @@ elif mode == "slugpulse":
               f" the per-cell loss {losses[0]:.6e} (1e-9)")
     check("pressure drop (uniform Churchill)", last["dp"], sum(losses),
           1e-9)
+
+elif mode == "rheology":
+    # 5.75 / A5 (increment 1): the liquid phase declares a power-law
+    # rheology and the mixture wall stress becomes
+    #   tau_w = alpha K' gamma^n + (1 - alpha) muG gamma,  gamma = 8 vm/d,
+    #   K' = K ((3n+1)/4n)^n,
+    # with the apparent mixture viscosity tau_w/gamma driving the same
+    # Churchill blend (laminar member f = 64/Re reads back (4 dx/d) tau_w).
+    # The wallis us = 0 arm makes every law input a case constant:
+    # alpha* = vsl/vm, vm = vsl + vsg. Siblings (checker runs them):
+    #   case_newt.dict -- no rheology keys, the undeclared twin
+    #   case_n1.dict   -- flowIndex 1 with K = muL, the declared-Newtonian
+    #                     identity
+    #   case_liq.dict  -- vsg 0, alpha* = 1: the wall stress is K' gamma^n,
+    #                     the exact single-phase Metzner-Reed pipe law
+    import os
+    import re as _re
+
+    DI, L, N = 0.02, 2.0, 40
+    DX = L / N
+    VSL, VSG = 0.04, 0.01
+    VM = VSL + VSG
+    A_STAR = VSL / VM
+    N_POW, K_POW, MU_G = 0.5, 0.15, 1e-4
+    RHO_L, RHO_G, MU_L = 1000.0, 20.0, 0.01
+    ROUGH = 0.0
+    K_PRIME = K_POW * ((3.0 * N_POW + 1.0) / (4.0 * N_POW)) ** N_POW
+    GAMMA = 8.0 * VM / DI
+    TAU_W = A_STAR * K_PRIME * GAMMA ** N_POW \
+        + (1.0 - A_STAR) * MU_G * GAMMA
+    MU_EFF = TAU_W / GAMMA
+    RHO_M = A_STAR * RHO_L + (1.0 - A_STAR) * RHO_G
+    RE = RHO_M * VM * DI / MU_EFF
+
+    last = frames[-1]
+    check("vm = the imposed total rate", last["vm"], VM, 1e-12)
+    worst_a = max(abs(c["alpha"] - A_STAR) for c in last["cells"])
+    ok_a = worst_a <= 1e-9
+    print(f"{'ok:  ' if ok_a else 'FAIL:'} settled holdup uniform at "
+          f"alpha* = vsl/vm = {A_STAR} (worst cell {worst_a:.3e})")
+    if not ok_a:
+        fails.append("holdup not settled")
+    split = all(abs(c["vsl"] - VSL) <= 1e-9 and abs(c["vsg"] - VSG) <= 1e-9
+                for c in last["cells"])
+    print(f"{'ok:  ' if split else 'FAIL:'} per-cell flux split is the "
+          f"homogeneous one (vsl = {VSL}, vsg = {VSG})")
+    if not split:
+        fails.append("flux split")
+
+    # the stated law, recomputed through the full Churchill blend on the
+    # apparent mixture viscosity
+    fr_total = 0.0
+    for c in last["cells"]:
+        a = c["alpha"]
+        tau = a * K_PRIME * GAMMA ** N_POW + (1.0 - a) * MU_G * GAMMA
+        mu_e = tau / GAMMA
+        re = (a * RHO_L + (1.0 - a) * RHO_G) * VM * DI / mu_e
+        fr_total += churchill(re, ROUGH / DI) * (DX / DI) * 0.5 \
+            * (a * RHO_L + (1.0 - a) * RHO_G) * VM ** 2
+    check("pressure drop = the stated mixture wall law (full blend)",
+          last["dp"], fr_total, 1e-9)
+    check("Re is deep laminar (turbulent member < 1e-12 relative)",
+          float(RE < 100.0), 1.0, 1e-12)
+    check("pressure drop = the laminar closed form (4L/d) tau_w",
+          last["dp"], (4.0 * L / DI) * TAU_W, 1e-9)
+    # the declared consistency is the Rabinowitsch K', not the textbook K:
+    # the gap between the measured drop and the textbook-K law is exactly
+    # the liquid share's correction
+    tau_textbook = A_STAR * K_POW * GAMMA ** N_POW \
+        + (1.0 - A_STAR) * MU_G * GAMMA
+    check("the wall carries K' = K((3n+1)/4n)^n, not the textbook K",
+          last["dp"] - (4.0 * L / DI) * tau_textbook,
+          A_STAR * (K_PRIME - K_POW) * GAMMA ** N_POW * (4.0 * L / DI),
+          1e-9)
+
+    # ---- the siblings ---------------------------------------------------
+    def run_case(path):
+        r = subprocess.run([exe, path], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SystemExit(f"sibling {path} failed rc={r.returncode}\n"
+                             f"{r.stdout}\n{r.stderr}")
+        t_vm = t_dp = None
+        alphas = []
+        for line in r.stdout.splitlines():
+            tok = line.replace("[chflow]", "").split()
+            if not tok:
+                continue
+            if tok[0] == "t" and len(tok) >= 6:
+                t_vm, t_dp = float(tok[3]), float(tok[5])
+                alphas = []  # keep only the last frame's cells
+            elif tok[0] == "cell":
+                alphas.append(float(tok[3]))
+        return t_vm, t_dp, alphas
+
+    case_dir = os.path.dirname(case)
+    newt_vm, newt_dp, newt_a = run_case(
+        os.path.join(case_dir, "case_newt.dict"))
+    n1_vm, n1_dp, n1_a = run_case(os.path.join(case_dir, "case_n1.dict"))
+    check("flowIndex 1 with K = muL lands on the undeclared twin's drop",
+          n1_dp, newt_dp, 1e-9, 1e-8)
+    check("the twin keeps the imposed rate", newt_vm, VM, 1e-12)
+    worst_twin = max(abs(x - A_STAR) for x in newt_a)
+    ok_twin = worst_twin <= 1e-9
+    print(f"{'ok:  ' if ok_twin else 'FAIL:'} the undeclared twin settles "
+          f"to the same holdup (worst cell {worst_twin:.3e}) -- the "
+          "declaration changed nothing but the wall law")
+    if not ok_twin:
+        fails.append("twin holdup")
+
+    liq_vm, liq_dp, liq_a = run_case(os.path.join(case_dir, "case_liq.dict"))
+    check("pure liquid (alpha* = 1) is the exact Metzner-Reed pipe law "
+          "dp = (4L/d) K' gamma^n", liq_dp,
+          (4.0 * L / DI) * K_PRIME * GAMMA ** N_POW, 1e-9)
+    check("the pure-liquid arm keeps the imposed rate", liq_vm, VM, 1e-12)
+    worst_liq = max(abs(x - 1.0) for x in liq_a)
+    ok_liq = worst_liq <= 1e-9
+    print(f"{'ok:  ' if ok_liq else 'FAIL:'} the pure-liquid arm is all "
+          f"liquid (worst cell {worst_liq:.3e})")
+    if not ok_liq:
+        fails.append("liquid arm holdup")
+
+    # ---- the rejections: loud, not silent defaults (probes mutate) ------
+    text = open(case).read()
+    probes = [
+        ("yieldStress in the two-fluid fluid block",
+         text.replace("    consistency 0.15;", "    consistency 0.15;\n"
+                      "    yieldStress 3;", 1),
+         "does not take a threshold"),
+        ("flowIndex without a consistency",
+         text.replace("    consistency 0.15;", "", 1),
+         "positive consistency"),
+        ("negative flowIndex",
+         text.replace("flowIndex 0.5;", "flowIndex -0.5;", 1),
+         "negative flowIndex"),
+        ("consistency without a flowIndex",
+         text.replace("    flowIndex 0.5;\n", "", 1),
+         "not a quantity"),
+    ]
+    for what, txt, needle in probes:
+        p = os.path.join(case_dir, "probe.dict")
+        open(p, "w").write(txt)
+        rr = subprocess.run([exe, p], capture_output=True, text=True)
+        os.remove(p)
+        ok = rr.returncode != 0 and needle in rr.stdout + rr.stderr
+        print(f"{'ok:  ' if ok else 'FAIL:'} rejecting {what}: non-zero "
+              f"exit naming the reason ('{needle}')")
+        if not ok:
+            fails.append(f"rejection: {what}")
 
 else:
     raise SystemExit(f"unknown mode {mode}")

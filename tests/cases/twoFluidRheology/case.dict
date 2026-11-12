@@ -1,0 +1,71 @@
+// 5.75 / A5 (increment 1): the two-fluid distributed row takes a liquid
+// power-law rheology. The mixture wall stress becomes
+//
+//   tau_w = alpha K' gamma^n + (1 - alpha) muG gamma,  gamma = 8 vm/d,
+//   K' = K ((3n+1)/4n)^n                                 (Rabinowitsch)
+//
+// and the apparent mixture viscosity tau_w/gamma drives the same Churchill
+// blend, whose laminar member f = 64/Re reads back exactly (4 dx/d) tau_w.
+//
+// THE ARM: horizontal, Wallis closure with us = 0 (homogeneous) and imposed
+// rates vsl 0.04 / vsg 0.01, so the steady holdup is the flux identity
+// alpha* = vsl/vm = 0.8 and vm = 0.05 exactly -- every quantity the wall
+// law needs is a case constant. gamma = 8*0.05/0.02 = 20 1/s,
+// K' = 0.15*1.25^0.5 = 0.1677051, tau_w = 0.8*0.75 + 0.2*1e-4*20
+// = 0.6004 Pa, dp = (4L/d) tau_w = 400*0.6004 = 240.16 Pa.
+// mu_eff = 0.03002 -> Re = 804*0.001/0.03002 = 26.8: deep laminar, the
+// Churchill turbulent term is below 1e-12 relative.
+// endTime 600: the initial holdup washes out as a sharp front at vm
+// (40 s to traverse) and its numerical-diffusion wake needs a few hundred
+// more seconds to die -- at t = 600 the field is alpha = 0.8 in every cell
+// to the last printed digit and dp lands on the closed form exactly.
+//
+// siblings (same geometry/fluid, checker runs them itself):
+//   case_newt.dict  no rheology keys      -- the undeclared twin
+//   case_n1.dict    flowIndex 1, K = muL  -- declared-Newtonian identity
+//   case_liq.dict   vsg 0 (alpha* = 1)    -- pure liquid: the wall stress is
+//                    K' gamma^n, the exact Metzner-Reed pipe law
+// A yield stress is refused loudly (see the loader), its own increment.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-4;
+    flowIndex 0.5;
+    consistency 0.15;
+}
+
+pipe
+{
+    length 2;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 40;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.04; vsg 0.01; waterFraction 0; }
+    outlet { type fixedPressure; p 1.0e5; }
+}
+
+time
+{
+    dt 0.1;
+    endTime 600;
+    reportEvery 100;
+}

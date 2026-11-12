@@ -4118,6 +4118,27 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：内核 ~130 行 + 1 case 文件 + 1 checker + 1 条 `add_test`，18 判据。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.74 凝胶强度与亚阈值蠕变第一次进瞬态行（A2）：静止阈值从常数变成**增广的钟** `tau0 + tau_g (1 - e^{-t_rest/t_g})`，静止支从 `Q = 0` 变成**可声明的蠕变线**——「静止 N 小时后重启要多大压差」从此是 case 的可观测，不是口号
+
+**这一格从哪来**：gap_analysis 编为 **A2**，估 1.5 增量（瞬态内核 + 新本构）。实测约 1（内核 ~70 行：`holdsStatic` 增广 + 蠕变支 + 凝胶钟 + 五条拒收 + 三个 loader 键 + `Transient.h` 七个字段；声明面三个可选键）。
+
+**声明面与解析核心**：管块三个可选键 **`gelStrength`**（Pa，τ_g∞）、**`gelTime`**（s，t_g）、**`creepRate`**（1/s，γ̇_c）——全部只对已声明 `yieldStress` 的管有意义，零声明零行为变化。
+1. **凝胶强度（触变不对称）**：静止阈值从 5.49 的常数 `4 tau0 L/d` 变成 `4 (tau0 + tau_g (1 - e^{-t_rest/t_g})) L/d`，其中**凝胶钟 `t_rest` 只在静止期走**——`commitStep` 里 `t_rest = held ? t_rest + dt : 0`，一步流动就清零（重建慢、清钟快，这就是触变不对称的行级陈述）。「静止 N 小时重启压差」= 阈值的 N 小时值，OLGA restart-pressure 量的直接对应物；
+2. **亚阈值蠕变（双黏度正则化，Bercovier–Engelman）**：held 支从唯一的 `Q = 0` 变成两支——声明 `creepRate` 的管答**强迫值** `q = pi d^4 drive / (128 mu_eff L)`，`mu_eff = mu + tau0/gamma_dot_c`，built on **闩锁的 drive**（与 `Q = 0` 同一形状：`J[k][k] = 1`、`r[k] = 0`，不是活定律）；γ̇_c → 0 退回 5.49 刚性 `Q = 0`，γ̇_c → ∞ 退回无阈值 Poiseuille。crossing 管即使声明蠕变也停在 `Q = 0`（先停下，从下一层的闩锁进蠕变支）；rest 见证取 `(qPrev == 0 || wasHeld)`，所以蠕变管（qPrev ≠ 0 但在静止）留在支上；
+3. **开路后的墙还是 5.46 的 Buckingham 律**：动壁支不新增任何代数——`frictionDp` 照旧走 `pipeFrictionPa`，静止阈值与动壁律的 `q → 0` 极限是同一个数。
+
+**case 与判据**：`tests/cases/transientGelCreep`（五个独立源腔 V = 0.1、B = 1e8，各挂恒定源向 0 Pa 池供液；held 期腔压恰好 **102.5 Pa/步**——速率取 2.05e-7 非整值，让台阶永远踩不到阈值的逐位边界）。checker `check_transient_gel_creep.py`（CTest `verify.transientGelCreep`，Test #90），**19 判据 0 失败**：
+* **开路层是整数、可预测**：Plain 在第 **60** 层（t = 30 s）开路，Gel 在第 **82** 层——checker 用与内核相同的闩锁递推（drive_n = 102.5(n−1) 对 thr(0.5(n−1))）预测，kernel 落在**恰好**那一层；Gel 前一步 drive 8200 ≤ thr(40 s) = 8202.7（仍 held，余量 2.7 Pa 也被闭式锁定）、开路步 8302.5 > thr(40.5 s) = 8220.6——**墙按闭式多扛了 2220.6 Pa 的重建**；
+* **凝胶延迟 = 重启压差的可观测面**：Gel 比 Plain **晚 22 层（11 s）**——固定节点压下凝胶只影响闩锁决策，延迟本身就是「静止 N 小时重启压差」的日历陈述，不是拟合数；
+* **蠕变闭式逐步成立**：Creep/CreepHi 两臂 600 步 × 2，`q = pi d^4 p_latched/(128 x 80.1 x L)` 最坏相对误差 **6.0e-12**（强迫行就是那条线）；源高 1.25 倍的 CreepHi 逐层 **q 恰 1.25 倍**（最坏偏差 9.1e-12，蠕变支线性于 drive）；平衡腔压 src/g = 5226.8 / 6533.5 Pa 精确落位；
+* **不开的墙还是 5.49**：Held 臂（tau0 = 40，thr = 80000）601 样本全程 `Q = 0` + hold 旗，腔压纯斜坡到 61500 = 102.5 x 600——61500 < 80000 是它不开的算术原因；
+* **开路的墙停在 5.46**：Plain/Gel 在 t ≥ 250 落到 Q = src、p_up = **6142.6706 Pa** 到 1e-9——Buckingham 根 tw* = 3.0713353 Pa（注意这不是牛顿泊肃叶的 6.5 Pa：动壁律趋于阈值但从不低于它）；
+* **五条拒收**大声点名：负 gelStrength、gelStrength 无正 gelTime、gelStrength 无 yieldStress（"no static wall to strengthen"）、负 creepRate、creepRate 无 yieldStress（"no held branch to regularise"）。
+
+**本增量的边界**：① 凝胶/蠕变只进**瞬态行**——稳态管网不认识这三个键（屈服 locus 本来就是稳态律的参数，不随日历走）；② 蠕变是双黏度**正则化**，不是真 Bingham 蠕变律（γ̇_c 是数值参数，不是材料常数——它的两个极限都退回已知行，这恰是判据锁住的）；③ 凝胶钟只按管记，无剪切历史谱（单状态变量，非结构化触变模型如 Houska 不在本增量）；④ transient loader 对 `dInner` 的拒收（5.73）与凝胶/蠕变互不干扰，环空管在瞬态行依旧被拒；⑤ 零声明位不变的见证是整个既有套件：5.49 的全部 case 逐位不动。
+
+**成本**：内核 ~70 行 + 1 case 文件 + 1 checker + 1 条 `add_test`，19 判据。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

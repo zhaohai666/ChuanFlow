@@ -1313,6 +1313,29 @@ python3 tests/check_steady_annulus.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/steadyAnnulus/case.dict"
 
+
+# 凝胶强度 + 亚阈值蠕变（5.74 / A2）：管块可选键 gelStrength / gelTime /
+# creepRate，只对已声明 yieldStress 的管有意义。静止阈值从常数变成只在
+# 静止期走的钟：4 (tau0 + tau_g (1 - exp(-t_rest/t_g))) L/d，commitStep
+# 累积 tRest、一步流动清零（触变不对称）。held 支多一支可声明的蠕变
+# 强迫值 q = pi d^4 drive / (128 mu_eff L)（mu_eff = mu + tau0/gamma_dot_c，
+# 与 Q = 0 同一行形状，built on 闩锁的 drive）；crossing 管停在 Q = 0、
+# 从下一层闩锁进蠕变支。开路后的墙还是 5.46 的 Buckingham 律。
+# 判据（19 条）：五臂源腔案（held 期 102.5 Pa/步的纯斜坡）里 Plain 第 60 层、
+# Gel 第 82 层开路——checker 用与内核相同的闩锁递推预测整数层；Gel 晚
+# 22 层（11 s）= 重启压差的日历可观测（前一步 8200 <= thr(40) = 8202.7
+# 也被闭式锁住）；蠕变两臂 600 步逐层闭式 6.0e-12、线性 1.25 倍
+# 9.1e-12；不开的墙（thr 80000 vs 可达 61500）全程 Q = 0；开路的墙
+# 停在 Buckingham 根 dp* = 6142.6706 Pa（不是牛顿的 6.5 Pa）；五条
+# 拒收大声点名。零声明 = 5.49 逐位不变（全量回归为证）。
+# 注意：固定节点压下凝胶只影响闩锁决策——可观测面是"源注入抬压 ->
+# 开路层延迟"，不是某个稳态压差；速率取非整值（2.05e-7）让台阶踩不到
+# 阈值的逐位边界。
+./build/src/1d/apps/chflow-1d-transient tests/cases/transientGelCreep/case.dict
+python3 tests/check_transient_gel_creep.py \
+    "$PWD/build/src/1d/apps/chflow-1d-transient" \
+    "$PWD/tests/cases/transientGelCreep/case.dict"
+
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
 # （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增
 # yieldedTransitionOf（network.cpp:413）+ PipeFlowResult::transition，solvePipeFlow 逐管填一次（:501），

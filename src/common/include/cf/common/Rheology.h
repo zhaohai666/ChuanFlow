@@ -59,4 +59,33 @@ inline double apparentViscosityPaS(const Rheology& rheology, double gdot,
     return mu;
 }
 
+/// The same law priced on the Metzner-Reed WALL rate of a circular pipe:
+/// the wall stress of a power-law fluid is K' gdot^n with
+///     K' = K ((3n+1)/(4n))^n               (Rabinowitsch's integrated
+///                                         velocity profile),
+/// not K gdot^n -- the textbook consistency under-prices a shear-thinning
+/// fluid's wall stress by exactly that factor. Folding K' into the
+/// consistency makes the apparent viscosity mu_app = tau_w/gdot read back
+/// the exact single-phase laminar pipe law (5.46/5.75), which is the
+/// anchor the black-oil and PVT marches use for their liquid phase.
+///
+/// A yield stress adds Papanastasiou's regularised share (finite at
+/// gdot -> 0, no dead branch in these correlation chains); with only a
+/// yield stress and no index, muNewtonian is the plastic viscosity. Zero
+/// declaration returns muNewtonian bit for bit -- the whole standing
+/// black-oil/PVT suite is that witness.
+inline double wallRateApparentViscosityPaS(const Rheology& rheology,
+                                           double gdot,
+                                           double muNewtonian)
+{
+    if (rheology.isNewtonian()) return muNewtonian;
+    Rheology mr = rheology;
+    if (mr.flowIndex > 0)
+    {
+        const double n = mr.flowIndex;
+        mr.consistency *= std::pow((3.0 * n + 1.0) / (4.0 * n), n);
+    }
+    return apparentViscosityPaS(mr, gdot, muNewtonian, 1e-6, 100.0);
+}
+
 } // namespace cf

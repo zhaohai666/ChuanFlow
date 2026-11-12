@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cf/pvt/BlackOil.h"
+#include "cf/common/Rheology.h"
 
 namespace cf
 {
@@ -35,6 +36,13 @@ struct BeggsBrillIn
     double diameter = 0;     // m
     double roughness = 0;    // m
     double angleDeg = 0;     // from horizontal, positive = uphill
+    // 5.76 (A5 increment 2): the LIQUID phase's generalized-Newtonian law.
+    // Only the liquid's share of the no-slip mixture viscosity is repriced
+    // (on the mixture wall rate gdot = 8 vm / D, with the Rabinowitsch K'),
+    // leaving the published holdup, flow-pattern and inclination
+    // correlations -- none of which reads a viscosity -- exactly as they
+    // are. The default is the undeclared fluid, bit for bit.
+    Rheology liquidRheology;
 };
 
 struct BeggsBrillOut
@@ -76,6 +84,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        double qoStd, double pInPa,
                                        double length, double diameter,
                                        double roughness, double sinTheta,
-                                       int segments = 24);
+                                       int segments = 24,
+                                       const Rheology& liquidRheology = {});
 
 } // namespace cf

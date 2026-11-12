@@ -101,7 +101,15 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
 
     const double rhoM = in.rhoL * lambda + in.rhoG * (1.0 - lambda);
     const double rhoS = in.rhoL * hl + in.rhoG * (1.0 - hl);
-    const double muM = in.muL * lambda + in.muG * (1.0 - lambda);
+    // 5.76 (A5 increment 2): the liquid phase's apparent viscosity priced
+    // on the mixture wall rate. The same lambda (no-slip) weighting the
+    // correlation has always used is kept, and nothing else in the
+    // holdup / flow-pattern / inclination correlations reads a viscosity,
+    // so a declaration moves the friction term and only the friction term.
+    // Zero declaration returns in.muL bit for bit.
+    const double muL = wallRateApparentViscosityPaS(
+        in.liquidRheology, 8.0 * vm / in.diameter, in.muL);
+    const double muM = muL * lambda + in.muG * (1.0 - lambda);
     const double re = rhoM * vm * in.diameter / muM;
     const double fNs = pvt::colebrookDarcyFriction(re, in.roughness / in.diameter);
     out.fNs = fNs;
@@ -135,7 +143,8 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        double qoStd, double pInPa,
                                        double length, double diameter,
                                        double roughness, double sinTheta,
-                                       int segments)
+                                       int segments,
+                                       const Rheology& liquidRheology)
 {
     BeggsBrillMarchOut out;
     const double pFloor = std::max(0.02 * pInPa, 1000.0);
@@ -174,6 +183,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
         in.diameter = diameter;
         in.roughness = roughness;
         in.angleDeg = angleDeg;
+        in.liquidRheology = liquidRheology;
 
         BeggsBrillOut g;
         if (vsl + vsg > 1e-9)

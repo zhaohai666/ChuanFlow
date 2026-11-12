@@ -1,0 +1,86 @@
+// 5.76 / A5 increment 2 -- the black-oil row's constitutive decision.
+//
+// A Beggs-Brill pipe used to refuse flowIndex/consistency/yieldStress. Now
+// the LIQUID share of the published no-slip mixture viscosity is repriced on
+// the mixture wall rate gdot = 8 vm / D, with the Rabinowitsch K', before it
+// enters the same Colebrook call:
+//
+//     muM = muL_app(lambda) + muG (1 - lambda),
+//     muL_app = K' gdot^(n-1) + tau_0 (1 - exp(-100 gdot)) / gdot.
+//
+// The published holdup, flow-pattern and inclination correlations read NO
+// viscosity, so a declaration can move the friction term and nothing else;
+// zero declaration returns blackOilLiquid()'s muL bit for bit (the standing
+// steadyNetworkMultiphase suite is that witness). A yield stress is a finite
+// Papanastasiou share here, not the transient row's static latch (5.49).
+//
+// The case is a DEAD OIL (gor 0, waterCut 0), HORIZONTAL line: Rs = 0, pb = 0,
+// free gas = 0, so lambda = HL = 1, exp(S) = 1, Ek = 0, elevation = 0 and the
+// gas correlations drop out entirely. In the laminar branch the mixture
+// density cancels, leaving the exact gradient
+//
+//     dp/ds = 32 muM vm / D^2 = (4/D) [ K' gdot^n + tau_0 (1-e^-100gdot) ],
+//
+// i.e. the same single-phase Metzner-Reed wall law the unit anchor asserts
+// for beggsBrillDpDs. The only pressure dependence left is Bo(p) in the
+// in-situ velocity vm = q Bo(p)/A; over the 5000 Pa drop of this case that
+// is a 1.8e-5 relative effect, which the checker accounts for by re-marching
+// the 24 segments rather than by treating vm as a constant.
+//
+// Both ends are fixed, so tau_w = dp D/(4L) = 5000*0.02/(4*200) = 0.125 Pa
+// is geometric. With muL = 3.1324996588723703e-3 Pa.s from the black-oil
+// correlations at 340 K / 850 kg.m-3 / gamma_g 0.75:
+//
+//     Newt    gdot ~ 39.9   (Re ~ 518)
+//     PowN1   flowIndex 1, K = muL   -> the identical number
+//     Thin05  K' = 0.05             -> gdot ~ 6.25
+//     Yield   tau_0 = 0.05          -> gdot ~ 23.9
+//     HB      both                  -> gdot ~ 2.25
+//
+// All five stay below Re 2040, so 64/Re is the exact laminar member. The
+// checker re-derives Bo(p), rhoOil(p) and muL from the dictionary fluid,
+// re-marches each pipe at the reported stock-tank rate and asserts the
+// closure, the reported outlet velocity, the inertness of HL/regime/m/Q,
+// the declared-Newtonian identity and the four parse-time refusals.
+//
+// verified by tests/check_steady_blackoil_rheology.py
+// (ctest verify.steadyBlackOilRheology).
+
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.75;
+        oilDensity     850;
+        gor            0;
+        waterCut       0;
+        temperature    340;
+        surfaceTension 0.025;
+    }
+}
+
+nodes
+{
+    A { pressure 1.005e6; }  // dp = 5000 Pa across every pipe
+    B { pressure 1.0e6;   }
+}
+
+pipes
+{
+    Newt   { from A; to B; length 200; diameter 0.02; }
+
+    PowN1  { from A; to B; length 200; diameter 0.02;
+             flowIndex 1; consistency 0.0031324996588723703; }
+
+    Thin05 { from A; to B; length 200; diameter 0.02;
+             flowIndex 0.5; consistency 0.044721359549995794; }
+
+    Yield  { from A; to B; length 200; diameter 0.02;
+             yieldStress 0.05; }
+
+    HB     { from A; to B; length 200; diameter 0.02;
+             flowIndex 0.5; consistency 0.044721359549995794;
+             yieldStress 0.05; }
+}
+
+solve { maxIter 100; tol 1e-10; }

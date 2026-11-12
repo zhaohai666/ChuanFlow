@@ -960,7 +960,8 @@ namespace
 /// the floor at the upper bracket.
 double twoPhaseRateForDrop(const NetworkPipe& pipe,
                            const pvt::BlackOilFluid& fluid, double pUp,
-                           double pLow, double sinFlow, bool& choked)
+                           double pLow, double sinFlow, bool& choked,
+                           const Rheology& liquidRheology)
 {
     choked = false;
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
@@ -969,7 +970,7 @@ double twoPhaseRateForDrop(const NetworkPipe& pipe,
     {
         const BeggsBrillMarchOut m = marchBeggsBrillPipe(
             fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness,
-            sinFlow, 24);
+            sinFlow, 24, liquidRheology);
         // choked marches return the floor shortfall: continuous with the
         // unchoked branch (there pOutlet -> pFloor) and correctly scaled
         // for the secant, unlike a fixed sentinel
@@ -1059,10 +1060,18 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
         (forward ? 1.0 : -1.0) * pipe.elevation / pipe.length;
 
     bool choked = false;
-    const double q = twoPhaseRateForDrop(pipe, fluid, pUp, pLow, sinFlow, choked);
+    // 5.76 (A5 increment 2): the case's liquid rheology is the one the
+    // black-oil march prices on the mixture wall rate. The three
+    // wall-law fields stay on the pipe (no new grammar); every consumer
+    // in this function sees the same declaration.
+    const Rheology liquidRheology{
+        pipe.flowIndex, pipe.consistency, pipe.yieldStress};
+    const double q = twoPhaseRateForDrop(pipe, fluid, pUp, pLow, sinFlow,
+                                         choked, liquidRheology);
 
     const BeggsBrillMarchOut m = marchBeggsBrillPipe(
-        fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness, sinFlow, 24);
+        fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness, sinFlow,
+        24, liquidRheology);
     out.flowRate = forward ? q : -q;
     out.velocity = m.vmOutlet * (forward ? 1.0 : -1.0);
     out.holdup = m.holdupOutlet;
@@ -1083,7 +1092,8 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     {
         bool ch2 = false;
         const double qDeep = twoPhaseRateForDrop(
-            pipe, fluid, pUp, std::max(pLow - h, 1.0), sinFlow, ch2);
+            pipe, fluid, pUp, std::max(pLow - h, 1.0), sinFlow, ch2,
+            liquidRheology);
         c = (qDeep - q) / h;
     }
     if (!(c > 0.0))
@@ -1093,14 +1103,16 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
         // residual downhill
         const BeggsBrillMarchOut dead =
             marchBeggsBrillPipe(fluid, 0.0, pUp, pipe.length, pipe.diameter,
-                                pipe.roughness, sinFlow, 24);
+                                pipe.roughness, sinFlow, 24,
+                                liquidRheology);
         const double deficit = pLow - dead.pOutlet; // missing pressure
         if (deficit > 0.0)
         {
             bool ch2 = false;
             const double probeLow = std::max(dead.pOutlet - 0.01 * pUp, 1.0);
             const double qProbe = twoPhaseRateForDrop(
-                pipe, fluid, pUp, probeLow, sinFlow, ch2);
+                pipe, fluid, pUp, probeLow, sinFlow, ch2,
+                liquidRheology);
             c = qProbe / std::max(pLow - probeLow, 1.0);
         }
         if (!(c > 0.0)) c = 1e-6; // keep the network Jacobian nonsingular
@@ -1151,8 +1163,14 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
     for (int i = 0; i < nSeg; ++i)
     {
         const double rho = fluid.density(p);
-        const double mu = fluid.viscosity(p);
         const double v = massRate / (rho * area);
+        // 5.76 (A5 increment 2): the PVT table supplies the pressure-
+        // dependent Newtonian baseline; a declared rheology reprices it on
+        // this segment's wall rate. No declaration returns the table value
+        // bit for bit (the whole PVT suite is that witness).
+        const double mu = wallRateApparentViscosityPaS(
+            Rheology{pipe.flowIndex, pipe.consistency, pipe.yieldStress},
+            8.0 * std::abs(v) / pipe.diameter, fluid.viscosity(p));
         const double re = rho * v * pipe.diameter / mu;
         const double f = churchillFriction(re, pipe.roughness / pipe.diameter);
         m.velocity = v;
@@ -1404,10 +1422,11 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         if (p.yieldStress < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative yield"
                     " stress (0 means no threshold)");
-        if (p.yieldStress > 0 && (net.hasBlackOil || net.hasPvtFluid))
-            cfFatal("steadyNetwork: pipe '" + name + "' carries a yield stress,"
-                    " which only the constant-property single-phase laminar"
-                    " law computes");
+        // 5.76 (A5 increment 2): a yield stress is now PRICED in the
+        // black-oil / PVT marches as the liquid's regularised apparent
+        // viscosity (Papanastasiou, no dead branch in a correlation chain).
+        // It is no longer refused; the transient row's static latch (5.49)
+        // is a different mechanism and stays there.
         // A coupled edge MAY declare a yield stress: it describes the fluid in
         // its partner region, not a threshold this network's row holds. The
         // declaration is forwarded to the 3D block below, after every check,
@@ -1420,10 +1439,14 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             cfFatal("steadyNetwork: pipe '" + name + "' declares a flow index"
                     " without a positive consistency: at n != 1 the fluid's mu"
                     " is not the same quantity as K (Pa.s^n)");
-        if (p.flowIndex > 0 && (net.hasBlackOil || net.hasPvtFluid))
-            cfFatal("steadyNetwork: pipe '" + name + "' carries a rheology,"
-                    " which only the constant-property single-phase law"
-                    " computes");
+        if (p.flowIndex == 0 && p.consistency > 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' declares a consistency"
+                    " without a flowIndex: without n the consistency is not"
+                    " a quantity the wall law reads");
+        // 5.76 (A5 increment 2): a rheology now reprices the LIQUID share of
+        // the two-phase / PVT march's viscosity on the mixture wall rate;
+        // the published holdup and flow-pattern correlations do not read a
+        // viscosity and stay exactly as they were.
         // Same for `flowIndex`/`consistency`: allowed on a coupled edge, but
         // only as the partner region's constitutive law.
         if (p.valveK < 0)

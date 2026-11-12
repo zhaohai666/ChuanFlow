@@ -227,6 +227,78 @@ int main()
         CHECK(gas.holdup == 0.0 && gas.regime == 3, "pure gas: zero holdup");
     }
 
+    // ---- 5.76 / A5 increment 2: the liquid's generalized-Newtonian law
+    //      reprices ONLY the viscosity share of the Beggs-Brill friction.
+    //      Pure liquid (lambda = HL = 1, S = 0, Ek = 0) makes the gradient
+    //      an exact algebraic identity: dp/ds = (4/D) tau_w with
+    //      tau_w = K' gdot^n + tau_0 (1 - exp(-m gdot)), gdot = 8 vm / D,
+    //      K' = K ((3n+1)/(4n))^n. Holdup, flow pattern and inclination
+    //      correlations read no viscosity, so they cannot move. ----
+    {
+        BeggsBrillIn in;
+        in.rhoL = 1000.0;
+        in.rhoG = 2.0;
+        in.muL = 1e-3;
+        in.muG = 1e-5;
+        in.sigma = 0.07;
+        in.vsl = 0.5;
+        in.vsg = 0.0;
+        in.pPa = 5.0e6;
+        in.diameter = 0.1;
+        in.roughness = 0.0;
+        in.angleDeg = 0.0;
+        const double D = in.diameter;
+        const double gdot = 8.0 * in.vsl / D;       // 40 1/s
+        const double n = 0.5;
+        const double K = 2.8284271247461903;        // sqrt(8)
+        const double Kp = K * std::pow((3.0 * n + 1.0) / (4.0 * n), n);
+        const double tauPow = Kp * std::pow(gdot, n);  // 20 Pa exactly
+        const double reNewton = in.rhoL * in.vsl * D / in.muL;
+        const double dwNewton = pvt::colebrookDarcyFriction(reNewton, 0.0)
+                              * in.rhoL * in.vsl * in.vsl / (2.0 * D);
+
+        const BeggsBrillOut undeclared = beggsBrillDpDs(in);
+        CHECK(relNear(undeclared.dpPerMeter, dwNewton, 1e-12),
+              "5.76: undeclared BB liquid keeps the published DW friction");
+
+        in.liquidRheology = Rheology{1.0, in.muL, 0.0};
+        const BeggsBrillOut declaredNewton = beggsBrillDpDs(in);
+        CHECK(declaredNewton.dpPerMeter == undeclared.dpPerMeter,
+              "5.76: declared-but-Newtonian liquid is bit-identical to the"
+              " undeclared one");
+
+        in.liquidRheology = Rheology{n, K, 0.0};
+        const BeggsBrillOut pow = beggsBrillDpDs(in);
+        CHECK(relNear(pow.dpPerMeter, 4.0 / D * tauPow, 1e-12),
+              "5.76: power-law BB gradient is (4/D) K' gdot^n exactly"
+              " (Rabinowitsch K', not the textbook K)");
+        CHECK(pow.holdup == undeclared.holdup
+              && pow.regime == undeclared.regime
+              && pow.fTp / pow.fNs == undeclared.fTp / undeclared.fNs,
+              "5.76: a viscosity declaration cannot move holdup, flow"
+              " pattern or the two-phase multiplier exp(S)");
+
+        const double tau0 = 2.0;
+        in.liquidRheology = Rheology{0.0, 0.0, tau0};
+        const BeggsBrillOut yielded = beggsBrillDpDs(in);
+        const double tauYield = in.muL * gdot
+                              + tau0 * (1.0 - std::exp(-100.0 * gdot));
+        CHECK(relNear(yielded.dpPerMeter, 4.0 / D * tauYield, 1e-12),
+              "5.76: Bingham share adds tau_0 (regularised, no dead branch"
+              " in a correlation chain) on the Newtonian baseline");
+
+        in.liquidRheology = Rheology{n, K, tau0};
+        const BeggsBrillOut hb = beggsBrillDpDs(in);
+        CHECK(relNear(hb.dpPerMeter,
+                      4.0 / D * (tauPow + tau0 * (1.0 - std::exp(-100.0 * gdot))),
+                      1e-12),
+              "5.76: Herschel-Bulkley wall stress is the SUM of the"
+              " power-law and yield shares, priced on one wall rate");
+        CHECK(hb.dpPerMeter > pow.dpPerMeter
+              && pow.dpPerMeter > yielded.dpPerMeter,
+              "5.76: the three laws are visibly distinct at one rate");
+    }
+
     // ---- march: dry oil (no free gas) keeps a liquid-full column ----
     {
         pvt::BlackOilFluid f;

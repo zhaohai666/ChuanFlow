@@ -1,0 +1,72 @@
+// 5.76 / A5 increment 2 -- the PVT row's constitutive decision.
+//
+// A tabulated-property pipe used to refuse flowIndex/consistency/yieldStress:
+// only the constant-property single-phase law knew a wall stress. Here the
+// PVT table is still the ONLY source of rho(p) and of the Newtonian mu(p),
+// but a declared rheology reprices that baseline on the segment's own wall
+// rate gdot = 8|v|/D before it enters the same Churchill call:
+//
+//     mu = K' gdot^(n-1) + tau_0 (1 - exp(-100 gdot)) / gdot,
+//     K' = K ((3n+1)/(4n))^n                     (Rabinowitsch),
+//
+// and with NO declaration mu is the table value bit for bit (the standing
+// steadyPvtColumn suite is that witness). rho(p), the mass rate and the
+// 24-segment Euler recursion are untouched.
+//
+// The table is FLAT (rho 1000, mu 0.01 at every pressure) so this case has
+// no compressibility drift: v = Q/A is one number in all 24 segments, both
+// ends are fixed, and therefore the laminar wall stress is purely geometric,
+//
+//     tau_w = dp D / (4 L) = 1000 * 0.02 / (4 * 20) = 0.25 Pa
+//
+// for EVERY pipe, Newtonian or not. That makes each pipe an independent
+// closed-form statement of the declared wall law inverted for the rate:
+//
+//     Newt    gdot = tau_w / mu                 = 25      Q = A gdot D/8
+//     PowN1   flowIndex 1, K = mu              -> the identical number
+//     Thin05  gdot = (tau_w / K')^2           = 6.25    (K' = 0.1)
+//     Yield   gdot = (tau_w - tau_0) / mu     = 20      (tau_0 = 0.05)
+//     HB      gdot = ((tau_w - tau_0)/K')^2   = 4
+//
+// Re stays between 3.2 and 125, so Churchill's laminar member f = 64/Re is
+// exact and dp = (4L/D) tau_w holds to solver precision; the turbulent half
+// of the blend is deliberately not exercised here.
+//
+// verified by tests/check_steady_pvt_rheology.py
+// (ctest verify.steadyPvtRheology).
+
+fluid
+{
+    pvt
+    {
+        pressure ( 1.0e5 1.0e6 1.0e7 );
+        rho      ( 1000  1000  1000  );
+        mu       ( 0.01  0.01  0.01  );
+    }
+}
+
+nodes
+{
+    A { pressure 2.01e5; }   // dp = 1000 Pa across every pipe
+    B { pressure 2.0e5;  }
+}
+
+pipes
+{
+    Newt   { from A; to B; length 20; diameter 0.02; }
+
+    PowN1  { from A; to B; length 20; diameter 0.02;
+             flowIndex 1; consistency 0.01; }
+
+    Thin05 { from A; to B; length 20; diameter 0.02;
+             flowIndex 0.5; consistency 0.08944271909999159; }
+
+    Yield  { from A; to B; length 20; diameter 0.02;
+             yieldStress 0.05; }
+
+    HB     { from A; to B; length 20; diameter 0.02;
+             flowIndex 0.5; consistency 0.08944271909999159;
+             yieldStress 0.05; }
+}
+
+solve { maxIter 100; tol 1e-11; }

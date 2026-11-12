@@ -426,6 +426,33 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyPvtColumn/case.dict)
 
+# 5.76 / A5 increment 2: the black-oil and PVT rows no longer refuse a wall
+# law. The LIQUID share of the BB no-slip mixture viscosity and the PVT
+# table's Newtonian baseline are repriced on the mixture wall rate
+# gdot = 8 vm / D with Rabinowitsch's K' and Papanastasiou's regularised
+# yield share; the published holdup, flow-pattern and inclination
+# correlations read no viscosity and stay exactly as they were. Zero
+# declaration is bit-identical, which the standing multiphase / PVT suites
+# witness. The PVT arm uses a FLAT table and two fixed nodes so tau_w =
+# dp d/(4L) is geometric and every one of five arms is an independent
+# closed-form inversion; the black-oil arm is dead oil and horizontal, so
+# lambda = HL = 1, exp(S) = 1, Ek = 0 and the checker re-marches the whole
+# 24-segment chain (the only drift left is Bo(p) in vm). Both checkers also
+# assert the declared-but-Newtonian identity, the K'-not-K rate, the four
+# parse-time refusals, and that a declaration moves no holdup or regime.
+add_test(
+    NAME verify.steadyPvtRheology
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_pvt_rheology.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyPvtRheology/case.dict)
+add_test(
+    NAME verify.steadyBlackOilRheology
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_blackoil_rheology.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyBlackOilRheology/case.dict)
+
 # partitioned steady 1D<->3D coupling: the same duct solved in 3D replaces the
 # analytic law of edge X, so the checker compares the interface against the
 # closed-form network (branch split, pressure chain), the block against planar

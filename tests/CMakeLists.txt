@@ -697,6 +697,23 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict)
 
+# A10 / 5.72: the double charge becomes a criterion. Same case as the split
+# factorial above, zero kernel changes -- what is new is the policy read off
+# the rowError identity: the bill is (M_row - M_dyn)*dq/dt with M_dyn a
+# property of the block (all three rungs read the same 2.1435e6 kg/m4), the
+# level-1 ladder is a per-rung bound (0.6635 / 0.5602 / 0.0046, strictly
+# ordered), the rung is bit-invisible where dq = 0 (levels 2..7 spread 0.0),
+# the collapse schedule is ONE settling level above the floor (level 2 =
+# 1.07e-2, the block's own dpInertia) and then the tolerance floor itself
+# (max 8.07e-4 < 1e-3 from level 3 on), and the free edge closes its identity
+# to 2.3e-13 Pa with a positive, capped bill.
+add_test(
+    NAME verify.transientRowErrorCriterion
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_row_error_criterion.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiTurbulentShapeAndInertiaSplit/case.dict)
+
 # the three degrees of freedom this chain kept separate, all three present at once:
 # where each edge's region inertia comes from (per arm AND per edge) crossed with
 # which operator negotiates the interface - four tables x two maps, eight arms on

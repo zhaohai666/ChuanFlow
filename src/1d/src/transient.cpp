@@ -38,10 +38,23 @@ double yieldThresholdPa(const NetworkPipe& geo)
 /// threshold, not with a rate tolerance, so the held set is decided by the same
 /// geometry-only number 5.46 put in front of the steady bracket, and a fluid
 /// held at rest under a super-threshold drive is a fluid that starts moving.
-bool holdsStatic(const NetworkPipe& geo, double qPrev, double drive)
+///
+/// 5.74 (A2): with a gel declaration the threshold is not constant -- a wall
+/// at rest for t_rest seconds holds `4 (tau0 + tau_g (1 - exp(-t_rest/t_g)))
+/// L / d`, the thixotropy asymmetry being that the clock only runs at rest
+/// (the caller clears it on the first moving step). Without a declaration
+/// tau_g = 0 and the number is 5.49's own, bit for bit.
+bool holdsStatic(const NetworkPipe& geo, double qPrev, double drive,
+                 double tRest, double gelStrength, double gelTime,
+                 bool wasHeld)
 {
     if (!(geo.yieldStress > 0)) return false;
-    return qPrev == 0 && std::abs(drive) <= yieldThresholdPa(geo);
+    const double tauG = gelStrength > 0
+                          ? gelStrength * (1.0 - std::exp(-tRest / gelTime))
+                          : 0.0;
+    return (qPrev == 0 || wasHeld)
+        && std::abs(drive)
+               <= 4.0 * (geo.yieldStress + tauG) * geo.length / geo.diameter;
 }
 
 /// The drop a pipe's momentum row is offered: the node pair minus the static
@@ -251,6 +264,26 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
             cfFatal("transient: pipe '" + pc.name + "' has a negative yield"
                     " stress: the threshold is the stress a static wall holds,"
                     " and a negative one would make the held set empty");
+        // 5.74 (A2): gel and creep are rest-branch physics of a yielded wall.
+        if (pc.gelStrength < 0)
+            cfFatal("transient: pipe '" + pc.name + "' has a negative"
+                    " gelStrength: gelation adds to the static wall stress");
+        if (pc.gelStrength > 0 && pc.gelTime <= 0)
+            cfFatal("transient: pipe '" + pc.name + "' declares gelStrength"
+                    " without a positive gelTime: the rebuild law is"
+                    " tau_g (1 - exp(-t_rest/t_g))");
+        if (pc.gelStrength > 0 && !(pc.yieldStress > 0))
+            cfFatal("transient: pipe '" + pc.name + "' declares gelStrength"
+                    " without a yieldStress: there is no static wall to"
+                    " strengthen");
+        if (pc.creepRate < 0)
+            cfFatal("transient: pipe '" + pc.name + "' has a negative"
+                    " creepRate: the bi-viscosity regularisation needs a"
+                    " positive gamma_dot_c");
+        if (pc.creepRate > 0 && !(pc.yieldStress > 0))
+            cfFatal("transient: pipe '" + pc.name + "' declares creepRate"
+                    " without a yieldStress: without a threshold there is"
+                    " no held branch to regularise");
         if (pc.coupledResistance < 0)
             cfFatal("transient: pipe '" + pc.name + "' has a negative coupled"
                     " resistance");
@@ -303,6 +336,11 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         d.kClosed = pc.valveKClosed;
         d.openStart = pc.valveOpenStart;
         d.openEnd = pc.valveOpenEnd;
+        // 5.74 (A2): the gel/creep declarations ride on the dynamic state.
+        d.gelStrength = pc.gelStrength;
+        d.gelTime = pc.gelTime;
+        d.creepRate = pc.creepRate;
+        d.creeps = pc.creepRate > 0;
         pipes_.push_back(d);
         pipeNames_.push_back(pc.name);
     }
@@ -382,7 +420,12 @@ double TransientNetwork::solveStep(double dt)
         PipeDyn& pd = pipes_[k];
         const double drive = drivePa(pd.geo, fluid_, pressureOf(pd.geo.from),
                                       pressureOf(pd.geo.to));
-        pd.held = holdsStatic(pd.geo, pd.qPrev, drive);
+        pd.driveLatch = drive;
+        // 5.74: a pipe on the creep branch stays on it (its qPrev is not 0,
+        // but it is at rest) -- the rest test takes the latched branch as the
+        // rest witness.
+        pd.held = holdsStatic(pd.geo, pd.qPrev, drive, pd.tRest,
+                              pd.gelStrength, pd.gelTime, pd.held);
     }
 
     for (int newton = 0; newton < gates::transientNewtonMaxIter; ++newton)
@@ -425,7 +468,27 @@ double TransientNetwork::solveStep(double dt)
                                && x[k] * pd.qPrev <= 0.0;
             if (pd.held || crossing)
             {
-                x[k] = 0;
+                // 5.74: the held row is Q = 0 unless the case declared a
+                // sub-threshold creep rate -- then the bi-viscosity branch
+                // answers with a very stiff Newtonian row,
+                //     q = pi d^4 drive / (128 mu_eff L),
+                // mu_eff = mu + tau0/gamma_dot_c, built on the LATCHED drive
+                // (a forced value like Q = 0, not a live law). The static
+                // wall supplies the threshold minus |drive|; continuity sees
+                // the creep rate instead of a sealed zero. A crossing pipe
+                // parks at Q = 0 even with creep declared: it stops, and
+                // joins the creep branch from the next step's latch.
+                if (pd.held && pd.creeps && !crossing)
+                {
+                    const double muEff = fluid_.mu
+                                       + pd.geo.yieldStress / pd.creepRate;
+                    x[k] = M_PI * std::pow(pd.geo.diameter, 4)
+                         * pd.driveLatch / (128.0 * muEff * pd.geo.length);
+                }
+                else
+                {
+                    x[k] = 0;
+                }
                 r[k] = 0;
                 J[k][k] = 1.0;
                 continue;
@@ -508,8 +571,14 @@ void TransientNetwork::commitStep()
 
     for (std::size_t k = 0; k < nP; ++k)
     {
-        pipes_[k].qPrev = x[k];
+        PipeDyn& pd = pipes_[k];
+        pd.qPrev = x[k];
         q_[k] = x[k];
+        // 5.74: the gel clock runs only at rest -- a step spent held (or
+        // creeping, which is the held branch) accumulates, a moving step
+        // clears it. Crossing pipes were moving: their clock is already 0.
+        if (pd.geo.yieldStress > 0)
+            pd.tRest = pd.held ? pd.tRest + dt : 0.0;
     }
     for (std::size_t i = 0; i < nN; ++i)
     {
@@ -929,6 +998,9 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
         p.consistency = pd.getScalarOr("consistency", 0.0);
         p.betaIn = pd.getScalarOr("betaIn", 1.0);
         p.betaOut = pd.getScalarOr("betaOut", 1.0);
+        p.gelStrength = pd.getScalarOr("gelStrength", 0.0);
+        p.gelTime = pd.getScalarOr("gelTime", 0.0);
+        p.creepRate = pd.getScalarOr("creepRate", 0.0);
         p.yieldStress = pd.getScalarOr("yieldStress", 0.0);
         if (pd.has("valveClose"))
         {

@@ -981,6 +981,21 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyAnnulus/case.dict)
 
+# 5.74 / A2 gel strength and sub-threshold creep in the transient row: the
+# gel arm opens exactly on the latch recursion's predicted layer (22 layers
+# after the plain twin -- the restart pressure as calendar), the creep arms
+# answer pi d^4 drive / (128 mu_eff L) at every step of the 600-step march
+# and stay linear at 1.25x, the never-opening wall stays 5.49's Q = 0, the
+# opened walls park on 5.46's Buckingham law, and the five declaration
+# scope violations are refused loudly. A zero declaration is the old row
+# bit for bit -- the standing suite is the witness.
+add_test(
+    NAME verify.transientGelCreep
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_gel_creep.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientGelCreep/case.dict)
+
 # 5.70 / A3 the momentum-flux factors betaIn/betaOut, declarable on a
 # non-coupled transient pipe: the row charges rho*(betaOut - betaIn)/A^2 *
 # q|q| -- the same account a coupled interface installs (5.43), now owned by

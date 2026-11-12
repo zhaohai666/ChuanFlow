@@ -86,6 +86,17 @@ struct TransientPipeConfig
     // carries no momentum flux to report.
     double betaIn = 1.0;       // shape factor of the upstream end profile
     double betaOut = 1.0;      // shape factor of the downstream end profile
+
+    // 5.74 (A2): gelation and sub-threshold creep on a yielded pipe. All
+    // three default to inert; without them the row is 5.49's rigid statement.
+    double gelStrength = 0.0;  // Pa, tau_g_inf: extra static wall stress built
+                               // up while the pipe rests (thixotropy asymmetry:
+                               // flow clears the gel clock instantly)
+    double gelTime = 0.0;      // s, the exponential rebuild constant t_g
+    double creepRate = 0.0;    // 1/s, gamma_dot_c of the bi-viscosity
+                               // regularisation: below the threshold the row
+                               // creeps with mu_eff = mu + tau0/gamma_dot_c
+                               // instead of holding Q = 0 exactly
 };
 
 struct TransientSource
@@ -268,6 +279,21 @@ private:
         // Latched at step entry from the committed state, so re-solving the same
         // step (the partitioned interface does that) cannot flip it mid-solve.
         bool held = false;
+        // 5.74 (A2): the gel clock. Advanced by dt on every step the pipe ends
+        // on the held/creep branch, cleared on the first moving step -- the
+        // thixotropy asymmetry (rebuild slow, breakdown instant). The held
+        // threshold is 4 (tau0 + tau_g_inf (1 - exp(-tRest/t_g))) L / d.
+        double tRest = 0;
+        // True when the case declared a sub-threshold creep rate: the held
+        // branch then reads q = pi d^4 drive / (128 mu_eff L) instead of Q = 0.
+        bool creeps = false;
+        // The gel/creep declarations, copied from the config so the latch and
+        // the held branch (both inside the step) can read them without the
+        // config round trip.
+        double gelStrength = 0, gelTime = 0, creepRate = 0;
+        // The drive latched at step entry: the creep row is a forced value
+        // like Q = 0, so it reads the latched drive, not the live iterate.
+        double driveLatch = 0;
         // valve schedule: K ramps geo.valveK -> kClosed over
         // [closeStart, closeEnd] and back over [openStart, openEnd];
         // negative start times disable the ramps

@@ -1,0 +1,89 @@
+# 5.74 / A2 亚阈值蠕变与凝胶强度第一次进瞬态行：
+#
+#   tau_static(t_rest) = tau0 + tau_g (1 - exp(-t_rest / t_g))
+#   held:  |drive| <= 4 tau_static(t_rest) L / d      (凝胶钟只在静止期走)
+#   creep: q = pi d^4 drive / (128 mu_eff L),
+#          mu_eff = mu + tau0/gamma_dot_c              (双黏度 Bercovier-Engelman)
+#
+# 场景：五个独立的上游腔室（volume 0.1, bulkModulus 1e8, 液位一半）各挂一台
+# 恒定源，向 0 Pa 固定池供液；腔室压强以
+#     dp/dt = (B/V) * (src - q) = 205 Pa/s        (held, q = 0)
+# 抬升，管在腔室压越过自家阈值的那一层开路。凝胶管的开路层因此**更晚**、
+# 需要的注入压**更高**——延迟本身就是重启压差。
+# 速率取 2.05e-7（非整值）是有意的：让 102.5 Pa/步的台阶永远踩不到阈值的
+# 逐位边界上，开路层的整数预测不受浮点噪声摆布。
+# 臂（d 0.04, L 20 => 4 tau0 L/d = 2000 tau0；conductance = pi d^4/(128 mu L)）：
+#   Plain   tau0 3                     thr = 6000 Pa 恒定，
+#                                      drive_n = 102.5 (n-1) > 6000 首次于 n = 60
+#   Gel     tau0 3, gel 2, t_g 50      thr(t_rest) = 6000 + 4000(1 - e^{-t_rest/50})，
+#                                      n-1 = 80: drive 8200 < thr 8202.7（仍 held），
+#                                      n-1 = 81: drive 8302.5 > thr 8220.4
+#                                      => 开路于 n = 82，比 Plain 晚 22 层 = 11 s
+#   Held    tau0 40                    thr = 80000 > 本案可达压强（600 步 * 102.5
+#                                      = 61500），恒 Q = 0（5.49 见证）
+#   Creep   tau0 40, creepRate 0.5     恒在蠕变支（drive ~ 5227 << 80000）：
+#                                      mu_eff = 0.1 + 40/0.5 = 80.1，
+#                                      q_n = pi d^4 p_{n-1} / (128 * 80.1 * L)
+#                                      = 3.9218e-11 * p_{n-1}，逐层闭式，
+#                                      平衡 p* = src/q 比 = 5226.8 Pa
+#   CreepHi 同 Creep，源高 1.25 倍（2.5625e-7）=> 线性 ODE 逐层 q 恰 1.25 倍，
+#                                      p* = 6533.5 Pa
+#
+# 开路后的平衡压差不是牛顿泊肃叶（6.5 Pa）：动壁律是 5.46 的 Buckingham 闭式，
+#     F(tw) = tw - (4/3) tau0 + tau0^4/(3 tw^3) = 32 mu Q / (pi d^3),
+# Q = src 反解 tw* = 3.0713352875 => dp* = 2000 tw* = 6142.670575 Pa。
+
+solver
+{
+    type transientNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.1;
+}
+
+time
+{
+    dt 0.5;
+    endTime 300;
+    reportEvery 1;
+}
+
+nodes
+{
+    A  { fixedPressure 0; }
+    B  { fixedPressure 0; }
+    C  { fixedPressure 0; }
+    D  { fixedPressure 0; }
+    E  { fixedPressure 0; }
+    F1 { volume 0.1; bulkModulus 1.0e8; pressure 0; liquidFraction 0.5; }
+    F2 { volume 0.1; bulkModulus 1.0e8; pressure 0; liquidFraction 0.5; }
+    F3 { volume 0.1; bulkModulus 1.0e8; pressure 0; liquidFraction 0.5; }
+    F4 { volume 0.1; bulkModulus 1.0e8; pressure 0; liquidFraction 0.5; }
+    F5 { volume 0.1; bulkModulus 1.0e8; pressure 0; liquidFraction 0.5; }
+}
+
+sources
+{
+    S1 { node F1; rate 2.05e-7; }
+    S2 { node F2; rate 2.05e-7; }
+    S3 { node F3; rate 2.05e-7; }
+    S4 { node F4; rate 2.05e-7; }
+    S5 { node F5; rate 2.5625e-7; }
+}
+
+pipes
+{
+    Plain   { from F1; to A; length 20; diameter 0.04; yieldStress 3;
+              initialFlow 0; }
+    Gel     { from F2; to B; length 20; diameter 0.04; yieldStress 3;
+              gelStrength 2; gelTime 50; initialFlow 0; }
+    Held    { from F3; to C; length 20; diameter 0.04; yieldStress 40;
+              initialFlow 0; }
+    Creep   { from F4; to D; length 20; diameter 0.04; yieldStress 40;
+              creepRate 0.5; initialFlow 0; }
+    CreepHi { from F5; to E; length 20; diameter 0.04; yieldStress 40;
+              creepRate 0.5; initialFlow 0; }
+}

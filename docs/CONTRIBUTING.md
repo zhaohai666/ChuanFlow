@@ -1242,6 +1242,36 @@ python3 tests/check_transient_beta_momentum.py \
     "$PWD/build/src/1d/apps/chflow-1d-transient" \
     "$PWD/tests/cases/transientBetaMomentum/case.dict"
 
+# 两条耦合边串联（5.71 / A9）：couple{ edges ( X1 X2 ); } 的两条边同时坐进
+# 串联位置（A -> X1 -> J1 自由 port -> X2 -> Snk，没有第三条分支）——5.32
+# 的两条边都在并联位置，此前每次都有一条被拓扑钉死、一条在谈判；这一角
+# 恰好相反：J1 的连续性是 q_X1 - q_X2 = 0，网络从头到尾只有一个速率，
+# 归属两张表还能动的是中间节点坐在哪。6 臂 = 四张逐边表 × GS +
+# bore/mixX2 × QN，零内核改动。判据的锋利处：
+#   1) 串联绑定：q_X1 == q_X2 逐位（6 臂 × 12 层 = 72 对）——网络没有
+#      两个速率可谈；
+#   2) 行可加：rowDrop_i == R_i*q + M_i*dq/dt 逐位 0，合并行（pA - pSnk）
+#      == rowDrop_1 + rowDrop_2 == (M1+M2)*dq/dt + (R1+R2)*q——阶梯的
+#      分子是两本账的裸和（并联案需要 m_i 权重还会过冲），可加性
+#      ≤ 8.5e-5 Pa；
+#   3) 惯量分配：恒定的惯性总额恰按 M1/(M1+M2) 分给两条行（1.1e-16），
+#      且移动的是中间节点（mixX2 的 J1 1737.9 < mixX1 2529.7）——
+#      归属改账不动速率；
+#   4) 斜率阶梯：行进处在弛豫的线性段（tau = MΣ/RΣ ≈ 0.52 s，12 层
+#      dt 5e-5 只走 0.12% 行程），四张表四条斜率严格反比于各自的 M 和
+#      （0.05%）——阶梯读作斜率而非指数 tau；
+#   5) QN 同 rung（斜率比 ≤ 1%）、worst 换手两臂都发生。
+# case 设计教训：drive 4.8e5 把 Q_inf 推出块 SIMPLE 60 扫稳定窗、爬升穿
+# 过渡 Re 让 kOmegaSST 块炸（continuity 1e55）→ 降 6.0e3；uRef 对
+# initialFlow 高度敏感（4.5e-5 -> 0.058 vs 6.5e-5 -> 3.52 第一趟即炸）；
+# τ = MΣ/RΣ 用真实湍流弦（RΣ = 3.2e7）不是种子 2.5e7——τ 误判会让
+# dt 选错量级、轨迹扫宽窗照样炸块。
+# 122 判据；checker 全程 10.80 s（ctest verify.transientCoupledMultiBothSeries）
+./build/src/1d/apps/chflow-coupled-1d3d-transient-multi tests/cases/transientCoupledMultiBothSeries/case.dict
+python3 tests/check_transient_coupled_multi_both_series.py \
+    "$PWD/build/src/1d/apps/chflow-coupled-1d3d-transient-multi" \
+    "$PWD/tests/cases/transientCoupledMultiBothSeries/case.dict"
+
 
 
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件

@@ -495,6 +495,23 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupledMultiphase/case.dict)
 
+# the partner block goes COMPRESSIBLE: detail{ compressible{ pRef; RsT; mu; } }
+# marches an isothermal ideal gas along the mesh's own cross-sections, so
+# rho=p/(RsT), the mass rate is conserved and p_in^2-p_out^2 is linear in q_in.
+# lossAt(q) is unchanged; qMag is the INLET volume rate and the outlet rate is
+# a result. A single-path network pins q for every derived arm; the checker
+# prices the printed state and all five stations against a dict-only closed
+# form, proves dp/q is nonlinear, that RsT cancels out of dp, that a top-level
+# (non-detail) declaration is a bit-identical zero-declaration twin, and eight
+# loud refusals (including a choked duct and the phases/non-Newtonian/RANS/
+# unsteady exclusions).
+add_test(
+    NAME verify.coupledCompressible
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_coupled_compressible.py
+        $<TARGET_FILE:chflow-coupled-1d3d>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupledCompressible/case.dict)
+
 # the same duct and the same network, put in motion: the interface is iterated
 # inside every time step, so the checker closes each step's momentum row against
 # the block's own drop, and regresses the ramp the two solvers produce together

@@ -103,6 +103,41 @@ private:
     scalar bodyDropPa_ = 0;
 };
 
+/// 5.79 / A8 increment 2: a COMPRESSIBLE partner region. ICoupledElement still
+/// hands it ONE volume rate, so `qMag` is defined at the INLET section; the
+/// isothermal ideal-gas EOS then fixes the density at every other station and
+/// the outlet volume rate is a RESULT, not an input. `pRef` is the absolute
+/// inlet pressure declared by the case: `lossAt(qMag)` carries no pressure, so
+/// the partner cannot read the network's node pressure (see 5.79 boundary 1).
+struct CompressibleConfig
+{
+    bool enabled = false;
+    scalar pRef = 0;   // Pa, absolute pressure at the inlet section
+    scalar RsT = 0;    // m2/s2, R_specific * T of the isothermal gas
+    scalar mu = 0;     // Pa.s; 0 -> the case's own fluid.mu
+};
+
+/// Read `compressible{ pRef; RsT; mu; }` from ONE detail{} dictionary.
+CompressibleConfig readCompressible(const Dictionary& detailDict);
+
+/// The along-duct isothermal march, station by station. `p2Slope` is the
+/// analytic d(p^2)/dx; a checker rebuilds it from the dict alone and compares
+/// every printed station against it, so the field cannot be a lookup table.
+struct CompressibleMeasure
+{
+    label sections = 0;
+    scalar length = 0;    // m, first-to-last CELL CENTRE span (5.78's anchor)
+    scalar height = 0;    // m, wall-to-wall spacing of the plane duct
+    scalar width = 0;     // m, the other transverse extent
+    scalar area = 0;      // m2, W*H
+    scalar pIn = 0, pOut = 0, dpPa = 0;
+    scalar rhoIn = 0, rhoOut = 0;
+    scalar qIn = 0, qOut = 0, massRate = 0;
+    scalar uIn = 0, uOut = 0;
+    scalar p2Slope = 0;   // Pa2/m
+    std::vector<scalar> xStation, pStation, rhoStation, qStation, uStation;
+};
+
 /// What an element's inlet carries beyond the number of cubic metres per second
 /// it was asked for: the shape the interface declared, that rate read back as
 /// the section integral of the condition the element actually got, the
@@ -350,7 +385,8 @@ public:
                 const std::string& inletShape = "flat",
                 const Rheology& rheology = Rheology{},
                 const GeneralizedNewtonianControls& gnCtl = {},
-                const PhaseConfig& phases = PhaseConfig{});
+                const PhaseConfig& phases = PhaseConfig{},
+                const CompressibleConfig& compressible = CompressibleConfig{});
 
     DetailBlock(const DetailBlock&) = delete;
     DetailBlock& operator=(const DetailBlock&) = delete;
@@ -394,6 +430,13 @@ public:
     }
     /// Null for every case that declares no phases (5.78).
     const PhaseField* phases() const { return phase_.get(); }
+    /// Empty (`enabled == false`) for every case that declares no
+    /// `compressible{}` (5.79).
+    const CompressibleMeasure& compressibleMeasure() const
+    {
+        return compressMeasure_;
+    }
+    bool compressible() const { return compressCfg_.enabled; }
 
     label lastSweeps() const override { return measure_.sweeps; }
     bool lastConverged() const override { return measure_.converged; }
@@ -443,6 +486,10 @@ private:
     void buildInletProfile();
     void applyBoundary(scalar qMag);
     void measure(const SimpleResult& res, scalar qMag);
+    /// 5.79: an isothermal gas duct marched along the mesh's own cross-
+    /// sections. Owns the whole `lossAt` answer, so neither SIMPLE nor
+    /// `applyBoundary` runs when `compressible{}` is declared.
+    void solveCompressibleDuct(scalar qMag);
 
     polyMesh mesh_;
     scalar nu_;
@@ -523,6 +570,13 @@ private:
     /// reference to them (it only reads the mesh geometry once).
     PhaseConfig phaseCfg_;
     std::unique_ptr<PhaseField> phase_;
+
+    /// 5.79: mutually exclusive with the phase field and with every other
+    /// owner of the block's density / viscosity, because the compressible
+    /// duct computes its own state station by station instead of solving the
+    /// constant-density FVM equations.
+    CompressibleConfig compressCfg_;
+    CompressibleMeasure compressMeasure_;
 };
 
 // ------------------------------------------------------------------

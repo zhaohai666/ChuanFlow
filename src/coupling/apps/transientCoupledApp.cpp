@@ -140,6 +140,7 @@ int main(int argc, char** argv)
             readGeneralizedNewtonianControls(caseDict);
         // 5.78: a two-phase partner block (absent in every older case).
         const PhaseConfig blockPhases = readPhases(dd);
+        const CompressibleConfig blockCompressible = readCompressible(dd);
         log::info("transient network+block: block has ", mesh.nCells(), " cells and ",
                   mesh.nPatches(), " patches; nu ", num(c.fluid.mu / c.fluid.rho),
                   "; dt ", num(tc.dt), " endTime ", num(tc.endTime),
@@ -154,7 +155,8 @@ int main(int argc, char** argv)
             // inherit seed 1's interface history
             DetailBlock block(mesh, c.fluid.mu / c.fluid.rho, c.fluid.rho, schemes,
                                blockCtl, probeMin, probeMax, blockTurb, "flat",
-                               blockRheology, gnCtl, blockPhases);
+                               blockRheology, gnCtl, blockPhases,
+                               blockCompressible);
 
             // and one fresh network: the agreed coefficient carries from step to
             // step, so a reused instance would start the series where the

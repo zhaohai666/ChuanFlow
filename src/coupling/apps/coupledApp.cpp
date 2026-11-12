@@ -141,6 +141,8 @@ int main(int argc, char** argv)
             readGeneralizedNewtonianControls(caseDict);
         // 5.78: a two-phase partner block. Absent in every older case.
         const PhaseConfig blockPhases = readPhases(dd);
+        // 5.79: a compressible gas duct. Absent in every older case.
+        const CompressibleConfig blockCompressible = readCompressible(dd);
         log::info("network+block: block has ", mesh.nCells(), " cells and ",
                   mesh.nPatches(), " patches; nu ", num(fluid.mu / fluid.rho),
                   "; turbulence ", blockTurb.model);
@@ -161,7 +163,8 @@ int main(int argc, char** argv)
             // inherit seed 1's interface history
             DetailBlock block(mesh, fluid.mu / fluid.rho, fluid.rho, schemes,
                                blockCtl, probeMin, probeMax, blockTurb, "flat",
-                               blockRheology, gnCtl, blockPhases);
+                               blockRheology, gnCtl, blockPhases,
+                               blockCompressible);
 
             // and one fresh network: the loop writes the converged coefficient
             // into the coupled pipe, so a reused instance would carry it as a
@@ -215,6 +218,43 @@ int main(int argc, char** argv)
                           " rhoMean ", num(ph->rhoMean()),
                           " muMean ", num(ph->muMean()),
                           " bodyDrop ", num(ph->bodyDropPa()));
+            // 5.79: the compressible partner reports its own state. Five
+            // stations are enough for a checker to rebuild p^2(x) from the
+            // dict alone without trusting the solver's own integral.
+            if (block.compressible())
+            {
+                const CompressibleMeasure& cm = block.compressibleMeasure();
+                log::info("block compressible seed ", s,
+                          ": pIn ", num(cm.pIn), " pOut ", num(cm.pOut),
+                          " dp ", num(cm.dpPa),
+                          " rhoIn ", num(cm.rhoIn),
+                          " rhoOut ", num(cm.rhoOut),
+                          " qIn ", num(cm.qIn), " qOut ", num(cm.qOut),
+                          " massRate ", num(cm.massRate),
+                          " uIn ", num(cm.uIn), " uOut ", num(cm.uOut),
+                          " p2Slope ", num(cm.p2Slope),
+                          " sections ", cm.sections,
+                          " length ", num(cm.length),
+                          " height ", num(cm.height),
+                          " width ", num(cm.width),
+                          " area ", num(cm.area));
+                const std::size_t n = cm.xStation.size();
+                if (n >= 2)
+                {
+                    const std::size_t idx[5] = {0, n / 4, n / 2,
+                                               (3 * n) / 4, n - 1};
+                    for (std::size_t j = 0; j < 5; ++j)
+                    {
+                        const std::size_t k = idx[j];
+                        log::info("block compressible station ", k,
+                                  ": x ", num(cm.xStation[k]),
+                                  " p ", num(cm.pStation[k]),
+                                  " rho ", num(cm.rhoStation[k]),
+                                  " q ", num(cm.qStation[k]),
+                                  " u ", num(cm.uStation[k]));
+                    }
+                }
+            }
             if (const GeneralizedNewtonianViscosity* gn =
                     block.generalizedNewtonian())
                 log::info("block fluid seed ", s, ": n ",

@@ -1,0 +1,98 @@
+// 5.79 / A8 increment 2: the 1D<->3D partner region is COMPRESSIBLE.
+//
+// A SINGLE-PATH steady network (Src -> A -> X 3D -> B -> Snk) injects a fixed
+// rate, so q_in is known exactly and dp(q) can be priced against an isothermal
+// ideal-gas closed form without any branch re-splitting (the 5.78 lesson).
+// The interface still hands the partner ONE volume rate: qMag is defined at
+// the INLET section, rho = p/(RsT) fixes the density at every other station,
+// and the outlet volume rate is a RESULT (fluxOut > fluxIn).
+//
+// detail{ compressible{ pRef; RsT; mu; } }:
+//   pRef = absolute pressure at the inlet section (Pa). lossAt(qMag) carries
+//          NO pressure, so this is a declaration of the case, not a reading
+//          of the network's node pressure -- see architecture.md 5.79 (1).
+//   RsT  = R_specific * T of the isothermal gas (m2/s2).
+//   mu   = optional dynamic viscosity; omitted -> the case's own fluid.mu.
+//
+// Plane Poiseuille friction + isothermal EOS + no axial inertia give
+//   p dp/dx = -12 mu mDot RsT/(W H^3),  mDot = rho_in q_in = p_in q_in/RsT
+//   => p_in^2 - p_out^2 = 24 mu L p_in q_in/(W H^3)
+// with L the first-to-last CELL CENTRE span (0.49 m on 50 x-cells), not the
+// bounding-box 0.5 m -- the same measurement anchor as 5.78.
+//
+// check_coupled_compressible.py derives every arm (including the undeclared
+// twin and the refusal probes) from THIS file into the system temp directory.
+fluid { rho 800; mu 0.1; }
+
+nodes {
+    Src  {};
+    J1   {};
+    J2   {};
+    Snk  { pressure 10000; }
+}
+
+sources {
+    feed { node Src; rate 2.4e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+    X  { from J1; to J2; length 0.5;   diameter 0.02;
+         coupledResistance 3.853e6; }
+    B  { from J2; to Snk; length 5.0;  diameter 0.1; }
+}
+
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edge X;
+    seeds ( 1.0e6 8.0e6 );
+    accelerate yes;
+    relax 1.0;
+    tolerance 1e-6;
+    maxOuterIterations 30;
+}
+
+detail {
+    block {
+        min   (0 0 0);
+        max   (0.5 0.02 0.02);
+        cells (50 20 1);
+
+        xmin  { name inlet;   type inlet;    }
+        xmax  { name outlet;  type outlet;   }
+        ymin  { name bottom;  type wall;     }
+        ymax  { name top;     type wall;     }
+        zmin  { name front;   type symmetry; }
+        zmax  { name back;    type symmetry; }
+    }
+
+    probe { min 0.12; max 0.49; }
+
+    schemes {
+        ddt       steady;
+        div       upwind;
+        laplacian corrected;
+        grad      corrected;
+    }
+
+    simple {
+        maxIterations 300;
+        continuityTol 1e-6;
+        pcorrTol      1e-5;
+        momentumTol   1e-5;
+        relaxU        0.9;
+        relaxP        0.03;
+        pRelaxStart   0.02;
+    }
+
+    // rho_in = pRef/RsT = 0.03333 kg/m3; a ~9% pressure drop along the duct
+    // makes rho_out/q_out visibly different from rho_in/q_in. pRef is chosen
+    // LOW on purpose: at 1e6 Pa the same rate would move the density by only
+    // 0.09% and an "ignore the EOS, use a constant rho" implementation could
+    // hide inside every tolerance.
+    compressible {
+        pRef 10000;
+        RsT  300000;
+    }
+}

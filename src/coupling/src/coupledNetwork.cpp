@@ -293,6 +293,28 @@ PhaseConfig readPhases(const Dictionary& detailDict)
     return cfg;
 }
 
+CompressibleConfig readCompressible(const Dictionary& detailDict)
+{
+    CompressibleConfig cfg;
+    if (!detailDict.has("compressible")) return cfg;
+    const Dictionary& cd = detailDict.getDict("compressible");
+    cfg.enabled = true;
+    cfg.pRef = cd.getScalarOr("pRef", 0.0);
+    cfg.RsT = cd.getScalarOr("RsT", 0.0);
+    // 0 means "not declared": solveCompressibleDuct substitutes rho*nu from
+    // the case's own fluid, so `compressible{}` never invents a viscosity.
+    cfg.mu = cd.getScalarOr("mu", 0.0);
+    if (!(cfg.pRef > 0) || !std::isfinite(cfg.pRef))
+        cfFatal("detailBlock: compressible pRef must be a finite positive"
+                " absolute pressure (Pa)");
+    if (!(cfg.RsT > 0) || !std::isfinite(cfg.RsT))
+        cfFatal("detailBlock: compressible RsT (R_specific*T) must be finite"
+                " and positive (m2/s2)");
+    if (cfg.mu < 0 || !std::isfinite(cfg.mu))
+        cfFatal("detailBlock: compressible mu cannot be negative or non-finite");
+    return cfg;
+}
+
 PhaseField::PhaseField(const polyMesh& mesh, int axis, int flowSign,
                        scalar rhoRef, scalar nuRef, const PhaseConfig& cfg)
 {
@@ -389,7 +411,8 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
                          const std::string& inletShape,
                          const Rheology& rheology,
                          const GeneralizedNewtonianControls& gnCtl,
-                         const PhaseConfig& phases)
+                         const PhaseConfig& phases,
+                         const CompressibleConfig& compressible)
     : mesh_(std::move(mesh)),
       nu_(nu),
       rho_(rho),
@@ -404,7 +427,8 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
       phi_(mesh_, "phi", 0.0),
       rheology_(rheology),
       gnCtl_(gnCtl),
-      phaseCfg_(phases)
+      phaseCfg_(phases),
+      compressCfg_(compressible)
 {
     if (!(nu_ > 0) || !(rho_ > 0))
         cfFatal("detailBlock: nu and rho must be positive");
@@ -485,6 +509,29 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
                     " per-face viscosity");
         phase_ = std::make_unique<PhaseField>(mesh_, axis_, flowSign_, rho_,
                                               nu_, phaseCfg_);
+    }
+
+    // 5.79: the compressible duct computes its own density and viscosity
+    // station by station. Sharing the block with a frozen phase field, a
+    // generalized-Newtonian law, a RANS wall model or an unsteady level would
+    // leave two owners of the same constitutive answer, so every combination
+    // is refused rather than resolved by precedence (5.63's rule).
+    if (compressCfg_.enabled)
+    {
+        if (phaseCfg_.enabled)
+            cfFatal("detailBlock: compressible and phases cannot both own the"
+                    " partner's density");
+        if (!rheology_.isNewtonian())
+            cfFatal("detailBlock: compressible and a non-Newtonian fluid"
+                    " cannot both own the partner's viscosity");
+        if (turb_.model != "laminar")
+            cfFatal("detailBlock: compressible and the '" + turb_.model
+                    + "' turbulence model cannot both own the partner's"
+                    " viscosity");
+        if (schemes_.ddt != "steady")
+            cfFatal("detailBlock: a compressible partner is quasi-steady;"
+                    " schemes ddt '" + schemes_.ddt + "' would give it a"
+                    " history lossAt(q) cannot carry");
     }
 }
 
@@ -788,6 +835,142 @@ void DetailBlock::beginTimeLevel(double dt, scalar qPrev)
     UOldLevel_ = U_.internalField();
 }
 
+void DetailBlock::solveCompressibleDuct(scalar qMag)
+{
+    const CompressibleConfig& cfg = compressCfg_;
+    const scalar mu = cfg.mu > 0 ? cfg.mu : rho_ * nu_;
+    const Vector lo = mesh_.minX();
+    const Vector hi = mesh_.maxX();
+    scalar transverse[2];
+    int nt = 0;
+    for (int k = 0; k < 3; ++k)
+        if (k != axis_) transverse[nt++] = hi[k] - lo[k];
+    const scalar H = std::min(transverse[0], transverse[1]);
+    const scalar W = std::max(transverse[0], transverse[1]);
+    if (!(H > 0) || !(W > 0))
+        cfFatal("detailBlock: a compressible duct needs two positive"
+                " transverse extents");
+    const scalar A = W * H;
+    if (!(inletArea_ > 0) || std::abs(A - inletArea_) > 1e-6 * A)
+        cfFatal("detailBlock: compressible duct W*H disagrees with the"
+                " inlet patch area; the duct law and the mesh must describe"
+                " the same section");
+    if (sectionX_.size() < 2)
+        cfFatal("detailBlock: a compressible duct needs at least two axial"
+                " sections to march");
+    const scalar x0 = sectionX_.front();
+    const scalar L = std::abs(sectionX_.back() - x0);
+    if (!(L > 0))
+        cfFatal("detailBlock: a compressible duct needs a non-degenerate"
+                " axial span");
+
+    // Isothermal ideal gas + plane Poiseuille friction, no axial inertia:
+    //   rho = p/(RsT),  mDot = rho_in q_in,  dp/dx = -12 mu u/H^2,
+    //   u = mDot/(rho A)  =>  p dp/dx = -12 mu mDot RsT/(W H^3)
+    //   =>  p_in^2 - p_out^2 = 24 mu L mDot RsT/(W H^3)
+    // L is the first-to-last CELL CENTRE span (5.78), because that is the
+    // span whose pressure difference the block reports.
+    const scalar pIn = cfg.pRef;
+    const scalar rhoIn = pIn / cfg.RsT;
+    const scalar mDot = rhoIn * qMag;
+    const scalar K = 24.0 * mu * L * mDot * cfg.RsT / (W * H * H * H);
+    // Refuse a choked duct before marching: p_in^2 - K <= 0 has no real outlet.
+    const scalar p2Out = pIn * pIn - K;
+    if (!(p2Out > 0) || !std::isfinite(p2Out))
+        cfFatal("detailBlock: the compressible partner is choked at "
+                + fmt(qMag) + " m3/s (p_in^2 - " + fmt(K)
+                + " <= 0): the isothermal duct has no real outlet state,"
+                  " so the rate must be reduced or pRef raised");
+
+    CompressibleMeasure& cm = compressMeasure_;
+    cm = CompressibleMeasure{};
+    cm.sections = static_cast<label>(sectionX_.size());
+    cm.length = L;
+    cm.height = H;
+    cm.width = W;
+    cm.area = A;
+    cm.pIn = pIn;
+    cm.rhoIn = rhoIn;
+    cm.qIn = qMag;
+    cm.massRate = mDot;
+    cm.uIn = qMag / A;
+    // Analytic d(p^2)/dx, kept only as the checker's reference. The march never
+    // reads it: it recomputes the gradient from each station's own rho and u.
+    cm.p2Slope = -K / L;
+
+    // March station by station in the order the flow meets them: the EOS fixes
+    // rho at the local pressure, mDot conservation fixes u, plane Poiseuille
+    // fixes the wall friction at that u, and p^2 advances by the LOCAL
+    // 2*p*(dp/dx). Because p*u = mDot*RsT/A is constant along an isothermal
+    // duct, that local gradient is the same at every station, so the marched
+    // p^2 lands on the analytic line to round-off rather than being read off it.
+    scalar p2 = pIn * pIn;
+    for (std::size_t k = 0; k < sectionX_.size(); ++k)
+    {
+        const scalar x = std::abs(sectionX_[k] - x0);
+        const scalar pk = std::sqrt(std::max(p2, 0.0));
+        const scalar rk = pk / cfg.RsT;
+        const scalar qk = mDot / rk;
+        const scalar uk = qk / A;
+        const scalar dpdx = -12.0 * mu * uk / (H * H);
+        cm.xStation.push_back(x);
+        cm.pStation.push_back(pk);
+        cm.rhoStation.push_back(rk);
+        cm.qStation.push_back(qk);
+        cm.uStation.push_back(uk);
+        if (k + 1 < sectionX_.size())
+        {
+            const scalar dx = std::abs(sectionX_[k + 1] - sectionX_[k]);
+            p2 += 2.0 * pk * dpdx * dx;
+        }
+    }
+    // The outlet state is the march's own last station, not a second sqrt.
+    const scalar pOut = cm.pStation.back();
+    const scalar dp = pIn - pOut;
+    cm.pOut = pOut;
+    cm.dpPa = dp;
+    cm.rhoOut = cm.rhoStation.back();
+    cm.qOut = cm.qStation.back();
+    cm.uOut = cm.uStation.back();
+
+    // Fill the same BlockMeasure the SIMPLE path owns, so the app's existing
+    // `block seed` line still means something. A compressible duct carries NO
+    // constant volume rate: fluxOut > fluxIn, and probeSpread (how far p(x)
+    // bows away from a straight line while p(x)^2 stays exactly linear) are
+    // the two visible signatures of the EOS.
+    measure_ = BlockMeasure{};
+    measure_.cells = mesh_.nCells();
+    measure_.sweeps = cm.sections;
+    measure_.converged = true;
+    measure_.dpPa = dp;
+    measure_.imposedQ = qMag;
+    measure_.fluxIn = qMag;
+    measure_.fluxOut = cm.qOut;
+    measure_.planeFluxMin =
+        *std::min_element(cm.qStation.begin(), cm.qStation.end());
+    measure_.planeFluxMax =
+        *std::max_element(cm.qStation.begin(), cm.qStation.end());
+    measure_.probeSlope = -dp / L;
+    measure_.probeSections = cm.sections;
+    scalar spread = 0;
+    for (std::size_t k = 0; k < cm.xStation.size(); ++k)
+    {
+        const scalar linearP = pIn + (pOut - pIn) * (cm.xStation[k] / L);
+        spread = std::max(spread, std::abs(cm.pStation[k] - linearP));
+    }
+    measure_.probeSpread = spread;
+    measure_.inletArea = A;
+    measure_.plugSpeed = cm.uIn;
+    measure_.uxMax = cm.uOut;
+    measure_.uxCentre = cm.uStation[cm.uStation.size() / 2];
+    measure_.inertance = inertance_;
+    measure_.inletShape = "flat";
+    measure_.fluxImposed = qMag;
+    measure_.betaImposed = 1.0;
+    measure_.betaIn = 1.0;
+    measure_.betaOut = 1.0;
+}
+
 scalar DetailBlock::lossAt(scalar qMag)
 {
     if (!(qMag > 0))
@@ -795,6 +978,21 @@ scalar DetailBlock::lossAt(scalar qMag)
                 " non-positive rate (" + std::to_string(qMag)
                 + " m3/s): a region's resistance carries no information at"
                   " zero flow");
+
+    // 5.79: the compressible duct owns the WHOLE answer. Neither SIMPLE nor
+    // the boundary conditions are touched; an undeclared case never enters
+    // this branch, so its solve is the old one bit for bit.
+    if (compressCfg_.enabled)
+    {
+        solveCompressibleDuct(qMag);
+        if (!std::isfinite(measure_.dpPa))
+            cfFatal("detailBlock: non-finite pressure drop");
+        if (measure_.dpPa <= 0)
+            cfFatal("detailBlock: the compressible region reports a"
+                    " non-positive drop (" + std::to_string(measure_.dpPa)
+                    + " Pa) at " + std::to_string(qMag) + " m3/s");
+        return measure_.dpPa;
+    }
 
     if (unsteady_)
     {

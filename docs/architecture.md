@@ -4103,6 +4103,21 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：0 内核改动 + 0 新 case + 1 checker + 1 条 `add_test`，18 判据；checker 全程 **192.68 s**（复用 §5.44 算例的六臂 × 两块 RANS 网格 × 8 层）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.73 环空截面第一次进稳态管网（A6）：层流锚点是 **Fredrickson–Bird 1958 的精确解**，湍流半区是 **Churchill 换掉层流成员**——C(κ)/Re 替代 64/Re，而 64 是 κ→0 的成员，所以圆管分支一位不动
+
+**这一格从哪来**：README 自 5.45 起写"圆管 only"；`docs/gap_analysis.md` 编为 **A6**，估 1 增量。实测约 1（内核 ~130 行：截面几何 4 函数 + FB 幂律积分 + Churchill 环空变体 + addPipe 校验/解析 + 两相 march 拒收 + loader 键；声明面一个可选键）。
+
+**声明面与解析核心**：管块可选键 **`dInner`**（m；> 0 = 同心环空，`diameter` 保持外径；0 = 圆管，全部数字逐位不变）。三个函数撑起全部物理：
+1. **水力直径** `Dh = d − dInner`（= 4A/P 的环空闭式）：Re、相对粗糙度、Darcy 换算 L/Dh 全部读它——圆管 Dh = d，逐位不动；
+2. **FB 1958 牛顿层流闭式** `Q = π·dp/(8μL)·[Ro⁴ − Ri⁴ − (Ro²−Ri²)²/ln(Ro/Ri)]`（双调和方程的精确解），同时给出层流常数 **C(κ) = f·Re_Dh = 16·Dh²(Ro²−Ri²)/G**——κ→0 时回到 64；
+3. **Churchill 环空变体**：同一对括号，只是层流项 (8/Re)¹² 里的 8 换成 C(κ)/8——C = 64 时 IEEE 逐位还原 churchillFriction。幂律走 **FB 幂律环空**：τ(r) = (Δp/2L)(r − λ²/r) 的零剪半径 λ 由两壁剖面匹配方程二分定出（单调、根唯一），剖面积分换序后一维 Simpson 化；Re_GP 用 **Dodge–Metzner 原形**（Dh 上、**不带** Rabinowitsch 修正——那是圆管几何的陈述），层流常数 C_pl = 4·Dh^(n+1)·A^n/((2πI)^n·8^(n−1)) 由"混合式层流渐近线 = FB 剖面"反解，**K 相消**，κ→0 成员是 64·((3n+1)/4n)^n。λ 与 I 只依赖 (κ, n)，在 `addPipe` 解析一次。
+
+**case 与判据**：`tests/cases/steadyAnnulus`（μ = 0.05、ρ = 850、L = 10；三档定压对：dp = 1e4 层流档 / dp = 4.98e6 湍流档（Re ~ 9250 / 60600）/ **dp = 1.0 深层流精确档**——Churchill 混合式的湍流项 < 1e-12 相对，f·Re 退化为纯常数；幂律不吃 1 Pa 档：n = 0.5 的 Re_GP 在那里落进内核 1e-12 的 Re 地板，幂律精确锚在 1e4 档，Re_GP ~ 2.3e-6，湍流项 < 1e-100 相对）。checker `check_steady_annulus.py`（CTest `verify.steadyAnnulus`），**18 判据 0 失败**：f·Re = C(κ) 与 Q = FB 闭式**双 1e-9**（三个 κ：2/3、0.1、1e-4）、圆管 f·Re = 64 + Q = Poiseuille 1e-9（κ = 0 成员逐位）、C 阶梯 95.74 > 89.37 > 71.78 > 64 单调、幂律 Q 对独立 2048 带重解到 5e-6、f·Re_GP = C_pl 1e-9（K 相消）且 C_pl 阶梯 90.28 > 84.77 > 71.55 = 64((3n+1)/4n)^n、圆管幂律 MR 闭式 1e-9 + f·Re = 64 不动、全档 Dh 接线 1e-9（Re = ρvDh/μ、dp = f(L/Dh)ρv²/2）、四条拒收（dInner ≥ d、dInner < 0、+屈服、+耦合边）大声点名。
+
+**本增量的边界**：① 环空只进**稳态单相牛顿/幂律**路径——屈服（屈服 locus 与壁应力是圆管几何的律）、耦合边（几何归伙伴）、黑油两相 march、PVT march 全部在入口大声拒收；transient/twoFluid 的 loader 对 `dInner` 同样拒收（防静默忽略）。② 偏心环空、矩形 duct 不在本增量（Dh 抽象已就位，层流锚需各自闭式）。③ 湍流档无真值可验（没有环空 Churchill 的实验重演），判据只锁接线与几何分离。④ C_pl 的 κ→0 成员 71.55 是解析推论，未在 case 里放 κ = 1e-6 档直接逼近。⑤ 环空 + 泵/阀可用（几何无关），但无专门判据。
+
+**成本**：内核 ~130 行 + 1 case 文件 + 1 checker + 1 条 `add_test`，18 判据。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

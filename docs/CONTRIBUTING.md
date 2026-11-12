@@ -1297,6 +1297,22 @@ python3 tests/check_transient_row_error_criterion.py \
 
 
 
+# 环空截面（5.73 / A6）：管块可选键 dInner（diameter 保持外径），水力直径
+# Dh = d - dInner 进 Re/粗糙度/L-Dh 换算。层流锚是 Fredrickson-Bird 1958 的
+# 精确闭式（牛顿）与 FB 幂律环空（零剪半径 lambda 由两壁剖面匹配二分），
+# 湍流是 Churchill 换掉层流成员：C(kappa)/8 替代 8，C = 64 时逐位还原——
+# 所以圆管分支一位不动。幂律 Re_GP 用 Dodge-Metzner 原形（无 Rabinowitsch），
+# C_pl 由"层流渐近线 = FB 剖面"反解，K 相消，kappa -> 0 成员 71.55。
+# 判据（18 条）：深层流档（dp = 1 Pa，湍流项 < 1e-12 相对）f.Re = C(kappa)
+# 与 Q = FB 闭式双 1e-9、圆管 f.Re = 64 + Poiseuille、C 阶梯单调落向 64；
+# 幂律档（dp = 1e4，湍流项 < 1e-100 相对）Q 对独立 2048 带重解 5e-6、
+# f.Re_GP = C_pl 1e-9；Dh 接线 1e-9 全档；四条拒收大声点名。
+# 注意：幂律臂不能放 dp = 1 Pa——Re_GP 落进内核 1e-12 的 Re 地板被扭曲。
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyAnnulus/case.dict
+python3 tests/check_steady_annulus.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyAnnulus/case.dict"
+
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
 # （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增
 # yieldedTransitionOf（network.cpp:413）+ PipeFlowResult::transition，solvePipeFlow 逐管填一次（:501），

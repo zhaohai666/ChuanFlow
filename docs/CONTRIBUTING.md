@@ -1456,6 +1456,35 @@ python3 tests/check_coupled_multiphase.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d" \
     "$PWD/tests/cases/coupledMultiphase/case.dict"
 
+# 1D↔3D 界面的可压伙伴块（5.79 / A8 增量 2）：detail{} 可选 compressible{}，
+#   键 pRef（绝对入口压强 Pa）、RsT（R_specific*T，m2/s2）、mu（可选，0 -> fluid.mu）。
+# 声明时 lossAt(q) 整条短路到沿 mesh 截面 march 的等温理想气体 duct：
+#   rho = p/RsT,  mDot = rho_in * q_in,  dp/dx = -12 mu u / H^2
+#   => p_in^2 - p_out^2 = 24 mu L p_in q_in/(W H^3)
+#   L 是首末 CELL CENTRE 跨度（50 x-cell 的 0.5 m 上是 0.49 m），不是 bbox。
+# qMag 是 INLET 体积流量；出口流量 q_out = mDot/rho_out 是结果，所以
+#   fluxOut > fluxIn、p(x) 弯而 p^2(x) 严格线性、rho*q 逐站守恒。
+# pRef 是 case 声明的绝对压强，NOT 网络节点压强：lossAt(q) 不收压强。
+#   RsT 在 dp 里相消（加倍时 dp 逐位相同、rho_in 与 mDot 各减半）。
+# 零声明时 lossAt 不进新分支，SIMPLE 调用逐字不变；同名块放在顶层
+#   （不属于 detail{}）是 checker 的零声明 twin，11 个量 0 容差。
+# 四条互斥拒收：phases / 非牛顿 / RANS / ddt Euler 都不能与可压同台。
+#   `chflow-3d-compressible` 是闭盒 Sod 管（只有 main、无 inlet/outlet），
+#   没有可复用的库级求解器，所以可压律在伙伴块内部自解，不动 src/3d。
+# 判据（126 条；9 臂 + 8 拒收探针全写系统临时目录）：
+#   主臂 pRef 10000 / RsT 300000 / q_in 2.4e-4
+#     -> pOut 9075.24104363, dp 924.758956369 Pa,
+#        rho 0.0333 -> 0.03025, q_out 2.6446e-4, mDot 8e-6, d(p^2)/dx -3.6e7；
+#   16 个打印量 + 5 站 x 4 恒等式对 dict-only 闭式 1e-9；
+#   三档 pRef 977.56 > 924.76 > 902.36；三档 rate 的 dp/q 严格递增（非线性）。
+#   pRef 别取 1e6！那样密度只变 0.09%，常密度假实现能藏进容差
+#   （与 5.78 的「rhoG 别取 400」同一条教训）。
+# 改这段时先跑主臂与零声明 twin，再跑 8 条拒收（含壅塞 pRef 1000）。
+./build/src/coupling/apps/chflow-coupled-1d3d tests/cases/coupledCompressible/case.dict
+python3 tests/check_coupled_compressible.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d" \
+    "$PWD/tests/cases/coupledCompressible/case.dict"
+
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
 # （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增
 # yieldedTransitionOf（network.cpp:413）+ PipeFlowResult::transition，solvePipeFlow 逐管填一次（:501），

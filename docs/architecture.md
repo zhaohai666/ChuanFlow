@@ -4154,7 +4154,7 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 * **声明牛顿恒等**：`flowIndex 1, K = muL` 与无声明孪生的 dp、holdup、速率全场一致（12 位打印同串）；
 * **纯液体臂**（vsg 0，`alpha* = 1`）：dp = **300 精确** = `(4L/d)·K'·γ̇^n`——与单相稳态核的管律逐位同一；
 * settled holdup 均匀 `alpha* = 0.8`（最坏格 1.1e-16）、逐格通量分配齐性、vm = vsl+vsg；
-* **四条拒收**大声点名：`yieldStress`（"the distributed mixture row does not take a threshold yet"——分布式行要阈值得先有 5.49 那样的闩锁，自成增量）、`flowIndex` 无 `consistency`、负 `flowIndex`、`consistency` 无 `flowIndex`。
+* **四条拒收**大声点名：`yieldStress`（"the distributed mixture row does not take a threshold yet"——分布式行要阈值得先有 5.49 那样的闩锁，自成增量）、`flowIndex` 无 `consistency`、负 `flowIndex`、`consistency` 无 `flowIndex`。（**后续状态**：§5.77 已落地该闩锁，第一条改为「负 `yieldStress`」拒收、其余三条不变；`verify.twoFluidRheology` 的探针与 `twoFluidRheology/case.dict` 头注释同步勘误。）
 
 **本增量的边界**：① **屈服不进本行**——分布式动量行的静止阈值需要闩锁（5.49 的单相版），是独立的下一增量；② 黑油 march（Beggs–Brill）与 PVT march 的摩擦是经验相关式，本构律进不去，这两行在 gap_analysis 保持 OPEN（要做的是混合规则决策，不是一行代码）；③ 湍流区无真值可验（同 5.73 的处理：判据锁接线与层流锚）；④ 入口 warm-start 的 `muBar` 电导仍用牛顿混合黏度（只是 Newton 种子，文档记录）；⑤ 零声明位不变的见证是 17 个既有 twoFluid case + 全量回归。
 
@@ -4177,9 +4177,37 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 * `tests/unit/networkTests.cpp` 的 **7 条精确解析锚**：未声明 BB 保持已发表 Darcy–Weisbach 梯度、声明但牛顿逐位相同、幂律 `dp/ds = (4/D)K'γ̇^n` 1e-12、声明黏度不能移动 `holdup`/`regime`/`exp(S)`、Bingham 份额、HB 两份额之和、三律在单一壁率上可区分；
 * 合计 **121 判据**（54 + 60 + 7）、0 失败；CTest 由 129 → **131** 项。
 
-**本增量的边界**：① `tau_0` 在 BB / PVT 相关式链里只是**有限正则化表观黏度**（`m = 100`、`γ̇` 地板 1e-6），**没有静止阈值、没有死支**——两流体分布式闩锁是 A5 增量 3，瞬态单相闩锁仍是 5.49；② BB 气相保持牛顿、`lambda` 无滑移加权与持液率 / 流型 / 倾斜修正逐字不动（「混合规则决策」的全部内容就是液相份额的重定价）；③ PVT 表仍拥有 `rho(p)` / `mu(p)` 的压力依赖，声明是**换算**不是替换；④ 湍流半区未独立验证（BB 的 Colebrook/Jain、PVT 的 Churchill 湍流项）——两个 case 都刻意深层层流（Re 1.649 ~ 518.6），与 5.73 / 5.75 同一处理；⑤ 正则化常数是共享数值参数而非材料常数，两个极限（τ₀ → 0 退幂律、n → 1 退牛顿）都在单元锚里锁住；⑥ 零声明逐位不变的见证是既有 `steadyNetworkMultiphase` / `steadyPvtColumn` / `steadyBinghamYield` / `steadyPowerLawRheology` / `steadyAnnulus` 等受影响 9 项 + 全量回归；⑦ 环空 `dInner`（5.73）与耦合边拒收不变；⑧ `twoFluid` 的 `yieldStress` 仍被大声拒绝，等增量 3；⑨ `nodal` 分析的 `WellLift` 面本来就没有流变键，其两处 `marchBeggsBrillPipe` 保持默认 `{}` 逐位不变（A5 的拒收只发生在 `steadyNetwork` loader），是否给井筒单独开声明面另议。
+**本增量的边界**：① `tau_0` 在 BB / PVT 相关式链里只是**有限正则化表观黏度**（`m = 100`、`γ̇` 地板 1e-6），**没有静止阈值、没有死支**——两流体分布式闩锁是 A5 增量 3，瞬态单相闩锁仍是 5.49；② BB 气相保持牛顿、`lambda` 无滑移加权与持液率 / 流型 / 倾斜修正逐字不动（「混合规则决策」的全部内容就是液相份额的重定价）；③ PVT 表仍拥有 `rho(p)` / `mu(p)` 的压力依赖，声明是**换算**不是替换；④ 湍流半区未独立验证（BB 的 Colebrook/Jain、PVT 的 Churchill 湍流项）——两个 case 都刻意深层层流（Re 1.649 ~ 518.6），与 5.73 / 5.75 同一处理；⑤ 正则化常数是共享数值参数而非材料常数，两个极限（τ₀ → 0 退幂律、n → 1 退牛顿）都在单元锚里锁住；⑥ 零声明逐位不变的见证是既有 `steadyNetworkMultiphase` / `steadyPvtColumn` / `steadyBinghamYield` / `steadyPowerLawRheology` / `steadyAnnulus` 等受影响 9 项 + 全量回归；⑦ 环空 `dInner`（5.73）与耦合边拒收不变；⑧ `twoFluid` 的 `yieldStress` 在 5.76 当时仍被大声拒绝（**后续状态**：§5.77 已放开并落地分布式闩锁，A5 至此 CLOSED）；⑨ `nodal` 分析的 `WellLift` 面本来就没有流变键，其两处 `marchBeggsBrillPipe` 保持默认 `{}` 逐位不变（A5 的拒收只发生在 `steadyNetwork` loader），是否给井筒单独开声明面另议。
 
 **成本**：内核 ~90 行净增（4 文件 109 增 / 19 删：`Rheology.h` / `BeggsBrill.h` / `beggsBrill.cpp` / `network.cpp`）+ 72 行单元锚 + 2 case 目录（2 dict）+ 2 checker + 2 条 `add_test`；121 判据。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
+### 5.77 两流体分布式行第一次拥有**静止的墙**（A5 增量 3）：阈值从 `4τ₀L/d` 变成 `Σ_i (4dx_i/d)·α_i·τ₀`——held 行、crossing 见证与 branch-network 的解锁棘轮同台；屈服壁律在 `u = 0` 不是函数，所以这一格的两处 Newton 都不能跨零差分
+
+**这一格从哪来**：5.75 把液相幂律接进两流体壁应力时，`yieldStress` 被大声拒收，理由写得很具体——「分布式动量行要阈值得先有 5.49 那样的闩锁」；5.76 又确认 BB / PVT 相关式链里的 `τ₀` 只是 Papanastasiou 有限正则化份额，**没有死支**。于是 A5 的最后一格不是「再接一条本构」，而是把 5.49 的静止支**翻译**到单体 lumped 混合速度 `vM_` 上：twoFluid 每根管只有一个 `vM_`（`phaseRates` 强加、`sealed` 恒 0、只有 `fixedPressure` 或 network span 由 Newton 解出），所以闩锁唯一的可观测面是**两端定压**。
+
+**声明面与解析核心**：
+
+1. **阈值是分布式的**：只有每个 cell 的**液相份额**能屈服，故 `dp_y = Σ_i (4 dx_i/d)·α_i·τ₀`；均匀 α 时退化成 5.49 的 `4τ₀L/d` 乘 α。它只认几何与冻结的持液率场，**不认 n 也不认 K**（HB 臂的判据锁住这一点）。drive 是 `dpDrive − Σ_i ρ_m,i g sinθ_i dx_i`，与动量残差移动的是同一个量，latch 与行不会在上游方向上吵架；
+2. **流动支**：壁应力 `τ_i = α_i(μ_L γ̇ + τ₀) + (1−α_i)μ_G γ̇`（幂律液相时 `μ_L γ̇ → K'γ̇^n`），`γ̇ = 8|v|/d`。`v → 0+` 时表观黏度 `τ_i/γ̇` 发散，层流成员 `f = 64/Re` 恰读回 `(4dx_i/d)τ_i`，故摩擦从**上方**趋于 `dp_y`——与 5.49 的 `dp_wall(Q→0+) → threshold` 同一个形状，也正是「亚阈值驱动若硬解会得到等大反向流」的根源。零声明走旧律逐字：旧 Churchill 分支的条件从 `flowIndex <= 0` 改成 `flowIndex <= 0 && !(yieldStress > 0)`，未声明时连 `mixtureMu` 的计算位置都没动；
+3. **held 行与 latch**：`held_` 在**步首**由 `(vMOld_ == 0 || wasHeld) && |drive| <= dp_y` 一次性判定（5.49 的反振荡棘轮）；命中则动量行替换成 `u = 0`，`staticHold()` 报 1。held 管不读壁律，所以 `nodePressure()` 积分出的 `dp` 是 0——静态壁默默扛住全部压差，报的是**摩擦 + 重力损失**而非总压降；
+4. **crossing 表述在残差上**：5.49 的 `crossing` 是「迭代 `x[k]` 穿过 0」，但这个核的 serial Newton 用中心差分跨过 `u = 0`，会把阈值跳跃本身塞进斜率——实测速度在 `8.9e-05 ~ 1.8e-03` 之间**永久振荡**、从不穿零。因此 `yieldCrossing` 改成问「**运动支上还有没有根**」：摩擦在旧速度那一支上以阈值为下界，亚阈值驱动下当 `vMOld_` 小到连 `u → 0+` 都平衡不了（rest 残差变号）就停车，下一步 latch 因 `vMOld_ = 0` 接管。这正是 5.49 `frictionSlope` 注释里「rest 点的斜率要向外取」所指的同一处不连续；
+5. **两处 Newton 的配套修复**：`momentumResidual(dt, 0, dp)` 在声明屈服时取**带符号阈值**（5.49 `frictionDp(q = 0, drive)` 的约定）而非 0，零声明塌回原值逐位；serial 与 network 的斜率在 `|u| <= h` 时改**单边差分**，不跨零。另有一处纯数值陷阱：`churchillFriction` 把 Re 钳在 `1e-12`，而屈服流体 `Re ~ v²` 会掉到钳位以下，冻结的 `f` 让摩阻随 `v²` 塌回 0、把阈值下限抹掉（network 首步因此报 singular Newton matrix）——故在 `Re < 1e-9` 邻域直接用层流恒等式 `(4dx/d)τ_w`，该处湍流项 < 1e-100 相对；
+6. **branch network**：`solveNetwork` 同样在步首从**上一步收敛的 junction 压力** latch；held 行 `r = u`、Jacobian 对角 1、不再对 junction 压力留列，而 junction 体积平衡行保留该速度列（连续性仍看见强制的 0）。junction 压力是 Newton 的未知量，步首 latch 因此在启动瞬态可能过期：迭代中若 `|dp − grav| > dp_y` 就**单向释放**该 latch（`unlatched[]` 棘轮，本步不锁回），否则超阈值网络会永久冻在静止；
+7. **声明面**：`fluid{ yieldStress t0; }`（负值与 `flowIndex`/`consistency` 的不一致组合仍大声拒收），`initial{ vm v0; }` 新增可选初速度（缺省 0、仅 serial、网络成员忽略）——它让「运动 → 静止」的 crossing 不需要时间变化边界就能被观测。
+
+**case 与判据**（`tests/cases/twoFluidPressureYield/` 7 份 dict + `check_two_fluid.py` 新 mode `pressureyield`、CTest #124、**100 判据**）：
+
+* 主臂 α = 1、L = 2、d = 0.02、N = 4、`μ_L = 0.1`、`τ₀ = 1` ⇒ `dp_y = 400 Pa`，dp = 300 Pa：全程 `vm = 0`、`static hold 1`（t = 0 是构造初值 0）、`dp = 0`、持液率冻结；`p = 400` 边界档仍 held（`<=` 属于静止集）；
+* `case_open` dp = 600：checker 独立重建**全 blend Churchill 壁损**与隐式 Euler 递归 `I(u − u_old)/dt + fr(u) − dp = 0`（`I = ρ̄_m L`），逐帧比对 vm 与 dp；稳态闭式 `(dp − dp_y)d²/(32μ_L L) = 0.0125 m/s`、`f·Re = 64`；
+* **分布式见证** `case_graded`：`fills{}` 让后两个 cell 是液、前两个是气 ⇒ `dp_y = 200 Pa`，同一个 dp = 300 Pa **开路**（几何-only 400 Pa、读入口 cell 0 Pa、读出口 cell 400 Pa 都会判错）；`p = 199` held / `p = 201` open 把带边钉在 **200 ± 1 Pa**；Godunov 数值扩散尾使 α 漂移 6.96e-3，checker 显式核算它给阈值带来的 **0.70 Pa** 漂移远小于带边余量；
+* 零声明 `case_newt`：逐帧复现 5.42 层流启动递归、无 `static hold` 上报；`yieldStress 0` 哨兵与未声明孪生末帧逐位相同；
+* `case_cross`：`initial vm 0.01` 起步、亚阈值驱动下单调减速、`t = 0.14` 停在 `u = 0` 并保持 held，全程无反向流；
+* `case_hb`：`n = 0.5 / K = 0.1 / τ₀ = 1`，阈值仍 400 Pa（不认 n、K），稳态 `K'√γ̇ = 0.5 ⇒ γ̇ = 20 ⇒ vm* = 0.05 m/s`，13 帧隐式 Euler 递归逐帧吻合；
+* `case_network`：两根等值 span 串一个 junction，300 Pa 总分压 → 两行都 held、`junction net = 0`、Jacobian 不奇异；把入口改成 1200 Pa 的探针验证**释放棘轮**：两管都流动、`vm` 与 `case_open` 的 600 Pa 档逐位吻合、`static hold` 全 0。
+
+**本增量的边界**：① 阈值用**冻结的持液率场**，held 时 α 不动所以自洽；流动中 α 输运会让阈值随 front 变化，checker 把这一漂移显式量化（0.70 Pa），但没有为运动中的阈值演化单独建律；② 只有 pressure-driven 管能 held——`phaseRates` 强加速度、`sealed` 恒 0，二者清 flag；③ 重力只在 drive 里以静压头出现，本增量 case 全水平，倾斜管的 `dp − ρgΔz` 未端到端验证；④ 湍流半区未独立验证（所有 arm Re < 20，深层层流）；⑤ `τ₀` 在 BB / PVT 相关式链里仍是 5.76 的有限正则化份额，**不是**这里的死支；⑥ network 的释放是单向棘轮，步初 junction 压力极端失配、需要多步反复横跳的启动瞬态未单独建例；⑦ 零声明逐位不变的见证是既有 twoFluid 全系列（18 + 3 thermal）与全量回归。
+
+**成本**：内核 ~310 行净增（`TwoFluid.h` 57 / `twoFluid.cpp` 241 / `twoFluidApp.cpp` 11，含注释）+ 7 份 dict + 1 checker 新模式 379 行 + 1 `add_test`；100 判据、CTest 131 → **132**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |

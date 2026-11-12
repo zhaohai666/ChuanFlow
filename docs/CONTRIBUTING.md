@@ -1346,8 +1346,9 @@ python3 tests/check_transient_gel_creep.py \
 # 表观混合黏度 tau_w/gamma 进同一支 Churchill——层流成员 f = 64/Re 恰好
 # 读回 (4 dx/d) tau_w，与未声明分支恒是同一条恒等式，只是黏度变成了率
 # 的函数。alpha = 1 逐位是精确单相幂律管流（Metzner-Reed）；零声明走旧
-# 路径逐字（17 个既有 twoFluid case 是见证）。yieldStress 大声拒绝：
-# 分布式动量行要阈值得先有 5.49 那样的闩锁，自成增量。
+# 路径逐字（既有 twoFluid 全系列是见证）。yieldStress 在 5.75 曾大声
+# 拒绝（分布式动量行要阈值得先有 5.49 那样的闩锁）——后续状态：§5.77
+# 已落地该闩锁，现在拒收的是负 yieldStress 与声明不一致，见下一块。
 # 判据（17 条）：wallis us = 0 臂让 alpha* = vsl/vm = 0.8 成为通量恒等
 # 式（全部律输入都是 case 常数）；dp = 240.16 Pa 对全 blend 律与纯层流
 # 闭式双 1e-9；壁上拿的是 K' 不是教材 K（与教材 K 律之差恰 = 液体份额
@@ -1393,6 +1394,36 @@ python3 tests/check_steady_pvt_rheology.py \
 python3 tests/check_steady_blackoil_rheology.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \
     "$PWD/tests/cases/steadyBlackOilRheology/case.dict"
+
+
+# 两流体分布式屈服闩锁（5.77 / A5 增量 3）：fluid{} 可选键 yieldStress，
+#   initial{} 可选键 vm（初速度，缺省 0、仅 serial 有效）。
+# 只有 cell 的液相份额能屈服，阈值是分布式积分
+#   dp_y = sum_i (4 dx_i/d) alpha_i tau0,
+# drive = dp - sum_i rho_m,i g sinT_i dx_i（水平时就是 dp）。
+# 步首 latch：vMOld == 0（或上一步已 held）且 |drive| <= dp_y
+#   -> 动量行换成 u = 0，app 报 `static hold 1`。此时 nodePressure()
+#   积分的是摩擦 + 重力损失，所以 dp 报 0——静态壁扛住全部压差，
+#   别拿它当总压降去判 held，判据看 vm 与 hold 旗。
+# 流动支 tau_w = alpha(muL gamma + tau0) + (1-alpha) muG gamma，
+#   gamma = 8 vm/d；v -> 0+ 时层流成员从上方趋于 dp_y。
+# 判据（100 条，checker 独立重建全 blend Churchill + 隐式 Euler 递归）：
+#   主臂 tau0=1 / L=2 / d=0.02 / alpha=1 -> dp_y=400 Pa，dp=300 全程 held；
+#   case_open dp=600 逐帧复现，稳态 (dp-dp_y)d^2/(32 muL L)=0.0125；
+#   case_graded 半管液 -> dp_y=200，同一 300 Pa 开路，p=199/201 钉带边；
+#   case_newt 零声明逐帧复现旧层流启动、yieldStress 0 哨兵逐位相同；
+#   case_cross initial vm 0.01 减速到 t=0.14 停住、无反向流；
+#   case_hb 幂律 + 屈服，阈值仍 400（不认 n/K）、vm*=0.05；
+#   case_network 两 span 全 held + 1200 Pa 探针验证单向释放棘轮。
+# 注意：屈服壁律在 u = 0 不是函数。中心差分跨零会把阈值跳跃塞进斜率，
+#   serial 速度永久振荡、network 报 singular Newton matrix；内核已把
+#   crossing 改判 rest 残差变号、两处 Newton 在 |u| <= h 走单边差分，并在
+#   Re < 1e-9 邻域用层流恒等式 (4dx/d)tau_w 绕开 churchillFriction 的
+#   Re 钳位。改这段时先跑 case_cross 与 case_network 的超阈值探针。
+./build/src/1d/apps/chflow-1d-twofluid tests/cases/twoFluidPressureYield/case.dict
+python3 tests/check_two_fluid.py \
+    "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
+    "$PWD/tests/cases/twoFluidPressureYield/case.dict" pressureyield
 
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
 # （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增

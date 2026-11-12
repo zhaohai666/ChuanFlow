@@ -1425,6 +1425,37 @@ python3 tests/check_two_fluid.py \
     "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
     "$PWD/tests/cases/twoFluidPressureYield/case.dict" pressureyield
 
+# 1D↔3D 界面的多相伙伴块（5.78 / A8 增量 1）：detail{} 可选 phases{}，
+#   键 rhoL/rhoG/muL/muG（0 = 未声明，回落到 case 自己的 rho/mu）、
+#   alpha ( ... )（沿流动轴等宽、inlet first）或 alpha0（均匀；与 alpha 互斥）、
+#   gravity ( gx gy gz )、viscosityMix（yes 或 no）。
+# 冻结相场逐 cell 混出 rho_m / mu_m：
+#   buoy = gravity * (rho_m / rho_ref)  <- FVM 的 p 是 kinematic，别把 rho_m 计两次
+#   measure() 乘回 rho_ref 后，dp 里多出物理静压头 -L_meas <rho_m> g_flow
+#   L_meas = max(x_c) - min(x_c)（首末 CELL CENTRE：50 cell -> 0.49 L，不是 bbox 0.5 L；
+#     第一版用 0.5 算出 800 Pa 而实测 784 Pa，正好差一个 cell）
+# viscosityMix yes 让同一份 alpha 也定价 nuFace_ = mu_m / rho_ref；逐面 hook
+#   只有一个 owner，与非牛顿 / RANS 同时声明即大声拒收（5.63 规则延伸）。
+# 零声明时 phase_ == nullptr，energy / viscosity 两个指针都保持旧值，
+#   solveIncompressibleSimple 的调用逐字不变。接口 lossAt(q) 没动。
+# 判据（70 条；9 个派生臂与 7 条拒收探针全部写进系统临时目录，case 目录不留文件）：
+#   plain / zero 的 dp, q, sweeps, probeSlope, dpPa 逐位相同（0 容差）；
+#   主臂 alpha (1 1 0 0)、rhoL 1200、rhoG 200、g = (-2 0 0)
+#     -> alphaMean 0.5 / rhoMean 700 / muMean 0.1 / bodyDrop 686 Pa，
+#        实测 dp - dp_plain = 689.21 Pa（+0.47% 离散足迹，门 2%）；
+#   half / reverse 的重力比例 0.500005 / -0.249959；
+#   端点密度 200 < 700 < 1200，且 700 != 零声明的 800
+#     —— rhoG 别取 400！那样 rhoMean 会等于参考密度 800，忽略相场也能骗过判据；
+#   冻结界面让 probeSpread 0.905 -> 101.672 Pa（> 10x，体力确实逐 cell 加）；
+#   viscosityMix 均匀臂发展段梯度 x1.9955、分层臂 muMean 0.125。
+# 注意：网络必须是单路径（Src -> A -> X(3D) -> B -> Snk，源定 rate = 2.4e-4）；
+#   并联旁路会让声明臂与孪生臂 q 不同，压降差里混进分支重分配。
+# 改这段时先跑主臂与 zero 孪生，再跑 7 条拒收。
+./build/src/coupling/apps/chflow-coupled-1d3d tests/cases/coupledMultiphase/case.dict
+python3 tests/check_coupled_multiphase.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d" \
+    "$PWD/tests/cases/coupledMultiphase/case.dict"
+
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
 # （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增
 # yieldedTransitionOf（network.cpp:413）+ PipeFlowResult::transition，solvePipeFlow 逐管填一次（:501），

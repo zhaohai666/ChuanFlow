@@ -1,0 +1,141 @@
+# transientCoupledMultiBothSeries (A9 / 5.71): two RANS detailed regions that
+# BOTH sit in the SERIES position of one time-stepping network.
+#
+#   A (fixed p) -> X1 (3D RANS duct) -> J1 (free port) -> X2 (3D RANS duct) -> Snk (fixed p)
+#
+# 5.32 put both coupled edges in the PARALLEL position (neither a passenger,
+# two rates negotiated). This file puts both in SERIES -- one free node
+# between them, no third branch anywhere -- which is the one topology where
+# the two rates are not two unknowns at all: J1's continuity is
+# q_X1 - q_X2 = 0, so the network carries ONE rate and the interface
+# negotiates one node drop against two chords. What series buys, and parallel
+# cannot show:
+#
+#   1. the rows ADD. One rate through two inertances is the merged row
+#        (M_X1 + M_X2) dq/dt = drive - (R_X1 + R_X2) q
+#      -- the ladder's numerator is the plain sum of the two edges' books,
+#      with no split weights (the parallel case needed m_X1, m_X2 weights and
+#      still overshoots 1.48x; here the merged row is the exact statement).
+#   2. the attribution moves the NODE, not the rate. The rate is fixed by the
+#      merged row; which book M_X2 carries decides how much of the drive sits
+#      at J1: p_J1 = R_X2 q + M_X2 dq/dt measured from Snk. Swapping X2's book
+#      (partner 3750 kg/m4 vs bore 6359) shifts the middle node without
+#      touching the rate -- on the pinned topology of 5.31 the same swap moved
+#      nothing readable.
+#   3. the march sits in the LINEAR part of the relaxation (tau = Msum/Rsum
+#      ~ 0.52 s against twelve levels of dt 5e-5 -- 0.12% of the travel), so
+#      the ladder reads as a SLOPE: each arm's dq/dt over the twelve levels is
+#      inversely proportional to its M sum, and the merged row's constant
+#      inertial total (drive - (R1+R2)q ~ 4550 Pa) SPLITS between the two rows
+#      in the ratio M1/Msum -- which book X1 carries moves the middle node's
+#      share by a factor 1.19 (mixX2 3328 Pa vs mixX1 2538 Pa) without
+#      touching the rate. The 27% first-level jump a cold merged row would
+#      hand the blocks is absent because M/dt (3.3e11) dwarfs R (3.2e7): the
+#      first level lands ON the initial flow, and the blocks never see a
+#      jump.
+#      deliberate choice as 5.32).
+#
+# The drives are set so every level sits turbulent in both ducts: A 6.0e3 Pa
+# against Snk 0 gives Q_inf ~ 7e-5 m3/s (v_X1 ~ 2.8 m/s, Re_bulk ~ 1.4e4), and
+# the pipes START at initialFlow 4.5e-5 (Re ~ 9e3, already past the transitional
+# band) so no level's block has to converge through the laminar region a
+# cold-start series march would crawl through -- the ramp still has 70% of the
+# travel to pay, because tau ~ 2.1e-4 s spans three of the twelve levels. The
+# same ducts as 5.32 carry the same y+ band and wall-function premises. The
+# mis-stated bores are 5.32's, on purpose:
+#   X1: section H*W = 2.5e-5 m2, bore 0.005 m -> rho*L/A is 1.27324x
+#   X2: section H*W = 3.2e-5 m2, bore 0.0049 m -> 1.69695x
+# so the four tables give four DIFFERENT numerators,
+#   M sums: region 11750 < mixX2 13936 < mixX1 14359 < bore 16545 kg/m4,
+# and no single correction factor can reproduce the ladder.
+#
+# Six arms: the four tables under the plain loop, plus the whole-bore and the
+# X2-mixed table again under the quasi-Newton map -- enough to check the
+# operator keeps the rung (5.32's claim) without re-paying the full 4x2.
+fluid { rho 1000; mu 1.0e-3; }
+
+nodes {
+    A   { fixedPressure 6.0e3; }
+    J1  { volume 1.0; liquidFraction 0.5; pressure 2.0e3; }
+    Snk { fixedPressure 0.0; }
+}
+
+pipes {
+    // the two coupled edges, one rate, one free node between them
+    X1 { from A;  to J1;  length 0.2;  diameter 0.005; initialFlow 4.5e-5;
+         coupledResistance 1.0e7; }
+    X2 { from J1; to Snk; length 0.12; diameter 0.0049; initialFlow 4.5e-5;
+         coupledResistance 1.5e7; }
+}
+
+time { dt 5.0e-5; endTime 6.0e-4; reportEvery 1; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    tolerance 2e-4;
+    maxSubIterations 6;
+    inertias ( network partner network network network partner );
+    accelerates ( 0 0 0 0 1 1 );
+    inertiaFrom {
+        mixX1_gs { X1 partner; X2 network; }
+        mixX2_gs { X1 network; X2 partner; }
+        mixX2_qn { X1 network; X2 partner; }
+    }
+    starts {
+        bore_gs   { X1 1.0e7; X2 1.5e7; }
+        region_gs { X1 1.0e7; X2 1.5e7; }
+        mixX1_gs  { X1 1.0e7; X2 1.5e7; }
+        mixX2_gs  { X1 1.0e7; X2 1.5e7; }
+        bore_qn   { X1 1.0e7; X2 1.5e7; }
+        mixX2_qn  { X1 1.0e7; X2 1.5e7; }
+    }
+}
+
+details {
+    # X1: 5.32's duct unchanged (0.2 x 0.005 x 0.005 m, 8 cells across the gap)
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.2 0.005 0.005);
+            cells (20 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.06; max 0.19; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_multi_both_series_X1.vtu;
+    }
+
+    # X2: 5.32's second duct unchanged (0.12 x 0.004 x 0.008 m)
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.12 0.004 0.008);
+            cells (12 8 2);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.04; max 0.11; }
+        turbulence { model kOmegaSST; intensity 0.05; lengthScale 3.0e-4;
+                     relaxation 0.7; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 60; continuityTol 1e-2; pcorrTol 1e-4;
+                 momentumTol 1e-4; relaxU 0.9; relaxP 0.3; pRelaxStart 0.02; }
+        vtk out_transient_multi_both_series_X2.vtu;
+    }
+}

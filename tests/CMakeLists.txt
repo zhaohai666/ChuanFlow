@@ -722,6 +722,23 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiBothParallel/case.dict)
 
+# 5.71 / A9 the opposite corner of 5.32's topology: BOTH coupled edges in the
+# SERIES position (A -> X1 -> J1 -> X2 -> Snk, one free node, no third
+# branch). The network carries ONE rate -- q_X1 == q_X2 bit for bit in all six
+# arms x 12 levels -- the rows ADD into a weight-free numerator (rowDrop ==
+# R*q + M*dq/dt bit for bit, the free node closes both rows, the merged row is
+# the plain sum), the constant inertial total splits EXACTLY as M1/(M1+M2) and
+# moves the middle node without touching the rate, the four tables give four
+# slopes inversely proportional to their M sums (the linear part of the
+# relaxation, tau ~ 0.52 s against dt 5e-5), quasi-Newton keeps the rung, and
+# both edges lead the residual schedule.
+add_test(
+    NAME verify.transientCoupledMultiBothSeries
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_coupled_multi_both_series.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient-multi>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupledMultiBothSeries/case.dict)
+
 # the one axis every coupled run in architecture.md 5.25 through 5.32 left in the
 # 1D row: here the partner solves du/dt on its own mesh inside the time level, so
 # the drop it reports is no longer a function of the rate alone. The interface

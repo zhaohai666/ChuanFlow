@@ -139,6 +139,8 @@ int main(int argc, char** argv)
         const Rheology blockRheology = readPartnerRheology(caseDict, edgeName);
         const GeneralizedNewtonianControls gnCtl =
             readGeneralizedNewtonianControls(caseDict);
+        // 5.78: a two-phase partner block. Absent in every older case.
+        const PhaseConfig blockPhases = readPhases(dd);
         log::info("network+block: block has ", mesh.nCells(), " cells and ",
                   mesh.nPatches(), " patches; nu ", num(fluid.mu / fluid.rho),
                   "; turbulence ", blockTurb.model);
@@ -159,7 +161,7 @@ int main(int argc, char** argv)
             // inherit seed 1's interface history
             DetailBlock block(mesh, fluid.mu / fluid.rho, fluid.rho, schemes,
                                blockCtl, probeMin, probeMax, blockTurb, "flat",
-                               blockRheology, gnCtl);
+                               blockRheology, gnCtl, blockPhases);
 
             // and one fresh network: the loop writes the converged coefficient
             // into the coupled pipe, so a reused instance would carry it as a
@@ -207,6 +209,12 @@ int main(int argc, char** argv)
                       " nutMax ", num(m.nutMax),
                       " wallYPlusMax ", num(m.wallYPlusMax),
                       " wallUTau ", num(m.wallUTau));
+            if (const PhaseField* ph = block.phases())
+                log::info("block phases seed ", s,
+                          ": alphaMean ", num(ph->alphaMean()),
+                          " rhoMean ", num(ph->rhoMean()),
+                          " muMean ", num(ph->muMean()),
+                          " bodyDrop ", num(ph->bodyDropPa()));
             if (const GeneralizedNewtonianViscosity* gn =
                     block.generalizedNewtonian())
                 log::info("block fluid seed ", s, ": n ",

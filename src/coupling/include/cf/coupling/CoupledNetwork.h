@@ -37,6 +37,72 @@ Rheology readPartnerRheology(const Dictionary& caseDict,
 GeneralizedNewtonianControls readGeneralizedNewtonianControls(
     const Dictionary& caseDict);
 
+// ---- 5.78 / A8 increment 1: a two-phase partner block -------------------
+// The interface only ever asks an element for lossAt(q) -> dp, so a partner
+// that carries two fluids needs no change at the interface at all: the phase
+// fraction lives INSIDE the 3D region, where it prices two things the FVM
+// kernel already has hooks for -- the cell-centred body force (IEnergyCoupling)
+// and the per-face viscosity (IEddyViscosity). A case that declares no phases
+// takes neither hook and solves bit for bit the equation it always solved.
+struct PhaseConfig
+{
+    bool enabled = false;
+    scalar rhoL = 0;                  // kg/m3, liquid
+    scalar rhoG = 0;                  // kg/m3, gas
+    scalar muL = 0;                   // Pa.s, liquid (default: case mu)
+    scalar muG = 0;                   // Pa.s, gas    (default: case mu)
+    Vector gravity = Vector::zero();  // m/s2, in the mesh's lab frame
+    scalar alpha0 = 0;                // uniform liquid fraction
+    /// Equal-width bands of liquid fraction along the flow axis, inlet first.
+    /// Empty means the uniform `alpha0`. Frozen field: the interface sees a
+    /// snapshot of a stratified/slug column, not an evolving front.
+    std::vector<scalar> alphaBands;
+    /// Let the phase fraction also price the wall law (per-face mixture
+    /// viscosity). With this off the block keeps its single constant nu.
+    bool viscosityMix = false;
+};
+
+/// Read `phases{ rhoL; rhoG; muL; muG; gravity (gx gy gz); alpha (...);
+/// viscosityMix yes; }` from ONE detail{} dictionary. An omitted phase
+/// property means "the 1D case's own fluid value" (filled in by PhaseField,
+/// which knows rho and nu). Every declaration that would be silently ignored
+/// is refused instead.
+PhaseConfig readPhases(const Dictionary& detailDict);
+
+/// The frozen phase field reduced to what the SIMPLE loop asks for: a
+/// cell-centred acceleration `g * rho_m/rho_ref` (so the kinematic pressure
+/// multiplied by rho_ref carries the physical `rho_m*g` head), and a per-face
+/// mixture viscosity. Both are algebraic, so the once-per-sweep refresh hooks
+/// are no-ops; the field is built once from the mesh and the declaration.
+class PhaseField : public IEnergyCoupling, public IEddyViscosity
+{
+public:
+    PhaseField(const polyMesh& mesh, int axis, int flowSign,
+               scalar rhoRef, scalar nuRef, const PhaseConfig& cfg);
+
+    const Field<Vector>* buoyancyForce() const override { return &buoy_; }
+    void correctEnergy(scalar dt) override {}
+    const Field<scalar>& nuEffFace() const override { return nuFace_; }
+    void correctTurbulence(scalar dt) override {}
+
+    scalar alphaMean() const { return alphaMean_; }
+    scalar rhoMean() const { return rhoMean_; }
+    scalar muMean() const { return muMean_; }
+    /// Analytic head the declared field must add to the measured drop:
+    /// -sum_cells V_c rho_m,c (g . flowDir) / A, i.e. -L <rho_m> g_flow.
+    scalar bodyDropPa() const { return bodyDropPa_; }
+    const Field<scalar>& alphaCell() const { return alpha_; }
+
+private:
+    Field<scalar> alpha_;
+    Field<Vector> buoy_;
+    Field<scalar> nuFace_;
+    scalar alphaMean_ = 0;
+    scalar rhoMean_ = 0;
+    scalar muMean_ = 0;
+    scalar bodyDropPa_ = 0;
+};
+
 /// What an element's inlet carries beyond the number of cubic metres per second
 /// it was asked for: the shape the interface declared, that rate read back as
 /// the section integral of the condition the element actually got, the
@@ -283,7 +349,8 @@ public:
                 const TurbulenceConfig& turb,
                 const std::string& inletShape = "flat",
                 const Rheology& rheology = Rheology{},
-                const GeneralizedNewtonianControls& gnCtl = {});
+                const GeneralizedNewtonianControls& gnCtl = {},
+                const PhaseConfig& phases = PhaseConfig{});
 
     DetailBlock(const DetailBlock&) = delete;
     DetailBlock& operator=(const DetailBlock&) = delete;
@@ -325,6 +392,8 @@ public:
     {
         return nonNewtonian_.get();
     }
+    /// Null for every case that declares no phases (5.78).
+    const PhaseField* phases() const { return phase_.get(); }
 
     label lastSweeps() const override { return measure_.sweeps; }
     bool lastConverged() const override { return measure_.converged; }
@@ -447,6 +516,13 @@ private:
     GeneralizedNewtonianControls gnCtl_;
     std::unique_ptr<GeneralizedNewtonianViscosity> nonNewtonian_;
     std::unique_ptr<RansModel> turbModel_;
+
+    /// 5.78: the frozen two-phase field. Only built when the case declares
+    /// `phases{}`; otherwise both SIMPLE hooks stay null and the old solve
+    /// is untouched. Declared after the fields above because it holds no
+    /// reference to them (it only reads the mesh geometry once).
+    PhaseConfig phaseCfg_;
+    std::unique_ptr<PhaseField> phase_;
 };
 
 // ------------------------------------------------------------------

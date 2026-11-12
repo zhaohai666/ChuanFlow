@@ -1,0 +1,96 @@
+// 5.78 / A8 increment 1: the 3D partner block carries TWO fluids.
+//
+// A SINGLE-PATH network (Src -> A -> X 3D -> B -> Snk): the source injects a
+// fixed rate, so every arm is measured at exactly the same q and the drop
+// difference between a declared arm and its undeclared twin IS the phase
+// field's contribution -- no branch re-splitting to fit around. The detailed
+// region declares a frozen phase field. Only the liquid
+// share of a cell is heavy, so the body force the FVM kernel sees is
+// g * rho_m/rho_ref with rho_m = alpha*rhoL + (1-alpha)*rhoG; once the
+// kinematic pressure is multiplied back by rho_ref the measured drop carries
+// the physical head -L <rho_m> g_flow on top of the Poiseuille friction.
+// `viscosityMix yes` additionally lets the same alpha price the per-face
+// viscosity, so a stratified column charges its own wall law band by band.
+//
+// check_coupled_multiphase.py derives every arm (including the undeclared
+// twin and the refusal probes) from THIS file into the system temp directory.
+// Four equal-width alpha bands run inlet-first along +x; the inlet patch is
+// xmin, so flowSign = +1 and the axial gravity component is gravity.x.
+fluid { rho 800; mu 0.1; }
+
+nodes {
+    Src  {};
+    J1   {};
+    J2   {};
+    Snk  { pressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 2.4e-4; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+    X  { from J1; to J2; length 0.5;   diameter 0.02;
+         coupledResistance 3.75e6; }
+    B  { from J2; to Snk; length 5.0;  diameter 0.1; }
+}
+
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edge X;
+    seeds ( 3.75e6 );
+    relax 1.0;
+    tolerance 1e-4;
+    maxOuterIterations 30;
+}
+
+detail {
+    block {
+        min   (0 0 0);
+        max   (0.5 0.02 0.02);
+        cells (50 20 1);
+
+        xmin  { name inlet;   type inlet;    }
+        xmax  { name outlet;  type outlet;   }
+        ymin  { name bottom;  type wall;     }
+        ymax  { name top;     type wall;     }
+        zmin  { name front;   type symmetry; }
+        zmax  { name back;    type symmetry; }
+    }
+
+    probe { min 0.12; max 0.49; }
+
+    schemes {
+        ddt       steady;
+        div       upwind;
+        laplacian corrected;
+        grad      corrected;
+    }
+
+    simple {
+        maxIterations 300;
+        continuityTol 1e-6;
+        pcorrTol      1e-5;
+        momentumTol   1e-5;
+        relaxU        0.9;
+        relaxP        0.03;
+        pRelaxStart   0.02;
+    }
+
+    phases {
+        // rhoG is deliberately NOT chosen so that the 50/50 column reproduces
+        // the 1D fluid's rho=800: <rho_m> = 700 here, which makes it obvious
+        // from the printed seed alone that the block's density comes from the
+        // phase field and not from the network's reference density.
+        rhoL 1200;
+        rhoG 200;
+        alpha ( 1 1 0 0 );
+        gravity ( -2 0 0 );
+    }
+}
+
+output {
+    vtk out_coupled_multiphase.vtu;
+}

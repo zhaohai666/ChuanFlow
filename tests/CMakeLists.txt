@@ -479,6 +479,22 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupled1d3d/case.dict)
 
+# the partner block carries TWO fluids: a frozen alpha field along the flow
+# axis blends rho_m and mu_m cell by cell, so the FVM body force is
+# g*rho_m/rho_ref and, once the kinematic p is scaled back, the measured head
+# is -L_meas <rho_m> g_flow on top of Poiseuille. A single-path network pins q
+# for every derived arm; the checker prices the printed seed against a
+# dict-only closed form, the head against its analytic value, gravity's linear
+# scaling, the band-priced wall law, a bit-identical zero-declaration twin,
+# and seven loud refusals. viscosityMix may not share the per-face hook with a
+# non-Newtonian/RANS partner.
+add_test(
+    NAME verify.coupledMultiphase
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_coupled_multiphase.py
+        $<TARGET_FILE:chflow-coupled-1d3d>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupledMultiphase/case.dict)
+
 # the same duct and the same network, put in motion: the interface is iterated
 # inside every time step, so the checker closes each step's momentum row against
 # the block's own drop, and regresses the ramp the two solvers produce together

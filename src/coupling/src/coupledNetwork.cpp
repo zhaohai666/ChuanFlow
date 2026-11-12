@@ -251,13 +251,145 @@ GeneralizedNewtonianControls readGeneralizedNewtonianControls(
     return ctl;
 }
 
+PhaseConfig readPhases(const Dictionary& detailDict)
+{
+    PhaseConfig cfg;
+    if (!detailDict.has("phases")) return cfg;
+    const Dictionary& pd = detailDict.getDict("phases");
+    cfg.enabled = true;
+    // 0 means "not declared": PhaseField substitutes the case's own rho/mu.
+    cfg.rhoL = pd.getScalarOr("rhoL", 0.0);
+    cfg.rhoG = pd.getScalarOr("rhoG", 0.0);
+    cfg.muL = pd.getScalarOr("muL", 0.0);
+    cfg.muG = pd.getScalarOr("muG", 0.0);
+    if (cfg.rhoL < 0 || cfg.rhoG < 0 || cfg.muL < 0 || cfg.muG < 0)
+        cfFatal("detailBlock: phases rhoL/rhoG/muL/muG cannot be negative");
+    if (pd.has("gravity"))
+    {
+        const std::vector<double> g = pd.getScalarList("gravity");
+        if (g.size() != 3 || !std::isfinite(g[0]) || !std::isfinite(g[1])
+            || !std::isfinite(g[2]))
+            cfFatal("detailBlock: phases gravity must be three finite"
+                    " components (gx gy gz)");
+        cfg.gravity = Vector(g[0], g[1], g[2]);
+    }
+    cfg.alpha0 = pd.getScalarOr("alpha0", 0.0);
+    if (pd.has("alpha") && pd.has("alpha0"))
+        cfFatal("detailBlock: phases alpha and alpha0 are mutually exclusive"
+                " (one declares bands, the other a uniform fraction)");
+    if (pd.has("alpha")) cfg.alphaBands = pd.getScalarList("alpha");
+    if (cfg.alphaBands.empty() && !(cfg.alpha0 >= 0 && cfg.alpha0 <= 1))
+        cfFatal("detailBlock: phases alpha0 must be in [0,1]");
+    for (const scalar a : cfg.alphaBands)
+        if (!(a >= 0 && a <= 1))
+            cfFatal("detailBlock: every phases alpha band must be in [0,1]");
+    if (!cfg.alphaBands.empty() && cfg.alphaBands.size() < 2)
+        cfFatal("detailBlock: phases alpha needs at least two bands");
+    const std::string mix = pd.getWordOr("viscosityMix", "no");
+    if (mix != "yes" && mix != "no")
+        cfFatal("detailBlock: phases viscosityMix is '" + mix
+                + "'; it understands 'yes' and 'no'");
+    cfg.viscosityMix = mix == "yes";
+    return cfg;
+}
+
+PhaseField::PhaseField(const polyMesh& mesh, int axis, int flowSign,
+                       scalar rhoRef, scalar nuRef, const PhaseConfig& cfg)
+{
+    const label nC = mesh.nCells();
+    const auto& centres = mesh.cellCentres();
+    const auto& vol = mesh.cellVolumes();
+    const scalar lo = mesh.minX()[axis];
+    const scalar hi = mesh.maxX()[axis];
+    const scalar span = hi - lo;
+    if (!(span > 0))
+        cfFatal("detailBlock: the phase field needs a non-degenerate flow axis");
+    const scalar inletCoord = flowSign > 0 ? lo : hi;
+
+    alpha_.assign(static_cast<std::size_t>(nC), 0);
+    for (label c = 0; c < nC; ++c)
+    {
+        const std::size_t u = static_cast<std::size_t>(c);
+        scalar s = (centres[u][axis] - inletCoord) * flowSign / span;
+        s = std::clamp(s, 0.0, std::nextafter(1.0, 0.0));
+        if (cfg.alphaBands.empty()) alpha_[u] = cfg.alpha0;
+        else
+        {
+            const std::size_t k = std::min(
+                static_cast<std::size_t>(s * cfg.alphaBands.size()),
+                cfg.alphaBands.size() - 1);
+            alpha_[u] = cfg.alphaBands[k];
+        }
+    }
+
+    const scalar rhoL = cfg.rhoL > 0 ? cfg.rhoL : rhoRef;
+    const scalar rhoG = cfg.rhoG > 0 ? cfg.rhoG : rhoRef;
+    const scalar muRef = rhoRef * nuRef;
+    const scalar muL = cfg.muL > 0 ? cfg.muL : muRef;
+    const scalar muG = cfg.muG > 0 ? cfg.muG : muRef;
+
+    scalar totalV = 0, rhoSum = 0, muSum = 0, alphaSum = 0;
+    buoy_.assign(static_cast<std::size_t>(nC), Vector::zero());
+    for (label c = 0; c < nC; ++c)
+    {
+        const std::size_t u = static_cast<std::size_t>(c);
+        const scalar a = alpha_[u];
+        const scalar rhoM = a * rhoL + (1.0 - a) * rhoG;
+        const scalar muM = a * muL + (1.0 - a) * muG;
+        // The kernel's p is kinematic. An acceleration g*rho_m/rho_ref
+        // therefore becomes, once measure() multiplies p by rho_ref, the
+        // physical head gradient rho_m*g -- only the LIQUID share of a cell
+        // is heavy, exactly the 5.77 distributed-threshold idea one dimension
+        // up.
+        buoy_[u] = cfg.gravity * (rhoM / rhoRef);
+        totalV += vol[u];
+        rhoSum += vol[u] * rhoM;
+        muSum += vol[u] * muM;
+        alphaSum += vol[u] * a;
+    }
+    alphaMean_ = alphaSum / totalV;
+    rhoMean_ = rhoSum / totalV;
+    muMean_ = muSum / totalV;
+
+    nuFace_.assign(static_cast<std::size_t>(mesh.nFaces()), nuRef);
+    if (cfg.viscosityMix)
+    {
+        const Field<label>& owner = mesh.owner();
+        const Field<label>& neighbour = mesh.neighbour();
+        for (label f = 0; f < mesh.nFaces(); ++f)
+        {
+            const std::size_t u = static_cast<std::size_t>(f);
+            scalar a = alpha_[static_cast<std::size_t>(owner[u])];
+            if (f < mesh.nInternalFaces())
+                a = 0.5 * (a + alpha_[static_cast<std::size_t>(neighbour[u])]);
+            nuFace_[u] = (a * muL + (1.0 - a) * muG) / rhoRef;
+        }
+    }
+
+    // The reported drop is p(first section centre) - p(last section centre),
+    // so the head it integrates spans the CELL CENTRES, not the whole block
+    // bounding box: on a uniform Nx-cell line that is (Nx-1)/Nx of L. Using
+    // the bounding box here would overstate the body force by one cell.
+    scalar cMin = centres[0][axis], cMax = centres[0][axis];
+    for (label c = 1; c < nC; ++c)
+    {
+        const scalar xc = centres[static_cast<std::size_t>(c)][axis];
+        cMin = std::min(cMin, xc);
+        cMax = std::max(cMax, xc);
+    }
+    const scalar spanMeasure = cMax - cMin;
+    const scalar gFlow = dot(cfg.gravity, unitAxis(axis) * scalar(flowSign));
+    bodyDropPa_ = -rhoMean_ * gFlow * spanMeasure;
+}
+
 DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
                          const Schemes& schemes, const SimpleControls& ctl,
                          scalar probeMin, scalar probeMax,
                          const TurbulenceConfig& turb,
                          const std::string& inletShape,
                          const Rheology& rheology,
-                         const GeneralizedNewtonianControls& gnCtl)
+                         const GeneralizedNewtonianControls& gnCtl,
+                         const PhaseConfig& phases)
     : mesh_(std::move(mesh)),
       nu_(nu),
       rho_(rho),
@@ -267,11 +399,12 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
       probeMax_(probeMax),
       turb_(turb),
       inletShape_(inletShape),
-      rheology_(rheology),
-      gnCtl_(gnCtl),
       U_(mesh_, "U"),
       p_(mesh_, "p"),
-      phi_(mesh_, "phi", 0.0)
+      phi_(mesh_, "phi", 0.0),
+      rheology_(rheology),
+      gnCtl_(gnCtl),
+      phaseCfg_(phases)
 {
     if (!(nu_ > 0) || !(rho_ > 0))
         cfFatal("detailBlock: nu and rho must be positive");
@@ -336,6 +469,23 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
 
     buildSections();
     buildInletProfile();
+
+    // 5.78: the phase field owns the per-cell body force hook unconditionally,
+    // but shares the ONE per-face viscosity hook with RANS and with the
+    // generalized-Newtonian law. Asking for two owners of that hook is refused
+    // rather than silently resolved by precedence (5.63's rule).
+    if (phaseCfg_.enabled)
+    {
+        if (phaseCfg_.viscosityMix && !rheology_.isNewtonian())
+            cfFatal("detailBlock: phases viscosityMix and a non-Newtonian"
+                    " fluid cannot both own the per-face viscosity");
+        if (phaseCfg_.viscosityMix && turb_.model != "laminar")
+            cfFatal("detailBlock: phases viscosityMix and the '"
+                    + turb_.model + "' turbulence model cannot both own the"
+                    " per-face viscosity");
+        phase_ = std::make_unique<PhaseField>(mesh_, axis_, flowSign_, rho_,
+                                              nu_, phaseCfg_);
+    }
 }
 
 void DetailBlock::buildSections()
@@ -671,9 +821,18 @@ scalar DetailBlock::lossAt(scalar qMag)
     IEddyViscosity* viscosity = nonNewtonian_
                                     ? static_cast<IEddyViscosity*>(nonNewtonian_.get())
                                     : static_cast<IEddyViscosity*>(turbModel_.get());
+    // 5.78: a declared phase field ALWAYS owns the cell-centred body force
+    // (mixed-density gravity); only `viscosityMix yes` also lets it price the
+    // wall law. An undeclared case leaves both pointers exactly as they were,
+    // so the SIMPLE call below is the old one bit for bit.
+    if (phase_ && phaseCfg_.viscosityMix)
+        viscosity = static_cast<IEddyViscosity*>(phase_.get());
+    IEnergyCoupling* energy = phase_
+                                  ? static_cast<IEnergyCoupling*>(phase_.get())
+                                  : nullptr;
     const SimpleResult res = solveIncompressibleSimple(mesh_, U_, p_, phi_, nu_,
                                                        schemes_, ctl_,
-                                                       viscosity);
+                                                       viscosity, energy);
     measure(res, qMag);
     if (!std::isfinite(measure_.dpPa))
         cfFatal("detailBlock: non-finite pressure drop");

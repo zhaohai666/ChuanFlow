@@ -68,6 +68,7 @@ struct BlockSpec
     scalar probeMax = 0;
     std::string vtk;
     TurbulenceConfig turb;
+    PhaseConfig phases;   // 5.78: absent in every older case
 };
 
 BlockSpec loadBlockSpec(const Dictionary& dd, const char* argv0,
@@ -83,7 +84,7 @@ BlockSpec loadBlockSpec(const Dictionary& dd, const char* argv0,
         cfFatal("coupled1d3d: details." + edgeName + " probe min must be below max");
     return BlockSpec{MeshLoader::fromCase(dd, argv0), loadSchemes(dd), loadSimple(dd),
                      probeMin, probeMax, dd.getWordOr("vtk", ""),
-                     TurbulenceConfig::fromCase(dd)};
+                     TurbulenceConfig::fromCase(dd), readPhases(dd)};
 }
 
 } // namespace
@@ -236,7 +237,8 @@ int main(int argc, char** argv)
                 owners.push_back(std::make_unique<DetailBlock>(
                     specs[i].mesh, nu, rho, specs[i].schemes, specs[i].simple,
                     specs[i].probeMin, specs[i].probeMax, specs[i].turb,
-                    startShapes[s][i], edgeRheology[i], gnCtl));
+                    startShapes[s][i], edgeRheology[i], gnCtl,
+                    specs[i].phases));
                 partners.push_back(owners.back().get());
             }
 

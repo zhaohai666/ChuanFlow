@@ -4160,6 +4160,27 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：内核 ~45 行 + 1 case 目录（4 文件）+ checker 新模式 + foreach 加一名，17 判据。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.76 黑油 / PVT 两行的**混合规则决策**（A5 增量 2）：只重定价「液相那一份黏度」——Beggs–Brill 已发表的 `lambda` 无滑移加权、持液率、流型与倾斜修正一个字不动；PVT 表继续供给压力相关牛顿基线，声明的壁律按**本段自己的** `gamma = 8|v|/D` 把它换算成表观黏度；`tau_0` 在相关式链里只是有限的正则化份额，**不是死支**
+
+**这一格从哪来**：A5 剩的两行在 5.75 被判为「要做的是混合规则决策，不是一行代码」。只读审计给出实施面：黑油 march 的液相黏度来自 `blackOilLiquid()`，`beggsBrillDpDs` 里 `muM = in.muL·lambda + in.muG·(1−lambda)` 是**唯一**黏度入口——持液率 `hl0`/`w`、四条流型界 `l1..l4`、倾斜修正 `c`、两相乘子 `exp(S)`、加速项 `Ek` **都不读黏度**；PVT march 则是 `PvtFluid::mu(p)` 分段线性表 + `churchillFriction(re, eps/d)`。于是决策不是「把 Churchill 换成非牛顿版」，而是**在黏度进入相关式之前给它重新定价**：`lambda` 还是 BB 发表的那个 `lambda`，`mu(p)` 还是那张表，动的只有液相份额的**数值**。
+
+**声明面与解析核心**（管块三个既有键 `flowIndex` / `consistency` / `yieldStress`，不再引入新语法）：
+1. **共享壁率换算** `cf::wallRateApparentViscosityPaS(rheology, gdot, muNewtonian)`（`src/common/include/cf/common/Rheology.h`）：把教材一致性 `K` 折成 Rabinowitsch 的 `K' = K((3n+1)/(4n))^n`，再调 `apparentViscosityPaS(mr, gdot, muNewtonian, 1e-6, 100)`，得到 `mu_app = K'·γ̇^(n−1) + τ₀(1−e^(−100γ̇))/γ̇`；`isNewtonian()` 时**直接返回 `muNewtonian` 原值**（零声明逐位不变）。`K'` 的意义是壁应力 `τ_w = mu_app·γ̇` 逐位读回精确单相层流管律，这条也是 5.75 的锚；
+2. **黑油行**：`BeggsBrillIn::liquidRheology` + `marchBeggsBrillPipe(..., const Rheology& liquidRheology = {})`，`solvePipeFlowTwoPhase` 把 `Rheology{pipe.flowIndex, pipe.consistency, pipe.yieldStress}` 转发到全部 5 个 BB march/探针调用点（速率割线、最终 march、电导探针、死支静态柱、死支弦探针），保证同一次求解里每个消费者看到**同一份声明**；`muM = mu_app·lambda + muG·(1−lambda)`，`lambda`/`hl`/regime/`S`/`Ek` 一律不动；
+3. **PVT 行**：`marchPvtPipe` 每段把 `mu = wallRateApparentViscosityPaS(Rheology{...}, 8|v|/D, fluid.viscosity(p))`——表仍负责 `rho(p)` 与压力相关牛顿基线，声明负责在该段壁率上重定价，24 段 Euler 递归逐字不动；
+4. **loader**：撤掉黑油/PVT 对 `yieldStress` 与 `flowIndex` 的两条拒收，新增一条 `flowIndex == 0 && consistency > 0`（没有 n，一致性不是壁律读的量）；`dInner` 环空拒收（5.73）与耦合边拒收保持；
+5. **`tau_0` 的语义边界**：Papanastasiou 正则化让 `γ̇ → 0` 时表观黏度有限，相关式链里因此**没有死支**——真屈服闩锁是 5.49 的瞬态静止支（两流体分布式版另立增量 3），不能把「有限的高黏度」冒充「墙不开」。
+
+**case 与判据**（两份新 case、两个新 checker、CTest #49 / #50；`networkTests.cpp` 另有 7 条 5.76 单元锚）：
+* `tests/cases/steadyPvtRheology`（`verify.steadyPvtRheology`，**54 判据**）：**平表**（`rho 1000`、`mu 0.01` 全压恒定）消灭 `rho(p)` 漂移，两端定压 `2.01e5 / 2.0e5`（dp = 1000 Pa）、`L = 20`、`d = 0.02` ⇒ `4L/d = 4000`，于是层流壁应力 **`τ_w = dp·d/(4L) = 0.25 Pa` 是几何量**，五种声明各自独立反解同一个数：未声明 `Q = 1.96349540849e-05` 恰是 Hagen–Poiseuille、`v = 0.0625 / Re = 125 / f = 0.512`；`flowIndex 1, K = mu` 与未声明**打印串逐位相同**；幂律 `v = 0.015625 / Re = 7.8125 / f = 8.192`；Bingham `v = 0.05 / Re = 80 / f = 0.8`；HB `v = 0.01 / Re = 3.2 / f = 20`。`f·Re == 64`、`Re < 2040`、24 段重推进落在下游节点，且 `K'/K = 1.118034` 让**教材 K 律给出 1.25× 的速率**（判据明确排除它）；四条拒收大声点名；
+* `tests/cases/steadyBlackOilRheology`（`verify.steadyBlackOilRheology`，**60 判据**）：**干油**（`gor 0`、`waterCut 0`、340 K、850 kg/m³、`gamma_g 0.75` ⇒ `muL = 3.1324996588723703e-3 Pa·s`）、水平、两端定压 `1.005e6 / 1.0e6`（dp = 5000 Pa）、`L = 200`、`d = 0.02` ⇒ `τ_w = 0.125 Pa`。此时 `Rs = pb = freeGas = 0`，`lambda = HL = 1`、`exp(S) = 1`、`Ek = 0`、气体相关式整条退出，层流下 `rhoM` 相消：`dp/ds = 32·muM·vm/d² = (4/d)[K'γ̇^n + τ₀(1−e^(−100γ̇))]`。checker **只从 dict 的 `blackoil{}` 块**重算 `Bo(p)` / `rhoOil(p)` / `muL` / 单位质量，再逐段重推进 24 步：未声明 `Q = 3.00375425909e-05`、`v_out = 0.0997609668084`（重推进复现到 1e-11），落点最差偏差 **0.081 Pa**、小于求解器自己的割线门 **0.1005 Pa**；`Re_max` 从 518.6 到 1.649 全层流；`HL = 1`、`exp(S) = 1`、`m/Q = 850`、`regime` 恰是已发表 `fr` 图在新顿档 `transition` / HB 档 `segregated`（**声明改的是速率，不是流型图**）；`flowIndex 1, K = muL` 逐位相同，四位律可区分，四条拒收点名；唯一剩下的压力依赖 `Bo(p)` 在 5000 Pa 上只有 1.8e-5 相对变化，所以 `τ_w` 的闭式判据按 1e-4 收紧而非假装 1e-12；
+* `tests/unit/networkTests.cpp` 的 **7 条精确解析锚**：未声明 BB 保持已发表 Darcy–Weisbach 梯度、声明但牛顿逐位相同、幂律 `dp/ds = (4/D)K'γ̇^n` 1e-12、声明黏度不能移动 `holdup`/`regime`/`exp(S)`、Bingham 份额、HB 两份额之和、三律在单一壁率上可区分；
+* 合计 **121 判据**（54 + 60 + 7）、0 失败；CTest 由 129 → **131** 项。
+
+**本增量的边界**：① `tau_0` 在 BB / PVT 相关式链里只是**有限正则化表观黏度**（`m = 100`、`γ̇` 地板 1e-6），**没有静止阈值、没有死支**——两流体分布式闩锁是 A5 增量 3，瞬态单相闩锁仍是 5.49；② BB 气相保持牛顿、`lambda` 无滑移加权与持液率 / 流型 / 倾斜修正逐字不动（「混合规则决策」的全部内容就是液相份额的重定价）；③ PVT 表仍拥有 `rho(p)` / `mu(p)` 的压力依赖，声明是**换算**不是替换；④ 湍流半区未独立验证（BB 的 Colebrook/Jain、PVT 的 Churchill 湍流项）——两个 case 都刻意深层层流（Re 1.649 ~ 518.6），与 5.73 / 5.75 同一处理；⑤ 正则化常数是共享数值参数而非材料常数，两个极限（τ₀ → 0 退幂律、n → 1 退牛顿）都在单元锚里锁住；⑥ 零声明逐位不变的见证是既有 `steadyNetworkMultiphase` / `steadyPvtColumn` / `steadyBinghamYield` / `steadyPowerLawRheology` / `steadyAnnulus` 等受影响 9 项 + 全量回归；⑦ 环空 `dInner`（5.73）与耦合边拒收不变；⑧ `twoFluid` 的 `yieldStress` 仍被大声拒绝，等增量 3；⑨ `nodal` 分析的 `WellLift` 面本来就没有流变键，其两处 `marchBeggsBrillPipe` 保持默认 `{}` 逐位不变（A5 的拒收只发生在 `steadyNetwork` loader），是否给井筒单独开声明面另议。
+
+**成本**：内核 ~90 行净增（4 文件 109 增 / 19 删：`Rheology.h` / `BeggsBrill.h` / `beggsBrill.cpp` / `network.cpp`）+ 72 行单元锚 + 2 case 目录（2 dict）+ 2 checker + 2 条 `add_test`；121 判据。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

@@ -942,7 +942,9 @@ python3 tests/check_steady_power_law_rheology.py \
 #   6) 反问题同台：case_driven 把 Q 钉成 5.0e-6 让 dp 成未知数，解出的 7692.34 Pa 对 checker 自己那套**二分**（不是
 #      Newton）反演差 5.326e-13；反向那根逐位是正向的负数——死分支判的是被选中方向的符号，不是正向运气好。
 #   7) 拒收要被断言（非零 rc + 消息）：屈服+耦合元（没有墙留给阈值 hold）、屈服+PVT/黑油（那是常物性单相层流律）、
-#      负 tau_0（g(xi) > 1，这条律唯一能给出比牛顿更小压降的方式）。第四条墙——屈服+幂律＝Herschel-Bulkley——当时也
+#      负 tau_0（g(xi) > 1，这条律唯一能给出比牛顿更小压降的方式）。【以上为该 checker 当时的记录，现状已变：
+#      §5.63 把耦合元的拒收改成"接受 + 与无声明孪生逐位相同"；§5.76 撤掉了 PVT/黑油两行的拒收，改为在黏度
+#      入口处重定价液相份额，所以现行 checker 只保留负 tau_0 一条硬拒收 + 两个"接受"断言。】第四条墙——屈服+幂律＝Herschel-Bulkley——当时也
 #      是拒收，5.47 落的就是它：这个文件已从 case_rejectRheology.dict 改名 case_rheologyNowSolves.dict，checker 现在断言
 #      它**解得出**（rc=0、Q>0、dp 仍是被问到的 1.0e4），数值本身归 5.47 的 checker。
 # 写这类判据时的坑：①死分支判据要写成 `forward ? fLo >= 0 : fLo <= 0` 这种**跟随已选方向**的形式，只判 dpTotal 与
@@ -1358,6 +1360,39 @@ python3 tests/check_transient_gel_creep.py \
 python3 tests/check_two_fluid.py \
     "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
     "$PWD/tests/cases/twoFluidRheology/case.dict" rheology
+
+
+# 黑油 / PVT 混合规则决策（5.76 / A5 增量 2）：黑油 march 的黏度只有
+#   muM = muL*lambda + muG*(1-lambda) 一个入口，PVT march 只有 mu(p) 一个入口；
+# 持液率 / 流型 / 倾斜修正 / exp(S) / Ek 都不读黏度，所以决策是「只重定价
+# 液相那一份黏度」，不换相关式：
+#   mu_app = K' gamma^(n-1) + tau0 (1 - exp(-100 gamma)) / gamma,
+#   gamma = 8|vm|/D,  K' = K ((3n+1)/(4n))^n   (Rabinowitsch),
+# 共享 helper wallRateApparentViscosityPaS 把教材 K 折成 K' 再走已有的
+# apparentViscosityPaS；零声明直接返回表/blackOilLiquid() 的 mu 原值。
+# BB 的 lambda 无滑移加权一个字不动；PVT 表继续供给 rho(p)/mu(p)。tau0 在
+# 相关式链里只是有限正则化份额，没有静止阈值、没有死支（5.49 / 增量 3
+# 才是闩锁）。loader 撤掉黑油/PVT 对 yieldStress/flowIndex 的两条拒收，
+# 新增 consistency 无 flowIndex 一条；dInner 环空拒收不变。
+# 判据（121 条 = 54 + 60 + 7 单元锚）：
+#   steadyPvtRheology 用平表让 rho(p) 不漂移，两端定压 -> tau_w = dp d/(4L)
+#   = 0.25 Pa 是几何量，五律各自独立反解；未声明 = Hagen-Poiseuille，
+#   f*Re == 64 全档，K'/K = 1.118034 排除教材 K 的 1.25x 速率；
+#   steadyBlackOilRheology 用干油 + 水平把 lambda = HL = 1、exp(S) = 1、
+#   Ek = 0 全退化掉，层流下 rhoM 相消，只剩 Bo(p) 的 1.8e-5 漂移——
+#   checker 只从 dict 重算 Bo(p)/rhoOil(p)/muL 并逐段重推进 24 步（落点
+#   最差 0.081 Pa < 求解器割线门 0.1005 Pa、出口速度 1e-11），并核对
+#   HL = 1、m/Q = 850、regime 恰是已发表 fr 图；两案各四条拒收。
+# 注意：BB 是经验相关式链，别把 tau_w 当严格闭式——干油 + 水平 + 两端
+# 定压是让闭式成立的全部条件；PVT 平表才把最后一点漂移也消掉。
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyPvtRheology/case.dict
+python3 tests/check_steady_pvt_rheology.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyPvtRheology/case.dict"
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyBlackOilRheology/case.dict
+python3 tests/check_steady_blackoil_rheology.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyBlackOilRheology/case.dict"
 
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
 # （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增

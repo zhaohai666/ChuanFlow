@@ -4139,6 +4139,27 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：内核 ~70 行 + 1 case 文件 + 1 checker + 1 条 `add_test`，19 判据。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.75 两流体分布式行第一次认识液相流变（A5 增量 1）：混合物壁应力从 `mu_mix·γ̇` 变成 **`alpha·K'γ̇^n + (1−alpha)·μ_G·γ̇`**——液体按自己的壁率拿 Metzner–Reed 份额，气体保持牛顿份额，表观混合黏度 `tau_w/γ̇` 进同一支 Churchill；`alpha = 1` 逐位是精确单相幂律管流
+
+**这一格从哪来**：gap_analysis 编为 **A5**（PVT / 黑油 / 两流体三行拒绝流变与屈服），估 2 增量。三行里只有两流体的摩擦是**我们自己的律**（混合物 Churchill，单站点 `cellFriction`）——可闭式扩展；黑油 march 是 Beggs–Brill 经验相关式（自带摩擦因子，不吃本构律）、PVT march 同理，那两行保持 OPEN。本增量实测 ~0.5（内核 ~45 行：`TwoFluidFluid` 两字段 + loader 四拒收 + `cellFriction` 分支 + app 打印）。
+
+**声明面与解析核心**：`fluid{}` 可选键 **`flowIndex`** / **`consistency`**（液相的；`flowIndex 0` = 牛顿，缺省逐位不变）。壁律：
+1. **混合物壁应力** `tau_w = alpha·K'·γ̇^n + (1−alpha)·μ_G·γ̇`，壁率用牛顿约定 `γ̇ = 8 v_m/d`，`K' = K((3n+1)/(4n))^n` 是 Rabinowitsch 修正的一致性——液体份额按自己的律拿，气体份额保持牛顿；
+2. **表观混合黏度** `mu_eff = tau_w/γ̇` 驱动同一支 Churchill（`Re = ρ_m v_m d/mu_eff`）——层流成员 `f = 64/Re` **恰好读回** `(4 dx/d)·tau_w`，与未声明分支恒是同一条恒等式，只是黏度变成了率的函数；
+3. **两个极限都精确**：`alpha = 1`（纯液体）时壁应力就是 `K'γ̇^n`，精确单相幂律管流；零声明走**旧路径逐字**（整个既有 two-fluid 套件是位不变见证）。
+
+**case 与判据**：`tests/cases/twoFluidRheology`（Wallis `us = 0` 均质臂：`alpha* = vsl/vm = 0.8` 是通量恒等式，γ̇ = 20 1/s、`tau_w = 0.6004 Pa`、**dp = 240.16 Pa 精确**；三个孪生 case 同目录）。checker `check_two_fluid.py` 新模式 `rheology`（CTest `verify.twoFluidRheology`），**17 判据 0 失败**：
+* dp 对**全 blend 律**（checker 逐格重算 `mu_eff` → churchill）1e-9，且 Re = 26.8 深层流见证 + dp 对**纯层流闭式** `(4L/d)·tau_w` 1e-9；
+* **壁上拿的是 K' 不是教材 K**：实测 dp 与教材 K 律之差 = `alpha·(K'−K)·γ̇^n·(4L/d)` = 25.3375 Pa 到 1e-9——Rabinowitsch 修正在液体份额上，不是缩放常数；
+* **声明牛顿恒等**：`flowIndex 1, K = muL` 与无声明孪生的 dp、holdup、速率全场一致（12 位打印同串）；
+* **纯液体臂**（vsg 0，`alpha* = 1`）：dp = **300 精确** = `(4L/d)·K'·γ̇^n`——与单相稳态核的管律逐位同一；
+* settled holdup 均匀 `alpha* = 0.8`（最坏格 1.1e-16）、逐格通量分配齐性、vm = vsl+vsg；
+* **四条拒收**大声点名：`yieldStress`（"the distributed mixture row does not take a threshold yet"——分布式行要阈值得先有 5.49 那样的闩锁，自成增量）、`flowIndex` 无 `consistency`、负 `flowIndex`、`consistency` 无 `flowIndex`。
+
+**本增量的边界**：① **屈服不进本行**——分布式动量行的静止阈值需要闩锁（5.49 的单相版），是独立的下一增量；② 黑油 march（Beggs–Brill）与 PVT march 的摩擦是经验相关式，本构律进不去，这两行在 gap_analysis 保持 OPEN（要做的是混合规则决策，不是一行代码）；③ 湍流区无真值可验（同 5.73 的处理：判据锁接线与层流锚）；④ 入口 warm-start 的 `muBar` 电导仍用牛顿混合黏度（只是 Newton 种子，文档记录）；⑤ 零声明位不变的见证是 17 个既有 twoFluid case + 全量回归。
+
+**成本**：内核 ~45 行 + 1 case 目录（4 文件）+ checker 新模式 + foreach 加一名，17 判据。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

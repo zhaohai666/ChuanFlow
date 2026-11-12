@@ -1336,6 +1336,29 @@ python3 tests/check_transient_gel_creep.py \
     "$PWD/build/src/1d/apps/chflow-1d-transient" \
     "$PWD/tests/cases/transientGelCreep/case.dict"
 
+
+# 两流体液相幂律流变（5.75 / A5 增量 1）：fluid{} 可选键 flowIndex /
+# consistency（液相的）。混合物壁应力变成
+#   tau_w = alpha K' gamma^n + (1 - alpha) muG gamma,  gamma = 8 vm/d,
+#   K' = K ((3n+1)/4n)^n,
+# 表观混合黏度 tau_w/gamma 进同一支 Churchill——层流成员 f = 64/Re 恰好
+# 读回 (4 dx/d) tau_w，与未声明分支恒是同一条恒等式，只是黏度变成了率
+# 的函数。alpha = 1 逐位是精确单相幂律管流（Metzner-Reed）；零声明走旧
+# 路径逐字（17 个既有 twoFluid case 是见证）。yieldStress 大声拒绝：
+# 分布式动量行要阈值得先有 5.49 那样的闩锁，自成增量。
+# 判据（17 条）：wallis us = 0 臂让 alpha* = vsl/vm = 0.8 成为通量恒等
+# 式（全部律输入都是 case 常数）；dp = 240.16 Pa 对全 blend 律与纯层流
+# 闭式双 1e-9；壁上拿的是 K' 不是教材 K（与教材 K 律之差恰 = 液体份额
+# 修正 25.3375 Pa）；flowIndex 1 / K = muL 与无声明孪生全场一致；纯液体
+# 臂 dp = 300 精确；四条拒收大声点名。
+# 注意：初始 holdup 冲刷是 vm 上的 sharp front（40 s 走完）+ 数值扩散
+# 尾需要几百秒死掉——endTime 600 才落到位；endTime 60 会在入口留下 5e-4
+# 量级的缓弛尾让闭式判据假红。
+./build/src/1d/apps/chflow-1d-twofluid tests/cases/twoFluidRheology/case.dict
+python3 tests/check_two_fluid.py \
+    "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
+    "$PWD/tests/cases/twoFluidRheology/case.dict" rheology
+
 # 屈服管的层流-湍流转捩 locus 第一次落在稳态那一行（5.51）：新算例 steadyYieldTransition，一个 case 文件
 # （17 根管 + 6 个定压节点、5 个桌面压差 200/500/5000/3e4/1.5e5 Pa）。case.dict **没有新键**：内核新增
 # yieldedTransitionOf（network.cpp:413）+ PipeFlowResult::transition，solvePipeFlow 逐管填一次（:501），

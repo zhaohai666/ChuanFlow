@@ -6,21 +6,27 @@
 // 1e5, with Re_B = rho v d / mu the plastic Reynolds number and
 // Trel = V / (tau_0/rho)^0.5 = Re_B / He^0.5 an identity.
 //
-// This case does NOT price turbulence: the friction a yielded pipe resists is
-// still its laminar wall law (5.46/5.47), because the published turbulent-yield
-// closure could not be transcribed with its constants intact. What is landed is
-// the pipe's own side of the question -- the rate the locus sits at and the drop
-// THIS pipe's wall law asks for there -- so a network can say how much room is
-// left before the statement it is making stops being the one that applies.
+// 5.83 lands the turbulent side: a smooth Bingham pipe strictly past Re_B,t is
+// priced by the Wilson & Thomas (2006) Eq (15)/(16) closure (cross-checked
+// against Thomas & Wilson 2007 Eq [3]/[4]), not the laminar Buckingham law. The
+// locus is still reported -- He, Re_B,t, Q_t and dp_t -- and dp_t is the LAST
+// laminar point, the drop the wall law asks for AT the locus rate.
 //
-// Five drops (N1 200 / N2 500 / N3 5000 / N4 3e4 / N5 1.5e5 Pa over B) times the
-// He families, so the same geometry appears once below and once past its own
-// locus, and the locus values themselves must not move between the two. The He
-// targets are the published parameter set of Csizmadia & Toth (2013) Table 1
-// (D = 0.1 m, rho = 1370 kg/m3, tau_y = 1 Pa, mu_B = 2e-2 Pa.s -> He = 3.425e4)
-// scaled by tau_0 at fixed d, plus the two band boundaries straddled digit by
-// digit. T3/T4 carry tau_0 far above any laboratory mud on purpose: they are
-// numerical probes of the He^0.5 band, not fluids.
+// The switch is hard, so it carries a hysteretic gap: at Re_B,t the turbulent
+// friction jumps ABOVE the laminar (for Small05, dp_t,lam = 403 Pa but
+// dp_t,turb = 626 Pa), and a drop between the two has no steady root -- the
+// solver sits at Q_t. The case therefore probes the well-posed regimes only:
+// Small01 at 200 Pa is laminar, its twin Small05 at 700 Pa is just past the gap
+// ceiling into turbulence. Same geometry, either side of transition.
+//
+// Six drops (N1 200 / N2 500 / N3 5000 / N4 3e4 / N5 1.5e5 / N6 700 Pa over B)
+// times the He families, so the same geometry appears once below and once past
+// its own locus, and the locus values themselves must not move between the two.
+// The He targets are the published parameter set of Csizmadia & Toth (2013)
+// Table 1 (D = 0.1 m, rho = 1370 kg/m3, tau_y = 1 Pa, mu_B = 2e-2 Pa.s ->
+// He = 3.425e4) scaled by tau_0 at fixed d, plus the two band boundaries
+// straddled digit by digit. T3/T4 carry tau_0 far above any laboratory mud on
+// purpose: they are numerical probes of the He^0.5 band, not fluids.
 //
 // verified by tests/check_steady_yield_transition.py
 // (ctest verify.steadyYieldTransition).
@@ -43,13 +49,14 @@ nodes
     N3 { pressure 5.0e3;   }
     N4 { pressure 3.0e4;   }
     N5 { pressure 1.5e5;   }
+    N6 { pressure 7.0e2;   }
 }
 
 pipes
 {
     // --- He = 3.425e2 and 3.425e4 (band 0 / band 1), Csizmadia Table 1 ------
     Small01      { from N1; to B; length 20; diameter 0.1; yieldStress 0.01; }
-    Small05      { from N2; to B; length 20; diameter 0.1; yieldStress 0.01; }
+    Small05      { from N6; to B; length 20; diameter 0.1; yieldStress 0.01; }
     TableHe04    { from N2; to B; length 20; diameter 0.1; yieldStress 1.0;  }
     TableHe04Run { from N3; to B; length 20; diameter 0.1; yieldStress 1.0;  }
 

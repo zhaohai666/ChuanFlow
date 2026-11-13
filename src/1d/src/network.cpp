@@ -466,6 +466,55 @@ double yieldedWallStress(const NetworkPipe& pipe, const FluidProperties& fluid,
     return binghamWallStress(pipe, fluid, q);
 }
 
+/// Wilson & Thomas (2006) Eq (17)-(19): the plastic Reynolds number at the
+/// laminar-turbulent locus of a Bingham plastic, a function of He alone. Shared
+/// by the locus report and the friction switch so the two cannot drift apart.
+double binghamTransitionRe(double hedstrom)
+{
+    if (hedstrom <= 1700.0) return 2100.0;
+    if (hedstrom <= 1.0e5)    return 80.0 * std::pow(hedstrom, 0.40);
+    return 25.0 * std::sqrt(hedstrom);
+}
+
+/// Wilson & Thomas (2006) Eq (15)/(16), cross-checked verbatim against Thomas &
+/// Wilson (2007) Eq [3]/[4]: the smooth-wall turbulent Darcy friction factor of
+/// a Bingham plastic. With beta = tau_w/tau_B, He = rho tau_B d^2/mu_B^2 and
+/// Re_B = rho V d/mu_B, the mean-to-shear velocity ratio V/U* = sqrt(8/f) obeys
+///   sqrt(8/f) = 2.5 ln(sqrt He) + 2.5 ln[sqrt(beta)(beta-1)/(beta+1)]
+///               + 11.6/beta - chi(beta),
+///   chi(beta) = -2.5 ln[(beta-1)/beta] - 2.5 (beta+0.5)/beta^2.
+/// beta = f Re_B^2/(8 He) and sqrt(8/f) = Re_B/sqrt(He beta), so this is one
+/// monotone equation in beta > 1, solved by bracketed bisection to rounding.
+/// As tau_B -> 0 (He -> 0, beta -> inf at fixed He*beta = Re*^2) the log terms
+/// collapse to 2.5 ln(Re*) while chi and 11.6/beta vanish: the Newtonian
+/// smooth-wall log law, not a separate statement. log1p keeps the (beta-1)/beta
+/// and (beta-1)/(beta+1) ratios accurate when beta is large.
+double yieldedTurbulentFriction(double rePlastic, double hedstrom)
+{
+    auto chi = [](double b)
+    {
+        return -2.5 * std::log1p(-1.0 / b) - 2.5 * (b + 0.5) / (b * b);
+    };
+    auto resid = [&](double b)
+    {
+        const double logTerm = 1.25 * std::log(b)
+                             + 2.5 * std::log1p(-2.0 / (b + 1.0));
+        return 1.25 * std::log(hedstrom) + logTerm + 11.6 / b - chi(b)
+             - rePlastic / std::sqrt(hedstrom * b);
+    };
+    double lo = 1.0 + 1.0e-12, hi = 2.0;
+    for (int e = 0; e < 200 && resid(hi) < 0.0; ++e) hi *= 2.0;
+    for (int it = 0; it < 200; ++it)
+    {
+        const double mid = 0.5 * (lo + hi);
+        if (resid(mid) > 0.0) hi = mid; else lo = mid;
+        if (!(hi > lo)) break;
+        if (hi - lo <= 2.0 * std::numeric_limits<double>::epsilon() * hi) break;
+    }
+    const double beta = 0.5 * (lo + hi);
+    return 8.0 * hedstrom * beta / (rePlastic * rePlastic);
+}
+
 /// Friction + valve loss (Pa, positive) at an imposed rate magnitude q: the
 /// wall-law drop from pipeFrictionPa -- which the transient row also calls --
 /// plus the local loss. A yielded pipe answers with the wall-stress solution,
@@ -505,6 +554,18 @@ double pipeFrictionReport(const NetworkPipe& pipe, const FluidProperties& fluid,
     if (pipe.yieldStress > 0)
     {
         if (!(speed > 0)) return 0.0;
+        // 5.83: past the locus a smooth Bingham pipe reports the Wilson-Thomas
+        // turbulent factor -- the same number pipeFrictionPa charges -- so the
+        // printed f still reproduces the printed drop. Below it (and for HB or
+        // a rough wall) the exact laminar factor 8 tau_w / (rho v^2).
+        if (!(pipe.flowIndex > 0) && pipe.roughness <= 0.0)
+        {
+            const double he = pipe.yieldStress * pipe.diameter * pipe.diameter
+                            * fluid.rho / (fluid.mu * fluid.mu);
+            const double reb = fluid.rho * speed * pipe.diameter / fluid.mu;
+            if (reb > binghamTransitionRe(he))
+                return yieldedTurbulentFriction(reb, he);
+        }
         return 8.0 * yieldedWallStress(pipe, fluid, speed * pipeArea(pipe))
              / (fluid.rho * speed * speed);
     }
@@ -640,8 +701,29 @@ double pipeFrictionPa(const NetworkPipe& pipe, const FluidProperties& fluid,
                       double q)
 {
     if (pipe.yieldStress > 0)
+    {
+        // 5.83: a smooth Bingham plastic strictly past its published locus
+        // (Wilson & Thomas 2006) is priced by the turbulent closure, not the
+        // laminar Buckingham wall law. Strict > keeps dpAtTransition -- which
+        // is evaluated AT Re_B,t -- on the laminar law. Herschel-Bulkley has no
+        // plastic viscosity and so no Wilson-Thomas statement; a rough wall is
+        // outside the smooth-wall closure. Both keep the laminar law until
+        // their own increments land.
+        if (!(pipe.flowIndex > 0) && pipe.roughness <= 0.0 && q != 0.0)
+        {
+            const double v = std::abs(q) / pipeArea(pipe);
+            const double he = pipe.yieldStress * pipe.diameter * pipe.diameter
+                            * fluid.rho / (fluid.mu * fluid.mu);
+            const double reb = fluid.rho * v * pipe.diameter / fluid.mu;
+            if (reb > binghamTransitionRe(he))
+            {
+                const double f = yieldedTurbulentFriction(reb, he);
+                return (f * pipe.length / pipe.diameter) * fluid.rho * v * v / 2.0;
+            }
+        }
         return 4.0 * pipe.length * yieldedWallStress(pipe, fluid, q)
              / pipe.diameter;
+    }
     const double v = q / pipeArea(pipe);
     const double re = generalizedReynolds(pipe, fluid, std::abs(v));
     if (pipeIsRect(pipe))
@@ -675,12 +757,13 @@ double pipeFrictionPa(const NetworkPipe& pipe, const FluidProperties& fluid,
 }
 
 /// Where a yielded pipe sits against the published laminar-turbulent locus.
-/// Nothing here is charged to the pipe: the locus is read off the grouping the
-/// literature uses (He, and the plastic Reynolds number Re_B built on the
-/// fluid's own mu -- which is exactly why a Herschel-Bulkley pipe gets no
-/// report, its law contains no plastic viscosity at all), and the one number
-/// that IS the pipe's own physics is `dpAtTransition`, the drop the wall law
-/// already shipped in 5.46/5.47 asks for at the locus rate. The three band
+/// The locus numbers are a report, not a charge -- but they are the switch
+/// pipeFrictionPa reads: a smooth Bingham pipe strictly past Re_B,t is priced
+/// by the Wilson-Thomas turbulent closure (5.83), below it by the laminar wall
+/// law. He and the plastic Reynolds number Re_B are built on the fluid's own
+/// mu, which is exactly why a Herschel-Bulkley pipe gets no report (its law
+/// contains no plastic viscosity at all). `dpAtTransition` is the pipe's own
+/// laminar drop at the locus rate -- the last laminar point. The three band
 /// constants and their He ranges are as printed in Wilson & Thomas (2006);
 /// their Eq (17), the fit that bridges 2100 down into the low-He range, could
 /// not be transcribed from the source layout, so band 0 is the flat 2100 the
@@ -696,18 +779,19 @@ YieldedTransition yieldedTransitionOf(const NetworkPipe& pipe,
                / (fluid.mu * fluid.mu);
     t.rePlastic = fluid.rho * (std::abs(q) / area) * pipe.diameter / fluid.mu;
 
-    if (t.hedstrom <= 1700.0)       { t.band = 0; t.reTransition = 2100.0; }
-    else if (t.hedstrom <= 1.0e5)   { t.band = 1; t.reTransition = 80.0
-                                                       * std::pow(t.hedstrom, 0.40); }
-    else                            { t.band = 2; t.reTransition = 25.0
-                                                       * std::sqrt(t.hedstrom); }
+    t.reTransition = binghamTransitionRe(t.hedstrom);
+    t.band = t.hedstrom <= 1700.0 ? 0 : (t.hedstrom <= 1.0e5 ? 1 : 2);
 
-    // the rate that number is a velocity of, and the drop this pipe's own law
-    // asks for there -- the same parentheses the momentum row uses, so the
-    // locus and the friction cannot drift apart
+    // the rate that number is a velocity of, and the laminar drop this pipe's
+    // own wall law asks for there. dpAtTransition is the LAST laminar point --
+    // the threshold the injection end crosses into turbulence -- so it is read
+    // from the shared laminar wall stress directly, never the turbulent switch
+    // (a round-trip through rateAtTransition could otherwise trip it at Re_B,t).
     t.rateAtTransition = t.reTransition * fluid.mu * area
                        / (fluid.rho * pipe.diameter);
-    t.dpAtTransition = pipeFrictionPa(pipe, fluid, t.rateAtTransition);
+    t.dpAtTransition = 4.0 * pipe.length
+                     * yieldedWallStress(pipe, fluid, t.rateAtTransition)
+                     / pipe.diameter;
     t.relTransitionSpeed = (t.rateAtTransition / area)
                          * std::sqrt(fluid.rho / pipe.yieldStress);
     t.pastLaminarLimit = t.rePlastic > t.reTransition;

@@ -218,9 +218,12 @@ struct SteadyControls
 /// -1 for any pipe whose law is not Bingham's -- a Herschel-Bulkley pipe
 /// declares no plastic viscosity, so neither He nor Re_B is a statement about
 /// it. `dpAtTransition` is what makes the locus usable: it is the drop the
-/// pipe's OWN wall law (5.46/5.47) asks for at the locus rate, i.e. how far the
-/// injection end has to move before the laminar statement stops being the
-/// one that applies. Nothing here re-prices the friction.
+/// pipe's OWN laminar wall law (5.46/5.47) asks for at the locus rate, i.e. how
+/// far the injection end has to move before the laminar statement stops being
+/// the one that applies. The locus numbers themselves are not a charge; past
+/// Re_B,t a smooth Bingham pipe is priced by the Wilson-Thomas turbulent
+/// closure (5.83), and dpAtTransition stays laminar because it is read AT the
+/// locus, not past it.
 struct YieldedTransition
 {
     int band = -1;
@@ -274,17 +277,20 @@ double churchillFriction(double reynolds, double relativeRoughness);
 
 /// The friction drop (Pa, positive) the declared wall law resists at a rate
 /// magnitude |q|: Newtonian or power-law through Churchill on the
-/// Metzner-Reed number, a yielded pipe through its own wall stress. Declared
-/// here because the transient momentum row and the steady pipe loss are two
-/// callers of one law; a rheology read differently in the two kernels would be
-/// a third set of assertions nobody could reconcile.
+/// Metzner-Reed number, a yielded pipe through its own laminar wall stress, or
+/// -- for a smooth Bingham plastic strictly past its locus -- the Wilson-Thomas
+/// turbulent closure (5.83). Declared here because the transient momentum row
+/// and the steady pipe loss are two callers of one law; a rheology read
+/// differently in the two kernels would be a third set of assertions nobody
+/// could reconcile.
 double pipeFrictionPa(const NetworkPipe& pipe, const FluidProperties& fluid,
                       double q);
 
 /// The transition locus of one yielded pipe at a rate magnitude |q| (see
-/// YieldedTransition). Reported, never charged: the friction a yielded pipe
-/// resists is still its laminar wall law, because the published turbulent-yield
-/// closure is not landed yet.
+/// YieldedTransition). The locus numbers are a report, not a charge; but a
+/// smooth Bingham pipe strictly past Re_B,t is now priced by the Wilson-Thomas
+/// turbulent closure (5.83) inside pipeFrictionPa, while dpAtTransition --
+/// evaluated AT the locus -- stays on the laminar wall law.
 YieldedTransition yieldedTransitionOf(const NetworkPipe& pipe,
                                       const FluidProperties& fluid, double q);
 

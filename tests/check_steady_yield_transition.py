@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 """steadyYieldTransition: the published laminar-turbulent locus of a yielded
-pipe, read off the pipe's own wall law -- checked by re-deriving every reported
-number from Wilson & Thomas (2006) and from Buckingham (1921) written out here.
+pipe AND the turbulent friction a smooth Bingham pipe is priced by past it --
+checked by re-deriving every reported number from Wilson & Thomas (2006) and
+from Buckingham (1921) written out here.
 
-What landed is a report, not a re-pricing. The row still answers a yielded pipe
-with its laminar wall law (5.46/5.47), because the published turbulent-yield
-FRICTION closure could not be transcribed with its constants intact. The locus,
-though, needs only the grouping the literature agrees on and the laminar law
-that is already in the kernel:
+5.83 lands the turbulent side. Below Re_B,t a yielded pipe answers with its
+laminar wall law (5.46/5.47); strictly past it, a smooth Bingham pipe is priced
+by the Wilson & Thomas Eq (15)/(16) closure (cross-checked against Thomas &
+Wilson 2007 Eq [3]/[4]). The locus itself needs only the grouping the literature
+agrees on:
 
     He   = tau_0 d^2 rho / mu^2                    (the Hedstrom number)
     Re_B = rho |v| d / mu                          (the plastic Reynolds number)
     Re_B,t(He) = 2100            (He <= 1700)
                             = 80 He^0.40   (1700 < He <= 1e5)
                             = 25 He^0.5    (He > 1e5)
-    Q_t  = Re_B,t mu A / (rho d)      and   dp_t = 4 L tw(Q_t) / d
+    Q_t  = Re_B,t mu A / (rho d)      and   dp_t = 4 L tw(Q_t) / d  (laminar)
     Trel = Q_t / A / (tau_0/rho)^0.5 = Re_B,t / He^0.5
 
-`dp_t` is the useful one: it is how far the injection end has to move before the
-statement the kernel is making stops being the one that applies. Seven families:
+The turbulent closure, with beta = tau_w/tau_B = f Re_B^2/(8 He):
+    sqrt(8/f) = 2.5 ln(sqrt He) + 2.5 ln[sqrt(beta)(beta-1)/(beta+1)]
+                + 11.6/beta - chi(beta)
+    chi(beta) = -2.5 ln[(beta-1)/beta] - 2.5 (beta+0.5)/beta^2
+solved here by bisection on beta > 1, independently of the kernel.
+
+`dp_t` is the LAST laminar point. The switch is hard, so at Re_B,t the turbulent
+drop jumps above the laminar one -- a hysteretic gap with no steady root, which
+the case avoids by probing only the well-posed regimes. Seven families:
 
   1. the locus belongs to the fluid and the geometry, not to the state it was
      read at -- twin pipes at different drops agree bit for bit
@@ -28,12 +36,15 @@ statement the kernel is making stops being the one that applies. Seven families:
   3. the identities: Trel = Re_B,t / He^0.5 (which forces Trel to 25 through the
      whole He^0.5 band, and to 80 He^-0.10 in the mid band), and the printed
      Re_B is the printed Re
-  4. dp_t is the pipe's OWN wall law at Q_t -- bisection on Buckingham's bracket
+  4. dp_t is the pipe's OWN laminar wall law at Q_t -- bisection on Buckingham's
+     bracket -- and it stays laminar even for a pipe solved turbulent
   5. the verdict: past/below the locus is the same answer from the rate, from
      the plastic Reynolds number, and from the drop
-  6. the report is inert: every rate is still the exact root of the asked drop,
-     f Re_B g(xi) = 64 still holds past the locus, and a tau_0 -> 0 pipe lands
-     on its Newtonian twin at the bracket's own factor
+  6. the switch prices turbulence: below the locus every rate is the laminar
+     Buckingham root and f Re_B g(xi) = 64; past it every rate is the turbulent
+     root and f is the Eq (15)/(16) factor re-derived here, NOT 64/(Re_B g); the
+     turbulent drop jumps above the laminar at the locus (the gap); and a
+     tau_0 -> 0 pipe still lands on its Newtonian twin at the bracket's factor
   7. where the locus does not apply: a Newtonian pipe and a Herschel-Bulkley
      pipe print no He, because neither declares a plastic viscosity
 """
@@ -49,12 +60,13 @@ CASE_DIR = CASE.rsplit("/", 1)[0]
 RHO = 1370.0
 MU = 0.02
 LENGTH = 20.0
-DROP = {"N1": 200.0, "N2": 500.0, "N3": 5000.0, "N4": 30000.0, "N5": 150000.0}
+DROP = {"N1": 200.0, "N2": 500.0, "N3": 5000.0, "N4": 30000.0, "N5": 150000.0,
+        "N6": 700.0}
 
 # name: (diameter, tau_0, from-node); tau_0 = None means no threshold declared
 PIPES = {
     "Small01":       (0.1, 0.01,   "N1"),
-    "Small05":       (0.1, 0.01,   "N2"),
+    "Small05":       (0.1, 0.01,   "N6"),
     "TableHe04":     (0.1, 1.0,    "N2"),
     "TableHe04Run":  (0.1, 1.0,    "N3"),
     "Edge1700Under": (0.02, 1.2400, "N5"),
@@ -194,6 +206,71 @@ def g_factor(dp, diam, tau0):
     return 1.0 - 4.0 / 3.0 * xi + xi ** 4 / 3.0
 
 
+# --- the turbulent closure, re-derived independently of the kernel ----------
+
+def wt_turbulent_f(reb, he):
+    """Wilson & Thomas (2006) Eq (15)/(16): the smooth-wall turbulent Darcy
+    factor of a Bingham plastic. With beta = tau_w/tau_B = f reb^2/(8 he) and
+    sqrt(8/f) = reb/sqrt(he beta), the mean-to-shear velocity ratio obeys
+        sqrt(8/f) = 1.25 ln he + 1.25 ln beta + 2.5 ln[(beta-1)/(beta+1)]
+                    + 11.6/beta - chi(beta),
+        chi(beta) = -2.5 ln[(beta-1)/beta] - 2.5 (beta+0.5)/beta^2.
+    One monotone equation in beta > 1, solved by bracketed bisection. Written
+    with plain log (the kernel uses log1p) so it is an independent code path."""
+    def chi(b):
+        return -2.5 * math.log((b - 1.0) / b) - 2.5 * (b + 0.5) / (b * b)
+
+    def resid(b):
+        return (1.25 * math.log(he) + 1.25 * math.log(b)
+                + 2.5 * math.log((b - 1.0) / (b + 1.0)) + 11.6 / b - chi(b)
+                - reb / math.sqrt(he * b))
+
+    lo, hi = 1.0 + 1.0e-12, 2.0
+    for _ in range(200):
+        if resid(hi) >= 0.0:
+            break
+        hi *= 2.0
+    for _ in range(300):
+        mid = 0.5 * (lo + hi)
+        if resid(mid) > 0.0:
+            hi = mid
+        else:
+            lo = mid
+        if hi - lo <= 2.0e-16 * hi:
+            break
+    beta = 0.5 * (lo + hi)
+    return 8.0 * he * beta / (reb * reb)
+
+
+def dp_turb_of_q(q, tau0, diam):
+    """The turbulent drop at a rate magnitude: (f L/d) rho v^2/2 with f from
+    Eq (15)/(16) at the plastic Reynolds number of that rate."""
+    v = abs(q) / area(diam)
+    reb = RHO * v * diam / MU
+    f = wt_turbulent_f(reb, he_of(diam, tau0))
+    return (f * LENGTH / diam) * RHO * v * v / 2.0
+
+
+def q_turb_of_dp(dp, tau0, diam):
+    """The turbulent rate at an imposed drop, bracketed above Q_t (the closure
+    only applies past the locus). dp_turb is monotone increasing in Q."""
+    qt = band_and_locus(he_of(diam, tau0))[1] * MU * area(diam) / (RHO * diam)
+    lo, hi = qt, qt * 2.0
+    for _ in range(200):
+        if dp_turb_of_q(hi, tau0, diam) >= dp:
+            break
+        hi *= 2.0
+    for _ in range(300):
+        mid = 0.5 * (lo + hi)
+        if dp_turb_of_q(mid, tau0, diam) < dp:
+            lo = mid
+        else:
+            hi = mid
+        if hi - lo <= 2.0e-16 * hi:
+            break
+    return 0.5 * (lo + hi)
+
+
 proc = run(STEADY, CASE)
 require(proc.returncode == 0, "the locus case solves (rc=%d)" % proc.returncode)
 S = parse_steady(proc.stdout)
@@ -301,42 +378,90 @@ require(n_past >= 3 and n_below >= 3,
         "verdict is not one-valued" % (n_past, n_below))
 require(S["Small01"]["dp"] < S["Small01"]["dpqt"] < S["Small05"]["dp"],
         "Small01/Small05 are the same pipe either side of its own dp_t = %.6g "
-        "Pa (200 / 500 Pa)" % S["Small01"]["dpqt"])
+        "Pa (200 laminar / 700 turbulent, clear of the gap)" % S["Small01"]["dpqt"])
 
-# --- 6. the report is inert -------------------------------------------------
+# --- 6. the switch prices turbulence past the locus -------------------------
 
-worst = 0.0
-worst_name = ""
-for n in LOCUS:
+# below the locus: the rate is the laminar Buckingham root of the asked drop,
+# and f Re_B g(xi) = 64 exactly as in 5.46/5.47
+below = [n for n in LOCUS if not S[n].get("past") and S[n]["q"] > 0.0]
+worst_q = worst_f = 0.0
+worst_qn = ""
+for n in below:
     d, tau0, node = PIPES[n]
     tw = S[n]["dp"] * d / (4.0 * LENGTH)
     want = q_of_tw(tw, tau0, d)
-    if want > 0 and rel(S[n]["q"], want) > worst:
-        worst, worst_name = rel(S[n]["q"], want), n
-require(worst < 1e-11,
-        "every moving rate is still the exact root of the asked drop under the "
-        "laminar law -- reading the locus charged nothing (%s, worst %.3g)"
-        % (worst_name, worst))
-worst = 0.0
-for n in LOCUS:
-    if S[n]["q"] <= 0.0:
-        continue
+    if rel(S[n]["q"], want) > worst_q:
+        worst_q, worst_qn = rel(S[n]["q"], want), n
+    worst_f = max(worst_f, rel(S[n]["f"] * S[n]["reb"]
+                               * g_factor(S[n]["dp"], d, tau0), 64.0))
+require(worst_q < 1e-11,
+        "every below-locus moving rate is still the exact laminar Buckingham "
+        "root of the asked drop (%s, worst %.3g)" % (worst_qn, worst_q))
+require(worst_f < 1e-9,
+        "f Re_B g(xi) = 64 holds below the locus, worst relative %.3g" % worst_f)
+
+# past the locus: the rate is the TURBULENT root, f is Eq (15)/(16) re-derived
+# here, and the printed f reproduces the printed drop -- not 64/(Re_B g)
+past = [n for n in LOCUS if S[n].get("past")]
+worst_q = worst_f = worst_dp = 0.0
+worst_qn = worst_fn = worst_dpn = ""
+for n in past:
     d, tau0, node = PIPES[n]
-    worst = max(worst, rel(S[n]["f"] * S[n]["reb"] * g_factor(S[n]["dp"], d, tau0),
-                           64.0))
-require(worst < 1e-9,
-        "f Re_B g(xi) = 64 still holds past the locus, worst relative %.3g -- "
-        "the locus did not reach into the friction factor" % worst)
-deep = [n for n in LOCUS if S[n].get("past") and S[n]["reb"] > 4.0e4]
+    he = he_of(d, tau0)
+    qw = q_turb_of_dp(DROP[node], tau0, d)
+    fw = wt_turbulent_f(S[n]["reb"], he)
+    dpw = (S[n]["f"] * LENGTH / d) * RHO * S[n]["v"] ** 2 / 2.0
+    if rel(S[n]["q"], qw) > worst_q:
+        worst_q, worst_qn = rel(S[n]["q"], qw), n
+    if rel(S[n]["f"], fw) > worst_f:
+        worst_f, worst_fn = rel(S[n]["f"], fw), n
+    if rel(S[n]["dp"], dpw) > worst_dp:
+        worst_dp, worst_dpn = rel(S[n]["dp"], dpw), n
+require(len(past) >= 3,
+        "the case has %d past-locus pipes priced turbulent" % len(past))
+require(worst_q < 1e-9,
+        "every past-locus rate is the exact root of the asked drop under the "
+        "Wilson-Thomas turbulent law (%s, worst %.3g)" % (worst_qn, worst_q))
+require(worst_f < 2e-11,
+        "every past-locus f IS the Eq (15)/(16) factor re-derived independently "
+        "here (%s, worst %.3g)" % (worst_fn, worst_f))
+require(worst_dp < 1e-9,
+        "the printed past-locus f reproduces the printed drop, (f L/d) rho v^2/2 "
+        "(%s, worst %.3g)" % (worst_dpn, worst_dp))
+
+# the deepest past-locus pipes have STOPPED reproducing the laminar bracket
+deep = [n for n in past if S[n]["reb"] > 4.0e4]
 require(len(deep) >= 2 and all(
     rel(S[n]["f"] * S[n]["reb"] * g_factor(S[n]["dp"], PIPES[n][0], PIPES[n][1]),
-        64.0) < 1e-9 for n in deep),
+        64.0) > 0.1 for n in deep),
         "the deepest past-locus pipes (%s) run Re_B in the tens of thousands to "
-        "hundreds of thousands and still answer 64 / (Re_B g), i.e. the laminar "
-        "bracket -- which is exactly the number the next increment has to stop "
+        "hundreds of thousands and NO LONGER answer 64/(Re_B g): the laminar "
+        "bracket is off by >10%%, which is exactly what 5.83 had to stop "
         "reproducing" % ",".join(deep))
 
-# the tau_0 -> 0 control: same geometry, Newtonian twin
+# the switch is hard: the turbulent and laminar drops never join smoothly at Q_t
+require(all(abs(dp_turb_of_q(S[n]["qt"], PIPES[n][1], PIPES[n][0])
+                - dp_of_q(S[n]["qt"], PIPES[n][1], PIPES[n][0])) > 0.0
+            for n in LOCUS),
+        "the switch is hard: the turbulent and laminar drops differ at Q_t for "
+        "every pipe (a jump, never a smooth join)")
+
+# for the band-0 straddle pipe the jump is a GAP (turbulent above laminar), so a
+# drop between the two has no steady root; Small05 sits at 700 Pa, clear above it
+d, tau0, _ = PIPES["Small05"]
+qt = S["Small05"]["qt"]
+dl = dp_of_q(qt, tau0, d)
+dt = dp_turb_of_q(qt, tau0, d)
+require(dt > dl and S["Small05"]["dp"] > dt,
+        "Small05's locus is a gap: dp_t,lam=%.4f < dp_t,turb=%.4f, and the "
+        "imposed 700 Pa sits above the ceiling (a drop inside the gap would "
+        "leave the solver sitting at Q_t with no root)" % (dl, dt))
+require(rel(S["Small05"]["dpqt"], dl) < 2e-11,
+        "the reported dp_t is the laminar floor of that gap (%.6g), even though "
+        "Small05 itself is solved turbulent" % dl)
+
+# the tau_0 -> 0 control: same geometry, Newtonian twin, still BELOW the locus
 g_fac = g_factor(S["Bore02"]["dp"], 0.02, 0.0002)
 require(rel(S["Bore02"]["q"], S["Bore02Newt"]["q"] * g_fac) < 1e-3,
         "the tau_0 = 2e-4 pipe's rate is its Newtonian twin's times the "

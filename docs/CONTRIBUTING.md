@@ -1359,6 +1359,33 @@ python3 tests/check_steady_esp.py \
     "$PWD/tests/cases/steadyEquipmentEsp/case.dict"
 
 
+# 径向地层导热网格（5.82 / D3 增量 1）：thermal{} 之外可选 formation{} 块
+# （conductivity k / outerRadius r_e / rhoC / shells M），把固定壁（无限等温
+# 热库）换成有限热容径向岩石网格。声明后 wallTemperature（constant/geothermal）
+# 改读为远场 T_e（r_e 处 Dirichlet），壁温由网格解出。每段 M+1 几何节点
+# rho_j = r_w (r_e/r_w)^(j/M)（r_w = D/2），node0 = 壁经膜 kw = k'dx 耦合流体、
+# nodeM = 远场。自推柱坐标 Fourier：面导纳 g_j = 2 pi k dx / ln(rho_{j+1}/rho_j)
+# （柱壳精确热导，非平板 kA/dr 近似），节点容量 C_j = rhoC dx pi(upper^2-lower^2)
+# （总 = rhoC dx pi(r_e^2-r_w^2)），隐式 Euler 径向 march 与流体温度步算子分裂
+# （稳态不动点精确）。稳态锚：常热流逐壳守恒 -> T_j = T_w + (T_e-T_w)
+# ln(rho_j/r_w)/ln(r_e/r_w)，几何节点上 = j/M 线性（与网格无关）；膜阻
+# R_film = 1/kw 与地层阻 R_form = ln(r_e/r_w)/(2 pi k dx) 串联 -> 流体见
+# g_eff = 1/(R_film+R_form)，稳态流体 = 换热递推 r = mcd/(mcd+g_eff)；壁节点
+# 分压 T_w = T_e + (T_i-T_e) R_form/(R_film+R_form)。
+# 判据（132 条）：稳态流体递推逐 cell 1e-9、壁分压逐段 1e-9、对数剖面
+# （j 线性）逐段 max 1e-9、远场 = T_e、径向/轴向单调；稳态能量 qStore->0 /
+# qWall = -qFar / 流体焓损 = 远场排热 / qFar = G_FORM sum(T_w-T_e)；瞬态
+# intake = storage + far 逐帧精确（20 帧）+ 首帧 storage > 1 W（有限热容见证）；
+# 五条拒收（无 thermal / k<=0 / r_e<=r_w / rhoC<=0 / shells<1）大声点名。
+# 零声明（无 formation{}）逐位不变——twoFluidThermalRelax/Exchanger/Geothermal
+# + 全量回归为证。边界：逐段独立无轴向岩石导热；算子分裂 O(dt) 瞬态误差
+# （稳态精确）；远场 Dirichlet，线源 E1 瞬态留待增量 2；rhoC 测试值 1e4。
+./build/src/1d/apps/chflow-1d-twofluid tests/cases/twoFluidFormationRadial/case.dict
+python3 tests/check_two_fluid_formation.py \
+    "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
+    "$PWD/tests/cases/twoFluidFormationRadial/case.dict"
+
+
 # 凝胶强度 + 亚阈值蠕变（5.74 / A2）：管块可选键 gelStrength / gelTime /
 # creepRate，只对已声明 yieldStress 的管有意义。静止阈值从常数变成只在
 # 静止期走的钟：4 (tau0 + tau_g (1 - exp(-t_rest/t_g))) L/d，commitStep

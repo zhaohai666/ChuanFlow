@@ -4299,6 +4299,23 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：内核 ~30 行（`Network.h` 10 含注释 + `network.cpp` `pumpHeadOf` 6 / loader 键 2 / 校验 9）+ 1 case 文件（22 节点 11 管）+ 1 checker（63 判据）+ 1 条 `add_test`，CTest 135 → **136**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.82 径向地层导热网格第一次耦合两流体温度方程（D3 增量 1）：壁不再是无限等温热库——有限岩石从井壁 r_w 径向导热到远场 r_e，柱坐标 Fourier 面导纳 `g_j = 2πk·dx/ln(ρ_{j+1}/ρ_j)` 让稳态节点温度**精确落在对数剖面**（几何节点上退化为 j 的线性），膜阻与地层阻 `R_form = ln(r_e/r_w)/(2πk·dx)` **串联**；两条都是自推物理，不是转录的经验相关式
+
+**这一格从哪来**：`docs/gap_analysis.md` 编为 **D3**（瞬态地层热耦合，对标 OLGA `HEATFORM`），README 现状「只有恒壁温或地温线」。task #32 已落地两流体分布式温度方程 + 壁面换热，但壁温是**固定的**（constant 或 geothermal line），等于把地层当成无限大等温热库——流体永远朝一个不变的温度弛豫。本增量是 D3 的第一半：把固定壁换成**有限热容的径向地层网格**，壁温由流体–地层耦合解出，岩石吸热升温、向远场排热。瞬态线源 E1 解析锚、深度变远场精化留待增量 2。
+
+**声明面与解析核心**：`thermal{}` 之外新增可选 **`formation{}`** 块（`conductivity k` / `outerRadius r_e` / `rhoC` / `shells M`）。声明后 `wallTemperature(i)`（constant 或 geothermal）从「壁温」改读为**远场温度 T_e**（r_e 处的 Dirichlet 边界），壁温由网格解出；不声明则一切逐位不变。每段 M+1 个几何半径节点 `ρ_j = r_w(r_e/r_w)^{j/M}`（r_w = D/2），node0 = 壁（经膜 `kw = wallHeatTransfer·dx` 耦合流体），nodeM = 远场。三个自推要素：
+1. **柱坐标 Fourier 面导纳** `g_j = 2πk·dx/ln(ρ_{j+1}/ρ_j)`——两半径间柱壳导热的精确热导（`Q = 2πkL ΔT/ln(r_out/r_in)`），不是平板 `kA/Δr` 近似；
+2. **节点容量** `C_j = rhoC·dx·π(upper²−lower²)`（几何中点间的壳体积，末节点延到 r_e），总容量 = `rhoC·dx·π(r_e²−r_w²)`，岩石因此**存储**热；
+3. **隐式 Euler 径向 march**，与流体温度步**算子分裂**（流体步用当前壁温 → 地层步用新流体温度），稳态不动点精确、地层自身能量逐帧守恒。
+
+**稳态锚（自推）**：常热流 Q 逐壳守恒 → `T_j = T_w + (T_e−T_w)ln(ρ_j/r_w)/ln(r_e/r_w)`；几何节点上 `ln(ρ_j/r_w)/ln(r_e/r_w) = j/M`，故剖面**退化为 j 的线性** `T_j = T_w + (T_e−T_w)j/M`（与网格密度无关，这是柱坐标精确导纳的离散指纹）。膜阻 `R_film = 1/kw` 与地层阻 `R_form = ln(r_e/r_w)/(2πk·dx)` 串联 → 流体见有效导纳 `g_eff = 1/(R_film+R_form)` 到 T_e，稳态流体剖面 = 换热递推 `T_i − T_e = (T_in−T_e)r^{i+1}`，`r = mcd/(mcd+g_eff)`；壁节点落在分压 `T_w = T_e + (T_i−T_e)R_form/(R_film+R_form)`。
+
+**case 与判据**：`tests/cases/twoFluidFormationRadial`（水平单相液流，ρ 1000、cL 4180、L 2、D 0.02、20 段、vsl 0.02、T_in 330、T_e 280；k' 20、k 2、r_e 0.2、rhoC 1e4、M 10）。checker `check_two_fluid_formation.py`（CTest `verify.twoFluidFormationRadial`），**132 判据 0 失败**：稳态流体递推逐 cell 1e-9（20）、壁节点分压逐段 1e-9（20）、对数剖面（j 线性）逐段 max 残差 1e-9（20）、远场节点 = T_e（20）、径向单调（20）、轴向流体单调（1）；稳态能量 qStore→0 / qWall = −qFar / qIntake = qFar / 流体焓损 = 远场排热 / `qFar = G_FORM·Σ(T_w−T_e)`（5）；**瞬态能量平衡 intake = storage + far 逐帧精确**（20 帧）+ 首帧 storage > 1 W（有限热容见证，1）；五条大声拒收（formation 无 thermal / k≤0 / r_e≤r_w / rhoC≤0 / shells<1）。实测 T_out **318.463084 K**、r 0.986969、g_eff 0.346749 W/K、R_form 2.383928 K/W、qFar 303.0023 W；t=100 帧 qIntake 300.575 = qStore 78.253 + qFar 222.322（精确闭合）。
+
+**本增量的边界**：① 径向网格**逐段独立**，无轴向岩石导热（径向梯度远大于轴向，标准假设）；② 算子分裂引入 O(dt) 瞬态耦合误差，稳态不动点精确——判据锁稳态 + 逐帧地层**自身**能量平衡，不锁瞬态剖面形状；③ 远场 r_e 处 Dirichlet（恒定 T_e），未建无限大地层的线源 E1 瞬态（增量 2）；④ `rhoC` 是测试值（1e4，真实岩石 ~2e6），只验证离散与守恒，不拟合真实地层弛豫时间；⑤ formation 只进两流体温度方程，transient（集总）/ steady 管网无此键；⑥ 零声明（无 formation{}）逐位不变——既有 `twoFluidThermalRelax/Exchanger/Geothermal` + 全量回归为证。
+
+**成本**：内核 + app ~190 行（`TwoFluid.h` ~48 含注释 + `twoFluid.cpp` 构造几何 ~50 / `formationStep` ~55 / `thermalStep` 接线 ~10 / loader 8 + app ~14）+ 1 case + 1 checker（132 判据）+ 1 条 `add_test`，CTest 136 → **137**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

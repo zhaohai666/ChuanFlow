@@ -68,6 +68,16 @@ struct NetworkPipe
                                // pump on); constant head when pumpRate = 0
     double pumpShutoffHead = 0;// m at zero rate (defaults to pumpHead)
     double pumpRate = 0;       // m3/s where pumpHead is quoted
+    // Multi-stage ESP + affinity laws (5.81, D1 increment 1): pumpStages N is
+    // a count of identical stages in series (head adds at the same flow);
+    // pumpSpeed s = N/N_rated rescales the curve by the Euler similarity laws
+    // Q ~ s, H ~ s^2, i.e. H_s(q) = s^2 H_1(q/s) = s^2 h0 - (h0-h1)(q/q1)^2
+    // (the quadratic term is speed-invariant, only shutoff scales). Combined
+    // H(q) = stages * (s^2 h0 - (h0-h1)(q/q1)^2). stages 1 / speed 1 (or
+    // absent) is the pump law above bit for bit. Single-phase steady only;
+    // gas interference is a later increment.
+    double pumpStages = 1;     // identical stages in series (>= 1)
+    double pumpSpeed = 1;      // relative speed N/N_rated (> 0)
 
     // Power-law rheology (Metzner & Reed 1955): when `flowIndex` > 0 the
     // pipe's fluid is tau = K gdot^n instead of Newtonian, and the single

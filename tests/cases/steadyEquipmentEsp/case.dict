@@ -1,0 +1,105 @@
+// D1 increment 1 (5.81): the multi-stage ESP and the affinity laws, on the
+// existing centrifugal-pump hook. Two new optional keys on a pump pipe:
+//   pumpStages N   -- N identical stages in series: head adds at the same flow
+//   pumpSpeed  s   -- relative speed N/N_rated: the Euler similarity laws
+//                     Q ~ s, H ~ s^2  =>  H_s(q) = s^2 h0 - (h0-h1)(q/q1)^2
+// so the combined curve is H(q) = stages * (s^2 h0 - (h0-h1)(q/q1)^2), clamped
+// at 0. At stages 1 / speed 1 (or absent) this is the 5.33 pump law bit for bit
+// -- the standing steadyEquipmentPump case is the witness.
+//
+// Every arm is laminar (rho 850, mu 0.1, L 1000, D 0.05), so the pipe law is
+// the explicit linear system curve R q with R = 128 mu L/(pi D^4), and the
+// checker never iterates: it recomputes each operating point / head from the
+// declared curve alone.
+//
+// Three families of arm:
+//  * rate-fed (a source imposes q = 2e-4 through the pump into a fixed
+//    terminal): dpPump = -rho g H(q) is read at a KNOWN flow, so the stage
+//    ladder FedS1:FedS2:FedS3 is exactly 1:2:3 and the speed arms isolate the
+//    s^2 shutoff scaling with the quadratic term unchanged -- a pointwise
+//    check of the curve, not just of one operating point.
+//  * closed loop (both ends 1e5): the operating point is the positive root of
+//    rho g H(q) = R q; the pump lift equals the friction drop exactly and the
+//    net dp is 0. LoopBase reproduces the 5.33 anchor q* = 3.085629e-4.
+//  * constant head (pumpRate 0): H = stages * s^2 * h0 exactly, q = rho g H / R
+//    linear -- the cleanest isolation of the N s^2 h0 shutoff law.
+//
+// Verified by tests/check_steady_esp.py (ctest verify.steadyEquipmentEsp).
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    // Rate-fed terminals (fixed) and free source nodes. The terminals sit at
+    // 10 bar, not 1 bar: a 3-stage ESP lifts 100 m of head (~8.3 bar), so at a
+    // 1-bar terminal the source node p = p_term + R q - rho g H would be driven
+    // negative, and the network Newton rejects non-positive pressures as
+    // unphysical. The absolute level shifts nothing observable -- Q is imposed,
+    // dpPump/dpFriction/Re depend only on the rate and the curve.
+    FT1 { pressure 1.0e6; } FS1 {}
+    FT2 { pressure 1.0e6; } FS2 {}
+    FT3 { pressure 1.0e6; } FS3 {}
+    FV08T { pressure 1.0e6; } FV08S {}
+    FV12T { pressure 1.0e6; } FV12S {}
+    FCT { pressure 1.0e6; } FCS {}
+    // closed loops (both ends fixed and equal)
+    LBS { pressure 1.0e5; } LBD { pressure 1.0e5; }
+    L2S { pressure 1.0e5; } L2D { pressure 1.0e5; }
+    LVS { pressure 1.0e5; } LVD { pressure 1.0e5; }
+    LCS { pressure 1.0e5; } LCD { pressure 1.0e5; }
+    // constant-head shutoff loop
+    CHS { pressure 1.0e5; } CHD { pressure 1.0e5; }
+}
+
+pipes
+{
+    // ---- rate-fed: pointwise curve at q = 2e-4 (h0 40, h1 25, q1 3e-4) ----
+    ESP_FedS1 { from FS1; to FT1; length 1000; diameter 0.05; roughness 0;
+                pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+                pumpStages 1; pumpSpeed 1.0; }
+    ESP_FedS2 { from FS2; to FT2; length 1000; diameter 0.05; roughness 0;
+                pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+                pumpStages 2; pumpSpeed 1.0; }
+    ESP_FedS3 { from FS3; to FT3; length 1000; diameter 0.05; roughness 0;
+                pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+                pumpStages 3; pumpSpeed 1.0; }
+    ESP_FedV08 { from FV08S; to FV08T; length 1000; diameter 0.05; roughness 0;
+                 pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+                 pumpStages 1; pumpSpeed 0.8; }
+    ESP_FedV12 { from FV12S; to FV12T; length 1000; diameter 0.05; roughness 0;
+                 pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+                 pumpStages 1; pumpSpeed 1.2; }
+    ESP_FedComb { from FCS; to FCT; length 1000; diameter 0.05; roughness 0;
+                  pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+                  pumpStages 2; pumpSpeed 1.1; }
+    // ---- closed loops: operating point = root of rho g H(q) = R q ----
+    ESP_LoopBase { from LBS; to LBD; length 1000; diameter 0.05; roughness 0;
+                   pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40; }
+    ESP_Loop2Stage { from L2S; to L2D; length 1000; diameter 0.05; roughness 0;
+                     pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+                     pumpStages 2; }
+    ESP_LoopSpeed { from LVS; to LVD; length 1000; diameter 0.05; roughness 0;
+                    pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+                    pumpSpeed 0.8; }
+    ESP_LoopComb { from LCS; to LCD; length 1000; diameter 0.05; roughness 0;
+                   pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+                   pumpStages 2; pumpSpeed 1.1; }
+    // ---- constant head: H = stages * s^2 * h0, q linear ----
+    ESP_ConstShutoff { from CHS; to CHD; length 1000; diameter 0.05; roughness 0;
+                       pumpHead 40; pumpShutoffHead 40;
+                       pumpStages 3; pumpSpeed 0.9; }
+}
+
+sources
+{
+    sFedS1 { node FS1; rate 2.0e-4; }
+    sFedS2 { node FS2; rate 2.0e-4; }
+    sFedS3 { node FS3; rate 2.0e-4; }
+    sFedV08 { node FV08S; rate 2.0e-4; }
+    sFedV12 { node FV12S; rate 2.0e-4; }
+    sFedComb { node FCS; rate 2.0e-4; }
+}
+
+solve { maxIter 50; tol 1e-10; }

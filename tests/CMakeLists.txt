@@ -330,6 +330,19 @@ foreach(tcase steadyEquipmentValve steadyEquipmentPump steadyEquipmentNetwork)
             ${mode})
 endforeach()
 
+# 5.81 / D1 increment 1: the multi-stage ESP and the affinity laws on the
+# existing pump hook. Rate-fed arms read the curve pointwise at a fixed flow
+# (stage ladder exactly 1:2:3, speed arms isolate the s^2 shutoff scaling),
+# closed loops put the operating point at the quadratic root, and the
+# constant-head arm gives N s^2 h0 exactly. stages 1 / speed 1 is the 5.33
+# pump law bit for bit -- the standing steadyEquipmentPump case is the witness.
+add_test(
+    NAME verify.steadyEquipmentEsp
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_esp.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyEquipmentEsp/case.dict)
+
 # non-Newtonian pipe friction, one substitution deep: the Metzner-Reed
 # generalized Reynolds number goes where rho*u*d/mu used to go, and because the
 # fluid is then a power law the laminar branch of the same Churchill call stops

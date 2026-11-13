@@ -277,12 +277,20 @@ struct RawFlow
 /// Pump head at rate q (m of fluid): H(q) = h0 - (h0 - h1)(q/q1)^2 clamped at
 /// 0; constant h0 when q1 = 0. Even in q: the machine adds the same head
 /// magnitude whichever way the flow runs (never sucks).
+/// 5.81 (D1): N stages in series multiply the head at the same flow, and a
+/// relative speed s rescales it by the Euler affinity laws (Q ~ s, H ~ s^2):
+/// H_s(q) = s^2 H_1(q/s) = s^2 h0 - (h0-h1)(q/q1)^2 -- the quadratic term is
+/// speed-invariant, only the shutoff head scales. Combined H = stages * H_s.
+/// stages 1 / speed 1 is the law above bit for bit (x*1.0 == x in IEEE).
 double pumpHeadOf(const NetworkPipe& p, double q)
 {
     if (!(p.pumpHead > 0)) return 0.0;
     const double h0 = p.pumpShutoffHead > 0 ? p.pumpShutoffHead : p.pumpHead;
-    if (!(p.pumpRate > 0)) return std::max(h0, 0.0);
-    const double h = h0 - (h0 - p.pumpHead) * q * q / (p.pumpRate * p.pumpRate);
+    const double stages = p.pumpStages;
+    const double s2 = p.pumpSpeed * p.pumpSpeed;
+    if (!(p.pumpRate > 0)) return std::max(stages * s2 * h0, 0.0);
+    const double h = stages * (s2 * h0
+                     - (h0 - p.pumpHead) * q * q / (p.pumpRate * p.pumpRate));
     return std::max(h, 0.0);
 }
 
@@ -1520,6 +1528,8 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.pumpHead = pd.getScalarOr("pumpHead", 0.0);
         p.pumpRate = pd.getScalarOr("pumpRate", 0.0);
         p.pumpShutoffHead = pd.getScalarOr("pumpShutoffHead", p.pumpHead);
+        p.pumpStages = pd.getScalarOr("pumpStages", 1.0);
+        p.pumpSpeed = pd.getScalarOr("pumpSpeed", 1.0);
         p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
         p.annulusInner = pd.getScalarOr("dInner", 0.0);
         if (p.annulusInner < 0)
@@ -1581,6 +1591,16 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         if (p.pumpHead > 0 && p.pumpShutoffHead < p.pumpHead)
             cfFatal("steadyNetwork: pipe '" + name + "' has a pump curve that"
                     " rises with rate (pumpShutoffHead < pumpHead)");
+        if (p.pumpStages < 1)
+            cfFatal("steadyNetwork: pipe '" + name + "' has pumpStages < 1: a "
+                    "stage count is at least one");
+        if (!(p.pumpSpeed > 0))
+            cfFatal("steadyNetwork: pipe '" + name + "' has a non-positive "
+                    "pumpSpeed: the affinity laws need a positive speed ratio");
+        if ((pd.has("pumpStages") || pd.has("pumpSpeed")) && !(p.pumpHead > 0))
+            cfFatal("steadyNetwork: pipe '" + name + "' declares pumpStages/"
+                    "pumpSpeed without a pump (pumpHead): the affinity laws "
+                    "belong to a pump curve, not a bare pipe");
         // The declaration has passed every check. Move it out of the wall-law
         // fields: a coupled pipe's loss is `coupledResistance * q` alone, so
         // leaving a `flowIndex` or `yieldStress` here would let the yielded

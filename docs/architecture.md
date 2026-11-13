@@ -4277,6 +4277,28 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：内核 ~145 行（`Network.h` ~16 + `network.cpp` ~120 + `transient.cpp` 3 + `twoFluid.cpp` 6）+ 1 case 文件 + 1 checker + 1 条 `add_test`，26 判据，CTest 134 → **135**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.81 多级 ESP 与亲和律第一次进稳态泵曲线（D1 增量 1）：N 级串联在同一流量上**叠加扬程**（能量守恒），相对转速 s 按 **Euler 相似律** Q∝s、H∝s² 重标曲线——`H_s(q) = s²·H₁(q/s) = s²h0 − (h0−h1)(q/q1)²`，二次项与转速无关、只有截止扬程缩放；两条都是自推物理，不是转录的经验相关式
+
+**这一格从哪来**：`docs/gap_analysis.md` 编为 **D1**（人工举升：ESP / 气举 / 有杆泵），README 现状「只有离心泵」。§5.33 已落地单级离心泵曲线 `H(q) = h0 − (h0−h1)(q/q1)²`（`pumpRate = 0` 时常扬程 h0）。本增量是 D1 的第一半：把那条曲线推广到**多级 ESP**（`pumpStages`）与**变速**（`pumpSpeed`），钩子、接口、四个 app 全不动——只在 `pumpHeadOf` 一处乘上两个自推因子。气体干涉（head 随含气率退化）需已发表相关式，留待增量 2；气举阀动力学、有杆泵示功图是后续增量。
+
+**声明面与解析核心**：泵管两个可选键 **`pumpStages N`**（≥1，缺省 1）与 **`pumpSpeed s`**（>0，缺省 1）。组合曲线
+**H(q) = stages·(s²·h0 − (h0−h1)·(q/q1)²)**，在 0 处截断；`pumpRate = 0`（常扬程）时 **H = stages·s²·h0**。两条物理各自自推：
+1. **级数叠加**：N 个几何相同的级串联，每级在同一流量 q 上做相同的功，能量守恒给出总扬程 = N·单级扬程（流量不变、扬程相加）；
+2. **亲和律**：转速比 s = N/N_rated 下速度三角形相似，Euler 扬程 ∝ u² ∝ s²、流量 ∝ u ∝ s，故 `H_s(q) = s²·H₁(q/s)`。代入二次曲线：`s²·[h0 − (h0−h1)(q/(s·q1))²] = s²h0 − (h0−h1)(q/q1)²`——**二次项的 s² 恰好相消**，只有截止扬程 h0 被 s² 缩放。这正是「变速只平移曲线顶点、不改其曲率」的解析根据。
+`stages = 1 / speed = 1`（或两键都不声明）时 `1·(1·h0 − …)` 与 §5.33 的 `h0 − …` **IEEE 逐位相同**（`x*1.0 == x`），所以零声明路径一位不动——既有 `steadyEquipmentPump` case 与全量回归是见证。
+
+**case 与判据**：`tests/cases/steadyEquipmentEsp`（ρ 850、μ 0.1、L 1000、D 0.05，全臂层流，系统曲线显式线性 `R q`，R = 128μL/(πD⁴)；h0 40、h1 25、q1 3e-4）。checker `check_steady_esp.py`（CTest `verify.steadyEquipmentEsp`），**63 判据 0 失败**，三族臂：
+* **速率注入**（源强加 q = 2e-4 经泵入定压终端）：在**已知流量**上逐点读曲线，`dpPump = −ρg·H(q)`。级数阶梯 FedS1:FedS2:FedS3 = **1:2:3**（同流量下 H_N = N·H₁，1e-9）；变速臂 FedV12 − FedV08 = −ρg(1.2²−0.8²)·h0（**二次项相消**的逐点见证，1e-6）；每臂另核 Q = 2e-4、终端压强被 honoring、自由源节点 `p_src = p_term + Rq − ρgH` 闭式（1e-6）、Re 层流带；
+* **闭合回路**（两端定压相等）：工作点 = `ρg·H(q) = Rq` 的正二次根，泵扬程恰等于摩阻、净 dp = 0。LoopBase 复现 §5.33 文档锚 **q\* = 3.085629e-4**（1e-9，零声明漂移见证）；2Stage / Speed0.8 / Comb 各对自己的根 1e-9；
+* **常扬程**（`pumpRate 0`，stages 3 / speed 0.9）：H = 3·0.9²·40 = **97.2 m** 精确，q = ρgH/R 线性，dpPump = −ρg·97.2（1e-6）；
+* **三条大声拒收**：`pumpStages`/`pumpSpeed` 无泵（stripped pumpHead）、`pumpSpeed 0`（非正）、`pumpStages 0`（<1），各自点名。
+
+**case 设计教训**：速率注入臂的定压终端取 **10 bar 而非 1 bar**。3 级 ESP 在 q = 2e-4 处扬程 100 m（≈8.3 bar），若终端在 1 bar，自由源节点 `p_src = p_term + Rq − ρgH` 会被压成**负压**（FedS1 ≈ −0.48 bar、FedS3 ≈ −6 bar），而管网 Newton 的可行性守卫（`network.cpp`  globalization：`pTry > 0` 否则跳过该试步）把负压判为非物理而拒收——第一版 6 条注入臂全部不收敛（Q ≠ 2e-4、源节点卡在正压侧），**闭合回路臂却全部精确**，从而证明内核律正确、把问题隔离为 case 设计而非物理。抬高终端到 10 bar 后所有源节点为正（最小 ≈2.97 bar），而 Q / dpPump / dpFriction / Re 全部不变（它们只依赖强加流量与曲线，与绝对压强水平无关）。另：回路 Re 带下界取 40（speed 0.8 臂工作点低、Re ≈ 48），与注入臂带一致。
+
+**本增量的边界**：① 只进**稳态单相牛顿**泵曲线——黑油两相 march、PVT march 的摩擦是经验相关式，多级/变速因子不进那些路径（与 §5.33 同处理）；transient/twoFluid 的泵声明面本就不带这两个键。② **气体干涉未建**（head 随 GVF 退化需已发表相关式，增量 2）；本增量是**纯液**多级曲线。③ 亲和律是**几何相似 + 不可压**的推论，未含雷诺数/效率随转速的偏移（真实 ESP 的 s² 律在大变速下有效率修正，本增量不建模）。④ 级数叠加假定各级**几何相同、同一流量**（串联），未含级间泄漏/回流。⑤ 零声明逐位不变的见证是 `steadyEquipmentPump` + 全量回归，未单独建「声明 stages1/speed1 对无声明孪生」的 0 容差 case（IEEE 恒等已在代码注释与 §5.33 锚锁定）。
+
+**成本**：内核 ~30 行（`Network.h` 10 含注释 + `network.cpp` `pumpHeadOf` 6 / loader 键 2 / 校验 9）+ 1 case 文件（22 节点 11 管）+ 1 checker（63 判据）+ 1 条 `add_test`，CTest 135 → **136**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

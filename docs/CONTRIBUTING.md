@@ -1335,6 +1335,30 @@ python3 tests/check_steady_rect_duct.py \
     "$PWD/tests/cases/steadyRectDuct/case.dict"
 
 
+# 多级 ESP + 亲和律（5.81 / D1 增量 1）：泵管两个可选键 pumpStages N（>=1，
+# 缺省 1）与 pumpSpeed s（>0，缺省 1）。组合曲线 H(q) = stages (s^2 h0 -
+# (h0-h1)(q/q1)^2) 截断在 0；pumpRate 0（常扬程）时 H = stages s^2 h0。
+# 两条物理自推：N 级串联在同一流量上叠加扬程（能量守恒）；转速比 s 按
+# Euler 相似律 Q~s、H~s^2 重标，H_s(q) = s^2 H_1(q/s) = s^2 h0 - (h0-h1)(q/q1)^2
+# ——二次项的 s^2 恰好相消，只有截止扬程缩放。stages 1 / speed 1（或缺省）
+# 与 5.33 泵律 IEEE 逐位相同（x*1.0 == x），零声明一位不动。
+# 判据（63 条）：速率注入臂在已知 q = 2e-4 上逐点读曲线——级数阶梯
+# FedS1:FedS2:FedS3 = 1:2:3、变速臂 FedV12 - FedV08 = -rho g (1.2^2-0.8^2) h0
+# （二次项相消的逐点见证）、自由源节点 p_src = p_term + Rq - rho g H 闭式；
+# 闭合回路工作点 = rho g H(q) = Rq 的正二次根，LoopBase 复现 5.33 锚
+# 3.085629e-4；常扬程 stages 3 / speed 0.9 给 H = 97.2 m 精确、q = rho g H/R
+# 线性；三条拒收（无泵声明 stages/speed、speed 0、stages 0）大声点名。
+# case 设计教训：速率注入终端取 10 bar 而非 1 bar——3 级 ESP 扬程 100 m
+# （~8.3 bar）会把 1 bar 终端下的自由源节点压成负压，而管网 Newton 的
+# 可行性守卫拒收非正压强（pTry > 0），第一版 6 条注入臂全不收敛、闭合
+# 回路却全精确，从而隔离出这是 case 设计而非内核律问题。抬高终端后
+# Q/dpPump/dpFriction/Re 全不变（只依赖强加流量与曲线）。
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyEquipmentEsp/case.dict
+python3 tests/check_steady_esp.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyEquipmentEsp/case.dict"
+
+
 # 凝胶强度 + 亚阈值蠕变（5.74 / A2）：管块可选键 gelStrength / gelTime /
 # creepRate，只对已声明 yieldStress 的管有意义。静止阈值从常数变成只在
 # 静止期走的钟：4 (tau0 + tau_g (1 - exp(-t_rest/t_g))) L/d，commitStep

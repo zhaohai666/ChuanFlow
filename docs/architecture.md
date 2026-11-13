@@ -4312,7 +4312,7 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **case 与判据**：`tests/cases/twoFluidFormationRadial`（水平单相液流，ρ 1000、cL 4180、L 2、D 0.02、20 段、vsl 0.02、T_in 330、T_e 280；k' 20、k 2、r_e 0.2、rhoC 1e4、M 10）。checker `check_two_fluid_formation.py`（CTest `verify.twoFluidFormationRadial`），**132 判据 0 失败**：稳态流体递推逐 cell 1e-9（20）、壁节点分压逐段 1e-9（20）、对数剖面（j 线性）逐段 max 残差 1e-9（20）、远场节点 = T_e（20）、径向单调（20）、轴向流体单调（1）；稳态能量 qStore→0 / qWall = −qFar / qIntake = qFar / 流体焓损 = 远场排热 / `qFar = G_FORM·Σ(T_w−T_e)`（5）；**瞬态能量平衡 intake = storage + far 逐帧精确**（20 帧）+ 首帧 storage > 1 W（有限热容见证，1）；五条大声拒收（formation 无 thermal / k≤0 / r_e≤r_w / rhoC≤0 / shells<1）。实测 T_out **318.463084 K**、r 0.986969、g_eff 0.346749 W/K、R_form 2.383928 K/W、qFar 303.0023 W；t=100 帧 qIntake 300.575 = qStore 78.253 + qFar 222.322（精确闭合）。
 
-**本增量的边界**：① 径向网格**逐段独立**，无轴向岩石导热（径向梯度远大于轴向，标准假设）；② 算子分裂引入 O(dt) 瞬态耦合误差，稳态不动点精确——判据锁稳态 + 逐帧地层**自身**能量平衡，不锁瞬态剖面形状；③ 远场 r_e 处 Dirichlet（恒定 T_e），未建无限大地层的线源 E1 瞬态（增量 2）；④ `rhoC` 是测试值（1e4，真实岩石 ~2e6），只验证离散与守恒，不拟合真实地层弛豫时间；⑤ formation 只进两流体温度方程，transient（集总）/ steady 管网无此键；⑥ 零声明（无 formation{}）逐位不变——既有 `twoFluidThermalRelax/Exchanger/Geothermal` + 全量回归为证。
+**本增量的边界**：① 径向网格**逐段独立**，无轴向岩石导热（径向梯度远大于轴向，标准假设）；② 算子分裂引入 O(dt) 瞬态耦合误差，稳态不动点精确——判据锁稳态 + 逐帧地层**自身**能量平衡，不锁瞬态剖面形状；③ 远场 r_e 处 Dirichlet（恒定 T_e），未建无限大地层的线源 E1 瞬态（增量 2）——**后续状态**：§5.84 / D3 增量 2 已用 Theis E1 + Duhamel 把该 Dirichlet 换成半无限外域，D3 已 CLOSED；本条保留为「零声明/有限 Dirichlet 路径」的记录；④ `rhoC` 是测试值（1e4，真实岩石 ~2e6），只验证离散与守恒，不拟合真实地层弛豫时间；⑤ formation 只进两流体温度方程，transient（集总）/ steady 管网无此键；⑥ 零声明（无 formation{}）逐位不变——既有 `twoFluidThermalRelax/Exchanger/Geothermal` + 全量回归为证。
 
 **成本**：内核 + app ~190 行（`TwoFluid.h` ~48 含注释 + `twoFluid.cpp` 构造几何 ~50 / `formationStep` ~55 / `thermalStep` 接线 ~10 / loader 8 + app ~14）+ 1 case + 1 checker（132 判据）+ 1 条 `add_test`，CTest 136 → **137**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
@@ -4332,6 +4332,32 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 **本增量的边界**：① **仅光滑壁**——粗糙壁湍流屈服闭合（2007 Eq [7]/[9]）留待后续增量，粗糙壁保持层流；② HB 无塑性黏度 μ_B，故 He/Re_B 都不是关于它的陈述，保持层流（§5.46/5.47）；③ 间隙是真实滞回特征，未发明未经确认的混合律填缝——case 探针放在良态区；④ band 0→1（2100→1568.29，−25.3%）与 band 1→2（8000→7905.69，−1.17%）的 join 是**记录的台阶**，不是光滑过渡——2006 Eq (17) 桥接式的常数无法从源排版转录，故如实记录台阶；⑤ 湍流档无实验真值可验（没有 Bingham 湍流的实验重演），判据锁的是**独立重推的 Eq 15/16**（纯 Python `math.log` 路径，与内核 `log1p` 路径独立）与内核逐位吻合，不是拟合实验。
 
 **成本**：内核 ~114 行（`network.cpp`：`binghamTransitionRe` 共享 + `yieldedTurbulentFriction` 二分 + `pipeFrictionPa`/`pipeFrictionReport` 两处开关 + `yieldedTransitionOf` band 重构 + `dpAtTransition` 显式层流）+ `Network.h` 26 行（注释/struct）+ case 37 行 + checker 207 行，**复用 `verify.steadyYieldTransition`（不新增 test，CTest 仍 137）**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
+### 5.84 固定 Dirichlet 远场第一次换成半无限域线源响应（D3 增量 2）：`formation{ semiInfinite yes; }` 让外域用 **Theis E1 + Duhamel** 回答整口井的热流历史——`F(s) = E1(r_e²/(4αs))/(4πk)` 且 `F(0)=0`，所以本步热流不会反馈进本步边界，**显式却精确**；远场温升全局共享，逐段地温剖面保留
+
+**这一格从哪来**：`docs/gap_analysis.md` 编为 **D3**（瞬态地层热耦合），增量 1（§5.82）把固定壁换成有限热容径向网格，但 node M 被钉在 `wallTemperature(i)` 这个 **Dirichlet 远场**——岩石热量最终排进一个恒温热库，井会达到稳态。§5.82 的边界③明确把「无限大地层的线源 E1 瞬态」留给增量 2。本增量只加**一个声明键**，把 r ≥ r_e 的外域换成对历史热流的线源响应；有限 Dirichlet 路径一个字节不动。D3 至此两个增量全部落地，条目 CLOSED。
+
+**声明面与解析核心**：`formation{}` 新增可选 **`semiInfinite yes`**（word，缺省 `no`；其它值大声拒收）。打开后 node M 的温度从 `wallTemperature(i)` 变成 `wallTemperature(i) + dT_e(t_n)`，其中
+
+1. **线源阶跃响应**（自推自 Theis/Carslaw–Jaeger 的点源解）：无限均质介质中，r = 0 处自 t = 0 起注入恒定线热流 q′ [W/m]，半径 r 处温升 `ΔT(s) = q′/(4πk)·E1(r²/(4αs))`，`α = k/rhoC`，`E1(x) = ∫_x^∞ e^{−u}/u du`。有限半径**面**源与线源的差别是 O(r²/(4αs))；这里把它作为命名边界记录，不伪装成有限半径柱面源的精确 Bessel 积分解。
+2. **Duhamel 叠加**：q′(t) 按步分段恒定（第 m 步记 `q′_m = qFar_m/L`，L 为全井长），则 `q′(t) = Σ_m q′_m[H(t−t_{m−1}) − H(t−t_m)]`，叠加给出
+   **`dT_e(t_n) = Σ_m (q′_m − q′_{m−1})·F(t_n − t_m)`**，`q′_0 = 0`，`F(s) = E1(r_e²/(4αs))/(4πk)`。
+3. **`F(0) = 0` 是本格的机关**：`s→0` 时 `x→∞`、`E1(x)→0`，因此当前步自己的热流对本步边界的贡献恒为零——温升可以**显式**用已记录的历史算出来，不需要隐式迭代或外域网格，却对分段恒定热流是**精确**的。每步末把 `(t_m, q′_m)` 追加进历史即可。
+4. **逐段地温剖面**：`dT_e` 是全井共享的一个标量（外域用全井平均热流），而每段的基线仍是自己的 `wallTemperature(i)`（constant 或 geothermal）；因此 `wallModel geothermal` 下 `T_e,i = T_surf + grad·(inletDepth − centerDrop_i)`，线源温升整齐地叠在这个深度剖面上。
+5. **E1 的数值实现**：x < 1 走收敛级数 `−γ − ln x − Σ_{n≥1}(−x)^n/(n·n!)`；x ≥ 1 走 Legendre 连分数（NR `expint(n=1)`，Lentz 递推）；x → ∞ 直接返回 0。app 打印四个 probe（0.1 / 1 / 10 / 50），checker 用**完全独立**的自适应 Simpson 求 `∫_0^∞ exp(−x e^w) dw`（u = x·e^w 代换）复核，不信任 C++ 的级数/连分数。
+
+**case 与判据**：shipped `tests/cases/twoFluidFormationRadial/case.dict` 刻意**不声明** semiInfinite，继续当零声明见证（132 条增量 1 稳态锚全部保留）。checker 把 5 个派生臂写进系统临时目录：长时程 semi（20 帧）、`reportEvery 1` 的 30 步 semiFine、它的 Dirichlet 孪生 plainFine、geothermal 臂（angleDeg 30 + grad 0.03）、以及把 `semiInfinite yes` 放错作用域到 `thermal{}` 的 twin。`check_two_fluid_formation.py` 从 132 判据扩到 **300 判据 0 失败**（新增 168 条），**复用 `verify.twoFluidFormationRadial`（Test #132），不新增 CTest，仍 137 项**：
+* **E1 独立求积**（4）：打印 `E1(0.1)=1.82292395842`、`E1(1)=0.219383934396`、`E1(10)=4.15696892969e−06`、`E1(50)=3.78326402955e−24`，各对自适应 Simpson 求积 1e−9 相对。**case 设计教训**：第一版求积用**绝对**容差 1e−14，而 `E1(50)` 只有 3.8e−24，自适应 Simpson 未细分就返回 2.21e−23 的假值；改成相对容差（`eps = rel·|whole|`）才把大 x 分支钉住。
+* **Duhamel 重推**（30）：从**打印的**每步 qFar 反推 q′_m，用独立 E1 重建 `dT_e(t_n)`，逐帧对打印的 `farRise` 1e−10 + 1e−8 相对。头 5 步 x ≥ 10（`r_e²/(4α) = 50 s`）、温升 < 1e−6 K，半无限臂与 Dirichlet 孪生的 qFar 仍逐位贴合（10 条）——热锋还没走到 r_e。
+* **真无界**（43）：20 帧温升**严格单调增**（0.9652 → **13.7270 K**），末帧 qFar **216.383 W** < 有限域稳态 **303.002 W**，末帧 qStore 仍 3.85 W（没有稳态不动点）；首帧与末帧每段 node M 都精确是 `T_e + dT_e`（40 条）。
+* **能量守恒**（50）：semi 20 帧 + semiFine 30 帧逐帧 `intake = storage + far` 精确——外域换了，内部面望远镜式相消没变。
+* **地温剖面**（22）：geothermal 臂每段 node M = `310 − 0.0015(i+0.5) + dT_e`（1e−9），段间差恰是 `grad·dx·sin30°`，且深层入口更暖；实测该臂 rise 从 −0.0481 K（初态流体 300 K 比 310 K 地层冷，热倒灌）升到 **5.4607 K**。
+* **零声明与作用域**（3）：shipped 臂每帧 `farRise == 0`；放错作用域的 twin 与 base **stdout 逐位相同**、formation 三个速率逐帧相同。
+* **六条大声拒收**：`semiInfinite maybe`（只收 yes/no）、以及半无限路径上重验无 thermal / k≤0 / r_e≤r_w / rhoC≤0 / shells<1 五条既有守卫。
+
+**本增量的边界**：① 外域是 **r=0 线源叠加**，不是有限半径柱面源的精确解（差 O(r_e²/(4αs))）；判据锁的是内核与独立重推的 E1/Duhamel 一致，不是与真实无限域精确解一致。② q′ 取**全井平均** `qFar/L`，逐段独立径向网格、无轴向岩石导热（§5.82 边界①仍在），远场温升是全井一个标量。③ 流体温度步与地层步仍是**算子分裂 O(dt)**（§5.82 边界②未动）；分段恒定热流假设本身也是一阶的。④ r_e 仍是网格外边界，semiInfinite **不自动扩网格**，只改 node M 的温度；热锋抵达 r_e 后才由外域接管。⑤ 常数 k / rhoC，无深度变物性、无内热源、无地下水对流、无相变。⑥ 半无限路径下远场持续升温，系统**不再有稳态不动点**——§5.82 的稳态闭式锚只在零声明/有限 Dirichlet 臂成立，checker 明确分开验证。⑦ `formation{}` 仍只进两流体温度方程，transient / steady 管网无此键。⑧ 零声明逐位不变：`farRise` 是追加的报告字段，既有 formation checker 已适配；无 formation 的 case 根本不打印该行，全量回归 137/137 见证。
+
+**成本**：内核 ~95 行（`twoFluid.cpp` E1 43 + Duhamel 25 + `formationStep` 接线 15 + loader 6 + 公开 wrapper 4）+ `TwoFluid.h` ~30 行（含注释/grammar）+ app 10 行 + case 头注释 10 行 + checker +196 行；**0 条新 `add_test`、0 个新 case 目录**，CTest 137 → **137**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |

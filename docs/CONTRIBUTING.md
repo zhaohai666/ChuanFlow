@@ -1379,7 +1379,37 @@ python3 tests/check_steady_esp.py \
 # 五条拒收（无 thermal / k<=0 / r_e<=r_w / rhoC<=0 / shells<1）大声点名。
 # 零声明（无 formation{}）逐位不变——twoFluidThermalRelax/Exchanger/Geothermal
 # + 全量回归为证。边界：逐段独立无轴向岩石导热；算子分裂 O(dt) 瞬态误差
-# （稳态精确）；远场 Dirichlet，线源 E1 瞬态留待增量 2；rhoC 测试值 1e4。
+# （稳态精确）；远场 Dirichlet——**后续状态**：线源 E1 半无限外域已由
+# 5.84 / D3 增量 2 落地（见下块），本块的 132 判据仍全部保留；rhoC 测试值 1e4。
+./build/src/1d/apps/chflow-1d-twofluid tests/cases/twoFluidFormationRadial/case.dict
+python3 tests/check_two_fluid_formation.py \
+    "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
+    "$PWD/tests/cases/twoFluidFormationRadial/case.dict"
+
+
+# 半无限域线源外域（5.84 / D3 增量 2）：formation{} 新增可选
+# semiInfinite yes（word，只收 yes/no）。node M 从固定 T_e 变成
+# wallTemperature(i) + dT_e(t_n)：
+#   dT_e = sum_m (q'_m - q'_{m-1}) F(t_n - t_m)
+#   F(s) = E1(r_e^2/(4 alpha s))/(4 pi k),  alpha = k/rhoC
+#   q'_m = qFar_m / L（全井平均）,  F(0) = 0
+# F(0)=0 让本步热流不反馈进本步边界 -> 显式却对分段恒定热流精确，无需外域
+# 网格或隐式迭代。E1 由级数(x<1)/Legendre 连分数(x>=1)实现，app 打印
+# 0.1/1/10/50 四 probe，checker 用独立自适应 Simpson 求
+# int_0^inf exp(-x exp(w)) dw 复核，并从打印的 qFar 历史重建每帧 rise——
+# 不信任内核自己的 E1/连分数。
+# 判据 132 -> 300（新增 168）：30 步 Duhamel、头 5 步与 Dirichlet 孪生贴合
+# （x>=10、rise<1e-6 K）、20 帧温升严格单调 0.9652 -> 13.7270 K、末帧
+# qFar 216.383 < 303.002 W 且 qStore 仍 > 0、50 帧 intake=storage+far、
+# geothermal 逐段 310-0.0015(i+0.5)+dT_e 剖面、作用域 twin stdout 逐位相同、
+# 6 拒收（semiInfinite maybe 只收 yes/no + 五条既有守卫重验）。
+# shipped case 刻意不声明 semiInfinite（零声明见证）；5 个派生臂全写系统
+# 临时目录。复用 verify.twoFluidFormationRadial，不新增 CTest（仍 137）。
+# 边界：r=0 线源叠加（有限半径面源差 O(r_e^2/(4 alpha s)) 如实记录，非精确
+# Bessel 柱面源解）；q' 全井平均、逐段独立无轴向岩石导热；算子分裂 O(dt)
+# 未动；r_e 仍是网格外边界、不自动扩网；半无限路径无稳态不动点。
+# E1 求积务必用相对容差：绝对 1e-14 会在 E1(50)=3.8e-24 上未细分就返回
+# 2.21e-23 的假值（本轮实测踩过）。
 ./build/src/1d/apps/chflow-1d-twofluid tests/cases/twoFluidFormationRadial/case.dict
 python3 tests/check_two_fluid_formation.py \
     "$PWD/build/src/1d/apps/chflow-1d-twofluid" \

@@ -1570,8 +1570,8 @@ python3 tests/check_coupled_compressible.py \
 #   3) 判决要**三个入口交叉**：pastLaminarLimit == (Q > Qt) == (ReB > ReBt) == (dp > dpQt) 逐管，且案里必须有管真的
 #      跨在两侧（实测 7 past / 8 below）；全侧一致的案证不了比较本身。
 #   4) "读 locus 没碰任何一笔账"要**两条都断**：速率仍是所问压差在层流屈服律下的根（实测最差 3.2e-12），且
-#      f Re_B g(xi) = 64 在**超出自己 locus 151 倍**的管上仍成立（3.4e-12）。第二条是留给下一格的：湍流摩擦闭包
-#      落地那天它必须变红，所以这批断言要一起改掉，而不是到时候删掉。
+#      f Re_B g(xi) = 64 在**超出自己 locus 151 倍**的管上仍成立（3.4e-12）。第二条留给下一格（§5.83/A1）：湍流摩擦
+#      闭包落地那天它必须变红——§5.83 已落地，这批断言已按"locus 以下仍层流、locus 以上换湍流"一起改掉（见下块），不是删掉。
 #   5) 两个带的接缝是**量出来的向下台阶**（He=1e5 处 -1.17%、He=1700 处 -25.3%）。别写成"分段函数连续"，也别顺手
 #      平滑——论文跨接缝用的 Eq (17) 常数没转写。注意方向：我第一版假设高带在中带上方，实测相反，跑一次再写判据。
 #   6) 分组层面的反面：牛顿管与 HB 管**不打** He，所以判据断"token 缺失"而不是"值为 0"；HB 行打印的 Re 是表观数
@@ -1582,6 +1582,33 @@ python3 tests/check_coupled_compressible.py \
 #   带 locus 的行多出八个 token，按 key 扫描。
 # 七族 60 条；ctest -j8 记 **0.29 s**（Test #80）——全表最便宜的一格，因为 locus 是纯读出：一次 app 调用、零步进、
 # 零重解网格；既有测试一字未改。
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyYieldTransition/case.dict
+python3 tests/check_steady_yield_transition.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyYieldTransition/case.dict"
+
+# 屈服管第一次按湍流定价（5.83/A1）：同一算例 steadyYieldTransition 从"只报 locus"升级成"locus 是摩擦开关"。
+# 内核新增 binghamTransitionRe(He)（locus 报告与开关共享，两者不漂移）+ yieldedTurbulentFriction(Re_B, He)
+# （network.cpp:472/:492）：Wilson & Thomas 2006 Eq (15)/(16)（= Thomas & Wilson 2007 Eq [3]/[4]，逐字核对一致）
+#   V/U* = 2.5 ln√He + 2.5 ln[√β(β−1)/(β+1)] + 11.6/β − χ(β)，χ(β) = −2.5 ln[(β−1)/β] − 2.5(β+0.5)/β²，
+# 由 β = f Re_B²/(8He) 与 √(8/f) = Re_B/√(He β) 消去 f → β>1 上一支单调隐式方程，括号二分（log1p 保大 β 精度），
+# 回代 f = 8Heβ/Re_B²。τ_B→0（He→0、β→∞ 而 He·β=Re*² 固定）塌回 2.5 ln Re*——牛顿光滑壁对数律，不是另一条陈述。
+# pipeFrictionPa（:700）与 pipeFrictionReport（:551）两处开关同一条判据：光滑（roughness≤0）Bingham（flowIndex==0）
+# 且 Re_B 严格 > Re_B,t 才湍流，否则层流 Buckingham。严格 > 让 dpAtTransition（在 Re_B,t 处求值）留层流。
+# pipeFrictionPa 稳态/瞬态共享，一处覆盖两侧。**无新声明键**。要看什么：
+#   1) 开关是**替换不是删除**：locus 以下管仍断层流 Buckingham 精确根（worst 3.2e-12）+ f Re_B g=64（worst 1.86e-12）；
+#      locus 以上管断湍流精确根（worst 6.39e-13）+ printed f = 此处独立重推 Eq 15/16（纯 math.log 路径，与内核 log1p
+#      独立，worst 2.11e-12）+ printed f 复现 printed 压降 (f L/d)ρv²/2（worst 7.75e-12）。最深管（Re_B 数万~数十万）
+#      **不再**答 64/(Re_B g)（层流括号偏 >10%）——这正是 §5.51 item 4 留红的那条，现在按"换律"改红为"验湍流"。
+#   2) **滞回间隙是物理不是 bug**：硬开关在 locus 不连续。低 He 管 dp_t,turb > dp_t,lam（Small05 间隙 403.08~625.84 Pa），
+#      dp 落间隙内**无稳态根**（Illinois 割线塌到 Q_t）；极高 He band-2（xi≈1）可重叠（符号在 He=1e5 两侧翻转）。
+#      **不发明未经确认混合律填缝**——把探针放良态区：Small05 从 N2(500，正在间隙内) 移到新节点 N6(700，天花板之上)，
+#      给出干净湍流根 Re_B=2243.6。判据显式断言间隙存在（dt>dl 且 700>dt）且 reported dp_t 是间隙地板（层流）。
+#   3) 独立重推是**第二锚**：checker 自己用 math.log 写 Eq 15/16 二分（wt_turbulent_f），与内核 log1p 路径独立，
+#      两者逐位吻合才证明转录正确——不是拿内核自己的数验内核。湍流档无实验真值，这条独立重推就是真值。
+#   4) 带接缝仍是**记录的台阶**（He=1e5 −1.17%、He=1700 −25.3%），Eq (17) 桥接常数没转写，别平滑。
+# 八族 67 条（§5.51 七族 60 条升级：family 6 从"报告 inert"整族重写成"开关按湍流定价"）；复用 verify.steadyYieldTransition
+# （Test #80，不新增 test，CTest 仍 137）。**边界**：仅光滑壁（粗糙壁 2007 Eq [7]/[9] 留待后续）；HB 无塑性黏度故无 WT 陈述。
 ./build/src/1d/apps/chflow-1d-steady tests/cases/steadyYieldTransition/case.dict
 python3 tests/check_steady_yield_transition.py \
     "$PWD/build/src/1d/apps/chflow-1d-steady" \

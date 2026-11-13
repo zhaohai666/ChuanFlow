@@ -4316,6 +4316,23 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：内核 + app ~190 行（`TwoFluid.h` ~48 含注释 + `twoFluid.cpp` 构造几何 ~50 / `formationStep` ~55 / `thermalStep` 接线 ~10 / loader 8 + app ~14）+ 1 case + 1 checker（132 判据）+ 1 条 `add_test`，CTest 136 → **137**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.83 屈服管第一次按湍流定价（A1）：光滑 Bingham 塑料**严格越过**已发表转捩 locus 后，壁面律从层流 Buckingham 换成 **Wilson–Thomas 湍流闭合**——`V/U* = 2.5 ln√He + 2.5 ln[√β(β−1)/(β+1)] + 11.6/β − χ(β)`，`β = τ_w/τ_B` 由 `√(8/f) = Re_B/√(He·β)` 化成 β>1 上一支单调隐式方程、括号二分求解，回代 `f = 8Heβ/Re_B²`；`τ_B→0` 塌回牛顿光滑壁对数律 `2.5 ln Re*`，不是另一条陈述
+
+**这一格从哪来**：`docs/gap_analysis.md` 编为 **A1**（屈服 + 湍流摩擦闭合），长期 `BLOCKED`——Wilson & Thomas 2006 (*Can. J. Chem. Eng.* 84:520) 与 Thomas & Wilson 2007 (Hydrotransport 17) 两份文献对 `β` 区间收缩与 `11.6/χ` 钝化项的陈述需第三方核对。本增量启动前已确认 **2006 Eq (15)/(16) 与 2007 Eq [3]/[4] 逐字相同**，β 的解方程形式 settled。§5.51（task #85）已把 locus（He、Re_B,t、Q_t、dp_t、Trel、band）作为**报告**落地；本增量写**摩擦侧**：locus 不再只是报告，而是 `pipeFrictionPa` 读的开关。估 1 增量，实测约 1。
+
+**声明面与解析核心**：**无新声明键**——开关读既有的 `yieldStress`/`flowIndex`/`roughness`。三个要素：
+1. **闭合式**（2006 Eq 15/16 = 2007 Eq 3/4）：记 `β = τ_w/τ_B`、`He = ρτ_B d²/μ_B²`、`Re_B = ρVd/μ_B`，则 `V/U* = √(8/f)` 满足 `√(8/f) = 2.5 ln√He + 2.5 ln[√β(β−1)/(β+1)] + 11.6/β − χ(β)`，`χ(β) = −2.5 ln[(β−1)/β] − 2.5(β+0.5)/β²`。由 `β = f Re_B²/(8He)` 与 `√(8/f) = Re_B/√(He β)` 消去 f，得 β>1 上一支单调隐式方程，括号二分求解到舍入，回代 **f = 8Heβ/Re_B²**。`log1p` 保 `(β−1)/β` 与 `(β−1)/(β+1)` 在 β 大时的精度；
+2. **牛顿极限**：`τ_B→0`（He→0、β→∞ 而 `He·β = Re*²` 固定）时对数项塌成 `2.5 ln Re*`、χ 与 11.6/β 消失——牛顿光滑壁对数律，不是另一条陈述；
+3. **开关条件**：`pipeFrictionPa` 与 `pipeFrictionReport` 同一条判据——**光滑**（`roughness ≤ 0`）**Bingham**（`flowIndex == 0`，即声明了塑性黏度 μ_B）且 **Re_B 严格 > Re_B,t(He)**（`binghamTransitionRe`，与 locus 报告共享同一函数，两者不会漂移）才按湍流定价；否则（HB 无塑性黏度、粗糙壁超出光滑壁闭合、locus 以下）保持层流 Buckingham。严格 `>` 让 `dpAtTransition`（在 Re_B,t 处求值）留在层流律上。`pipeFrictionPa` 是稳态（`network.cpp`）与瞬态（`transient.cpp`）**共享**的唯一壁律入口，一处改动覆盖两侧。
+
+**滞回间隙（本增量量出的物理）**：硬开关在 locus 处**不连续**。低 He 管湍流压降在 Q_t 处**跳高于**层流（`dp_t,turb > dp_t,lam`），于是 dp 落在 `(dp_t,lam, dp_t,turb)` 之间时**没有稳态根**——括号 Illinois 割线塌到 Q_t；极高 He 的 band-2 管（xi≈1）则可能**重叠**（湍流低于层流），符号在 He=1e5 带边界两侧翻转。这是真实的滞回转捩特征，不是数值缺陷。本增量**不发明未经确认的混合律**去填缝（遵守「未确认方程不得进内核」），而是把 case 探针放在良态区（间隙之外），并把 `dpAtTransition` 显式钉在层流（间隙的地板）。
+
+**case 与判据**：扩展既有 `tests/cases/steadyYieldTransition`（§5.51 的 locus case，**复用 `verify.steadyYieldTransition`，不新增 test**，CTest 仍 137）。新增节点 N6=700 Pa、Small05 从 N2(500) 移到 N6(700)——500 Pa 正落在 Small05 的间隙 (403.08, 625.84) 内无根，700 Pa 在天花板之上给出干净湍流根（Re_B=2243.6）。checker `check_steady_yield_transition.py` **67 判据 0 失败**，八族：① locus 是几何+流体不是状态（孪生管逐位）；② 三带常数与已发表参数集 He 靶（Csizmadia & Toth 2013 Table 1）；③ 恒等式 `Trel = Re_B,t/√He`、printed Re_B = printed Re；④ dp_t 是内核自己的 Buckingham 律在 Q_t 处求值（非相关式）；⑤ 判据 past/below 由速率、Re_B、压差三路一致；⑥ **开关按湍流定价**——locus 以下管仍是层流 Buckingham 精确根（worst 3.2e-12）且 `f·Re_B·g = 64`（worst 1.86e-12），locus 以上管是 Wilson–Thomas 湍流精确根（worst 6.39e-13）、printed f 就是此处独立重推的 Eq 15/16 因子（worst 2.11e-12）、printed f 复现 printed 压降 `(f L/d)ρv²/2`（worst 7.75e-12）、最深管（Edge1e5Under/Edge1e5Over/BigHe06Run，Re_B 数万到数十万）**不再**答 `64/(Re_B g)`（层流括号偏 >10%，正是 5.83 要停止复现的数）、硬开关在 Q_t 处湍流/层流压降对每管都非零（跳变非光滑 join）、Small05 间隙 `dp_t,lam=403.0754 < dp_t,turb=625.8412` 且 700>天花板、reported dp_t 是间隙地板；⑦ `τ_0→0` 控制（Bore02 = Newtonian 孪生 × 括号因子 g）；⑧ locus 不适用处（Newtonian/HB 无 He token）。**7 past / 8 below**，判据非单值。
+
+**本增量的边界**：① **仅光滑壁**——粗糙壁湍流屈服闭合（2007 Eq [7]/[9]）留待后续增量，粗糙壁保持层流；② HB 无塑性黏度 μ_B，故 He/Re_B 都不是关于它的陈述，保持层流（§5.46/5.47）；③ 间隙是真实滞回特征，未发明未经确认的混合律填缝——case 探针放在良态区；④ band 0→1（2100→1568.29，−25.3%）与 band 1→2（8000→7905.69，−1.17%）的 join 是**记录的台阶**，不是光滑过渡——2006 Eq (17) 桥接式的常数无法从源排版转录，故如实记录台阶；⑤ 湍流档无实验真值可验（没有 Bingham 湍流的实验重演），判据锁的是**独立重推的 Eq 15/16**（纯 Python `math.log` 路径，与内核 `log1p` 路径独立）与内核逐位吻合，不是拟合实验。
+
+**成本**：内核 ~114 行（`network.cpp`：`binghamTransitionRe` 共享 + `yieldedTurbulentFriction` 二分 + `pipeFrictionPa`/`pipeFrictionReport` 两处开关 + `yieldedTransitionOf` band 重构 + `dpAtTransition` 显式层流）+ `Network.h` 26 行（注释/struct）+ case 37 行 + checker 207 行，**复用 `verify.steadyYieldTransition`（不新增 test，CTest 仍 137）**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

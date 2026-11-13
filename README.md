@@ -35,6 +35,7 @@
 - **1D↔3D 伙伴块认识两相**：`detail{ phases{ ... } }` 让管网一条边内部的 3D 区域第一次拥有**两种流体**——`rhoL`/`rhoG`/`muL`/`muG`、`alpha ( ... )`（沿流动轴等宽、inlet first）或 `alpha0`、`gravity ( gx gy gz )`、`viscosityMix`。冻结相场逐 cell 混出 `rho_m = a·rhoL + (1−a)·rhoG` 与 `mu_m`，借 `IEnergyCoupling::buoyancyForce()` 把 `g·rho_m/rho_ref` 送进 FVM（FVM 的 `p` 是 kinematic，`measure()` 乘回 `rho_ref` 后才是物理静压头 `−L_meas <rho_m> g_flow`，**只有液体那份是重的**，与 §5.77 的分布式 α 同一支思路）；`viscosityMix yes` 让同一份 alpha 经 `IEddyViscosity::nuEffFace()` 逐面给壁律定价，分层柱按自己的黏度分段收费。接口层 `ICoupledElement::lossAt(q)` 与 `src/3d` 求解器**零改动**，零声明 / 声明-空块的 `dp/q/sweeps/probeSlope/dpPa` 逐位相同。单路径稳态网络固定 `q = 2.4e-4` 让压降差只含相场贡献：打印的 `alphaMean 0.5 / rhoMean 700 / muMean 0.1 / bodyDrop 686 Pa` 对 dict-only 闭式 1e-9、实测压降差 689.21 Pa（+0.47% 离散足迹）、重力线性 0.500005 / −0.249959、端点密度 200 < 700 < 1200 且 700 ≠ 零声明的 800、冻结界面使探针 spread 0.905 → 101.672 Pa、混合黏度让发展段梯度 ×1.9955——70 条判据 + 7 条大声拒收（§5.78 / A8 增量 1；**后续状态**：增量 2 §5.79 已落地，A8 至此 CLOSED）
 - **1D↔3D 伙伴块可压**：`detail{ compressible{ pRef; RsT; mu; } }` 把伙伴块换成沿 mesh 截面逐站推进的**等温理想气体 duct**——`ρ = p/(R_sT)`、`ṁ = ρ_in q_in` 守恒、`p²_in − p²_out = 24μL p_in q_in/(W H³)`（`L` 取首末 cell-centre 跨度）。接口 `lossAt(q)` 仍只收一个速率，故 `qMag` 定义为**入口**体积流量、出口流量是结果（主臂 `q_in 2.4e-4 → q_out 2.6446e-4`、密度 `0.0333 → 0.03025`）；`p(x)` 弯而 `p²(x)` 严格线性，五个打印站各自满足 `ρq = ṁ`。`pRef` 是 case 声明的绝对入口压强（**不随网络节点压强变**，因为 `lossAt(q)` 不收压强），三档 `pRef` 在同一 q 下给出 977.56 / 924.76 / 902.36 Pa；`RsT` 在 `dp` 里相消（加倍时 `dp` 逐位相同而密度与质量流量各减半）；三档 rate 的 `dp/q` 严格递增证明它已不是 `R·q`；零声明 twin 十一量逐位相同。接口层与 `src/3d` **零改动**（闭盒 Sod 管 `chflow-3d-compressible` 没有库级可复用求解器，故在伙伴块内部自解 duct）——126 条判据 + 8 条拒收（§5.79 / A8 增量 2，**A8 至此 CLOSED**；边界：`pRef` 不随网络压强变、与 `phases{}` 互斥、等温非可压 Navier–Stokes）
 - **矩形 duct 进稳态管网**：管块可选键 `ductHeight`（`diameter` 改读为宽 W、`ductHeight` 是高 H）——层流锚是 **∇²u = −G/μ 在矩形上无滑移的精确 Fourier 级数解**（本仓库自推，非转录文献）：`bracket(aspect) = 1 − (192·aspect/π⁵)Σ_{n odd}tanh(nπ/2aspect)/n⁵`、`Q = (dp/L)·long·short³·bracket/(12μ)`、`C_rect = f·Re = 96/((1+aspect)²·bracket)`，湍流是 **Churchill 换掉层流成员**：C_rect/Re 替代 64/Re，而 96 是 aspect→0（平行平板）的成员、56.908 是正方，圆管仍走自己的 64 逐位不变；f·Re = C_rect 与 Q = conductance·dp 双 1e-9、C 阶梯单调落向正方 56.91、旋转孪生对称、**级数无关的第二锚**（纯 Python 二维有限差分 Poisson + Richardson 确认正方 bracket 5.2e-7）、Dh 接线 1e-9 全档；屈服/幂律/耦合边/两相 march 在入口大声拒收——26 条判据（§5.80 / C3 增量 1；偏心环空留待增量 2）
+- **屈服管按湍流定价（光滑 Bingham 越过 locus）**：§5.51 只报转捩 locus、一个钱不重定价，这一格把摩擦闭包那一半补上——`yieldStress > 0`、`flowIndex == 0`（纯 Bingham）、`roughness <= 0` 的光滑管，当 `Re_B = ρvd/μ_B` **严格越过**自家 locus `Re_B,t(He)` 时，从层流 Buckingham 切到 **Wilson–Thomas 2006 Eq (15)/(16)（= 2007 Eq [3]/[4]，两篇原文逐字一致）**湍流闭合：`V/U* = 2.5 ln√He + 2.5 ln[√β(β−1)/(β+1)] + 11.6/β − χ(β)`、`χ = −2.5 ln[(β−1)/β] − 2.5(β+0.5)/β²`，其中 `V/U* = √(8/f)`、`β = τ_w/τ_B`、`He = ρτ_B d²/μ_B²`；代入 `β = f·Re_B²/(8He)` 化成 `β > 1` 上**一条单调隐式方程**，括号二分求解、返回 Darcy `f = 8Heβ/Re_B²`。`τ_B → 0`（`He → 0`、`β → ∞` 而 `Heβ = Re*²` 固定）逐字塌回牛顿 `V/U* = 2.5 ln Re*`。开关装在 `pipeFrictionPa`（稳态 `network.cpp` 与瞬态 `transient.cpp` 共用），一处改动两侧同时生效；严格 `>` 让 locus 上那一点（`dpAtTransition` 按 `Re_B,t` 求值）仍层流。**滞回间隙不被发明填平**：硬开关在 locus 处不连续——低 `He` 管湍流压降跳到层流**上方**（GAP，`dp_lam(Q_t)` 与 `dp_turb(Q_t)` 之间无稳态根，Illinois 割线塌到 `Q_t`），极高 `He` 带 2（ξ≈1）湍流落到层流**下方**（OVERLAP），符号在 `He = 1e5` 边界翻转；未确认的混合律不进内核，算例探针只落在良态区。HB 与牛顿管不受影响、粗糙壁仍层流（光滑壁闭合 only，2007 粗糙壁 Eq [7]/[9] 留待后续）。判据打在**独立重推**上：checker 用纯 `math.log` 重写 Eq (15)/(16) 二分（不借内核 `log1p`），7 past / 8 below，below-locus 速率/摩阻最差 **3.2e-12 / 1.86e-12**（locus 以下逐字仍层流 Buckingham）、past-locus 速率/摩阻/压差最差 **6.39e-13 / 2.11e-12 / 7.75e-12**（独立湍流闭式复现），`Small05` 间隙 `dp_t,lam = 403.08 < dp_t,turb = 625.84 Pa`、施加 700 Pa 得干净湍流根 `Re_B = 2243.6 / Q = 0.00257246`；两个带接缝仍是 §5.51 量出的向下台阶（`He = 1700`：2100 → 1568.29 **−25.3%**；`He = 1e5`：8000 → 7905.69 **−1.17%**，跨接缝 Eq (17) 常数未转写）——67 条判据、复用 Test #80、CTest 137（§5.83 / A1，**A1 至此 CLOSED**；边界：光滑壁 only、HB 不切、无实验真值、间隙不填）
 - **多入口使用形态**：C++ 原生库 / Python API / CLI 命令行 / Tauri 桌面GUI，集群自动化、本地交互都支持
 - **标准IO兼容**：支持 Gmsh msh、VTK/VTU、HDF5，可导入 OpenFOAM 网格，结果直接用 ParaView 可视化
 
@@ -1087,7 +1088,7 @@ print(result.pressure_profile)
   没有材料黏度可报，`Re` 换成表观数 `8 rho v^2/tw` 后 `f · Re == 64` 只是**定义**（**2.911e-10**，即打印精度），真正有内容的是 `HbN1`/`Bing` 之比**就是** `g(xi) = 0.475200`。
   这一格还第一次把**外层求解的退出精度**量出来而没有把它写成判据：软着陆那两格的 **1.511e-09** 不来自律，而来自 `equipmentFlow` 的速率括号门（1e-9 相对，
   src/1d/src/network.cpp:364）先于残差门触发——把打印的速率喂回闭式反演，内核留下的压差 **1.112e-06 Pa** 乘上该点的斜率 `dlnQ/dln tw = 13.593` 恰好复现观测（第 4 位）。
-  其余边界与 5.46 同侧：湍流侧的屈服（Darby-Metzner 一类）没落地也没被证伪（**转捩 locus 那一半已在 5.51 落成算例，摩擦闭包那一半仍未落地**）、`f` 在 `yieldStress > 0` 时永远不看 `Re`（本案最大 **84.10**，表观数；5.51 把它在不看的前提下推到超出 locus 151 倍仍复现 `64`）、PVT/黑油/两流体与瞬态那一行**当时**仍拒收（docs/architecture.md 5.47；**后续状态**：§5.74 瞬态、§5.75 / §5.77 两流体、§5.76 PVT/黑油已分别落地，A2 与 A5 均已 CLOSED）；
+  其余边界与 5.46 同侧：湍流侧的屈服（Darby-Metzner 一类）没落地也没被证伪（**转捩 locus 那一半已在 5.51 落成算例，摩擦闭包那一半已由 §5.83/A1 落地**——光滑 Bingham 严格越过 locus 后按 Wilson–Thomas 湍流闭合定价、locus 以下仍层流 Buckingham）、`f` 在 `yieldStress > 0` 时永远不看 `Re`（本案最大 **84.10**，表观数；5.51 把它在不看的前提下推到超出 locus 151 倍仍复现 `64`）、PVT/黑油/两流体与瞬态那一行**当时**仍拒收（docs/architecture.md 5.47；**后续状态**：§5.74 瞬态、§5.75 / §5.77 两流体、§5.76 PVT/黑油已分别落地，A2 与 A5 均已 CLOSED）；
   另有两处已知不整齐：①app 头部那行
   `interface ( … )` 取 case 级缺省 `ctl.accelerate`（src/coupling/apps/transientCoupledMultiApp.cpp:216），
   `accelerates ( 0 1 )` 或八臂的 `0 0 0 0 1 1 1 1` 逐臂生效时它只描述第一臂——逐臂算子看每臂自己的
@@ -1181,7 +1182,8 @@ print(result.pressure_profile)
   （`34250`），判决 `pastLaminarLimit` 从速率/`ReB`/压差三个入口在 15 管上两两相同（本案 **7 past / 8 below**），`ReB` 与 `Re` 逐字同一句、
   `τ_0 = 2e-4` 的管对其牛顿孪生符合 `Q = Q_Newt · g`（`g = 0.994667`，`ξ = 1/250`），而牛顿管与 HB 管**不打** `He`（HB 打印的是表观数
   `8 ρ v²/τ_w`）。两个带的接缝是量出来的**向下台阶**（`He = 1e5`：7999.99 → 7906.50，**−1.17%**；`He = 1700`：2100 → 1568.29，**−25.3%**），
-  因为跨过去的 Eq (17) 常数没转写——本节记录而未给准则。边界：只有稳态侧打印；**past locus 之后什么都没说**（摩擦闭包未落地）；带 0 在
+  因为跨过去的 Eq (17) 常数没转写——本节记录而未给准则。边界：只有稳态侧打印；**past locus 之后**本节只报 locus 不重定价，
+  摩擦闭包那一半已由 §5.83/A1 落地（光滑 Bingham 严格越过 locus 后按 Wilson–Thomas 湍流闭合定价、locus 以下仍层流 Buckingham）；带 0 在
   `He < 1700` 内是平的 2100；只有 Bingham；等温常物性（`μ(p)` 表管的 locus 会随填充变）；无粗糙度（Thomas & Wilson, Hydrotransport 17, 2007
   的粗糙壁同一分析未转写）；本案**不做**"past 就拒收"——在损失函数里抛错会在 Illinois 括号展开的 60 步里必然触发，哪怕答案是层流的
   （docs/architecture.md 5.51）。
@@ -1203,7 +1205,7 @@ print(result.pressure_profile)
   **1.270e-12** 而留给壁的 **7288.309 Pa** 高于 6000 Pa 阈值（这就是它没被 hold 的理由，写成判据）。**121** 条判据、2 个 case 文件（12 根管、
   全定压）；边界：`beta` × 静止支仍是空白，而 hold × 浮动节点 × 日程那一半**已在 5.53 落成算例**（日程放在邻居那一行时它拥有放开，
   放在被 hold 的那一行时连放开那一步都不移动）、静止支依旧刚（阈值以下无蠕变/触变/启动压力）、只有 Bingham、步号分辨率
-  是 `dt`、past-locus 付多少仍归 5.51（docs/architecture.md 5.52）。
+  是 `dt`、past-locus 的 locus 归 5.51、越过之后付多少已由 §5.83/A1 定价（docs/architecture.md 5.52）。
   5.53 落的是 5.50 边界④与 5.52 边界②各让一次的那一格——**浮动节点 × 静止支 × 阀的时间表**同台，桌面从两端定压改成每对"一根
   `τ_0 = 2.0` 的屈服管 `A → F` 串一根牛顿泄放管 `F → B`"、`F` 带 `volume 0.1 / bulkModulus 1e8`（即 `Cc =` **1e-9 m³/Pa**），而内核一字未改。
   于是闩锁比的 drive 不再是算例里的数而是**解出来的**，两件事随之分开：**日程放在邻居那一行时它拥有放开**——泄放管上写死的

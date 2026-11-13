@@ -188,7 +188,18 @@ int main(int argc, char** argv)
             {
                 log::info("formation: qFar ", num(s.formationHeatRate()),
                           " qIntake ", num(s.formationIntakeRate()),
-                          " qStore ", num(s.formationStorageRate()));
+                          " qStore ", num(s.formationStorageRate()),
+                          " farRise ", num(s.formationFarRise()));
+                if (c.formation.semiInfinite)
+                {
+                    // probes of the E1 implementation itself; the checker
+                    // weighs these against an independent quadrature.
+                    log::info("formation e1: 0.1 ",
+                              num(exponentialIntegralE1(0.1)),
+                              " 1 ", num(exponentialIntegralE1(1.0)),
+                              " 10 ", num(exponentialIntegralE1(10.0)),
+                              " 50 ", num(exponentialIntegralE1(50.0)));
+                }
                 for (int i = 0; i < s.sections(); ++i)
                 {
                     const std::vector<double> fp = s.formationProfile(i);

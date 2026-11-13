@@ -247,7 +247,7 @@ struct TwoFluidThermal
 /// r_e held at wallTemperature(i) (the constant/geothermal profile becomes
 /// the FAR-FIELD boundary). The grid is M+1 nodes at geometric radii
 /// rho_j = r_w (r_e/r_w)^(j/M); node 0 is the wall the fluid film sees, node
-/// M is the Dirichlet far field. Cylindrical Fourier conduction between
+/// M is the far field. Cylindrical Fourier conduction between
 /// nodes gives the face conductance g_j = 2 pi k dx / ln(rho_{j+1}/rho_j),
 /// so the steady profile is the exact logarithm
 ///   T_j = T_w + (T_e - T_w) ln(rho_j/r_w) / ln(r_e/r_w)
@@ -255,13 +255,32 @@ struct TwoFluidThermal
 /// unit length is ln(r_e/r_w)/(2 pi k). Each node stores heat with capacity
 /// rhoC dx times its shell volume; the grid marches by implicit Euler,
 /// staggered with the fluid temperature step (exact at steady state).
+///
+/// D3 increment 2: `semiInfinite yes` replaces the fixed Dirichlet far field
+/// with the line-source (Theis) response of the rock OUTSIDE r_e. A step of
+/// heat q' [W/m] injected at r = 0 raises the temperature at radius r by
+/// q'/(4 pi k) E1(r^2/(4 alpha t)), alpha = k/rhoC; superposing the measured
+/// per-step far-field flux by Duhamel gives a time-dependent rise
+///   dT_e(t_n) = sum_m (q'_m - q'_{m-1}) F(t_n - t_m),
+///   F(s) = E1(r_e^2/(4 alpha s))/(4 pi k),  F(0) = 0.
+/// F(0) = 0 is why the current step's own flux cannot feed back into its own
+/// boundary: the rise is explicit in the recorded history yet exact for a
+/// piecewise-constant flux. Each section keeps its own geothermal far-field
+/// offset, so a depth-varying T_e profile survives the superposition.
 struct TwoFluidFormation
 {
     double conductivity = 0; // W/(m K), radial rock conductivity k
     double outerRadius = 0;  // m, far-field radius r_e (> bore radius)
     double rhoC = 0;         // J/(m3 K), formation volumetric heat capacity
     int shells = 0;          // M radial intervals (M+1 nodes, node M = far)
+    bool semiInfinite = false; // line-source outer field instead of T_e = const
 };
+
+/// E1(x) = integral_x^inf exp(-u)/u du, the Theis well function. Series for
+/// x < 1, a continued fraction for x >= 1, and exactly 0 in the x -> inf
+/// (s -> 0) limit. Exposed so the app can report probes the checker weighs
+/// against an independent numerical quadrature.
+double exponentialIntegralE1(double x);
 
 struct TwoFluidFill
 {
@@ -447,6 +466,9 @@ public:
     /// Rate of heat stored in the formation this step, W (= intake - far
     /// field rejection, exactly); zero unless formation is on.
     double formationStorageRate() const { return formStorageRate_; }
+    /// Line-source rise of the far-field temperature this step, K (identically
+    /// zero unless formation{ semiInfinite yes; } is declared).
+    double formationFarRise() const { return formFarRise_; }
 
     // ---- junction support (used by TwoFluidNetwork) ----
 
@@ -642,6 +664,12 @@ private:
     std::vector<std::vector<double>> formG_; // n_ x M face conductances, W/K
     std::vector<std::vector<double>> formC_; // n_ x M node capacities, J/K
     std::vector<std::vector<double>> formT_; // n_ x (M+1) node temperatures
+    // semi-infinite outer field: the recorded per-step average far-field flux
+    // (W/m) and its step-end time, used for the Duhamel superposition; empty
+    // on the Dirichlet path, which therefore stays bit-for-bit unchanged.
+    std::vector<double> formQHist_;  // W/m, q'_m
+    std::vector<double> formTHist_;  // s, t_m
+    double formFarRise_ = 0; // K, the line-source rise applied this step
     double formHeatRate_ = 0;     // W, rejected to the far field this step
     double formIntakeRate_ = 0;   // W, absorbed from the fluid this step
     double formStorageRate_ = 0;  // W, stored in the rock this step
@@ -699,6 +727,14 @@ private:
 ///       surfaceTemperature 288;  // geothermal: T(d) = surf + gradient*d
 ///       gradient 0.03;           // K/m of true vertical depth
 ///       inletDepth 2000;         // m below surface at s = 0
+///   }
+///   formation    // optional: finite radial rock grid; needs thermal{}
+///   {
+///       conductivity 2;          // W/(m K)
+///       outerRadius 0.2;         // m, r_e > diameter/2
+///       rhoC 10000;              // J/(m3 K)
+///       shells 10;               // radial intervals
+///       semiInfinite no;         // or yes: E1/Duhamel outer field (5.84)
 ///   }
 ///   hydrate      // optional: presence switches the hydrate kinetics on;
 ///                // requires the gas EOS (gasR > 0) and a thermal{} block

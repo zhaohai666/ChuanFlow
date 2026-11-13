@@ -22,6 +22,75 @@ double mixtureMu(const TwoFluidFluid& f, double a)
     return a * f.muL + (1.0 - a) * f.muG;
 }
 
+/// Theis well function E1(x) = int_x^inf exp(-u)/u du. Two independent
+/// branches: the convergent series for x < 1 (Euler's gamma + logarithm),
+/// and the Legendre continued fraction for x >= 1. x -> inf is the s -> 0
+/// limit of the line-source kernel and is exactly zero: that is what makes
+/// the Duhamel superposition explicit in the flux history.
+double expIntegralE1(double x)
+{
+    if (!(x > 0.0) || !std::isfinite(x)) return 0.0;
+    if (x < 1.0)
+    {
+        constexpr double gamma = 0.577215664901532860606512090082402431;
+        double sum = -gamma - std::log(x);
+        double term = 1.0;
+        for (int n = 1; n <= 80; ++n)
+        {
+            term *= -x / double(n);          // (-x)^n / n!
+            const double add = -term / double(n);
+            sum += add;
+            if (std::abs(add) < 1e-18 * std::abs(sum)) break;
+        }
+        return sum;
+    }
+    // NR expint(n=1,x): b = x + 1; h = 1/b; a_i = -i^2; b_i = x + 2i + 1
+    constexpr double tiny = 1e-300;
+    constexpr double eps = 1e-16;
+    double b = x + 1.0;
+    double c = 1.0 / tiny;
+    double d = 1.0 / b;
+    double h = d;
+    for (int i = 1; i <= 300; ++i)
+    {
+        const double a = -double(i) * double(i);
+        b += 2.0;
+        d = 1.0 / (a * d + b);
+        if (std::abs(d) < tiny) d = tiny;
+        c = b + a / c;
+        if (std::abs(c) < tiny) c = tiny;
+        const double del = d * c;
+        h *= del;
+        if (std::abs(del - 1.0) < eps) break;
+    }
+    return std::exp(-x) * h;
+}
+
+/// Duhamel superposition of a piecewise-constant far-field flux history.
+/// q'(t) = q'_m on (t_{m-1}, t_m]; the step response is
+/// F(s) = E1(r_e^2/(4 alpha s))/(4 pi k), F(0) = 0, so
+///   dT(t_n) = sum_m (q'_m - q'_{m-1}) F(t_n - t_m),  q'_0 = 0.
+double lineSourceRise(double tNow, const std::vector<double>& qHist,
+                      const std::vector<double>& tHist, double rOuter,
+                      double alpha, double k)
+{
+    double rise = 0.0;
+    double qPrev = 0.0;
+    for (std::size_t m = 0; m < qHist.size(); ++m)
+    {
+        const double s = tNow - tHist[m];
+        // s == 0 is the current step: F(0) = 0, so its own flux cannot feed
+        // back into its own boundary. No implicit loop is needed.
+        const double F = (s > 0.0)
+            ? expIntegralE1(rOuter * rOuter / (4.0 * alpha * s))
+              / (4.0 * M_PI * k)
+            : 0.0;
+        rise += (qHist[m] - qPrev) * F;
+        qPrev = qHist[m];
+    }
+    return rise;
+}
+
 /// Godunov flux of the quadratic F(a) = qa a^2 + qb a + qc between the left
 /// and right states. Convex F (qa > 0) shocks on a falling jump and
 /// rarefies on a rising one, concave F mirrors both, and the linear case
@@ -46,6 +115,11 @@ double godunovQuadratic(double qa, double qb, double qc, double aL, double aR)
 }
 
 } // namespace
+
+double exponentialIntegralE1(double x)
+{
+    return expIntegralE1(x);
+}
 
 TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
     : cfg_(c)
@@ -1337,10 +1411,20 @@ void TwoFluidPipe::formationStep(double dt)
     formHeatRate_ = 0;
     formIntakeRate_ = 0;
     formStorageRate_ = 0;
+    // 5.84: on the semi-infinite path the outer field answers the whole
+    // well's recorded flux history through the E1/Duhamel kernel. The rise is
+    // shared by every section, while each section keeps its own geothermal
+    // far-field offset. The Dirichlet path never evaluates the kernel.
+    const bool semi = fm.semiInfinite;
+    formFarRise_ = semi
+        ? lineSourceRise(t_, formQHist_, formTHist_, fm.outerRadius,
+                         fm.conductivity / fm.rhoC, fm.conductivity)
+        : 0.0;
     for (int i = 0; i < n_; ++i)
     {
         const double kw = th.wallHeatTransfer * dxs_[i];
-        const double te = wallTemperature(i);
+        const double te = semi ? wallTemperature(i) + formFarRise_
+                               : wallTemperature(i);
         const std::vector<double>& g = formG_[i];
         const std::vector<double>& c = formC_[i];
         std::vector<double>& tf = formT_[i];
@@ -1380,6 +1464,13 @@ void TwoFluidPipe::formationStep(double dt)
         tf[M] = te;
         formIntakeRate_ += kw * (T_[i] - tf[0]);
         formHeatRate_ += g[M - 1] * (tf[M - 1] - te);
+    }
+    if (semi)
+    {
+        // Record the step-average far-field flux per metre of well. F(0) = 0
+        // guarantees this entry cannot influence the rise of this same step.
+        formTHist_.push_back(t_);
+        formQHist_.push_back(formHeatRate_ / length_);
     }
 }
 
@@ -1624,6 +1715,11 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.formation.outerRadius = fm.getScalar("outerRadius");
         c.formation.rhoC = fm.getScalar("rhoC");
         c.formation.shells = static_cast<int>(fm.getScalar("shells"));
+        const std::string si = fm.getWordOr("semiInfinite", "no");
+        if (si == "yes") c.formation.semiInfinite = true;
+        else if (si != "no")
+            cfFatal("twoFluid: formation semiInfinite must be 'yes' or 'no'"
+                    " (got '" + si + "')");
     }
 
     if (caseDict.has("hydrate"))

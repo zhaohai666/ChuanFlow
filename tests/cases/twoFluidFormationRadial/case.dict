@@ -25,8 +25,16 @@
 //   wall node T_w,i = 280 + (T_i - 280) * 0.826626
 //   formation nodes linear in j between T_w and 280
 //   qWall = -qFar at steady, qStore -> 0
+// D3 increment 2 (5.84) deliberately leaves semiInfinite UNDECLARED here:
+// this file is the bit-identical zero-declaration witness (finite Dirichlet
+// far field, all 132 increment-1 anchors). The checker derives the
+// semiInfinite arms into a system temp dir: a long arm (unbounded rise), a
+// 30-step reportEvery-1 arm (Duhamel reconstruction), its Dirichlet twin
+// (early-time identity), a geothermal arm (depth profile + shared rise) and
+// a scope twin (the word outside formation{} is ignored). E1 is weighed by
+// an independent adaptive-Simpson quadrature, never trusted from the app.
 // verified by tests/check_two_fluid_formation.py
-// (ctest verify.twoFluidFormationRadial).
+// (ctest verify.twoFluidFormationRadial, 300 criteria; no new test added).
 fluid
 {
     rhoL 1000; rhoG 20; muL 0.01; muG 1e-5;

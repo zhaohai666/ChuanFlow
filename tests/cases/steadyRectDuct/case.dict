@@ -1,0 +1,58 @@
+# 5.80 / C3 矩形 duct 第一次进稳态管网：矩形截面的层流锚点是 grad^2 u = -G/mu
+# 在 W x H 矩形上无滑移边界的精确 Fourier 级数解（本仓库自推，非转录文献），
+# 湍流半区是 Churchill 换掉层流成员（C_rect/Re 替代 64/Re）——C_rect 在
+# aspect -> 0 的成员是 96（平行平板），所以圆管分支一位不动（圆管仍走 64）。
+#
+# 几何（m）：宽 W = diameter = 0.04 固定，高 H = ductHeight 取
+#   0.04（正方 aspect=1）、0.02（0.5）、0.01（0.25）、0.004（0.1）、
+#   0.0004（0.01）；另有一根旋转孪生 W=0.02 / H=0.04（与 0.04x0.02 同一矩形）。
+#   mu = 0.05 Pa.s，rho = 850，L = 10。
+#   A->B 定压对 dp = 1000 Pa（层流档，正方 Re ~ 76）；
+#   C->D 定压对 dp = 2.0e6 Pa（湍流档，正方 Re ~ 1.8e4）。
+#
+# 层流闭式（checker 独立重算的锚，aspect = short/long <= 1）：
+#   bracket(aspect) = 1 - (192 aspect/pi^5) . sum_{n odd} tanh(n pi/(2 aspect))/n^5
+#   Q = (dp/L) . long . short^3 . bracket/(12 mu)
+#   conductance = long . short^3 . bracket/(12 mu L)
+#   f . Re_Dh = C_rect = 96/((1+aspect)^2 . bracket) = 24 Dh^2/(short^2 . bracket)
+#   Dh = 2 W H/(W+H),  A = W H
+#   aspect -> 0: C -> 96（平行平板）；aspect = 1: C = 56.908（正方，bracket=0.42173）
+#   单调下降 96 -> 56.91。checker 另用纯 Python 二维有限差分 Poisson（SOR，
+#   无 scipy）独立解 grad^2 u = -1 并积分，Richardson 外推确认正方 bracket 到 5e-7。
+# 湍流档不验关联式（没有真值），验整条接线：打印的 Re == rho v Dh/mu、
+#   dp == f (L/Dh) rho v^2/2、矩形与圆管孪生管在此 dp 下分离。
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.05;
+}
+
+nodes
+{
+    A { pressure 2000; }
+    B { pressure 1000; }
+    C { pressure 3.0e6; }
+    D { pressure 1.0e6; }
+}
+
+pipes
+{
+    # --- 层流档：A -> B，dp 恰为 1000 Pa ------------------------------------
+    RectSquare    { from A; to B; length 10; diameter 0.04; ductHeight 0.04; }
+    RectHalf      { from A; to B; length 10; diameter 0.04; ductHeight 0.02; }
+    RectQuarter   { from A; to B; length 10; diameter 0.04; ductHeight 0.01; }
+    RectTenth     { from A; to B; length 10; diameter 0.04; ductHeight 0.004; }
+    RectHundredth { from A; to B; length 10; diameter 0.04; ductHeight 0.0004; }
+    RectRotated   { from A; to B; length 10; diameter 0.02; ductHeight 0.04; }
+    CircTwin      { from A; to B; length 10; diameter 0.04; }
+
+    # --- 湍流档：C -> D，dp 恰为 2.0e6 Pa -----------------------------------
+    TurbRectSquare { from C; to D; length 10; diameter 0.04; ductHeight 0.04; }
+    TurbCirc       { from C; to D; length 10; diameter 0.04; }
+}

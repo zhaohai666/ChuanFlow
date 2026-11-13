@@ -21,8 +21,11 @@ constexpr double kGravity = 9.80665;
 
 bool pipeIsAnnulus(const NetworkPipe& p) { return p.annulusInner > 0; }
 
+bool pipeIsRect(const NetworkPipe& p) { return p.ductHeight > 0; }
+
 double pipeArea(const NetworkPipe& p)
 {
+    if (pipeIsRect(p)) return p.diameter * p.ductHeight;
     if (pipeIsAnnulus(p))
         return 0.25 * M_PI * (p.diameter * p.diameter
                               - p.annulusInner * p.annulusInner);
@@ -30,11 +33,13 @@ double pipeArea(const NetworkPipe& p)
 }
 
 /// Hydraulic diameter 4A/P: for a concentric annulus exactly dOuter - dInner,
-/// for a circle the diameter itself. The Reynolds number, the relative
-/// roughness and the Darcy conversion L/Dh all read this -- which is why a
-/// circular pipe never moves (Dh == diameter, bit for bit).
+/// for a rectangle 2WH/(W+H), for a circle the diameter itself. The Reynolds
+/// number, the relative roughness and the Darcy conversion L/Dh all read this
+/// -- which is why a circular pipe never moves (Dh == diameter, bit for bit).
 double pipeHydraulicDiameter(const NetworkPipe& p)
 {
+    if (pipeIsRect(p))
+        return 2.0 * p.diameter * p.ductHeight / (p.diameter + p.ductHeight);
     return pipeIsAnnulus(p) ? p.diameter - p.annulusInner : p.diameter;
 }
 
@@ -183,11 +188,61 @@ void annulusFbIntegrals(const NetworkPipe& p, int strips, double& lambda,
     dimQ = dimLess(lambda);
 }
 
+/// The rectangular-duct laminar correction bracket (5.80), from the exact
+/// Fourier-series solution of grad^2 u = -G/mu on a W x H rectangle with
+/// no-slip walls: a parabolic particular solution across the SHORT side plus
+/// a cosh/sin homogeneous series that cancels it on the two long walls. With
+/// aspect = short/long <= 1 the integrated rate carries
+///     bracket = 1 - (192 aspect/pi^5) sum_{n odd} tanh(n pi/(2 aspect))/n^5,
+/// so Q = (dp/L) . long . short^3 . bracket/(12 mu) -- the plane-Poiseuille
+/// gap^3 law times the side-wall correction. bracket -> 1 as aspect -> 0
+/// (parallel plates, f.Re = 96) and = 0.42174 for a square (f.Re = 56.91).
+/// Summed once by addPipe (it depends only on the aspect), so the rate solve
+/// never re-sums it. 1/n^5 decay: 4001 odd terms leave a tail below 1e-15
+/// even at aspect = 1, where tanh saturates slowest.
+double rectLaminarBracket(double aspect)
+{
+    double sum = 0.0;
+    for (int n = 1; n <= 8001; n += 2)
+    {
+        const double nn = static_cast<double>(n);
+        sum += std::tanh(nn * M_PI / (2.0 * aspect))
+             / (nn * nn * nn * nn * nn);
+    }
+    return 1.0 - (192.0 * aspect / std::pow(M_PI, 5)) * sum;
+}
+
+/// Newtonian laminar conductance Q/dp of the rectangular duct: the plane
+/// Poiseuille gap^3 law on the SHORT side times the long side and the bracket.
+double rectLaminarConductance(const NetworkPipe& p,
+                              const FluidProperties& fluid)
+{
+    const double longSide = std::max(p.diameter, p.ductHeight);
+    const double shortSide = std::min(p.diameter, p.ductHeight);
+    return longSide * shortSide * shortSide * shortSide * p.rectBracket
+         / (12.0 * fluid.mu * p.length);
+}
+
+/// The laminar constant C(aspect) = f . Re_Dh of the rectangular duct, from
+/// the same series: f = 2 Dh dp/(L rho v^2), Re_Dh = rho v Dh/mu and v = Q/A
+/// give f Re = 24 Dh^2/(short^2 bracket) = 96/((1+aspect)^2 bracket). 96 at
+/// aspect -> 0 (parallel plates), 56.91 at aspect = 1 (square) -- so
+/// Churchill's laminar line is the aspect -> 0 member of this family and the
+/// all-regime blend only has to swap that member, exactly as for the annulus.
+double rectLaminarConstant(const NetworkPipe& p)
+{
+    const double aspect = std::min(p.diameter, p.ductHeight)
+                        / std::max(p.diameter, p.ductHeight);
+    const double onePlus = 1.0 + aspect;
+    return 96.0 / (onePlus * onePlus * p.rectBracket);
+}
+
 /// Hagen-Poiseuille slope pi D^4 / (128 mu L): the maximum conductance of a
 /// pipe (laminar limit), used as the fallback when the difference quotient
 /// degenerates at dp ~ 0.
 double laminarConductance(const NetworkPipe& p, const FluidProperties& fluid)
 {
+    if (pipeIsRect(p)) return rectLaminarConductance(p, fluid);
     if (pipeIsAnnulus(p)) return annulusLaminarConductance(p, fluid);
     return M_PI * std::pow(p.diameter, 4) / (128.0 * fluid.mu * p.length);
 }
@@ -445,6 +500,12 @@ double pipeFrictionReport(const NetworkPipe& pipe, const FluidProperties& fluid,
         return 8.0 * yieldedWallStress(pipe, fluid, speed * pipeArea(pipe))
              / (fluid.rho * speed * speed);
     }
+    if (pipeIsRect(pipe))
+    {
+        const double dh = pipeHydraulicDiameter(pipe);
+        return churchillAnnulusFriction(reynolds, pipe.roughness / dh,
+                                        rectLaminarConstant(pipe));
+    }
     if (pipeIsAnnulus(pipe))
     {
         const double dh = pipeHydraulicDiameter(pipe);
@@ -575,6 +636,15 @@ double pipeFrictionPa(const NetworkPipe& pipe, const FluidProperties& fluid,
              / pipe.diameter;
     const double v = q / pipeArea(pipe);
     const double re = generalizedReynolds(pipe, fluid, std::abs(v));
+    if (pipeIsRect(pipe))
+    {
+        // 5.80: the same all-regime blend on Dh, laminar member swapped for
+        // the rectangular duct's own Fourier-series constant (96 -> 56.91).
+        const double dh = pipeHydraulicDiameter(pipe);
+        const double f = churchillAnnulusFriction(re, pipe.roughness / dh,
+                                                  rectLaminarConstant(pipe));
+        return (f * pipe.length / dh) * fluid.rho * v * v / 2.0;
+    }
     if (pipeIsAnnulus(pipe))
     {
         // 5.73: the same all-regime blend on Dh, with the laminar member
@@ -694,6 +764,37 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
                 cfFatal("network: pipe '" + p.name
                         + "' failed to resolve its Fredrickson-Bird profile");
         }
+    }
+    if (pipeIsRect(p))
+    {
+        // 5.80's declaration scope: the rectangular duct is a single-phase
+        // Newtonian steady section. Everything else is refused loudly rather
+        // than silently read as a circle or an annulus.
+        if (pipeIsAnnulus(p))
+            cfFatal("network: pipe '" + p.name
+                    + "' declares both a rectangular duct (ductHeight) and an "
+                      "annulus (dInner): pick one bore shape");
+        if (p.yieldStress > 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' declares a rectangular duct with a yield stress: the "
+                      "yielded locus and wall stress are circular-geometry "
+                      "laws; the duct takes no threshold in this increment");
+        if (p.flowIndex > 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' declares a rectangular duct with a power-law index: "
+                      "the 2D nonlinear cross-section profile is not resolved "
+                      "in this increment");
+        if (p.coupledResistance > 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' declares a rectangular duct on a coupled edge: the "
+                      "partner owns that edge's geometry");
+        const double aspect = std::min(p.diameter, p.ductHeight)
+                            / std::max(p.diameter, p.ductHeight);
+        p.rectBracket = rectLaminarBracket(aspect);
+        if (!(p.rectBracket > 0) || !(p.rectBracket <= 1.0))
+            cfFatal("network: pipe '" + p.name
+                    + "' failed to resolve its rectangular-duct laminar "
+                      "profile");
     }
     pipes.push_back(p);
     return static_cast<label>(pipes.size()) - 1;
@@ -1045,6 +1146,10 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     if (pipeIsAnnulus(pipe))
         cfFatal("twoPhase: pipe '" + pipe.name + "' declares an annulus: the "
                 "black-oil march is a circular-bore correlation chain");
+    if (pipeIsRect(pipe))
+        cfFatal("twoPhase: pipe '" + pipe.name + "' declares a rectangular "
+                "duct: the black-oil march is a circular-bore correlation "
+                "chain");
     out = PipeFlowResult{};
     out.name = pipe.name;
     out.regime = -1;
@@ -1152,6 +1257,9 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
     if (pipeIsAnnulus(pipe))
         cfFatal("pvtMarch: pipe '" + pipe.name + "' declares an annulus: the "
                 "PVT march is a circular-bore correlation chain");
+    if (pipeIsRect(pipe))
+        cfFatal("pvtMarch: pipe '" + pipe.name + "' declares a rectangular "
+                "duct: the PVT march is a circular-bore correlation chain");
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
     const double massRate = fluid.density(pUp) * qIn;
     const double ds = pipe.length / nSeg;
@@ -1416,6 +1524,10 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.annulusInner = pd.getScalarOr("dInner", 0.0);
         if (p.annulusInner < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative dInner");
+        p.ductHeight = pd.getScalarOr("ductHeight", 0.0);
+        if (p.ductHeight < 0)
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' has a negative ductHeight");
         p.flowIndex = pd.getScalarOr("flowIndex", 0.0);
         p.consistency = pd.getScalarOr("consistency", 0.0);
         p.yieldStress = pd.getScalarOr("yieldStress", 0.0);

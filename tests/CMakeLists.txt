@@ -1041,6 +1041,20 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyAnnulus/case.dict)
 
+# 5.80 / C3 the rectangular duct: the self-derived Fourier-series laminar
+# anchor (f.Re = C_rect to 1e-9, Q to 1e-9), a monotone aspect ladder from the
+# parallel-plate 96 to the square 56.91, a series-free 2D FD Poisson
+# cross-check (Richardson to 1e-5), a symmetric rotated twin, Dh-consistent
+# reports at 1e-9 on every tier, and loud rejections outside the declaration
+# scope. The circular branch is bit-still: the whole pre-existing suite is the
+# witness.
+add_test(
+    NAME verify.steadyRectDuct
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_rect_duct.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyRectDuct/case.dict)
+
 # 5.74 / A2 gel strength and sub-threshold creep in the transient row: the
 # gel arm opens exactly on the latch recursion's predicted layer (22 layers
 # after the plain twin -- the restart pressure as calendar), the creep arms

@@ -43,11 +43,21 @@ struct NetworkPipe
     label from = -1; // resolved by OneDNetwork::addPipe
     label to = -1;
     double length = 0;     // m, along the pipe
-    double diameter = 0;   // m; the OUTER bore when annulusInner > 0
+    double diameter = 0;   // m; the OUTER bore when annulusInner > 0, the
+                           // WIDTH when ductHeight > 0 (5.80)
     double annulusInner = 0; // m; > 0 makes the bore a concentric annulus of
                              // this inner diameter (5.73); 0 = circular pipe,
                              // and every number below is bit-identical to the
                              // circular branch
+    // Rectangular duct (5.80): when ductHeight > 0 the bore is a rectangle of
+    // width `diameter` and height `ductHeight` (both m). The laminar anchor is
+    // the exact Fourier-series solution of the cross-section Poisson equation
+    // grad^2 u = -G/mu: C(aspect) = f.Re_Dh is 96 for parallel plates
+    // (aspect -> 0) and 56.91 for a square. 0 = not a duct, and every circular
+    // / annulus number is bit-identical when this is absent. Newtonian
+    // single-phase steady only this increment (power-law / yield / coupled /
+    // two-phase / PVT / transient / two-fluid refused loudly).
+    double ductHeight = 0;   // m; > 0 makes the bore a rectangular duct
     double roughness = 0;  // m, absolute roughness
     double elevation = 0;  // m, z(to) - z(from); adds rho*g*dz to the drop
 
@@ -111,6 +121,14 @@ struct NetworkPipe
     // they are solved once instead of inside every rate solve.
     double annulusLambda = 0;
     double annulusDimQ = 0;
+
+    // Rectangular-duct laminar bracket (5.80), resolved once by addPipe when
+    // ductHeight > 0: bracket(aspect) = 1 - (192 aspect/pi^5) sum_{n odd}
+    // tanh(n pi/(2 aspect))/n^5, aspect = short/long. The rate is
+    // Q = (dp/L) . long . short^3 . bracket/(12 mu) and C = 96/((1+aspect)^2
+    // bracket); both depend only on the aspect, never on the rate, so the
+    // series is summed once instead of inside every rate solve.
+    double rectBracket = 0;
 
     /// Coupled element (the 1D side of a 1D<->3D interface): when > 0 this
     /// pipe carries NO 1D resistance of its own – its whole loss is

@@ -1,0 +1,72 @@
+// Radial formation conduction coupled to the two-fluid temperature equation
+// (D3 increment 1). Steady single-phase liquid flow through a horizontal pipe
+// whose wall is no longer an infinite isothermal reservoir: a finite rock
+// mass conducts radially from the bore wall r_w = D/2 = 0.01 m out to a far
+// field r_e = 0.2 m held at T_e = 280 K. The formation{} block discretises
+// the rock into M = 10 geometric radial nodes rho_j = r_w (r_e/r_w)^(j/M).
+//
+// Two self-derived anchors (cylindrical Fourier conduction, no transcription):
+//  1. The face conductance g_j = 2 pi k dx / ln(rho_{j+1}/rho_j) makes the
+//     steady node profile the EXACT logarithm
+//       T_j = T_w + (T_e - T_w) ln(rho_j/r_w) / ln(r_e/r_w),
+//     which on geometric nodes is LINEAR in j: T_j = T_w + (T_e - T_w) j/M.
+//  2. The film (k' dx) and the formation resistance
+//     R_form = ln(r_e/r_w)/(2 pi k dx) act in series, so the fluid sees an
+//     effective conductance g_eff = 1/(1/(k' dx) + R_form) to T_e and the
+//     steady fluid profile is the exchanger recurrence
+//       T_i - T_e = (T_in - T_e) r^(i+1),  r = mcd/(mcd + g_eff).
+// The rock starts at T_e and stores heat (rhoC > 0); the run is long enough
+// (~130 formation time constants) that the storage vanishes and the steady
+// anchors hold to 1e-9. The checker also asserts the per-frame formation
+// energy balance intake = storage + far-field rejection (exact by construction).
+//
+// Measured (mcd = 26.2637 W/K, k'dx = 2, R_form = 2.38393 K/W, g_eff = 0.346749):
+//   r = 0.986969, r^20 = 0.769247 -> T_out = 318.462 K
+//   wall node T_w,i = 280 + (T_i - 280) * 0.826626
+//   formation nodes linear in j between T_w and 280
+//   qWall = -qFar at steady, qStore -> 0
+// verified by tests/check_two_fluid_formation.py
+// (ctest verify.twoFluidFormationRadial).
+fluid
+{
+    rhoL 1000; rhoG 20; muL 0.01; muG 1e-5;
+    cL 4180; cG 2150;
+}
+
+pipe
+{
+    length 2; diameter 0.02; roughness 0; angleDeg 0; sections 20;
+}
+
+closure
+{
+    model wallis; slipVelocity 0;
+}
+
+initial
+{
+    alpha 1; temperature 300;
+}
+
+boundaries
+{
+    inlet { type phaseRates; vsl 0.02; vsg 0; temperature 330; }
+    outlet { type fixedPressure; p 0; temperature 330; }
+}
+
+thermal
+{
+    wallHeatTransfer 20;
+    wallModel constant;
+    wallTemperature 280;
+}
+
+formation
+{
+    conductivity 2;
+    outerRadius 0.2;
+    rhoC 10000;
+    shells 10;
+}
+
+time { dt 1; endTime 2000; reportEvery 100; }

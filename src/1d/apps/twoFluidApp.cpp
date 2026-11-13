@@ -184,6 +184,20 @@ int main(int argc, char** argv)
             if (!T.empty())
                 log::info("thermal: qWall ", num(s.wallHeatRate()),
                           " qInlet ", num(s.inletHeatRate()));
+            if (c.formationOn)
+            {
+                log::info("formation: qFar ", num(s.formationHeatRate()),
+                          " qIntake ", num(s.formationIntakeRate()),
+                          " qStore ", num(s.formationStorageRate()));
+                for (int i = 0; i < s.sections(); ++i)
+                {
+                    const std::vector<double> fp = s.formationProfile(i);
+                    std::string line = "form " + std::to_string(i);
+                    for (std::size_t j = 0; j < fp.size(); ++j)
+                        line += " " + num(fp[j]);
+                    log::info(line);
+                }
+            }
         };
 
         emit(sim);

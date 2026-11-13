@@ -1517,6 +1517,17 @@ foreach(tcase twoFluidThermalRelax twoFluidThermalExchanger
             ${mode})
 endforeach()
 
+# D3 increment 1: a radial formation conduction grid coupled to the two-fluid
+# temperature equation. The checker asserts the steady series-resistance
+# exchanger recurrence, the exact logarithmic rock profile (linear in the
+# geometric node index), and the per-frame formation energy balance.
+add_test(
+    NAME verify.twoFluidFormationRadial
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_formation.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidFormationRadial/case.dict)
+
 # The PVT case sweeps a pressure envelope through the flash; the checker
 # asserts thermodynamic identities (material balance, fugacity equality,
 # envelope collapse, table vs direct EOS) rather than stored numbers.

@@ -241,6 +241,28 @@ struct TwoFluidThermal
     double inletDepth = 0;         // m below surface at s = 0
 };
 
+/// Radial formation conduction grid (D3). Without it the wall is an infinite
+/// isothermal reservoir at wallTemperature(i); with it a finite rock mass
+/// conducts radially from the bore wall r_w = diameter/2 out to a far field
+/// r_e held at wallTemperature(i) (the constant/geothermal profile becomes
+/// the FAR-FIELD boundary). The grid is M+1 nodes at geometric radii
+/// rho_j = r_w (r_e/r_w)^(j/M); node 0 is the wall the fluid film sees, node
+/// M is the Dirichlet far field. Cylindrical Fourier conduction between
+/// nodes gives the face conductance g_j = 2 pi k dx / ln(rho_{j+1}/rho_j),
+/// so the steady profile is the exact logarithm
+///   T_j = T_w + (T_e - T_w) ln(rho_j/r_w) / ln(r_e/r_w)
+/// at every node regardless of spacing, and the formation resistance per
+/// unit length is ln(r_e/r_w)/(2 pi k). Each node stores heat with capacity
+/// rhoC dx times its shell volume; the grid marches by implicit Euler,
+/// staggered with the fluid temperature step (exact at steady state).
+struct TwoFluidFormation
+{
+    double conductivity = 0; // W/(m K), radial rock conductivity k
+    double outerRadius = 0;  // m, far-field radius r_e (> bore radius)
+    double rhoC = 0;         // J/(m3 K), formation volumetric heat capacity
+    int shells = 0;          // M radial intervals (M+1 nodes, node M = far)
+};
+
 struct TwoFluidFill
 {
     double from = 0;  // m along the pipe (cells whose centre is inside)
@@ -318,6 +340,8 @@ struct TwoFluidCase
     bool thermalOn = false;      // energy equation solved (thermal{} present)
     double temperature0 = 300;   // K, uniform initial temperature
     TwoFluidThermal thermal;
+    bool formationOn = false;    // radial formation grid solved (formation{})
+    TwoFluidFormation formation;
     bool hydrateOn = false;      // hydrate kinetics solved (hydrate{} present)
     TwoFluidHydrate hydrate;
     bool entrainmentOn = false;  // film-droplet split solved (entrainment{}
@@ -411,6 +435,18 @@ public:
     double wallHeatRate() const { return wallHeatRate_; }
     /// Enthalpy the inflow boundaries inject, W (transport + sources only).
     double inletHeatRate() const { return inletHeatRate_; }
+    /// Radial formation node temperatures for section i (M+1 nodes, inner =
+    /// bore wall, outer = far field); empty unless formation{} is present.
+    std::vector<double> formationProfile(int i) const;
+    /// Heat the formation rejects to the far field this step, W (positive =
+    /// out of the formation); zero unless formation is on.
+    double formationHeatRate() const { return formHeatRate_; }
+    /// Heat the formation absorbs from the fluid this step, W (positive =
+    /// into the formation); zero unless formation is on.
+    double formationIntakeRate() const { return formIntakeRate_; }
+    /// Rate of heat stored in the formation this step, W (= intake - far
+    /// field rejection, exactly); zero unless formation is on.
+    double formationStorageRate() const { return formStorageRate_; }
 
     // ---- junction support (used by TwoFluidNetwork) ----
 
@@ -528,6 +564,7 @@ private:
     void entrainmentStep(double dt);
     void hydrateStep(double dt);
     void thermalStep(double dt);
+    void formationStep(double dt);
     /// Evaluate the inlet rate schedule at the step midpoint (robust to
     /// t_ accumulation drift) into the boundary's scalar rates (no-op
     /// without a schedule).
@@ -599,6 +636,15 @@ private:
                                     // (entrainment on)
     double wallHeatRate_ = 0;
     double inletHeatRate_ = 0;
+    // radial formation grid (formationOn): node radii shared across sections,
+    // per-section face conductances / node capacities / node temperatures
+    std::vector<double> formR_;              // M+1 node radii, m
+    std::vector<std::vector<double>> formG_; // n_ x M face conductances, W/K
+    std::vector<std::vector<double>> formC_; // n_ x M node capacities, J/K
+    std::vector<std::vector<double>> formT_; // n_ x (M+1) node temperatures
+    double formHeatRate_ = 0;     // W, rejected to the far field this step
+    double formIntakeRate_ = 0;   // W, absorbed from the fluid this step
+    double formStorageRate_ = 0;  // W, stored in the rock this step
     double vM_ = 0;   // current mixture velocity
     double vMOld_ = 0;
     double t_ = 0;

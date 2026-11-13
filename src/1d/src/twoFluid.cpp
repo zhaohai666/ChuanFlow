@@ -193,6 +193,55 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         T_.assign(n_, cfg_.temperature0);
     }
 
+    if (cfg_.formationOn)
+    {
+        if (!cfg_.thermalOn)
+            cfFatal("twoFluid: formation{} needs a thermal{} block");
+        const TwoFluidFormation& fm = cfg_.formation;
+        const double rw = 0.5 * diameter_;
+        if (!(fm.conductivity > 0))
+            cfFatal("twoFluid: formation needs a positive conductivity");
+        if (!(fm.outerRadius > rw))
+            cfFatal("twoFluid: formation outerRadius must exceed the bore"
+                    " radius (diameter/2)");
+        if (!(fm.rhoC > 0))
+            cfFatal("twoFluid: formation needs a positive rhoC");
+        if (fm.shells < 1)
+            cfFatal("twoFluid: formation shells must be at least one");
+        const int M = fm.shells;
+        // geometric node radii from the bore wall out to the far field
+        formR_.resize(M + 1);
+        const double ratio = fm.outerRadius / rw;
+        for (int j = 0; j <= M; ++j)
+            formR_[j] = rw * std::pow(ratio, double(j) / M);
+        formR_[0] = rw;
+        formR_[M] = fm.outerRadius;
+        formG_.assign(n_, std::vector<double>(M, 0.0));
+        formC_.assign(n_, std::vector<double>(M, 0.0));
+        formT_.assign(n_, std::vector<double>(M + 1, 0.0));
+        const double twoPiK = 2.0 * M_PI * fm.conductivity;
+        for (int i = 0; i < n_; ++i)
+        {
+            const double dx = dxs_[i];
+            for (int j = 0; j < M; ++j)
+            {
+                // cylindrical Fourier conductance between adjacent nodes
+                formG_[i][j] = twoPiK * dx
+                             / std::log(formR_[j + 1] / formR_[j]);
+                // node j owns the shell between geometric midpoints; the
+                // last node extends out to the far-field radius r_e
+                const double lo = (j == 0)
+                    ? rw : std::sqrt(formR_[j - 1] * formR_[j]);
+                const double hi = (j == M - 1)
+                    ? fm.outerRadius : std::sqrt(formR_[j] * formR_[j + 1]);
+                formC_[i][j] = fm.rhoC * dx * M_PI * (hi * hi - lo * lo);
+            }
+            // the rock starts at the far-field temperature
+            const double te = wallTemperature(i);
+            for (int j = 0; j <= M; ++j) formT_[i][j] = te;
+        }
+    }
+
     if (cfg_.hydrateOn)
     {
         if (!eosOn())
@@ -1182,8 +1231,10 @@ void TwoFluidPipe::thermalStep(double dt)
                          * (alpha_[i] * f.rhoL * f.cL
                             + (1.0 - alpha_[i]) * cellGasDensity(i) * f.cG);
         const double kw = th.wallHeatTransfer * dxs_[i];
+        const double tw = cfg_.formationOn ? formT_[i][0]
+                                           : wallTemperature(i);
         mat[i][i] = cap / dt + kw;
-        rhs[i] = cap / dt * T_[i] + kw * wallTemperature(i);
+        rhs[i] = cap / dt * T_[i] + kw * tw;
         if (cfg_.hydrateOn)
         {
             // hydrate formation releases its latent heat into the section
@@ -1262,14 +1313,80 @@ void TwoFluidPipe::thermalStep(double dt)
         }
     }
     detail::solveDenseLinear(mat, rhs);
+    for (int i = 0; i < n_; ++i) T_[i] = rhs[i];
+
+    // march the radial rock with the new fluid temperatures, then report the
+    // wall exchange at the end-of-step wall temperature so the formation
+    // energy balance (intake = storage + far-field rejection) closes exactly
+    if (cfg_.formationOn) formationStep(dt);
 
     wallHeatRate_ = 0;
     for (int i = 0; i < n_; ++i)
     {
-        wallHeatRate_ += th.wallHeatTransfer * dxs_[i]
-                       * (wallTemperature(i) - rhs[i]);
-        T_[i] = rhs[i];
+        const double tw = cfg_.formationOn ? formT_[i][0]
+                                           : wallTemperature(i);
+        wallHeatRate_ += th.wallHeatTransfer * dxs_[i] * (tw - T_[i]);
     }
+}
+
+void TwoFluidPipe::formationStep(double dt)
+{
+    const TwoFluidFormation& fm = cfg_.formation;
+    const TwoFluidThermal& th = cfg_.thermal;
+    const int M = fm.shells;
+    formHeatRate_ = 0;
+    formIntakeRate_ = 0;
+    formStorageRate_ = 0;
+    for (int i = 0; i < n_; ++i)
+    {
+        const double kw = th.wallHeatTransfer * dxs_[i];
+        const double te = wallTemperature(i);
+        const std::vector<double>& g = formG_[i];
+        const std::vector<double>& c = formC_[i];
+        std::vector<double>& tf = formT_[i];
+        // implicit Euler on the M unknown nodes; node M is the far field.
+        // Node 0 is the wall: film exchange with the new fluid temperature
+        // plus conduction to node 1. The last node conducts to the Dirichlet
+        // far field. Internal faces telescope, so the section balance closes.
+        std::vector<std::vector<double>> a(M, std::vector<double>(M, 0.0));
+        std::vector<double> b(M, 0.0);
+        for (int j = 0; j < M; ++j)
+        {
+            double diag = c[j] / dt;
+            double rhs = c[j] / dt * tf[j];
+            if (j == 0)
+            {
+                diag += kw + g[0];
+                rhs += kw * T_[i];
+            }
+            else
+            {
+                diag += g[j - 1] + g[j];
+                a[j][j - 1] -= g[j - 1];
+            }
+            if (j < M - 1)
+                a[j][j + 1] -= g[j];
+            else
+                rhs += g[M - 1] * te;
+            a[j][j] = diag;
+            b[j] = rhs;
+        }
+        detail::solveDenseLinear(a, b);
+        for (int j = 0; j < M; ++j)
+        {
+            formStorageRate_ += c[j] * (b[j] - tf[j]) / dt;
+            tf[j] = b[j];
+        }
+        tf[M] = te;
+        formIntakeRate_ += kw * (T_[i] - tf[0]);
+        formHeatRate_ += g[M - 1] * (tf[M - 1] - te);
+    }
+}
+
+std::vector<double> TwoFluidPipe::formationProfile(int i) const
+{
+    if (!cfg_.formationOn || i < 0 || i >= n_) return {};
+    return formT_[i];
 }
 
 double TwoFluidPipe::pressureDrop() const
@@ -1497,6 +1614,16 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.thermal.inletDepth = th.getScalarOr("inletDepth", 0.0);
         if (c.thermal.wallHeatTransfer < 0)
             cfFatal("twoFluid: negative wallHeatTransfer");
+    }
+
+    if (caseDict.has("formation"))
+    {
+        c.formationOn = true;
+        const Dictionary& fm = caseDict.getDict("formation");
+        c.formation.conductivity = fm.getScalar("conductivity");
+        c.formation.outerRadius = fm.getScalar("outerRadius");
+        c.formation.rhoC = fm.getScalar("rhoC");
+        c.formation.shells = static_cast<int>(fm.getScalar("shells"));
     }
 
     if (caseDict.has("hydrate"))

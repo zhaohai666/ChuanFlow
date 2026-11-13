@@ -1316,6 +1316,25 @@ python3 tests/check_steady_annulus.py \
     "$PWD/tests/cases/steadyAnnulus/case.dict"
 
 
+# 矩形 duct（5.80 / C3 增量 1）：管块可选键 ductHeight（diameter 改读为宽 W，
+# ductHeight 是高 H），水力直径 Dh = 2WH/(W+H) 进 Re/粗糙度/L-Dh 换算。层流锚是
+# grad^2 u = -G/mu 在矩形上无滑移的精确 Fourier 级数（本仓库自推，非转录文献）：
+# bracket(aspect) = 1 - (192 aspect/pi^5) sum_{n odd} tanh(n pi/(2 aspect))/n^5，
+# Q = (dp/L) long short^3 bracket/(12 mu)，C_rect = f.Re = 96/((1+aspect)^2 bracket)。
+# 湍流是 Churchill 换掉层流成员：C_rect/8 替代 8，C = 64 时逐位还原——圆管一位不动。
+# aspect -> 0 成员 96（平行平板），aspect = 1 是正方 56.908（bracket 0.42173）。
+# 级数在 addPipe 解析一次（rectBracket，4001 奇数项尾 < 1e-15），速率求解不重求和。
+# 判据（26 条）：五个 aspect（0.01/0.1/0.25/0.5/1）f.Re = C_rect 与 Q = conductance.dp
+# 双 1e-9、C 阶梯 94.705 > 84.676 > 72.931 > 62.192 > 56.908 单调、旋转孪生
+# 0.02x0.04 == 0.04x0.02、圆管 f.Re = 64 + Poiseuille 逐位；级数无关的第二锚——
+# 纯 Python 二维有限差分 Poisson（SOR 无 scipy）+ Richardson 确认正方 bracket 5.2e-7；
+# Dh 接线 1e-9 全档；湍流档两几何 Re > 4000 且 Q 分离；五条拒收大声点名。
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyRectDuct/case.dict
+python3 tests/check_steady_rect_duct.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyRectDuct/case.dict"
+
+
 # 凝胶强度 + 亚阈值蠕变（5.74 / A2）：管块可选键 gelStrength / gelTime /
 # creepRate，只对已声明 yieldStress 的管有意义。静止阈值从常数变成只在
 # 静止期走的钟：4 (tau0 + tau_g (1 - exp(-t_rest/t_g))) L/d，commitStep

@@ -4262,6 +4262,21 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：`CoupledNetwork.h` 约 45 行（`CompressibleConfig` / `CompressibleMeasure` / `readCompressible` / `DetailBlock` 接线）+ `coupledNetwork.cpp` 约 170 行（loader、march、短路分支、四条互斥拒收）+ 4 个 app 共约 50 行转发与打印 + 1 份 dict 98 行 + checker 377 行 + 1 `add_test`；**126 判据**、CTest 133 → **134**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.80 矩形 duct 第一次进稳态管网（C3 增量 1）：层流锚点是 **∇²u = −G/μ 在 W×H 矩形上无滑移的精确 Fourier 级数解**（本仓库自推，非转录文献），湍流半区是 **Churchill 换掉层流成员**——C_rect/Re 替代 64/Re，而 96 是 aspect→0 的成员，圆管仍走自己的 64
+
+**这一格从哪来**：`docs/gap_analysis.md` 编为 **C3**（与 A6 同体），A6（§5.73）落地时把 `Dh = 4A/P` 的截面抽象就位、并明写「矩形 duct / 偏心环空仍 OPEN」。本增量是 C3 的第一半：矩形 duct。估 1 增量，实测约 1（内核 ~145 行：截面几何 2 分支 + Fourier 级数 3 函数 + Churchill 复用 + addPipe 校验/解析 + 两相/PVT march 拒收 + loader 键 + transient/twoFluid 拒收；声明面一个可选键）。偏心环空（C3 增量 2）需 bipolar 坐标下的数值 Poisson 锚，留待下一增量。
+
+**声明面与解析核心**：管块可选键 **`ductHeight`**（m；> 0 = 矩形 duct，`diameter` 改读为**宽 W**、`ductHeight` 是**高 H**；0 = 圆管，全部数字逐位不变）。三个函数撑起全部物理：
+1. **水力直径** `Dh = 2WH/(W+H)`（= 4A/P 的矩形闭式，A = WH）：Re、相对粗糙度、Darcy 换算 L/Dh 全部读它——圆管 Dh = d，逐位不动；
+2. **矩形层流精确级数**（自推）：∇²u = −G/μ 在矩形上无滑移，分离变量 = 跨短边的抛物特解 + 在两长壁抵消它的 cosh/sin 齐次级数。记 aspect = short/long ≤ 1，积分速率带 **bracket(aspect) = 1 − (192·aspect/π⁵)·Σ_{n odd} tanh(nπ/(2·aspect))/n⁵**，于是 **Q = (dp/L)·long·short³·bracket/(12μ)**（平面 Poiseuille 的 gap³ 律 × 侧壁修正），层流常数 **C_rect = f·Re_Dh = 96/((1+aspect)²·bracket) = 24·Dh²/(short²·bracket)**。aspect→0 时 bracket→1、C→96（平行平板）；aspect = 1 时 bracket = 0.42173、C = 56.908（正方）。bracket 只依赖 aspect，在 `addPipe` 解析一次存进 `rectBracket`（4001 个奇数项，1/n⁵ 衰减使尾 < 1e-15），速率求解绝不重求和；
+3. **Churchill 环空变体复用**：§5.73 的 `churchillAnnulusFriction(re, rough, C)` 本就**泛型于 C**——同一对括号，层流项 (C/8/Re)¹² 里的 C 换成 C_rect。C = 64 时 IEEE 逐位还原 `churchillFriction`，所以圆管分支一位不动；矩形把层流成员换成自己的 96→56.91 家族，正如环空换成 C(κ)。**本增量矩形只走牛顿**：幂律（2D 非线性剖面未解）、屈服（locus 与壁应力是圆管几何律）都在入口大声拒收。
+
+**case 与判据**：`tests/cases/steadyRectDuct`（μ = 0.05、ρ = 850、L = 10、W = 0.04 固定；两档定压对：dp = 1000 层流档（正方 Re ~ 76）/ dp = 2.0e6 湍流档（正方 Re ~ 1.8e4））。checker `check_steady_rect_duct.py`（CTest `verify.steadyRectDuct`），**26 判据 0 失败**：五个 aspect（0.01 / 0.1 / 0.25 / 0.5 / 1）的 f·Re = C_rect 与 Q = conductance·dp **双 1e-9**、C 阶梯 94.705 > 84.676 > 72.931 > 62.192 > 56.908 单调（aspect→0 落向平行平板 96、aspect = 1 落向正方 56.91）、旋转孪生 0.02×0.04 与 0.04×0.02 的 Q/v/Re/f 1e-9 相同（长短边互换对称）、圆管 f·Re = 64 + Q = Poiseuille 1e-9（圆管分支逐位）、**级数无关的第二锚**——纯 Python 二维有限差分 Poisson（SOR，无 scipy）解 ∇²u = −1 并积分，n = 48/96 收敛 + Richardson 外推确认正方 bracket/12 到 **5.2e-7**、全档 Dh 接线 1e-9（v = Q/A、Re = ρvDh/μ、dp = f(L/Dh)ρv²/2）、湍流档两几何 Re > 4000 且矩形与圆管孪生 Q 分离、五条拒收（rect + 环空 / + 屈服 / + 幂律 / + 耦合边 / 负 ductHeight）大声点名。
+
+**本增量的边界**：① 矩形只进**稳态单相牛顿**路径——屈服、幂律、耦合边（几何归伙伴）、黑油两相 march、PVT march 全部在入口大声拒收；transient/twoFluid 的 loader 对 `ductHeight` 同样拒收（防静默忽略）。② 偏心环空不在本增量（C3 增量 2，Dh 抽象已就位，层流锚需 bipolar 坐标数值 Poisson）。③ 湍流档无真值可验（没有矩形 Churchill 的实验重演），判据只锁接线与几何分离。④ 矩形幂律的 2D 非线性剖面未解（拒收）。⑤ aspect→0 的 96 是解析推论，case 用 aspect = 0.01（C = 94.705）逼近，未放 aspect = 1e-6 档直接逼近。⑥ 矩形 + 泵/阀可用（几何无关），但无专门判据。
+
+**成本**：内核 ~145 行（`Network.h` ~16 + `network.cpp` ~120 + `transient.cpp` 3 + `twoFluid.cpp` 6）+ 1 case 文件 + 1 checker + 1 条 `add_test`，26 判据，CTest 134 → **135**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

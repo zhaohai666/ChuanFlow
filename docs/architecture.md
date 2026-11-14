@@ -4359,6 +4359,35 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：内核 ~95 行（`twoFluid.cpp` E1 43 + Duhamel 25 + `formationStep` 接线 15 + loader 6 + 公开 wrapper 4）+ `TwoFluid.h` ~30 行（含注释/grammar）+ app 10 行 + case 头注释 10 行 + checker +196 行；**0 条新 `add_test`、0 个新 case 目录**，CTest 137 → **137**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.85 流型图第一次成为调度面（D4 增量 1）：`beggsBrillPattern(λ, Nfr)` 把 Beggs-Brill 的四边界分类从梯度闭合里拆成**可独立查询的单一真值源**——梯度照常通过它选持液率（逐位不变），march 把出口段的图状态读出来，**只读观测面，不是新声明键**
+
+**这一格从哪来**：`docs/gap_analysis.md` 编为 **D4**（流型图作为调度面）。在此之前 `beggsBrill.cpp` 是**单一闭合**：流型图（L1..L4 四边界 + regime 优先级 + transition 权重）在 `beggsBrillDpDs` 内部**就地算一遍**，选完持液率就丢，外部既查不到、也无法独立复核——图本身不是一个调度面。本增量把这张图拆成独立函数 `beggsBrillPattern`，让梯度**通过它**调度（而非再就地推导一遍），并把出口段的图状态沿 march 读出。**这是只读观测面 + 调度重构，不新增任何 case.dict 键**：用户仍不能声明/强制一个 regime，图照旧从 `(λ, Nfr)` 选出它。D4 增量 2（可写调度面 / 替代图）按需另排。
+
+**声明面与解析核心**：无新声明键。新增的是**解析面与报告字段**：
+
+1. **独立调度函数**：`BeggsBrillPattern beggsBrillPattern(double lambda, double nfr)` 返回 `{regime, l1, l2, l3, l4, transitionWeight}`。四边界是发表式
+   **`L1 = 316 λ^0.302`、`L2 = 0.0009252 λ^−2.4684`、`L3 = 0.1 λ^−1.4516`、`L4 = 0.5 λ^−6.738`**，`Nfr = vm²/(gD)`，`g = 9.80665`。regime 优先级**逐字照发表**（最后匹配的规则胜出）：`λ<0.01` 走 segregated 支 `Nfr<L1`；`λ≥0.01` 的 segregated 是 `Nfr<L2`；transition 是 `L2≤Nfr≤L3`（权重 `w=(L3−Nfr)/(L3−L2)`，仅 regime 1 非零）；intermittent 上限 `λ<0.4` 取 `L1`、`λ≥0.4` 取 `L4`；其余 distributed。
+2. **梯度通过它调度**：`beggsBrillDpDs` 里 `const BeggsBrillPattern pat = beggsBrillPattern(lambda, fr);` 之后，持液率分支读 `pat.regime` 与 `pat.transitionWeight`，**不再就地重推图**。因为图本来就在内部算，拆出来再读回**一个数都不改**——逐位等价于重构前的内联图。`BeggsBrillOut` 追加 `l1..l4 + transitionWeight`：这些是**选中持液率的那组数**，不是第二次求值。
+3. **march 出口读出**：`BeggsBrillMarchOut` 追加 `regimeOutlet / nfrOutlet / l1Outlet..l4Outlet`，描述**最后一段 alone**；`regimeMin/Max` 仍是**沿管包络**（一根管可以沿程穿过多个 regime，读出的是 march 结束处）。两个 return 点（压力地板早退 / 正常走完）都接线。
+4. **app 报告**：`steadyNetworkApp` 对两相管（`regimeOutlet ≥ 0`）追加 `oRegime <name> lambda <..> Nfr <..> L1 <..> L2 <..> L3 <..> L4 <..>`（12 位有效数字）；单相管（`regime<0`）照旧打 `Re/f`，图对单相无意义。
+5. **Python 绑定**：`beggs_brill_pattern` 进 `chflow` 顶层与 `__all__`，可脱离任何流动求解独立扫图。
+
+**case 与判据**：新增 `tests/cases/steadyFlowPatternMap/case.dict`——5 根**水平黑油管**，同一.stock-tank 流量 `0.004 sm³/s` 进定压终端 `4.0e6 Pa`（gasGravity 0.75 / oilDensity 850 / gor 80 / waterCut 0 / temp 340 / surfaceTension 0.025 / roughness 4.6e-5）。**管径设定出口 Froude 数**，于是五个出口分别落在四个 regime：
+
+| 管 | D / L | regime | λ | Nfr | HL | dp (Pa) |
+|---|---|---|---|---|---|---|
+| P1 | 0.40 / 500 | segregated | 0.38656 | 0.0020691 | 1.0（钳） | 58.34 |
+| P2 | 0.20 / 500 | transition | 0.38657 | 0.066208 | 0.72484 | 1649.98 |
+| P3 | 0.08 / 500 | intermittent | 0.38713 | 6.4478 | 0.49240 | 156805 |
+| P4 | 0.05 / 200 | intermittent | 0.38900 | 67.001 | 0.47407 | 638058 |
+| P5 | 0.035 / 20 | distributed | 0.38812 | 400.35 | 0.42606 | 415039 |
+
+`check_steady_flow_pattern_map.py` **106 判据 0 失败**：自带**独立 BlackOil PVT 类** + 从报告的上游压强出发的 **24 段重 march** + 模块级图函数，逐管断言——Newton 收敛 / 无 choke；重 march 落到终端压强且**末段就是报告的出口态**（lambda / vm / holdup / regime / L1..L4）；`Nfr = vm²/(gD)` 运动学恒等式；L1..L4 是报告 λ 处的发表边界；出口 regime 是 `(λ,Nfr)` 处的发表优先级；沿管包络括住出口 regime；transition 臂持液率是 segregated 持液率与 λ 按 `w=(L3−Nfr)/(L3−L2)` 的发表混合；质量流量 = stock-tank 流量 × 每 sm³ 地面质量；**四个 regime 全部访问到**。另写一个**高 GOR 孪生**（GOR 8000）进系统临时目录：`λ=0.004897<0.01` 走 segregated 支 `Nfr=12.895 < L1=63.392`，把 `λ<0.01` 那条优先级分支单独钉住。绑定侧 `tests/python/test_bindings.py` 新增 `FlowPatternMapTests`：**16 λ × 18 Nfr 稠密网格（>1500 断言）**对独立 Python 重述逐点扫图 + 四 regime 可达性。新增 `verify.steadyFlowPatternMap`（Test #52，+1 条 `add_test`）；本 Windows 构建全量回归 **139** 项（含 `python.bindings` 与 4 项 Rust CLI）。
+
+**本增量的边界**：① 这是 **Beggs-Brill (1973) 的四 regime 分类图**，不是 OLGA 的完整流型图（后者含 stratified-wavy / slug / annular-mist / bubble 等更多 regime 与不同边界）；四 regime 正是发表闭合所用的那组。② 图是**只读观测面 + 调度重构**，**没有新声明键、没有 forced-regime 覆盖**——用户不能声明 regime，图仍从 `(λ,Nfr)` 选它；可写调度面 / 替代图留给增量 2。③ 梯度**逐位不变**：图本来就在 `beggsBrillDpDs` 内部算，拆成 `beggsBrillPattern` 再读回不改任何数；transition 持液率混合端点 `hl0(1)=λ` 是既有物理，未动。④ 出口读出只描述**最后一段**；`regimeMin/Max` 仍是沿管包络。⑤ 只有两相（黑油）管打 `oRegime`，单相管照旧 `Re/f`。⑥ 图是**水平流分类**：倾角修正 `psi` 在图选出水平持液率**之后**施加，未动；图本身只读 `(λ,Nfr)`，不读 angle。⑦ **零声明逐位不变**：无新 case.dict 键，`oRegime` 是追加报告字段，既有 steady checker 不解析它；全量回归见证。
+
+**成本**：内核 ~87 行（`beggsBrill.cpp` +55/−14：`beggsBrillPattern` 23 + 梯度调度重构 + march 出口跟踪；`BeggsBrill.h` +32 含注释/grammar）+ app +11 + 绑定 +2 + `test_bindings.py` +66 + checker 463（新）+ case 69（新）；**1 条新 `add_test`（Test #52）、1 个新 case 目录**，本构建 CTest **139**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

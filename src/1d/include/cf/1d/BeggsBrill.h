@@ -54,7 +54,32 @@ struct BeggsBrillOut
     double lambdaL = 0;    // no-slip liquid content
     double fNs = 0;        // no-slip Darcy friction factor
     double fTp = 0;        // two-phase Darcy friction factor
+    // 5.85 (D4 increment 1): the flow-pattern dispatch surface read out at
+    // this segment -- the four L boundaries at the segment's lambda and the
+    // transition blend weight (nonzero only in regime 1). The gradient
+    // dispatches its holdup through beggsBrillPattern, so these are the
+    // numbers that selected the holdup, not a second evaluation.
+    double l1 = 0, l2 = 0, l3 = 0, l4 = 0;
+    double transitionWeight = 0;
 };
+
+/// 5.85 (D4 increment 1): the Beggs-Brill flow-pattern map as a standalone
+/// dispatch surface. Given the no-slip liquid content lambda and the Froude
+/// number Nfr = vm^2/(g D), returns the regime (0 segregated, 1 transition,
+/// 2 intermittent, 3 distributed), the four published boundaries
+///   L1 = 316 lambda^0.302,      L2 = 0.0009252 lambda^-2.4684,
+///   L3 = 0.1 lambda^-1.4516,    L4 = 0.5 lambda^-6.738,
+/// and the transition blend weight w = (L3 - Nfr)/(L3 - L2) (regime 1 only).
+/// beggsBrillDpDs dispatches through this function -- it is the single source
+/// of truth for the map, queryable independently of any flow solve.
+struct BeggsBrillPattern
+{
+    int regime = 0;
+    double l1 = 0, l2 = 0, l3 = 0, l4 = 0;
+    double transitionWeight = 0;
+};
+
+BeggsBrillPattern beggsBrillPattern(double lambda, double nfr);
 
 BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in);
 
@@ -77,6 +102,13 @@ struct BeggsBrillMarchOut
     double fTpOutlet = 0;    // two-phase Darcy friction of the last segment
     int regimeMin = 9;
     int regimeMax = -1;
+    // 5.85 (D4 increment 1): the dispatch surface at the OUTLET segment --
+    // its regime, no-slip content, Froude number and the four L boundaries.
+    // regimeMin/Max stay the along-pipe envelope; these describe the last
+    // segment alone, so a caller can read the map where the march ended.
+    int regimeOutlet = 0;
+    double nfrOutlet = 0;
+    double l1Outlet = 0, l2Outlet = 0, l3Outlet = 0, l4Outlet = 0;
     bool ok = false;         // false when the march hit the pressure floor
 };
 

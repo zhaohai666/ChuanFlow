@@ -15,7 +15,9 @@ endif()
 
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
-add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+if(NOT MSVC)
+    add_compile_options(-Wall -Wextra -Wno-unused-parameter)
+endif()
 
 enable_testing()
 
@@ -31,6 +33,12 @@ option(CHFLOW_WITH_PYTHON "Build the pybind11 Python bindings" ON)
 if(CHFLOW_WITH_PYTHON)
     find_package(Python3 COMPONENTS Interpreter Development.Module QUIET)
     if(Python3_FOUND)
+        # use the modern FindPython3 result above (the same interpreter the
+        # tests run) instead of pybind11's classic FindPythonLibs fallback,
+        # which can resolve a different Python and build an ABI-mismatched .pyd
+        set(PYBIND11_FINDPYTHON ON CACHE BOOL "" FORCE)
+        set(PYTHON_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH "" FORCE)
+        set(Python3_EXECUTABLE "${Python3_EXECUTABLE}" CACHE FILEPATH "" FORCE)
         include(FetchContent)
         FetchContent_Declare(pybind11
             GIT_REPOSITORY https://github.com/pybind/pybind11

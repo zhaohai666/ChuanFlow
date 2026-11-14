@@ -103,7 +103,12 @@ int main(int argc, char** argv)
         if (cd.has("inertias")) inertias = cd.getWordList("inertias");
         if (inertias.empty()) inertias.push_back("network");
         if (inertias.size() == 1 && seeds.size() > 1)
-            inertias.assign(seeds.size(), inertias[0]);
+        {
+            // copy the value out first: assign() may reallocate and free the
+            // old buffer before reading a reference that points into it
+            const std::string all = inertias[0];
+            inertias.assign(seeds.size(), all);
+        }
         if (inertias.size() != seeds.size())
             cfFatal("coupled1d3dTransient: couple{} needs inertias ( ) with one"
                     " entry per seed, or one entry for all of them");

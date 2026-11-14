@@ -466,6 +466,18 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyBlackOilRheology/case.dict)
 
+# 5.85 (D4 increment 1): the Beggs-Brill flow-pattern map as a dispatch surface.
+# Five horizontal pipes, one per regime; the checker re-derives the black-oil
+# PVT + 24-segment march and the published map independently and asserts the
+# reported outlet regime / lambda / Nfr / L1..L4 are exactly the standalone map
+# at that outlet state (plus a high-GOR lambda<0.01 twin).
+add_test(
+    NAME verify.steadyFlowPatternMap
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_flow_pattern_map.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyFlowPatternMap/case.dict)
+
 # partitioned steady 1D<->3D coupling: the same duct solved in 3D replaces the
 # analytic law of edge X, so the checker compares the interface against the
 # closed-form network (branch split, pressure chain), the block against planar
@@ -1542,9 +1554,17 @@ if(CHFLOW_PYTHON_BINDINGS)
     add_test(
         NAME python.bindings
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings.py)
-    # ':' not ';': CMake would split an ENVIRONMENT value containing ';'
+    # path separator is ':' on POSIX, ';' on Windows. ENVIRONMENT is itself a
+    # CMake list, so a raw ';' (even from $<SEMICOLON>) splits it into two
+    # entries and drops the second path. '\;' is an escaped semicolon: it stays
+    # inside one list element and reaches the process as a literal ';'.
+    if(WIN32)
+        set(cf_path_sep "\;")
+    else()
+        set(cf_path_sep ":")
+    endif()
     set_tests_properties(python.bindings PROPERTIES
-        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python:$<TARGET_FILE_DIR:chflow_core>")
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
 endif()
 
 # ---- CLI (Rust) ----

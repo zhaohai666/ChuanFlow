@@ -232,5 +232,71 @@ class TestNodalBindings(unittest.TestCase):
         self.assertGreater(pwf, 0.8 * 850.0 * 9.80665 * 2200.0)
 
 
+class FlowPatternMapTests(unittest.TestCase):
+    """5.85 / D4 increment 1: beggs_brill_pattern is the published Beggs-Brill
+    flow-pattern map as a standalone dispatch surface. Sweep (lambda, Nfr)
+    across every regime and both sides of each L boundary, re-deriving the
+    map in pure Python (no solver, no PVT) and comparing field by field."""
+
+    @staticmethod
+    def boundaries(lam):
+        return (316.0 * lam ** 0.302, 0.0009252 * lam ** -2.4684,
+                0.1 * lam ** -1.4516, 0.5 * lam ** -6.738)
+
+    @classmethod
+    def regime(cls, lam, nfr):
+        l1, l2, l3, l4 = cls.boundaries(lam)
+        if (lam < 0.01 and nfr < l1) or (lam >= 0.01 and nfr < l2):
+            return 0
+        if lam >= 0.01 and l2 <= nfr <= l3:
+            return 1
+        if (0.01 <= lam < 0.4 and l3 < nfr <= l1) \
+                or (lam >= 0.4 and l3 < nfr <= l4):
+            return 2
+        return 3
+
+    def test_map_matches_the_published_restatement(self):
+        # lambda spans the <0.01 branch, the 0.01..0.4 intermittent-ceiling-L1
+        # branch, and the >=0.4 ceiling-L4 branch.
+        lambdas = [0.001, 0.003, 0.005, 0.008, 0.01, 0.05, 0.1, 0.2, 0.3,
+                   0.39, 0.4, 0.5, 0.6, 0.8, 0.9, 0.99]
+        n_assert = 0
+        for lam in lambdas:
+            l1, l2, l3, l4 = self.boundaries(lam)
+            # sample both sides of every boundary plus extremes, so every
+            # regime and every boundary neighbourhood is visited
+            nfrs = [1e-6]
+            for b in (l1, l2, l3, l4):
+                nfrs += [0.5 * b, 0.99 * b, 1.01 * b, 2.0 * b]
+            nfrs.append(1e12)
+            for nfr in nfrs:
+                got = chflow.beggs_brill_pattern(lam, nfr)
+                r = self.regime(lam, nfr)
+                self.assertEqual(got["regime"], r,
+                                 f"regime at lambda={lam} Nfr={nfr}")
+                for key, want in (("l1", l1), ("l2", l2), ("l3", l3), ("l4", l4)):
+                    self.assertLess(abs(got[key] - want) / want, 1e-10,
+                                    f"{key} at lambda={lam}")
+                w = (l3 - nfr) / (l3 - l2) if r == 1 else 0.0
+                self.assertLess(abs(got["transition_weight"] - w), 1e-10,
+                                f"weight at lambda={lam} Nfr={nfr}")
+                if r == 1:
+                    self.assertGreater(got["transition_weight"], 0.0)
+                    self.assertLess(got["transition_weight"], 1.0)
+                n_assert += 6
+        # a dense sweep, not a handful of spot checks
+        self.assertGreater(n_assert, 1500)
+
+    def test_regimes_are_all_reachable(self):
+        seen = set()
+        for lam in (0.005, 0.2, 0.39, 0.5, 0.9):
+            l1, l2, l3, l4 = self.boundaries(lam)
+            ceil = l1 if lam < 0.4 else l4
+            for nfr in (0.1 * l2, math.sqrt(l2 * l3),
+                        math.sqrt(l3 * ceil), 10.0 * ceil):
+                seen.add(chflow.beggs_brill_pattern(lam, nfr)["regime"])
+        self.assertEqual(seen, {0, 1, 2, 3})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

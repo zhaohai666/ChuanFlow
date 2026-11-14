@@ -281,10 +281,11 @@
 ### D4. 流型图作为调度面
 
 - **参考工具**：OLGA 流型图 / Pipesim Beggs-Brill pattern dispatch
-- **当前状态**：`OPEN`
-- **成本估计**：2 增量
-- **落点**：architecture.md §6.x
-- **README 现状**：`beggsBrill.cpp` 是单一闭合；流型图本身不是调度面。
+- **当前状态**：`IN_PROGRESS`（2026-11-15，增量 1 §5.85 已落地：流型图成为可独立查询的只读调度面；增量 2「可写调度面 / 替代图」按需另排）
+- **成本估计**：2 增量（增量 1 实测 ~0.5：内核 ~87 行 + app 11 + 绑定 2 + 1 case + 1 checker 463 行 + 绑定网格 66 行）
+- **落点**：architecture.md §5.85
+- **README 现状**：`beggsBrill.cpp` 曾是单一闭合，流型图在 `beggsBrillDpDs` 内部就地算完即丢；增量 1 把它拆成独立函数 `beggsBrillPattern`，梯度通过它调度（逐位不变），march 读出出口段图状态。
+- **已测量（增量 1）**：`BeggsBrillPattern beggsBrillPattern(λ, Nfr)` 返回 `{regime, l1..l4, transitionWeight}`，四边界 `L1=316λ^0.302 / L2=0.0009252λ^−2.4684 / L3=0.1λ^−1.4516 / L4=0.5λ^−6.738`、`Nfr=vm²/(gD)`、regime 优先级逐字照发表（含 `λ<0.01` 的 segregated 支 `Nfr<L1`）。`beggsBrillDpDs` 改为读 `pat.regime/transitionWeight` 调度持液率——图本来就在内部算，拆出再读回**一个数都不改**；`BeggsBrillOut` 追加 `l1..l4+transitionWeight`（选中持液率的那组数，非二次求值），`BeggsBrillMarchOut` 追加 `regimeOutlet/nfrOutlet/l1..l4Outlet`（最后一段 alone，`regimeMin/Max` 仍是沿管包络），`steadyNetworkApp` 对两相管追加 `oRegime/lambda/Nfr/L1..L4` 报告，Python 绑定暴露 `beggs_brill_pattern`。**无新声明键**：只读观测面 + 调度重构，用户不能强制 regime。新增 case `steadyFlowPatternMap`（5 根水平黑油管，管径设定出口 Nfr，分别落 segregated/transition/intermittent/intermittent/distributed）+ checker `check_steady_flow_pattern_map.py` **106 判据 0 失败**（独立 BlackOil PVT + 24 段重 march，末段就是报告出口态、Nfr 运动学恒等式、L1..L4 发表边界、regime 发表优先级、包络括住出口、transition 持液率发表混合、质量守恒、四 regime 全访问 + 高 GOR 孪生 `λ=0.004897<0.01` 走 `Nfr=12.895<L1=63.392`）；绑定 `FlowPatternMapTests` 16 λ × 18 Nfr 稠密网格（>1500 断言）对独立 Python 重述扫图。`verify.steadyFlowPatternMap`（Test #52，+1 add_test，本 Windows 构建 CTest 139）。**边界**：BB 1973 四 regime 分类图（非 OLGA 完整图）；只读、无 forced-regime 覆盖（可写调度面留增量 2）；梯度逐位不变、transition 端点 `hl0(1)=λ` 未动；出口读出只描述末段；只两相管打 oRegime；图是水平分类，倾角修正 psi 在其后施加、未动；零声明逐位不变（oRegime 是追加报告字段，既有 steady checker 不解析它）。
 
 ### D5. 自适应时间步（CFL 驱动的 `dt`）
 

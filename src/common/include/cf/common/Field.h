@@ -18,8 +18,6 @@ public:
     using base = std::vector<T>;
     using base::base;
 
-    Field(std::size_t n, T v = T{}) : base(n, v) {}
-
     std::span<T> span_() { return {this->data(), this->size()}; }
 };
 

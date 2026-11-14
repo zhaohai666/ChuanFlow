@@ -256,6 +256,15 @@ struct PipeFlowResult
     int regime = -1;        // two-phase: Beggs-Brill regime of the last
                             // segment (0 segregated, 1 transition,
                             // 2 intermittent, 3 distributed; -1 single-phase)
+    // 5.85 (D4 increment 1): the flow-pattern dispatch surface read out at
+    // the outlet segment -- its own regime, no-slip liquid content, Froude
+    // number and the four L boundaries that selected its holdup. `regime`
+    // above stays the along-pipe envelope (regimeMax); these describe the
+    // last segment alone, so the map is readable where the march ended.
+    int regimeOutlet = -1;
+    double lambdaOutlet = 0;
+    double nfrOutlet = 0;
+    double patternL1 = 0, patternL2 = 0, patternL3 = 0, patternL4 = 0;
     double massRate = 0;    // two-phase: kg/s, invariant along the pipe
     bool choked = false;    // two-phase: the march hit the pressure floor at
                             // the imposed end pressures

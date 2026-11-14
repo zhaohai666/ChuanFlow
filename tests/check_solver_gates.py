@@ -47,8 +47,9 @@ ARCH = os.path.join(ROOT, "docs/architecture.md")
 
 STEADY = os.path.abspath(sys.argv[1])
 CASE = os.path.abspath(sys.argv[2])
-CASE_DIR = CASE.rsplit("/", 1)[0]
-TRANSIENT = os.path.join(os.path.dirname(STEADY), "chflow-1d-transient")
+CASE_DIR = os.path.dirname(CASE)
+_EXE = ".exe" if os.name == "nt" else ""
+TRANSIENT = os.path.join(os.path.dirname(STEADY), "chflow-1d-transient" + _EXE)
 T_CASE = os.path.join(TESTS, "cases/transientTimeDecoupled/case.dict")
 
 # The policy, as documented. If SolverGates.h changes any of these five

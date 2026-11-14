@@ -54,6 +54,17 @@ int main(int argc, char** argv)
                 line += " HL " + num(f.holdup) + " regime "
                       + std::string(regimeName[f.regime])
                       + " m " + num(f.massRate);
+                if (f.regimeOutlet >= 0)
+                {
+                    line += " oRegime "
+                          + std::string(regimeName[f.regimeOutlet])
+                          + " lambda " + num(f.lambdaOutlet)
+                          + " Nfr " + num(f.nfrOutlet)
+                          + " L1 " + num(f.patternL1)
+                          + " L2 " + num(f.patternL2)
+                          + " L3 " + num(f.patternL3)
+                          + " L4 " + num(f.patternL4);
+                }
                 if (f.choked) line += " CHOKED";
             }
             else

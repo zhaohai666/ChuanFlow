@@ -16,6 +16,30 @@ constexpr double kGravity = 9.80665;
 
 } // namespace
 
+BeggsBrillPattern beggsBrillPattern(double lambda, double nfr)
+{
+    BeggsBrillPattern pat;
+    pat.l1 = 316.0 * std::pow(lambda, 0.302);
+    pat.l2 = 0.0009252 * std::pow(lambda, -2.4684);
+    pat.l3 = 0.1 * std::pow(lambda, -1.4516);
+    pat.l4 = 0.5 * std::pow(lambda, -6.738);
+
+    // regime precedence exactly as published; the last matching rule wins
+    if ((lambda < 0.01 && nfr < pat.l1) || (lambda >= 0.01 && nfr < pat.l2))
+        pat.regime = 0;
+    else if (lambda >= 0.01 && nfr >= pat.l2 && nfr <= pat.l3)
+        pat.regime = 1;
+    else if ((0.01 <= lambda && lambda < 0.4 && nfr > pat.l3 && nfr <= pat.l1)
+             || (lambda >= 0.4 && nfr > pat.l3 && nfr <= pat.l4))
+        pat.regime = 2;
+    else
+        pat.regime = 3;
+
+    if (pat.regime == 1)
+        pat.transitionWeight = (pat.l3 - nfr) / (pat.l3 - pat.l2);
+    return pat;
+}
+
 BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
 {
     BeggsBrillOut out;
@@ -31,22 +55,20 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
     const double fr = vm * vm / (kGravity * in.diameter);
     out.lambdaL = lambda;
 
-    const double l1 = 316.0 * std::pow(lambda, 0.302);
-    const double l2 = 0.0009252 * std::pow(lambda, -2.4684);
-    const double l3 = 0.1 * std::pow(lambda, -1.4516);
-    const double l4 = 0.5 * std::pow(lambda, -6.738);
-
-    // regime precedence exactly as published; the last matching rule wins
-    int regime;
-    if ((lambda < 0.01 && fr < l1) || (lambda >= 0.01 && fr < l2)) regime = 0;
-    else if (lambda >= 0.01 && fr >= l2 && fr <= l3) regime = 1;
-    else if ((0.01 <= lambda && lambda < 0.4 && fr > l3 && fr <= l1)
-             || (lambda >= 0.4 && fr > l3 && fr <= l4)) regime = 2;
-    else regime = 3;
+    // 5.85 (D4 increment 1): the flow-pattern map is a standalone dispatch
+    // surface; the gradient reads its regime and boundaries from that single
+    // source rather than re-deriving the map inline.
+    const BeggsBrillPattern pat = beggsBrillPattern(lambda, fr);
+    const int regime = pat.regime;
     out.regime = regime;
+    out.l1 = pat.l1;
+    out.l2 = pat.l2;
+    out.l3 = pat.l3;
+    out.l4 = pat.l4;
+    out.transitionWeight = pat.transitionWeight;
 
     // horizontal holdup with the >= lambda clamp; index 1 (transition) is
-    // never taken directly - it blends hl0(0) and hl0(2)
+    // never taken directly - it blends hl0(0) and hl0(1) (= lambda)
     const double ab[4] = {0.98, 0.0, 0.845, 1.065};
     const double bb[4] = {0.4846, 0.0, 0.5351, 0.5824};
     const double cb[4] = {0.0868, 0.0, 0.0173, 0.0609};
@@ -58,7 +80,7 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
     double hl;
     if (regime == 1)
     {
-        const double w = (l3 - fr) / (l3 - l2);
+        const double w = pat.transitionWeight;
         hl = w * hl0(0) + (1.0 - w) * hl0(1);
     }
     else
@@ -158,6 +180,8 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
 
     double p = pInPa;
     double lastHoldup = 0, lastLambda = 0, lastVm = 0, lastFTp = 0;
+    int lastRegime = 0;
+    double lastL1 = 0, lastL2 = 0, lastL3 = 0, lastL4 = 0;
     const double angleDeg = std::asin(std::clamp(sinTheta, -1.0, 1.0))
                           * 180.0 / M_PI;
     for (int i = 0; i < segments; ++i)
@@ -207,6 +231,11 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
         }
         lastVm = vsl + vsg;
         lastFTp = g.fTp;
+        lastRegime = g.regime;
+        lastL1 = g.l1;
+        lastL2 = g.l2;
+        lastL3 = g.l3;
+        lastL4 = g.l4;
 
         out.holdupMax = std::max(out.holdupMax, g.holdup);
         out.regimeMin = std::min(out.regimeMin, g.regime);
@@ -223,6 +252,12 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
             out.lambdaOutlet = lastLambda;
             out.vmOutlet = lastVm;
             out.fTpOutlet = lastFTp;
+            out.regimeOutlet = lastRegime;
+            out.nfrOutlet = lastVm * lastVm / (kGravity * diameter);
+            out.l1Outlet = lastL1;
+            out.l2Outlet = lastL2;
+            out.l3Outlet = lastL3;
+            out.l4Outlet = lastL4;
             out.ok = false;
             return out;
         }
@@ -233,6 +268,12 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
     out.lambdaOutlet = lastLambda;
     out.vmOutlet = lastVm;
     out.fTpOutlet = lastFTp;
+    out.regimeOutlet = lastRegime;
+    out.nfrOutlet = lastVm * lastVm / (kGravity * diameter);
+    out.l1Outlet = lastL1;
+    out.l2Outlet = lastL2;
+    out.l3Outlet = lastL3;
+    out.l4Outlet = lastL4;
     out.ok = true;
     return out;
 }

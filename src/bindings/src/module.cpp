@@ -4,6 +4,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
+#include "cf/1d/BeggsBrill.h"
 #include "cf/1d/Network.h"
 #include "cf/1d/Nodal.h"
 #include "cf/1d/Transient.h"
@@ -79,6 +80,23 @@ PYBIND11_MODULE(chflow_core, m)
 
     m.def("churchill_friction", &cf::churchillFriction,
           py::arg("reynolds"), py::arg("relative_roughness"));
+
+    // 5.85 (D4 increment 1): the Beggs-Brill flow-pattern map as a standalone
+    // dispatch surface, queryable without a flow solve.
+    m.def("beggs_brill_pattern",
+          [](double lambda, double nfr)
+          {
+              const cf::BeggsBrillPattern p = cf::beggsBrillPattern(lambda, nfr);
+              py::dict d;
+              d["regime"] = p.regime;
+              d["l1"] = p.l1;
+              d["l2"] = p.l2;
+              d["l3"] = p.l3;
+              d["l4"] = p.l4;
+              d["transition_weight"] = p.transitionWeight;
+              return d;
+          },
+          py::arg("lambda"), py::arg("nfr"));
 
     m.def("load_network", [](const std::string& caseDictPath)
           { return cf::loadNetworkFromDict(cf::Dictionary::parseFile(caseDictPath)); },

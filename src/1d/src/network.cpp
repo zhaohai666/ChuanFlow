@@ -1273,6 +1273,13 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     out.velocity = m.vmOutlet * (forward ? 1.0 : -1.0);
     out.holdup = m.holdupOutlet;
     out.regime = m.regimeMax;
+    out.regimeOutlet = m.regimeOutlet;
+    out.lambdaOutlet = m.lambdaOutlet;
+    out.nfrOutlet = m.nfrOutlet;
+    out.patternL1 = m.l1Outlet;
+    out.patternL2 = m.l2Outlet;
+    out.patternL3 = m.l3Outlet;
+    out.patternL4 = m.l4Outlet;
     out.massRate = m.massRate;
     out.frictionFactor = m.fTpOutlet;
     out.choked = choked || !m.ok;

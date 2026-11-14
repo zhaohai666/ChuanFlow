@@ -1,0 +1,70 @@
+// 5.85 (D4 increment 1): the Beggs-Brill flow-pattern map as a dispatch
+// surface. Five horizontal black-oil pipes, one per regime of the published
+// map, all fed the same stock-tank oil rate into a fixed-pressure terminal.
+// The diameter sets the outlet Froude number Nfr = vm^2/(g D), so sweeping D
+// at fixed rate walks the outlet across the map:
+//
+//   P1  D=0.40  ->  Nfr ~ 0.002  <  L2          segregated
+//   P2  D=0.20  ->  Nfr ~ 0.066  in [L2, L3]    transition
+//   P3  D=0.08  ->  Nfr ~ 6.4    in (L3, L1]    intermittent
+//   P4  D=0.05  ->  Nfr ~ 67     in (L3, L1]    intermittent (deeper)
+//   P5  D=0.035 ->  Nfr ~ 400    >  L1          distributed
+//
+// (lambda ~ 0.39 < 0.4 here, so the intermittent ceiling is L1, not L4.)
+// The short P5 keeps the distributed arm's friction drop well under the
+// terminal pressure so it does not choke. Every pipe is horizontal
+// (elevation 0) so the gradient is friction + acceleration only.
+//
+// The checker (tests/check_steady_flow_pattern_map.py) re-derives the whole
+// black-oil PVT + 24-segment march independently and asserts the reported
+// outlet regime / lambda / Nfr / L1..L4 are exactly the standalone map at
+// that outlet state -- the gradient dispatches through beggsBrillPattern,
+// it does not re-evaluate the map inline. A high-GOR twin exercises the
+// lambda < 0.01 segregated branch. The dense map itself is swept against an
+// independent Python restatement in tests/python/test_bindings.py.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.75;
+        oilDensity     850;
+        gor            80;    // sm3/sm3
+        waterCut       0;
+        temperature    340;   // K, isothermal
+        surfaceTension 0.025; // N/m
+    }
+}
+
+nodes
+{
+    W1 {};
+    W2 {};
+    W3 {};
+    W4 {};
+    W5 {};
+    Outlet { pressure 4.0e6; }
+}
+
+pipes
+{
+    P1 { from W1; to Outlet; length 500; diameter 0.40;  roughness 4.6e-5; elevation 0; }
+    P2 { from W2; to Outlet; length 500; diameter 0.20;  roughness 4.6e-5; elevation 0; }
+    P3 { from W3; to Outlet; length 500; diameter 0.08;  roughness 4.6e-5; elevation 0; }
+    P4 { from W4; to Outlet; length 200; diameter 0.05;  roughness 4.6e-5; elevation 0; }
+    P5 { from W5; to Outlet; length 20;  diameter 0.035; roughness 4.6e-5; elevation 0; }
+}
+
+sources
+{
+    s1 { node W1; rate 0.004; }
+    s2 { node W2; rate 0.004; }
+    s3 { node W3; rate 0.004; }
+    s4 { node W4; rate 0.004; }
+    s5 { node W5; rate 0.004; }
+}
+
+solve
+{
+    maxIter 100;
+    tol     1e-10;
+}

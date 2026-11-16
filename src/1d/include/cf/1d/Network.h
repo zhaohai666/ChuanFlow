@@ -126,6 +126,27 @@ struct NetworkPipe
     // map, which is exactly the 5.85 path, bit for bit.
     int flowPattern = -1;
 
+    // Gas-lift valve (5.89, D1 increment 3): this pipe IS an injection-pressure-
+    // operated valve between the injection (annulus) node and the production
+    // (tubing) node. `liftDomePressure` > 0 switches it on; `diameter` is then
+    // the PORT bore, not a pipe bore (the gas has no other path), and the pipe
+    // carries no length, roughness, elevation, rheology or other equipment.
+    // Two published closures price it, both in GasLiftValve.h: the bellows
+    // force balance decides WHETHER it flows (Guo et al. 2007 Eq 13.42/13.43),
+    // the isentropic nozzle decides HOW MUCH. It is a tabulated-PVT-only
+    // element because the nozzle needs the gas density at the upstream pressure
+    // the valve actually sees; on a constant-property or black-oil network the
+    // declaration is refused rather than quietly priced with the wrong rho.
+    // Open/closed is discontinuous, so the closing band is not guessed: an
+    // injection pressure between Pvc and Pvo is reported as indeterminate and
+    // priced closed, because the steady solve has no memory of where the valve
+    // came from.
+    double liftDomePressure = 0;   // Pa absolute, nitrogen charge at valve T (Pd)
+    double liftAreaRatio = 0;      // R = Ap/Ab, in (0,1)
+    double liftSpringPressure = 0; // Pa, spring term St (0 = no spring)
+    double liftDischargeCoeff = 0; // Cd, in (0,1]
+    double liftKappa = 0;          // cp/cv of the lift gas (> 1)
+
     // Power-law rheology (Metzner & Reed 1955): when `flowIndex` > 0 the
     // pipe's fluid is tau = K gdot^n instead of Newtonian, and the single
     // change to the Darcy-Weisbach law is the Reynolds number in the
@@ -327,6 +348,23 @@ struct PipeFlowResult
     double nfrOutlet = 0;
     double patternL1 = 0, patternL2 = 0, patternL3 = 0, patternL4 = 0;
     double massRate = 0;    // two-phase: kg/s, invariant along the pipe
+    // 5.89 (D1 increment 3): the gas-lift valve's own statement, on a valve
+    // pipe only (disposition -1 everywhere else). `flowRate` is the volume rate
+    // at the UPSTREAM (injection-side) density the nozzle was priced on, and
+    // `massRate` is Cd times the isentropic flux, so massRate/flowRate is that
+    // density by construction. `valveDisposition` separates the two ways a
+    // valve can pass nothing: below its closing pressure it is shut, between
+    // the closing and opening pressures it is in the spread and the steady
+    // solve has no basis to pick, so it is priced shut and says so.
+    int valveDisposition = -1; // 0 closed, 1 open, 2 in the spread band
+    double valveOpeningPressure = 0; // Pvo at the solved tubing pressure, Pa abs
+    double valveClosingPressure = 0; // Pvc, Pa abs
+    double valveSpread = 0;    // Pvo - Pvc, Pa; negative once the tubing alone
+                               // holds the port off its seat
+    double valveProductionEffect = 0; // R/(1-R) Pt: how far the tubing has
+                                      // pulled Pvo down from its test-rack value
+    double valveTestRackOpening = 0; // the same valve's Pvo at 1 atm tubing side
+    bool valveChoked = false;        // sonic at the port: downstream is unheard
     bool choked = false;    // two-phase: the march hit the pressure floor at
                             // the imposed end pressures
 };
@@ -410,6 +448,17 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
 /// Tabulated-property variant: fluid { pvt { pressure ( 1e5 1e6 4e6 );
 ///   rho ( 5 25 100 ); mu ( 1e-5 1.15e-5 1.5e-5 ); } } — piecewise-linear
 /// rho(p)/mu(p), clamped at the table ends.
+/// Gas-lift valve (5.89, D1 increment 3), on a fluid { pvt } network only:
+///   pipes { VLV { from ANN; to T; length 0; diameter 0.0047625;
+///                 liftDomePressure 7.0e6;     // Pa abs; the switch, 0 = no valve
+///                 liftAreaRatio 0.10;         // R = Ap/Ab, in (0,1)
+///                 liftSpringPressure 0;       // Pa, the St term
+///                 liftDischargeCoeff 0.665;   // Cd, in (0,1]
+///                 liftKappa 1.3; } }          // cp/cv of the lift gas
+/// `diameter` is the port bore, `length` is required and must read 0, and
+/// `elevation` must be absent or 0: a valve is a point element, and a wall law,
+/// bore shape, pump, coupled edge or flow-pattern override co-declared with it
+/// is refused rather than unread.
 OneDNetwork loadNetworkFromDict(const Dictionary& caseDict);
 SteadyControls loadSteadyControls(const Dictionary& caseDict);
 

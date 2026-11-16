@@ -1786,6 +1786,13 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
                     "writable flow-pattern dispatch (5.88) overrides the "
                     "Beggs-Brill map of the steady black-oil network; the "
                     "two-fluid row classifies its own regimes");
+        if (pd.has("liftDomePressure") || pd.has("liftAreaRatio")
+            || pd.has("liftSpringPressure") || pd.has("liftDischargeCoeff")
+            || pd.has("liftKappa"))
+            cfFatal("twoFluid: pipe '" + g.name + "' declares a lift valve: the "
+                    "gas-lift valve (5.89) is a steady-network injection-string "
+                    "element priced on node pressures; the two-fluid row moves "
+                    "its own phases and has no bellows to open");
         g.roughness = pd.getScalarOr("roughness", 0.0);
         g.angleDeg = pd.getScalarOr("angleDeg", 0.0);
         g.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));
@@ -1862,6 +1869,13 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
                     "writable flow-pattern dispatch (5.88) overrides the "
                     "Beggs-Brill map of the steady black-oil network; the "
                     "two-fluid row classifies its own regimes");
+        if (pd.has("liftDomePressure") || pd.has("liftAreaRatio")
+            || pd.has("liftSpringPressure") || pd.has("liftDischargeCoeff")
+            || pd.has("liftKappa"))
+            cfFatal("twoFluid: pipe '" + g.name + "' declares a lift valve: the "
+                    "gas-lift valve (5.89) is a steady-network injection-string "
+                    "element priced on node pressures; the two-fluid row moves "
+                    "its own phases and has no bellows to open");
         g.roughness = pd.getScalarOr("roughness", 0.0);
         g.angleDeg = pd.getScalarOr("angleDeg", 0.0);
         g.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));

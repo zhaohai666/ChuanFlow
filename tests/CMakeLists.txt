@@ -1132,6 +1132,30 @@ add_test(
         $<TARGET_FILE:chflow-1d-transient>
         $<TARGET_FILE:chflow-1d-twofluid>)
 
+# 5.89 / D1 increment 3 the IPO gas-lift valve: the bellows force balance
+# re-derived from the case's own dome, area ratio and spring at each arm's
+# solved tubing pressure (Pvo, Pvc, spread, PPE and the test-rack opening to
+# 1e-9), the isentropic nozzle re-integrated off the table's own density with
+# its throat ratio located by searching the flux maximum rather than quoting it
+# (1e-9 on every passing rate), and the identity that makes the exponent a
+# tested number: 1/(k-1) instead of k/(k-1) still gives a smooth, still-flat
+# flux, and moves the mis-priced choked arms by 1.6%. Ten arms give all three
+# dispositions and both throat states; the choked trio is bit-identical across a
+# megapascal of back pressure; R moves the thresholds and cancels out of the
+# throughput; one spring knob walks open -> in-spread -> shut with Pvc rising by
+# exactly St(1-R); a shut arm holds its tubing at the shoe; and the marching
+# arms and the manifold close on the printed rows. Untouched paths are bit-still
+# -- the standing suite is the witness.
+add_test(
+    NAME verify.steadyGasLiftValve
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_gas_lift_valve.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyGasLiftValve/case.dict
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-twofluid>
+        $<TARGET_FILE:chflow-1d-nodal>)
+
 # 5.74 / A2 gel strength and sub-threshold creep in the transient row: the
 # gel arm opens exactly on the latch recursion's predicted layer (22 layers
 # after the plain twin -- the restart pressure as calendar), the creep arms

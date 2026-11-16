@@ -300,6 +300,16 @@ NodalCase loadNodalCaseFromDict(const Dictionary& caseDict)
         cfFatal("nodal: well declares flowPattern: the writable flow-pattern "
                 "dispatch (5.88) is a steady-network pipe declaration; the VLP "
                 "well marches with the flow-pattern map's own choice");
+    // 5.89 (D1 increment 3): same reason. A VLP well is marched with a gas rate
+    // it is handed; the valve that would have set that rate lives on the steady
+    // network, so the keys are refused rather than left unread.
+    if (wd.has("liftDomePressure") || wd.has("liftAreaRatio")
+        || wd.has("liftSpringPressure") || wd.has("liftDischargeCoeff")
+        || wd.has("liftKappa"))
+        cfFatal("nodal: well declares a lift valve: the gas-lift valve (5.89) "
+                "is a steady-network injection-string element priced on node "
+                "pressures; the VLP march is handed its gas rate and does not "
+                "own a bellows to open");
 
     c.wellheadPressure = caseDict.getScalar("wellheadPressure");
     if (!(c.wellheadPressure > 0))

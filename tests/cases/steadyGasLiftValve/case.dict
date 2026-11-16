@@ -1,0 +1,181 @@
+// Gas-lift valves on an injection-gas manifold (5.89, D1 increment 3).
+//
+// A surface tie-in line holds a manifold node at lift-gas pressure; a mandrel
+// stack hangs off it, and every valve is a pipe whose whole law is the bellows
+// force balance (does it open?) followed by the isentropic nozzle (how much
+// passes?). Each valve feeds a tubing run that ends at a fixed-pressure shoe,
+// so the back pressure the port sees is that arm's own doing.
+//
+// The fill is a tabulated gas lying exactly on rho = P/176208 (an isothermal
+// ideal gas, Rs T = 176208 J/kg): piecewise-linear interpolation between knots
+// collinear through the origin reproduces the line at every pressure, so the
+// nozzle's upstream density is a closed form the checker re-derives rather than
+// a table lookup it has to trust.
+//
+// Arms, and what each one is for. The manifold solves just under the supply
+// header, by the tie-in's own drop:
+//   VLV_SUB   dome 7.4, no spring, a shoe at 5.5 MPa: open, and still subcritical
+//   VLV_CHOK  the same valve on a shoe at 2.0 MPa: open, and sonic at the port
+//   VLV_TWIN  CHOK's twin on a shoe a megapascal deeper: a choked port cannot
+//             hear its downstream, so the two rows must agree to the last digit
+//   VLV_SPR   CHOK plus a 0.5 MPa spring: the manifold lands inside the spread
+//             the spring widened, so there is no state to inherit, the arm is
+//             priced shut and says IN-SPREAD
+//   VLV_HARD  the same arm with a 1.5 MPa spring: the closing pressure is above
+//             the manifold now, so this one is shut on the spring alone
+//   VLV_CLOSE dome 9.5 MPa, no spring: shut on the dome alone
+//   VLV_R05   SUB's port behind a 0.05-ratio bellows: different thresholds and
+//             the same throughput, because R never enters the nozzle
+//   VLV_WIDE  a 6 mm port against a shoe barely under the manifold: the pressure
+//             ratio is 0.98, where the compressible flux must collapse onto the
+//             incompressible Chedzy form sqrt(2 rho dp)
+//   VLV_UP    the stack: the upper mandrel chokes into the string
+//   VLV_LO    the lower mandrel, dome 8.2 MPa: shut while its neighbour passes,
+//             which is the whole point of a valve setting
+//
+// The shoes put the passing arms either deep in the throat (r ~ 0.25, against
+// the critical ratio 0.546 this gas's flux brackets at) or clearly outside it
+// (0.69, 0.98), so no arm straddles the threshold and a mis-quoted threshold
+// shows up as a wrong rate on the choked rows rather than as a flip. The
+// checker therefore does not take the ratio on faith: it finds the maximum of
+// the flux expression it is about to compare against, by search.
+//
+// The tie-in is declared ANN -> SUPPLY, against the direction its gas actually
+// travels. The network's Jacobian takes a free node's own diagonal from the
+// pipes that start there, so a fixed-source line declared SUPPLY -> ANN would
+// leave the manifold row without the one slope that decides its pressure, and
+// Newton would wander. Direction is a book-keeping choice; the law is sign-aware.
+
+fluid
+{
+    pvt
+    {
+        pressure ( 1.0e6 4.0e6 8.0e6 1.2e7 );
+        rho      ( 5.6751078271 22.7004313084 45.4008626168 68.1012939252 );
+        mu       ( 1.2e-5 1.2e-5 1.2e-5 1.2e-5 );
+    }
+}
+
+nodes
+{
+    SUPPLY { pressure 8.0e6; }   // the gas plant's export header
+    ANN    {}                   // the manifold: tied to SUPPLY, and solved
+    T1 {}  T2 {}  T3 {}  T4 {}  T5 {}  T6 {}  T7 {}  T8 {}
+    MID  {}                     // below the upper mandrel
+    T9   {}                     // the lower mandrel's depth
+    WH_HI  { pressure 5.5e6; }  // a shoe that keeps its valve subcritical
+    WH_LO  { pressure 2.0e6; }
+    WH_MIN { pressure 1.0e6; }
+    WH_NEAR{ pressure 7.8e6; }  // only just below the manifold
+}
+
+sources
+{
+    // The compressor's own contribution to the manifold. Whatever the valves
+    // pass beyond this comes off the header through the tie-in.
+    gas { node ANN; rate 0.002; }
+}
+
+pipes
+{
+    // ---- the manifold and its tie-in ---------------------------------------
+    MFL { from ANN; to SUPPLY; length 200; diameter 0.06; roughness 4.6e-5; }
+
+    // ---- open, subcritical ------------------------------------------------
+    VLV_SUB
+    {
+        from ANN; to T1;
+        length 0; diameter 0.0047625;   // a 3/16 in port
+        liftDomePressure 7.4e6; liftAreaRatio 0.10;
+        liftDischargeCoeff 0.665; liftKappa 1.3;
+    }
+    TBG1 { from T1; to WH_HI; length 200; diameter 0.05; }
+
+    // ---- open, sonic, and its deeper twin ---------------------------------
+    VLV_CHOK
+    {
+        from ANN; to T2;
+        length 0; diameter 0.0047625;
+        liftDomePressure 7.0e6; liftAreaRatio 0.10;
+        liftDischargeCoeff 0.665; liftKappa 1.3;
+    }
+    TBG2 { from T2; to WH_LO; length 500; diameter 0.062; }
+
+    VLV_TWIN
+    {
+        from ANN; to T3;
+        length 0; diameter 0.0047625;
+        liftDomePressure 7.0e6; liftAreaRatio 0.10;
+        liftDischargeCoeff 0.665; liftKappa 1.3;
+    }
+    TBG3 { from T3; to WH_MIN; length 500; diameter 0.062; }
+
+    // ---- the same valve, one spring at a time ------------------------------
+    VLV_SPR
+    {
+        from ANN; to T4;
+        length 0; diameter 0.0047625;
+        liftDomePressure 7.0e6; liftAreaRatio 0.10; liftSpringPressure 0.5e6;
+        liftDischargeCoeff 0.665; liftKappa 1.3;
+    }
+    TBG4 { from T4; to WH_LO; length 500; diameter 0.062; }
+
+    VLV_HARD
+    {
+        from ANN; to T5;
+        length 0; diameter 0.0047625;
+        liftDomePressure 7.0e6; liftAreaRatio 0.10; liftSpringPressure 1.5e6;
+        liftDischargeCoeff 0.665; liftKappa 1.3;
+    }
+    TBG5 { from T5; to WH_LO; length 500; diameter 0.062; }
+
+    // ---- shut on the dome alone --------------------------------------------
+    VLV_CLOSE
+    {
+        from ANN; to T6;
+        length 0; diameter 0.0047625;
+        liftDomePressure 9.5e6; liftAreaRatio 0.10;
+        liftDischargeCoeff 0.665; liftKappa 1.3;
+    }
+    TBG6 { from T6; to WH_LO; length 500; diameter 0.062; }
+
+    // ---- the same port, a different bellows --------------------------------
+    VLV_R05
+    {
+        from ANN; to T7;
+        length 0; diameter 0.0047625;
+        liftDomePressure 7.4e6; liftAreaRatio 0.05;
+        liftDischargeCoeff 0.665; liftKappa 1.3;
+    }
+    TBG7 { from T7; to WH_HI; length 200; diameter 0.05; }
+
+    // ---- a port barely feeling its downstream ------------------------------
+    VLV_WIDE
+    {
+        from ANN; to T8;
+        length 0; diameter 0.006;
+        liftDomePressure 1.0e6; liftAreaRatio 0.10;
+        liftDischargeCoeff 0.665; liftKappa 1.3;
+    }
+    TBG8 { from T8; to WH_NEAR; length 50; diameter 0.03; }
+
+    // ---- two mandrels, one string ------------------------------------------
+    VLV_UP
+    {
+        from ANN; to MID;
+        length 0; diameter 0.0047625;
+        liftDomePressure 7.0e6; liftAreaRatio 0.10;
+        liftDischargeCoeff 0.665; liftKappa 1.3;
+    }
+    TBG9 { from MID; to T9; length 500; diameter 0.076; }
+    VLV_LO
+    {
+        from ANN; to T9;
+        length 0; diameter 0.0047625;
+        liftDomePressure 8.2e6; liftAreaRatio 0.10;
+        liftDischargeCoeff 0.665; liftKappa 1.3;
+    }
+    TBG10 { from T9; to WH_LO; length 500; diameter 0.076; }
+}
+
+solve { maxIter 400; tol 1e-11; }

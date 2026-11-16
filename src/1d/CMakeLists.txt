@@ -2,6 +2,7 @@ add_library(cf1d STATIC
     src/network.cpp
     src/transient.cpp
     src/beggsBrill.cpp
+    src/gasLiftValve.cpp
     src/twoFluid.cpp
     src/nodal.cpp
 )

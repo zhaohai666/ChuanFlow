@@ -1002,6 +1002,13 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
                     "writable flow-pattern dispatch (5.88) is a steady-network "
                     "black-oil declaration; the transient row has no "
                     "Beggs-Brill pattern map to override");
+        if (pd.has("liftDomePressure") || pd.has("liftAreaRatio")
+            || pd.has("liftSpringPressure") || pd.has("liftDischargeCoeff")
+            || pd.has("liftKappa"))
+            cfFatal("transient: pipe '" + name + "' declares a lift valve: the "
+                    "gas-lift valve (5.89) is a steady-network injection-string "
+                    "element priced on node pressures; the transient row "
+                    "advances a momentum equation, it has no bellows to open");
         p.roughness = pd.getScalarOr("roughness", 0.0);
         p.elevation = pd.getScalarOr("elevation", 0.0);
         p.initialFlow = pd.getScalarOr("initialFlow", 0.0);

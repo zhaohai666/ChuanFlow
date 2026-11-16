@@ -9,6 +9,7 @@
 #include "cf/common/Log.h"
 
 #include "cf/1d/BeggsBrill.h"
+#include "cf/1d/GasLiftValve.h"
 #include "cf/1d/SolverGates.h"
 
 #include "DenseSolve.h"
@@ -28,6 +29,9 @@ constexpr double kPascalPerPsi = 6894.757293168;
 bool pipeIsAnnulus(const NetworkPipe& p) { return p.annulusInner > 0; }
 
 bool pipeIsRect(const NetworkPipe& p) { return p.ductHeight > 0; }
+
+// 5.89 (D1 increment 3): the dome charge is what switches a gas-lift valve on.
+bool pipeIsLiftValve(const NetworkPipe& p) { return p.liftDomePressure > 0; }
 
 double pipeArea(const NetworkPipe& p)
 {
@@ -1043,7 +1047,10 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
     p.from = nodeIndex(p.fromName);
     p.to = nodeIndex(p.toName);
     if (p.from == p.to) cfFatal("network: pipe '" + p.name + "' connects a node to itself");
-    if (!(p.diameter > 0) || !(p.length > 0))
+    // A gas-lift valve is a point element: the port is its `diameter` and it has
+    // no length to be positive about, so both numbers belong to the valve scope
+    // below rather than to the pipe law's requirement here.
+    if (!pipeIsLiftValve(p) && (!(p.diameter > 0) || !(p.length > 0)))
         cfFatal("network: pipe '" + p.name + "' needs positive length and diameter");
     // 5.87: an axis offset is a statement about an annulus. A negative one is
     // the mirror image, but declared it is a typo, so it is refused rather than
@@ -1177,6 +1184,58 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
                     + "' failed to resolve its rectangular-duct laminar "
                       "profile");
     }
+    // Gas-lift valve (5.89, D1 increment 3): the declaration is a valve, not a
+    // pipe with a valve in it, so everything the pipe laws would otherwise read
+    // is refused here rather than left in place unread. The three numbers the
+    // closures actually consume are checked where they can be checked: R in
+    // (0,1) because 1-R divides the force balance, kappa > 1 because the
+    // critical ratio's exponent is 1/(k-1), Cd in (0,1] because it is a
+    // recovery fraction, and a non-negative spring because St only ever pushes
+    // the valve shut.
+    if (pipeIsLiftValve(p))
+    {
+        if (!(p.diameter > 0))
+            cfFatal("network: pipe '" + p.name
+                    + "' is a gas-lift valve without a port: `diameter` is the "
+                      "bore the lift gas passes through");
+        if (p.length != 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' is a gas-lift valve with a length: a valve is a point "
+                      "element, its drop is the port's, not a bore's friction");
+        if (p.elevation != 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' is a gas-lift valve with an elevation: the force "
+                      "balance reads the two node pressures directly");
+        if (p.roughness > 0 || p.valveK > 0 || p.pumpHead > 0
+            || p.pumpGasFraction > 0 || p.coupledResistance > 0
+            || p.annulusInner > 0 || p.ductHeight > 0 || p.eccentricity > 0
+            || p.flowIndex > 0 || p.consistency > 0 || p.yieldStress > 0
+            || p.flowPattern >= 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' is a gas-lift valve that also declares a wall law, a "
+                      "bore shape, a pump, a coupled edge or a flow-pattern "
+                      "override: the valve's rate comes from its bellows and "
+                      "its port and nothing else prices it");
+        if (!(p.liftAreaRatio > 0) || !(p.liftAreaRatio < 1))
+            cfFatal("network: pipe '" + p.name
+                    + "' has a lift-valve area ratio outside (0,1): R = Ap/Ab "
+                      "is a port smaller than the bellows that senses it, and "
+                      "the force balance divides by 1-R");
+        if (p.liftSpringPressure < 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' has a negative lift-valve spring pressure: the spring "
+                      "only ever helps hold the valve shut");
+        if (!(p.liftDischargeCoeff > 0) || !(p.liftDischargeCoeff <= 1))
+            cfFatal("network: pipe '" + p.name
+                    + "' has a lift-valve discharge coefficient outside (0,1]: "
+                      "Cd recovers part of the ideal nozzle flux, it cannot "
+                      "create more of it");
+        if (!(p.liftKappa > 1))
+            cfFatal("network: pipe '" + p.name
+                    + "' has a lift-valve kappa <= 1: the isentropic nozzle "
+                      "exponent k = cp/cv exceeds 1 for any real gas, and the "
+                      "critical ratio (2/(k+1))^(k/(k-1)) is priced by k/(k-1)");
+    }
     pipes.push_back(p);
     return static_cast<label>(pipes.size()) - 1;
 }
@@ -1194,6 +1253,10 @@ double churchillFriction(double reynolds, double relativeRoughness)
 void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
                    double dpTotal, PipeFlowResult& out)
 {
+    if (pipeIsLiftValve(pipe))
+        cfFatal("solvePipeFlow: pipe '" + pipe.name + "' is a gas-lift valve on "
+                "a constant-property fill: the nozzle is priced on the gas "
+                "density at the valve's own upstream pressure");
     double Hq = 0;
     const RawFlow r = equipmentFlow(pipe, fluid, dpTotal, Hq);
     out.name = pipe.name;
@@ -1527,6 +1590,11 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     if (pipeIsAnnulus(pipe))
         cfFatal("twoPhase: pipe '" + pipe.name + "' declares an annulus: the "
                 "black-oil march is a circular-bore correlation chain");
+    if (pipeIsLiftValve(pipe))
+        cfFatal("twoPhase: pipe '" + pipe.name + "' is a gas-lift valve: the "
+                "black-oil march carries its own solution gas, and this "
+                "increment prices the injection string, not the two-phase "
+                "column");
     if (pipeIsRect(pipe))
         cfFatal("twoPhase: pipe '" + pipe.name + "' declares a rectangular "
                 "duct: the black-oil march is a circular-bore correlation "
@@ -1645,8 +1713,7 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
 {
     if (pipeIsAnnulus(pipe))
         cfFatal("pvtMarch: pipe '" + pipe.name + "' declares an annulus: the "
-                "PVT march is a circular-bore correlation chain");
-    if (pipeIsRect(pipe))
+                "PVT march is a circular-bore correlation chain");    if (pipeIsRect(pipe))
         cfFatal("pvtMarch: pipe '" + pipe.name + "' declares a rectangular "
                 "duct: the PVT march is a circular-bore correlation chain");
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
@@ -1752,6 +1819,92 @@ double pvtRateForDrop(const NetworkPipe& pipe, const PvtFluid& fluid,
     return q;
 }
 
+/// Gas-lift valve (5.89, D1 increment 3): the injection string's endpoint. Two
+/// published closures run in order and neither borrows from the other. The
+/// bellows force balance reads the injection pressure `pFrom` against the
+/// tubing pressure `pTo` and says whether the port is open; the isentropic
+/// nozzle then reads the gas at the state it actually sits in -- the density
+/// the PVT table gives at pFrom, which is why this element cannot live on a
+/// constant-property fill. The rate is reported at that same upstream density,
+/// so `massRate / flowRate` is rho(pFrom) by construction and the node balance
+/// downstream carries the volume the tubing sees.
+///
+/// The open/closed switch is discontinuous, and a steady solve has no history
+/// to resolve it with: below Pvc the valve is shut, at or above Pvo it is open,
+/// and in between it is reported as sitting in its own spread and priced shut.
+/// Pricing it *open* there would invent flow the manufacturer's force balance
+/// never authorized; the disposition token is what makes the band visible on
+/// the readout instead of a silent zero.
+void solveLiftValvePvt(const NetworkPipe& pipe, const PvtFluid& fluid,
+                       double pFrom, double pTo, PipeFlowResult& out)
+{
+    const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
+    const GasLiftValve valve{pipe.liftDomePressure, pipe.liftAreaRatio,
+                             pipe.liftSpringPressure, area,
+                             pipe.liftDischargeCoeff, pipe.liftKappa};
+
+    const GasLiftValveThresholds th = gasLiftValveThresholds(valve, pTo);
+    out.valveOpeningPressure = th.openingPressure;
+    out.valveClosingPressure = th.closingPressure;
+    out.valveSpread = th.spread;
+    out.valveProductionEffect = th.productionEffect;
+    out.valveTestRackOpening = th.testRackOpening;
+    const bool opens = pFrom >= th.openingPressure;
+    out.valveDisposition = opens ? 1
+                       : (pFrom <= th.closingPressure ? 0 : 2);
+
+    const double rhoUp = fluid.density(pFrom);
+    double q = 0;
+    if (opens)
+    {
+        const GasLiftValveFlow fl = gasLiftValveFlow(valve, pFrom, rhoUp, pTo);
+        out.valveChoked = fl.choked;
+        out.choked = fl.choked;
+        out.massRate = fl.massRate;
+        q = fl.massRate / rhoUp;
+    }
+    out.flowRate = q;
+    // The bore velocity referred to the density the volume rate is priced at,
+    // which is the manifold's, not the throat's: a choked port runs sonic at a
+    // throat density well below this one, and this row does not pretend to
+    // march to it.
+    out.velocity = q / area;
+    out.reynolds = fluid.mu.empty()
+                       ? 0.0
+                       : rhoUp * std::abs(out.velocity) * pipe.diameter
+                       / fluid.viscosity(pFrom);
+    out.frictionFactor = 0; // no wall law is priced here
+    // The whole drop is the port's: a point element has no wall to rub against,
+    // so dpTotal = dpValve and dpFriction stays the zero it was born as. Read
+    // as the march reads it, the drop adds up.
+    out.dpValve = out.dpTotal;
+
+    // dQ/d(dpTotal) at fixed injection pressure, the same convention as the
+    // marched pipe law. A choked port is deliberately flat: it has stopped
+    // listening to the downstream, and for a gas whose density rides with its
+    // pressure it has stopped listening upstream in VOLUME terms too (its mass
+    // rate rides with the manifold, its volume rate does not). A shut port
+    // listens to nothing. Both keep a floor so a manifold of nothing but shut
+    // ports still has a Jacobian, but the floor is not the pipe law's 1e-6:
+    // the marched lines here slope at 1e-7, and a dead valve modelled as
+    // sixty times stiffer than every live pipe in the network is a lie Newton
+    // will step by.
+    const double h = std::max(1e-4 * std::abs(out.dpTotal), 1.0);
+    double c = 0;
+    if (q > 0)
+    {
+        const double pHighProbe = pTo + h;
+        const double pLowProbe = std::max(pTo - h, 1.0);
+        const GasLiftValveFlow fp =
+            gasLiftValveFlow(valve, pFrom, rhoUp, pLowProbe);
+        const GasLiftValveFlow fm =
+            gasLiftValveFlow(valve, pFrom, rhoUp, pHighProbe);
+        c = (fp.massRate - fm.massRate) / rhoUp / (pHighProbe - pLowProbe);
+    }
+    if (!(c > 0)) c = 1e-12; // keep the network Jacobian nonsingular
+    out.conductance = c;
+}
+
 } // namespace
 
 bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
@@ -1762,6 +1915,11 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
     out.regime = -1;
     const double dp = pFrom - pTo;
     out.dpTotal = dp;
+    if (pipeIsLiftValve(pipe))
+    {
+        solveLiftValvePvt(pipe, fluid, pFrom, pTo, out);
+        return true;
+    }
     if (!(pipe.length > 0) || !(pipe.diameter > 0)
         || fluid.pressure.size() < 2)
         return true;
@@ -1914,6 +2072,36 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.pumpGasFraction = pd.getScalarOr("pumpGasFraction", 0.0);
         p.pumpIntakePressure = pd.getScalarOr("pumpIntakePressure", 0.0);
         p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
+        // Gas-lift valve (5.89, D1 increment 3). The port bore is `diameter`;
+        // liftDomePressure is the switch, and addPipe owns the parameter scope.
+        p.liftDomePressure = pd.getScalarOr("liftDomePressure", 0.0);
+        p.liftAreaRatio = pd.getScalarOr("liftAreaRatio", 0.0);
+        p.liftSpringPressure = pd.getScalarOr("liftSpringPressure", 0.0);
+        p.liftDischargeCoeff = pd.getScalarOr("liftDischargeCoeff", 0.0);
+        p.liftKappa = pd.getScalarOr("liftKappa", 0.0);
+        if (p.liftDomePressure < 0)
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' has a negative liftDomePressure: a dome charge is an "
+                      "absolute pressure (0 means no valve)");
+        if (p.liftDomePressure == 0
+            && (pd.has("liftAreaRatio") || pd.has("liftSpringPressure")
+                || pd.has("liftDischargeCoeff") || pd.has("liftKappa")))
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' declares a lift-valve parameter without "
+                      "liftDomePressure: the dome charge is what switches the "
+                      "valve on, and the rest would be read by nothing");
+        if (p.liftDomePressure > 0 && net.hasBlackOil)
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' is a gas-lift valve on a black-oil network: a lift "
+                      "valve injects gas into a node whose liquid already "
+                      "carries its own solution gas, and this increment prices "
+                      "the injection string, not the two-phase column");
+        if (p.liftDomePressure > 0 && !net.hasPvtFluid)
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' is a gas-lift valve on a constant-property network: "
+                      "the isentropic nozzle prices the lift gas at the "
+                      "density of its own upstream pressure, which needs a "
+                      "fluid { pvt } table");
         p.annulusInner = pd.getScalarOr("dInner", 0.0);
         if (p.annulusInner < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative dInner");

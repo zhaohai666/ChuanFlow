@@ -4114,7 +4114,7 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **case 与判据**：`tests/cases/steadyAnnulus`（μ = 0.05、ρ = 850、L = 10；三档定压对：dp = 1e4 层流档 / dp = 4.98e6 湍流档（Re ~ 9250 / 60600）/ **dp = 1.0 深层流精确档**——Churchill 混合式的湍流项 < 1e-12 相对，f·Re 退化为纯常数；幂律不吃 1 Pa 档：n = 0.5 的 Re_GP 在那里落进内核 1e-12 的 Re 地板，幂律精确锚在 1e4 档，Re_GP ~ 2.3e-6，湍流项 < 1e-100 相对）。checker `check_steady_annulus.py`（CTest `verify.steadyAnnulus`），**18 判据 0 失败**：f·Re = C(κ) 与 Q = FB 闭式**双 1e-9**（三个 κ：2/3、0.1、1e-4）、圆管 f·Re = 64 + Q = Poiseuille 1e-9（κ = 0 成员逐位）、C 阶梯 95.74 > 89.37 > 71.78 > 64 单调、幂律 Q 对独立 2048 带重解到 5e-6、f·Re_GP = C_pl 1e-9（K 相消）且 C_pl 阶梯 90.28 > 84.77 > 71.55 = 64((3n+1)/4n)^n、圆管幂律 MR 闭式 1e-9 + f·Re = 64 不动、全档 Dh 接线 1e-9（Re = ρvDh/μ、dp = f(L/Dh)ρv²/2）、四条拒收（dInner ≥ d、dInner < 0、+屈服、+耦合边）大声点名。
 
-**本增量的边界**：① 环空只进**稳态单相牛顿/幂律**路径——屈服（屈服 locus 与壁应力是圆管几何的律）、耦合边（几何归伙伴）、黑油两相 march、PVT march 全部在入口大声拒收；transient/twoFluid 的 loader 对 `dInner` 同样拒收（防静默忽略）。② 偏心环空、矩形 duct 不在本增量（Dh 抽象已就位，层流锚需各自闭式）。③ 湍流档无真值可验（没有环空 Churchill 的实验重演），判据只锁接线与几何分离。④ C_pl 的 κ→0 成员 71.55 是解析推论，未在 case 里放 κ = 1e-6 档直接逼近。⑤ 环空 + 泵/阀可用（几何无关），但无专门判据。
+**本增量的边界**：① 环空只进**稳态单相牛顿/幂律**路径——屈服（屈服 locus 与壁应力是圆管几何的律）、耦合边（几何归伙伴）、黑油两相 march、PVT march 全部在入口大声拒收；transient/twoFluid 的 loader 对 `dInner` 同样拒收（防静默忽略）。② 偏心环空、矩形 duct 不在本增量（Dh 抽象已就位，层流锚需各自闭式）（**后续状态**：矩形 duct 已由 §5.80 / C3 增量 1 落地；偏心环空已由 §5.87 / C3 增量 2 落地——双极坐标半解析截面解，Fredrickson–Bird 是其 e→0 成员，A/P/Dh 逐位不动、只有层流剖面随偏心距重定价）。③ 湍流档无真值可验（没有环空 Churchill 的实验重演），判据只锁接线与几何分离。④ C_pl 的 κ→0 成员 71.55 是解析推论，未在 case 里放 κ = 1e-6 档直接逼近。⑤ 环空 + 泵/阀可用（几何无关），但无专门判据。
 
 **成本**：内核 ~130 行 + 1 case 文件 + 1 checker + 1 条 `add_test`，18 判据。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
@@ -4273,7 +4273,7 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **case 与判据**：`tests/cases/steadyRectDuct`（μ = 0.05、ρ = 850、L = 10、W = 0.04 固定；两档定压对：dp = 1000 层流档（正方 Re ~ 76）/ dp = 2.0e6 湍流档（正方 Re ~ 1.8e4））。checker `check_steady_rect_duct.py`（CTest `verify.steadyRectDuct`），**26 判据 0 失败**：五个 aspect（0.01 / 0.1 / 0.25 / 0.5 / 1）的 f·Re = C_rect 与 Q = conductance·dp **双 1e-9**、C 阶梯 94.705 > 84.676 > 72.931 > 62.192 > 56.908 单调（aspect→0 落向平行平板 96、aspect = 1 落向正方 56.91）、旋转孪生 0.02×0.04 与 0.04×0.02 的 Q/v/Re/f 1e-9 相同（长短边互换对称）、圆管 f·Re = 64 + Q = Poiseuille 1e-9（圆管分支逐位）、**级数无关的第二锚**——纯 Python 二维有限差分 Poisson（SOR，无 scipy）解 ∇²u = −1 并积分，n = 48/96 收敛 + Richardson 外推确认正方 bracket/12 到 **5.2e-7**、全档 Dh 接线 1e-9（v = Q/A、Re = ρvDh/μ、dp = f(L/Dh)ρv²/2）、湍流档两几何 Re > 4000 且矩形与圆管孪生 Q 分离、五条拒收（rect + 环空 / + 屈服 / + 幂律 / + 耦合边 / 负 ductHeight）大声点名。
 
-**本增量的边界**：① 矩形只进**稳态单相牛顿**路径——屈服、幂律、耦合边（几何归伙伴）、黑油两相 march、PVT march 全部在入口大声拒收；transient/twoFluid 的 loader 对 `ductHeight` 同样拒收（防静默忽略）。② 偏心环空不在本增量（C3 增量 2，Dh 抽象已就位，层流锚需 bipolar 坐标数值 Poisson）。③ 湍流档无真值可验（没有矩形 Churchill 的实验重演），判据只锁接线与几何分离。④ 矩形幂律的 2D 非线性剖面未解（拒收）。⑤ aspect→0 的 96 是解析推论，case 用 aspect = 0.01（C = 94.705）逼近，未放 aspect = 1e-6 档直接逼近。⑥ 矩形 + 泵/阀可用（几何无关），但无专门判据。
+**本增量的边界**：① 矩形只进**稳态单相牛顿**路径——屈服、幂律、耦合边（几何归伙伴）、黑油两相 march、PVT march 全部在入口大声拒收；transient/twoFluid 的 loader 对 `ductHeight` 同样拒收（防静默忽略）。② 偏心环空不在本增量（C3 增量 2，Dh 抽象已就位，层流锚需 bipolar 坐标数值 Poisson）（**后续状态**：§5.87 / C3 增量 2 已落地——σ 方向用 h² 的解析谱、τ 方向逐模 Thomas + Richardson 的半解析截面解，C3 至此两半 CLOSED）。③ 湍流档无真值可验（没有矩形 Churchill 的实验重演），判据只锁接线与几何分离。④ 矩形幂律的 2D 非线性剖面未解（拒收）。⑤ aspect→0 的 96 是解析推论，case 用 aspect = 0.01（C = 94.705）逼近，未放 aspect = 1e-6 档直接逼近。⑥ 矩形 + 泵/阀可用（几何无关），但无专门判据。
 
 **成本**：内核 ~145 行（`Network.h` ~16 + `network.cpp` ~120 + `transient.cpp` 3 + `twoFluid.cpp` 6）+ 1 case 文件 + 1 checker + 1 条 `add_test`，26 判据，CTest 134 → **135**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
@@ -4407,6 +4407,26 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 **本增量的边界**：① 只进**稳态单相牛顿**泵曲线（与 §5.81 同处理）；黑油 / PVT march 也经共享 `pumpHeadOf` 读到该乘子，但那里 `p_i` 同样是**声明**而非从解出的节点压强回填。② `p_i` 是**声明的**工况入口压强（相关式测得该乘子时所用的条件），**不**从牛顿解回耦（不改 Jacobian、不引入 `p_i` 与流量的隐式迭代）；把 `p_i` 接成上游节点读数、把 `g` 从黑油自由气解算出来，是后续增量。③ 乘子转录自 Turpin 经验拟合，**非自推物理**（区别于 §5.81 两条自推律）；低含气率 crossover 处乘子略 > 1 是其固有性质，如实记录。④ `H_TP` 在原式是「以混合物密度计的扬程」，本增量把它实现为对单相扬程标量的乘子；两相混合物密度的显式 head 换算不在本格。⑤ 零声明逐位不变的见证是 `steadyEquipmentEsp` + `GAS_Base`/`GAS_G0` 双臂 + 全量回归。
 
 **成本**：内核 ~16 行（`Network.h` 含注释 ~14 / `network.cpp` `pumpHeadOf` +9 / loader 键 2 / 校验 3 条 ~13 / 常量 1）+ 1 case（14 节点 7 管）+ 1 checker（32 判据）+ 1 条 `add_test`，**本增量 CTest 138 → 139**（D4 增量 1 落在 138 之后；A11 的条件 MPI 测试仍在工作树里未核实，不在本格范围）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
+### 5.87 环空偏心距第一次进稳态管网（C3 增量 2）：内管轴线平移 e 之后**截面积、湿周、Dh 一位不动**（两圈全程被润湿），动的只有层流剖面——宽边 disproportionately 多带流量，所以 K_geom 升、C = f·Re_Dh 降；层流锚点是**双极坐标下的半解析截面解**（σ 方向解析谱 + τ 方向每模一趟 Thomas），同心成员仍是 Fredrickson–Bird 闭式
+
+**这一格从哪来**：`docs/gap_analysis.md` 的 **C3**（与 A6 同体）的第二半。§5.73（A6）给出同心环空的 Fredrickson–Bird 闭式与 `churchillAnnulusFriction`，§5.80（C3 增量 1）把矩形 duct 的精确 Fourier 剖面接进同一套「一次性解析 K_geom + Churchill 换层流成员」的骨架，并明写「偏心环空（C3 增量 2）留待下一增量」。偏心环空是钻井环空水力（窄边速度峰值、岩屑床）的几何本体，Pipesim/OLGA 的环空节点带偏心距输入。估 1 增量，实测约 1：内核 ~120 行（`eccentricAnnulusSectionIntegral` 一个函数 + 两条入口校验 + 两个 conductance/constant 分支 + loader 键 + transient/twoFluid 拒收），声明面一个可选键。
+
+**声明面与解析核心**：管块可选键 **`eccentricity`**（m；内管轴线相对外管的平移量，0 = 同心）。它只在 `annulusInner > 0` 时有意义，`addPipe` 一次性解出**偏心环空截面导数** `annulusEccK = K_geom`（m⁴）存进管子，之后 `annulusLaminarConductance` 读 `K_geom/(μL)`、`annulusLaminarConstant` 读 `C = 2·Dh²·A/K_geom`——两个量共用同一个 K_geom，所以**恒等式 `f·Re ≡ 2 Dh² A·dp/(Q μ L)` 在解里精确成立**（checker 以 1e-9 断言，等价于摩擦常数与电导出自同一个截面）。`eccentricity` 缺省或 0 时**不调解、不占字段**，所有同心数字 IEEE 逐位不变（见证：`verify.steadyAnnulus` 全绿 + case 里 `EccZero` 臂与未声明臂的 Q/v/Re/f **逐字节相同**）。解析核心是双极坐标：`x = a·sinh τ/(cosh τ − cos σ)`，两圆是 τ = 常数的两条线，圆心 a·coth τ、半径 a/|sinh τ|；由 e、Ro、Ri 反解 **`x0 = (e²+Ro²−Ri²)/(2e)`、`a² = x0²−Ro²`**，再取**免除消的**对数形式 `τ_o = ln(Ro/(x0+a))`、`τ_i = ln(Ri/(x0−e+a))`（两值皆负，合法域 `e < Ro − Ri`）。Poisson 问题 `(∂ττ + ∂σσ)w = −h²`（`h = a/(cosh τ − cos σ)`，`dA = h² dτ dσ`）在两 τ 边 Dirichlet、σ 周期。**σ 方向不需离散**：`h²` 有解析余弦谱 `h² = a²[A₀ + Σ_{m≥1} A_m cos mσ]`，`A₀ = C/S³`、`A_m = 2 e^{−mT}(C+mS)/S³`（T = |τ|、S = sinh T、C = cosh T）。于是每模一个三对角 `W_m'' − m²W_m = −a²A_m`（对角 `−(2+(m·dτ)²)`、上次对角 1，一趟 Thomas），`K_geom = ∫∫ h² w dτ dσ` 由 Parseval 收成一个 τ 上的一维积分 `π a² ∫[2A₀W₀ + Σ_{m≥1}A_mW_m]dτ`。网格 nt = 400/800 两趟 Richardson `K = k_f + (k_f−k_c)/3`；模截断由针尖（最小 |τ|）定：`mmax = ceil(45/tmin)+4`，先要求 `45/tmin < 2e4`，再验尾 `2e^{−mmax·tmin}(1+mmax·tanh tmin) < 1e-14`，最后要求两网格相对展布 < 1%——三关任一不过即 `cfFatal`（宁可拒收，不给未收敛的截面常数）。**本增量只走牛顿单相稳态**：幂律（5.74 的零剪切实径积分按同心构造）、屈服、耦合边、`ductHeight` 冲突在入口大声拒收。
+
+**case 与判据**：`tests/cases/steadyEccentricAnnulus`（3 节点 / 15 管；μ = 0.05、ρ = 850、L = 10；Do = 0.06、Di = 0.04（κ = 2/3，gap 0.01）与 Di = 0.006（κ = 0.1）；A→B 档 dp = 1.0e3 是深层流档（Re_Dh 5.7→145，Churchill 湍流成员 < 1e-12 相对，f·Re 就是截面常数本身），C→B 档 dp = 4.98e6 是湍流档（Re_Dh ~ 9200））。checker `check_steady_eccentric_annulus.py`（CTest `verify.steadyEccentricAnnulus`），**67 判据 0 失败**：
+1. **闭式成员**：`EccConc` 的 f·Re = Fredrickson–Bird **1e-9**（95.739203，与 §5.73 的 κ = 2/3 同值）；`CircTwin` 仍精确 64 + Hagen–Poiseuille（1e-9）。
+2. **e→0 退化**：`EccEps`（e/gap = 1e-6）与 FB 的 Q/v/Re/f **逐字节相同**；`EccMicro`（e/gap = 0.002）在 5e-4 内且**严格低于** FB。
+3. **独立重算的阶梯**：checker 自带一套双极坐标解（nt = 300/600、`mmax = ceil(50/tmin)+8`，与内核不同网格与不同截断）复算每臂 C = 2 Dh²A/K 与 Q = dp·K/(μL)，**5e-6** 相符。C 阶梯 `95.739203 > 95.388866 > 90.430294 > 81.175421 > 70.141018 > 59.315741 > 49.733705 > 41.702269`（e/gap 0 → 0.05 → 0.95，κ = 2/3）严格单调降，增益 `Q/Q_conc` 从 1.0037 涨到 2.2958。
+4. **不解 PDE 的硬界**（区域单调性，能抓住标度错误）：内接同心环空 (Ro, Ri+e) 的 FB 闭式是**下界**、外包同心环空 (Ro, max(Ri−e, 0)) 的是**上界**，每臂两侧均严格成立。
+5. **不变量与接线**：A、P、Dh 与同心逐位相同；v = Q/A、Re = ρvDh/μ、dp = f(L/Dh)ρv²/2 全档 1e-9；恒等式 `f·Re ≡ 2 Dh²A·dp/(QμL)` 1e-9。
+6. **宽窄对比**：同 e/gap = 0.5，宽环空（κ = 0.1）保留 K/K_FB = 0.8246，窄环空（κ = 2/3）只保留 0.7326——gap 越窄，偏心越伤导数。
+7. **湍流档记录模型的诚实边界**：`TurbConc`/`TurbHalf` 都 Re > 4000、独立复算 Churchill 1e-9、f·Re 离层流 C > 50%，但两者 Q 之差 `0 < ΔQ/Q < 1e-3`——Churchill 的湍流成员只认 Re 与相对粗糙度，**同 Dh 即同摩擦**，偏心距是层流剖面效应，越过过渡区不再分账（环空没有 Wilson–Thomas 的对应式；§5.83 只给圆管 Bingham）。
+8. **九条拒收探针**（regex 重写 `EccHalf` 臂，逐条 rc=1 点名）：负 e、无 dInner 的 e、e ≥ (Do−Di)/2、e 恰等于极限（1e-17 m 液膜 → 网格不可解）、幂律 + e、e + `ductHeight`、e + 耦合边、e + 屈服，外加瞬动量行与两流体行对 `eccentricity` 的 loader 拒收（防静默忽略）。
+
+**本增量的边界**：① 只进**稳态单相牛顿**环空；幂律、屈服、黑油两相 march、PVT march、瞬态行、两流体行全部在入口大声拒收（`Network.h` 注释与三处 loader 各自点名）。② K_geom 由 `addPipe` 解一次并缓存，**不随压强/温度/流变重算**（牛顿环空它是纯几何常数，成立）；把偏心距接成随井眼轨迹变化的场量、或从两相解回填 e，是后续增量。③ e→Ro−Ri 的贴边极限在 `45/tmin < 2e4` 处失去可解性（模数发散），大声拒收而非给未收敛值——实测 e/gap = 0.95 仍在域内（mmax ~ 数百）。④ 湍流侧无偏心距相关式可转录，形状盲区如实记录（判据锁接线与「确实几乎不分账」这个事实本身，不假装捕捉到物理）。⑤ 定向（宽边朝上/朝下）不影响本格：稳态单相牛顿的截面解只认 |e|，重力取向属于两相/岩屑床问题。⑥ 零声明逐位不变的见证是 `verify.steadyAnnulus` + `EccZero`/`EccEps` 双臂 + 全量回归。
+
+**成本**：内核 ~120 行（`Network.h` 注释+2 字段 ~18 / `network.cpp` `eccentricAnnulusSectionIntegral` ~90 + `msgNum` 6 + 两分支 6 + 两条校验 ~12 + loader 键 2 / `transient.cpp` 3 / `twoFluid.cpp` 6）+ 1 case（3 节点 15 管）+ 1 checker（67 判据）+ 1 条 `add_test`，case 运行时 0.03 s（15 管全部截面解完），**本增量 CTest 139 → 140**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |

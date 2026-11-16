@@ -310,6 +310,18 @@ NodalCase loadNodalCaseFromDict(const Dictionary& caseDict)
                 "is a steady-network injection-string element priced on node "
                 "pressures; the VLP march is handed its gas rate and does not "
                 "own a bellows to open");
+    // 5.90 (D1 increment 4): same reason. The rod pump takes its rate from the
+    // stroke and the barrel, which is the opposite of the VLP march asking the
+    // column what rate it will carry.
+    if (wd.has("rodPlungerDiameter") || wd.has("rodStrokeLength")
+        || wd.has("rodStrokesPerMinute") || wd.has("rodDiameter")
+        || wd.has("rodLength") || wd.has("rodYoungModulus")
+        || wd.has("rodDensity"))
+        cfFatal("nodal: well declares a rod pump: the subsurface rod pump "
+                "(5.90) is a steady-network element whose rate is its stroke "
+                "times its barrel; the VLP march solves for the rate the "
+                "reservoir and the column agree on and does not own a polished "
+                "rod to pull a card against");
 
     c.wellheadPressure = caseDict.getScalar("wellheadPressure");
     if (!(c.wellheadPressure > 0))

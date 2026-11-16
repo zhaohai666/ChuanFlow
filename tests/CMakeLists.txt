@@ -1156,6 +1156,31 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         $<TARGET_FILE:chflow-1d-nodal>)
 
+# 5.90 / D1 increment 4 the subsurface rod pump: the four statements -- the
+# string's buoyed weight, Fo = A_p dp on the differential the network itself
+# solved, Hooke's df = Fo L/(A_r E) and Seff = S - df -- re-derived from the
+# case's own geometry, densities and port pressures on ten arms (all 17 printed
+# fields to 3.7e-11 relative), the card drawn as the parallelogram its four
+# printed numbers fix and its shoelace area closed on the printed work, the
+# downhole card squared into the 0..Fo rectangle, the counterbalance at its
+# mid-height and the whole load re-summed term by term from the annulus level,
+# both static heads and both column frictions. The three dispositions are all
+# there (8 full / 1 stalled / 1 no-load); one compliance L/E walks two string
+# gauges; a rod-density change moves only the datum; an imposed feed finds its
+# own differential; and every marched column re-integrates to its printed dp.
+# A pump row is a point element and refuses geometry, a wall law, every other
+# element's keys and all three other solvers. Untouched paths are bit-still --
+# the standing suite is the witness.
+add_test(
+    NAME verify.steadyRodPumpCard
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_rod_pump_card.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyRodPumpCard/case.dict
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-twofluid>
+        $<TARGET_FILE:chflow-1d-nodal>)
+
 # 5.74 / A2 gel strength and sub-threshold creep in the transient row: the
 # gel arm opens exactly on the latch recursion's predicted layer (22 layers
 # after the plain twin -- the restart pressure as calendar), the creep arms

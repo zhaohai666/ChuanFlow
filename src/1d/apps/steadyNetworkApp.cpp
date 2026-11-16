@@ -98,6 +98,36 @@ int main(int argc, char** argv)
                       + " m " + num(f.massRate)
                       + (f.valveChoked ? " SONIC" : "");
             }
+            else if (f.card.state >= 0)
+            {
+                // 5.90 (D1 increment 4): a rod pump row has no wall law either,
+                // and what it does have is a card. The four loads say where the
+                // polished rod and the plunger top out and bottom out, the
+                // stretch and the effective stroke say what the fluid load cost
+                // the string, and the rate, work and power say what came of it.
+                // The parallelogram itself is not spelled out: it is fixed by
+                // (stroke, stretch, wmin, wmax), and the checker draws it.
+                static const char* cardStateName[] = {"FULL", "NO-LOAD",
+                                                      "STALLED"};
+                line += " rod " + std::string(cardStateName[f.card.state])
+                      + " wmax " + num(f.card.maxLoad)
+                      + " wmin " + num(f.card.minLoad)
+                      + " dmax " + num(f.card.downholeMaxLoad)
+                      + " dmin " + num(f.card.downholeMinLoad)
+                      + " wr " + num(f.card.rodWeightInFluid)
+                      + " fo " + num(f.card.fluidLoad)
+                      + " fomax " + num(f.card.fluidLoadMax)
+                      + " upthrust " + num(f.card.upthrust)
+                      + " stretch " + num(f.card.stretch)
+                      + " stroke " + num(f.card.stroke)
+                      + " seff " + num(f.card.effectiveStroke)
+                      + " ev " + num(f.card.efficiency)
+                      + " disp " + num(f.card.displacement)
+                      + " m " + num(f.card.massRate)
+                      + " work " + num(f.card.workPerCycle)
+                      + " power " + num(f.card.hydraulicPower)
+                      + " cbe " + num(f.card.counterbalance);
+            }
             else
             {
                 line += " Re " + num(f.reynolds) + " f "

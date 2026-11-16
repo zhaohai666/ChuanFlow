@@ -1793,6 +1793,15 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
                     "gas-lift valve (5.89) is a steady-network injection-string "
                     "element priced on node pressures; the two-fluid row moves "
                     "its own phases and has no bellows to open");
+        if (pd.has("rodPlungerDiameter") || pd.has("rodStrokeLength")
+            || pd.has("rodStrokesPerMinute") || pd.has("rodDiameter")
+            || pd.has("rodLength") || pd.has("rodYoungModulus")
+            || pd.has("rodDensity"))
+            cfFatal("twoFluid: pipe '" + g.name + "' declares a rod pump: the "
+                    "subsurface rod pump (5.90) is a steady-network element "
+                    "whose rate is its stroke times its barrel; the two-fluid "
+                    "row moves its own phases through the bore and has no "
+                    "polished rod to pull a card against");
         g.roughness = pd.getScalarOr("roughness", 0.0);
         g.angleDeg = pd.getScalarOr("angleDeg", 0.0);
         g.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));
@@ -1876,6 +1885,15 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
                     "gas-lift valve (5.89) is a steady-network injection-string "
                     "element priced on node pressures; the two-fluid row moves "
                     "its own phases and has no bellows to open");
+        if (pd.has("rodPlungerDiameter") || pd.has("rodStrokeLength")
+            || pd.has("rodStrokesPerMinute") || pd.has("rodDiameter")
+            || pd.has("rodLength") || pd.has("rodYoungModulus")
+            || pd.has("rodDensity"))
+            cfFatal("twoFluid: pipe '" + g.name + "' declares a rod pump: the "
+                    "subsurface rod pump (5.90) is a steady-network element "
+                    "whose rate is its stroke times its barrel; the two-fluid "
+                    "row moves its own phases through the bore and has no "
+                    "polished rod to pull a card against");
         g.roughness = pd.getScalarOr("roughness", 0.0);
         g.angleDeg = pd.getScalarOr("angleDeg", 0.0);
         g.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));

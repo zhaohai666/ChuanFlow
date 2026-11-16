@@ -147,6 +147,34 @@ struct NetworkPipe
     double liftDischargeCoeff = 0; // Cd, in (0,1]
     double liftKappa = 0;          // cp/cv of the lift gas (> 1)
 
+    // Rod pump (5.90, D1 increment 4): this pipe IS a subsurface sucker-rod
+    // pump between the intake node it draws from and the tubing node it
+    // discharges into, in the declared direction. `rodPlungerDiameter` > 0
+    // switches it on; it is the only pump here that is not a head curve,
+    // because a plunger does not add head at a rate the network chooses -- it
+    // moves a volume the machine dictates, A_p S_eff N, and the pressure rise
+    // it works against is whatever the columns above and below it add up to.
+    // The element is therefore read backwards from every other pipe: its rate
+    // is the input and its `dpTotal` (negative while it lifts) is the answer.
+    // What comes out is the dynamometer card -- the buoyed rod weight, the
+    // fluid load the plunger actually holds, the stretch it costs, the stroke
+    // left over, the work per stroke and the power -- all of it statics plus
+    // Hooke's law, priced at the network's own two port pressures. See
+    // RodPump.h for the four statements. It runs on a constant-property fill
+    // only this increment: the barrel's mass balance is exact when the fluid's
+    // density does not ride with its pressure, and the node model books volume
+    // per supplying row, so a compressible fill would double-count the
+    // expansion on the way to the surface. The wave equation that turns the
+    // polished-rod card into the downhole one (Gibbs 1953), partial fillage,
+    // slippage past the plunger and gas in the barrel are later increments.
+    double rodPlungerDiameter = 0; // m, barrel bore A_p (the switch)
+    double rodStrokeLength = 0;    // m, polished-rod stroke S
+    double rodStrokesPerMinute = 0;// spm
+    double rodDiameter = 0;        // m, rod string gauge A_r
+    double rodLength = 0;          // m, pump setting depth L
+    double rodYoungModulus = 0;    // Pa, rod string E
+    double rodDensity = 0;         // kg/m3, rod string density
+
     // Power-law rheology (Metzner & Reed 1955): when `flowIndex` > 0 the
     // pipe's fluid is tau = K gdot^n instead of Newtonian, and the single
     // change to the Darcy-Weisbach law is the Reynolds number in the
@@ -313,6 +341,46 @@ struct YieldedTransition
     bool pastLaminarLimit = false;  // the solved rate is past the locus
 };
 
+/// The dynamometer card of one rod pump, as the steady network reads it (see
+/// RodPump.h for the four statements behind every number). `state` is -1 on
+/// every row that is not a pump; 0 full card, 1 no fluid load across the
+/// plunger, 2 the load stretches the string past the whole stroke. Loads are
+/// newtons of rod force at the pump's depth, `maxLoad`/`minLoad` at the
+/// polished rod and `downholeMaxLoad`/`downholeMinLoad` at the plunger, so the
+/// two pairs differ by exactly the buoyed string weight. Travels are metres of
+/// polished-rod stroke: `stretch` is what the fluid load costs and
+/// `effectiveStroke` is what the plunger actually travels, the parallelogram's
+/// width being `stroke - stretch` and its height exactly `fluidLoad`. The rate
+/// is barrel volume at the intake conditions and the power is the card's area
+/// per second, so `workPerCycle == fluidLoad * effectiveStroke` and
+/// `hydraulicPower == dpPump * displacement` are both restatements of the same
+/// parallelogram, not a second law.
+struct RodPumpReadout
+{
+    int state = -1;
+    double plungerArea = 0;      // A_p, m2
+    double rodArea = 0;          // A_r, m2
+    double rodWeightInAir = 0;   // N
+    double buoyancy = 0;         // N
+    double rodWeightInFluid = 0; // N
+    double fluidLoad = 0;        // Fo, N
+    double fluidLoadMax = 0;     // rho g L A_p, N
+    double upthrust = 0;         // fluidLoadMax - fluidLoad, N (signed)
+    double maxLoad = 0;          // W_max at the polished rod, N
+    double minLoad = 0;          // W_min, N
+    double downholeMaxLoad = 0;  // N
+    double downholeMinLoad = 0;  // N
+    double counterbalance = 0;   // (W_max + W_min)/2, N
+    double stretch = 0;          // delta_f, m
+    double stroke = 0;           // S, m
+    double effectiveStroke = 0;  // S_eff, m
+    double efficiency = 0;       // S_eff / S
+    double displacement = 0;     // A_p S_eff N, m3/s
+    double massRate = 0;         // rho * displacement, kg/s
+    double workPerCycle = 0;     // Fo S_eff, J
+    double hydraulicPower = 0;   // work per cycle x strokes per second, W
+};
+
 struct PipeFlowResult
 {
     std::string name;
@@ -329,6 +397,7 @@ struct PipeFlowResult
     double frictionFactor = 0;
     double conductance = 0; // dQ/d(dpTotal), s
     YieldedTransition transition; // the locus, for a Bingham pipe only
+    RodPumpReadout card;          // the dynamometer card, for a rod pump only
     double holdup = 0;      // two-phase: outlet liquid volume fraction
     int regime = -1;        // two-phase: Beggs-Brill regime of the last
                             // segment (0 segregated, 1 transition,
@@ -459,6 +528,19 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
 /// `elevation` must be absent or 0: a valve is a point element, and a wall law,
 /// bore shape, pump, coupled edge or flow-pattern override co-declared with it
 /// is refused rather than unread.
+/// Rod pump (5.90, D1 increment 4), on a constant-property `fluid` network only:
+///   pipes { PUMP { from ANN; to TUB; length 0;
+///                  rodPlungerDiameter 0.04445;  // barrel bore; the switch
+///                  rodStrokeLength 1.5;         // polished-rod stroke S
+///                  rodStrokesPerMinute 8;       // spm
+///                  rodDiameter 0.019050;        // rod string gauge
+///                  rodLength 1500;              // pump setting depth L
+///                  rodYoungModulus 2.0e11;      // string E
+///                  rodDensity 7850; } }         // string rho
+/// `from` is the intake the barrel fills from and `to` the tubing it delivers
+/// into; the pump is a point element like the valve, so `diameter`, `length`
+/// and `elevation` all read 0, and a wall law, bore shape, head curve, lift
+/// valve, coupled edge or flow-pattern override co-declared with it is refused.
 OneDNetwork loadNetworkFromDict(const Dictionary& caseDict);
 SteadyControls loadSteadyControls(const Dictionary& caseDict);
 

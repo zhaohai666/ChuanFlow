@@ -10,6 +10,7 @@
 
 #include "cf/1d/BeggsBrill.h"
 #include "cf/1d/GasLiftValve.h"
+#include "cf/1d/RodPump.h"
 #include "cf/1d/SolverGates.h"
 
 #include "DenseSolve.h"
@@ -32,6 +33,9 @@ bool pipeIsRect(const NetworkPipe& p) { return p.ductHeight > 0; }
 
 // 5.89 (D1 increment 3): the dome charge is what switches a gas-lift valve on.
 bool pipeIsLiftValve(const NetworkPipe& p) { return p.liftDomePressure > 0; }
+
+// 5.90 (D1 increment 4): the barrel bore is what switches a rod pump on.
+bool pipeIsRodPump(const NetworkPipe& p) { return p.rodPlungerDiameter > 0; }
 
 double pipeArea(const NetworkPipe& p)
 {
@@ -1049,8 +1053,12 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
     if (p.from == p.to) cfFatal("network: pipe '" + p.name + "' connects a node to itself");
     // A gas-lift valve is a point element: the port is its `diameter` and it has
     // no length to be positive about, so both numbers belong to the valve scope
-    // below rather than to the pipe law's requirement here.
-    if (!pipeIsLiftValve(p) && (!(p.diameter > 0) || !(p.length > 0)))
+    // below rather than to the pipe law's requirement here. A rod pump is a
+    // point element too, and it has no bore of its own at all -- the barrel is
+    // declared as rodPlungerDiameter -- so `diameter` and `length` are refused
+    // there rather than required here.
+    if (!pipeIsLiftValve(p) && !pipeIsRodPump(p)
+        && (!(p.diameter > 0) || !(p.length > 0)))
         cfFatal("network: pipe '" + p.name + "' needs positive length and diameter");
     // 5.87: an axis offset is a statement about an annulus. A negative one is
     // the mirror image, but declared it is a typo, so it is refused rather than
@@ -1210,7 +1218,7 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
             || p.pumpGasFraction > 0 || p.coupledResistance > 0
             || p.annulusInner > 0 || p.ductHeight > 0 || p.eccentricity > 0
             || p.flowIndex > 0 || p.consistency > 0 || p.yieldStress > 0
-            || p.flowPattern >= 0)
+            || p.flowPattern >= 0 || p.rodPlungerDiameter > 0)
             cfFatal("network: pipe '" + p.name
                     + "' is a gas-lift valve that also declares a wall law, a "
                       "bore shape, a pump, a coupled edge or a flow-pattern "
@@ -1236,6 +1244,76 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
                       "exponent k = cp/cv exceeds 1 for any real gas, and the "
                       "critical ratio (2/(k+1))^(k/(k-1)) is priced by k/(k-1)");
     }
+    // Rod pump (5.90, D1 increment 4): the declaration is a pump, not a pipe
+    // with a pump in it, so the bore, the length and the elevation the pipe
+    // laws would otherwise read belong to the row and are refused here. The
+    // seven numbers the card consumes are each checked where they divide: the
+    // rod area divides the stretch, the stroke divides the efficiency, and a
+    // string lighter than the fluid it hangs in would make the buoyed weight a
+    // statement about flotation, not about rods -- that one is allowed and the
+    // card says so, because the arithmetic does not care which is heavier.
+    if (pipeIsRodPump(p))
+    {
+        if (p.length != 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' is a rod pump with a length: the pump is a point "
+                      "element, its lift is the columns above and below its "
+                      "two ports, not a bore to march");
+        if (p.diameter > 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' is a rod pump with a diameter: the bore that matters "
+                      "is the barrel's, declared as rodPlungerDiameter; a "
+                      "pipe bore here would be read by nothing");
+        if (p.elevation != 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' is a rod pump with an elevation: the setting depth is "
+                      "rodLength, and the two ports are at the same depth");
+        if (p.roughness > 0 || p.valveK > 0 || p.pumpHead > 0
+            || p.pumpRate > 0 || p.pumpStages > 1 || p.pumpSpeed != 1
+            || p.pumpGasFraction > 0 || p.pumpIntakePressure > 0
+            || p.coupledResistance > 0 || p.annulusInner > 0
+            || p.ductHeight > 0 || p.eccentricity > 0 || p.flowIndex > 0
+            || p.consistency > 0 || p.yieldStress > 0 || p.flowPattern >= 0
+            || p.liftDomePressure > 0)
+            cfFatal("network: pipe '" + p.name
+                    + "' is a rod pump that also declares a wall law, a bore "
+                      "shape, a head-curve pump, a lift valve, a coupled edge "
+                      "or a flow-pattern override: the plunger's rate comes "
+                      "from its stroke and its string and nothing else prices "
+                      "it");
+        if (!(p.rodStrokeLength > 0))
+            cfFatal("network: pipe '" + p.name
+                    + "' is a rod pump without a stroke: rodStrokeLength is the "
+                      "polished-rod travel the card is drawn against, and it "
+                      "divides the volumetric efficiency");
+        if (!(p.rodStrokesPerMinute > 0))
+            cfFatal("network: pipe '" + p.name
+                    + "' is a rod pump without a speed: rodStrokesPerMinute is "
+                      "what turns the per-stroke card into a rate and a power");
+        if (!(p.rodDiameter > 0))
+            cfFatal("network: pipe '" + p.name
+                    + "' is a rod pump without a rod: rodDiameter is the string "
+                      "that carries the load, and its area divides the stretch");
+        if (!(p.rodLength > 0))
+            cfFatal("network: pipe '" + p.name
+                    + "' is a rod pump without a setting depth: rodLength is "
+                      "both the string that stretches and the column the "
+                      "plunger holds up");
+        if (!(p.rodYoungModulus > 0))
+            cfFatal("network: pipe '" + p.name
+                    + "' is a rod pump without a modulus: Hooke's law prices "
+                      "the stroke the fluid load costs");
+        if (!(p.rodDensity > 0))
+            cfFatal("network: pipe '" + p.name
+                    + "' is a rod pump with a non-positive rod density: the "
+                      "string's weight in air is what the buoyancy subtracts "
+                      "from");
+        if (p.rodDiameter >= p.rodPlungerDiameter)
+            cfFatal("network: pipe '" + p.name
+                    + "' has a rod at least as wide as its plunger: the rod "
+                      "passes through the barrel's bore, so A_r < A_p is what "
+                      "leaves an annulus to sweep");
+    }
     pipes.push_back(p);
     return static_cast<label>(pipes.size()) - 1;
 }
@@ -1250,6 +1328,88 @@ double churchillFriction(double reynolds, double relativeRoughness)
     return 8.0 * std::pow(std::pow(8.0 / re, 12.0) + std::pow(a + b, -1.5), 1.0 / 12.0);
 }
 
+namespace
+{
+
+/// Rod pump (5.90, D1 increment 4): the one row in this kernel whose rate is
+/// not an answer. Every other pipe is a law Q(dp) the node solve reads; a
+/// plunger moves A_p S_eff N because that is what the machine is set to, and
+/// what it reports back is the pressure its two ports differ by. So the march
+/// is skipped entirely, the row's `flowRate` is imposed in the declared
+/// direction (which is why `dpTotal` reads negative while the pump lifts), and
+/// the card is priced at the differential the network happened to hand the
+/// plunger. Nothing is assumed about the column above the pump: `fluidLoad` is
+/// A_p times the two node pressures, so the tubing's weight, its friction, the
+/// wellhead backpressure, the annulus level and the casing pressure all arrive
+/// already added up -- and the card's own `fluidLoadMax` is what that same
+/// differential would be with none of them but a full wet string, which is the
+/// difference a level shot reads.
+///
+/// The conductance this row offers Newton is the slope of that imposed rate,
+/// and it is the stretch: a pump lifting against a heavier column travels a
+/// shorter stroke, so dQ/d(dpTotal) is positive and small -- three to four
+/// orders under the marched rows around it, which is what a positive-displacement
+/// machine is. A stalled or unloaded pump has no slope at all, and keeps the
+/// same 1e-12 floor the shut valve keeps: stiff enough to hold the Jacobian
+/// open, loose enough not to pretend to be a pipe.
+void solveRodPumpConstant(const NetworkPipe& pipe, const FluidProperties& fluid,
+                          double dpTotal, PipeFlowResult& out)
+{
+    const RodPump pump{pipe.rodPlungerDiameter, pipe.rodStrokeLength,
+                       pipe.rodStrokesPerMinute, pipe.rodDiameter,
+                       pipe.rodLength, pipe.rodYoungModulus, pipe.rodDensity};
+    // from is the intake, to is the tubing above the pump: the plunger works
+    // against p(to) - p(from), the negation of the row's own dpTotal.
+    const RodPumpCard card =
+        rodPumpCardOfLoad(pump, fluid.rho, -dpTotal);
+
+    out.name = pipe.name;
+    out.regime = -1;
+    out.dpTotal = dpTotal;
+    out.dpFriction = 0.0;  // a point element has no wall to rub against
+    out.dpPump = dpTotal;  // and the whole rise is the machine's
+    out.flowRate = card.displacement;
+    out.massRate = card.massRate;
+    // The face velocity the barrel sweeps, referred to the bore that does the
+    // sweeping -- not to `diameter`, which a pump row refuses.
+    out.velocity = card.plungerArea > 0
+                       ? card.displacement / card.plungerArea : 0.0;
+    out.frictionFactor = 0.0; // no wall law is priced here
+
+    out.card.state = static_cast<int>(card.state);
+    out.card.plungerArea = card.plungerArea;
+    out.card.rodArea = card.rodArea;
+    out.card.rodWeightInAir = card.rodWeightInAir;
+    out.card.buoyancy = card.buoyancy;
+    out.card.rodWeightInFluid = card.rodWeightInFluid;
+    out.card.fluidLoad = card.fluidLoad;
+    out.card.fluidLoadMax = card.fluidLoadMax;
+    out.card.upthrust = card.upthrust;
+    out.card.maxLoad = card.maxLoad;
+    out.card.minLoad = card.minLoad;
+    out.card.downholeMaxLoad = card.downholeMaxLoad;
+    out.card.downholeMinLoad = card.downholeMinLoad;
+    out.card.counterbalance = card.counterbalance;
+    out.card.stretch = card.stretch;
+    out.card.stroke = card.stroke;
+    out.card.effectiveStroke = card.effectiveStroke;
+    out.card.efficiency = card.efficiency;
+    out.card.displacement = card.displacement;
+    out.card.massRate = card.massRate;
+    out.card.workPerCycle = card.workPerCycle;
+    out.card.hydraulicPower = card.hydraulicPower;
+
+    const double h = std::max(1e-4 * std::abs(dpTotal), 1.0);
+    const double qPlus = rodPumpCardOfLoad(pump, fluid.rho,
+                                           -(dpTotal + h)).displacement;
+    const double qMinus = rodPumpCardOfLoad(pump, fluid.rho,
+                                            -(dpTotal - h)).displacement;
+    const double c = (qMinus - qPlus) / (2.0 * h);
+    out.conductance = (c > 0) ? c : 1e-12;
+}
+
+} // namespace
+
 void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
                    double dpTotal, PipeFlowResult& out)
 {
@@ -1257,6 +1417,11 @@ void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
         cfFatal("solvePipeFlow: pipe '" + pipe.name + "' is a gas-lift valve on "
                 "a constant-property fill: the nozzle is priced on the gas "
                 "density at the valve's own upstream pressure");
+    if (pipeIsRodPump(pipe))
+    {
+        solveRodPumpConstant(pipe, fluid, dpTotal, out);
+        return;
+    }
     double Hq = 0;
     const RawFlow r = equipmentFlow(pipe, fluid, dpTotal, Hq);
     out.name = pipe.name;
@@ -2079,6 +2244,41 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.liftSpringPressure = pd.getScalarOr("liftSpringPressure", 0.0);
         p.liftDischargeCoeff = pd.getScalarOr("liftDischargeCoeff", 0.0);
         p.liftKappa = pd.getScalarOr("liftKappa", 0.0);
+        // Rod pump (5.90, D1 increment 4). The barrel bore is the switch, and
+        // addPipe owns the declaration scope. Absent keys leave every field at
+        // its 0 and the pipe is read as the pipe it was before this increment.
+        p.rodPlungerDiameter = pd.getScalarOr("rodPlungerDiameter", 0.0);
+        p.rodStrokeLength = pd.getScalarOr("rodStrokeLength", 0.0);
+        p.rodStrokesPerMinute = pd.getScalarOr("rodStrokesPerMinute", 0.0);
+        p.rodDiameter = pd.getScalarOr("rodDiameter", 0.0);
+        p.rodLength = pd.getScalarOr("rodLength", 0.0);
+        p.rodYoungModulus = pd.getScalarOr("rodYoungModulus", 0.0);
+        p.rodDensity = pd.getScalarOr("rodDensity", 0.0);
+        if (p.rodPlungerDiameter < 0)
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' has a negative rodPlungerDiameter: a barrel bore is a "
+                      "length (0 means no pump)");
+        if (p.rodPlungerDiameter == 0
+            && (pd.has("rodStrokeLength") || pd.has("rodStrokesPerMinute")
+                || pd.has("rodDiameter") || pd.has("rodLength")
+                || pd.has("rodYoungModulus") || pd.has("rodDensity")))
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' declares a rod-pump parameter without "
+                      "rodPlungerDiameter: the barrel bore is what switches the "
+                      "pump on, and the rest would be read by nothing");
+        if (p.rodPlungerDiameter > 0 && net.hasBlackOil)
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' is a rod pump on a black-oil network: the barrel fills "
+                      "with the fluid at the intake pressure and this increment "
+                      "does not price a two-phase column above it");
+        if (p.rodPlungerDiameter > 0 && net.hasPvtFluid)
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' is a rod pump on a property-varying fill: the node "
+                      "model books each row's volume at that row's own upstream "
+                      "density, so a barrel that compresses what it takes would "
+                      "be counted twice on the way to the surface; this "
+                      "increment prices an incompressible barrel on a constant "
+                      "fluid { rho mu }");
         if (p.liftDomePressure < 0)
             cfFatal("steadyNetwork: pipe '" + name
                     + "' has a negative liftDomePressure: a dome charge is an "

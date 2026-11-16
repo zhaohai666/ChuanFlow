@@ -1,0 +1,221 @@
+// Subsurface rod pumps and the dynamometer card they draw (5.90, D1 increment 4).
+//
+// A rod-pump row is a point element with two ports: the intake below the
+// plunger and the tubing shoe just above it. Its rate is not an answer to a
+// pressure difference -- it is the barrel's swept volume, A_p (S - delta_f) N,
+// priced on the string's own elasticity -- and what it reports back is the
+// differential its two node pressures happen to differ by. So the whole card
+// falls out of the network solve rather than out of an assumed gradient: the
+// annulus fluid level, the casing pressure, the tubing's weight and friction and
+// the wellhead backpressure all arrive already added up into A_p * dp.
+//
+// Each well arm is the same three rows around the pump:
+//   ANNn  PUMPn  from Pn (intake) up the h-metre liquid column to Hn, the
+//         annulus fluid level, held at the casing pressure. The column carries
+//         the difference between what the formation feeds and what the pump
+//         takes, so its friction is part of the intake pressure, exactly as it
+//         is in the well.
+//   PUMPn Pn -> Dn, length 0. The machine.
+//   TUBn  Dn -> Wn, the produced column of the setting depth L up to the
+//         wellhead, carrying the pump's own rate.
+// which is the pressure the plunger works against in closed form:
+//   dp = (p_W - p_H) + rho g (L - h) + dpFric(tubing) - dpFric(annulus)
+// and A_p times that is the fluid load. The columns are laminar (rho 850, mu
+// 0.1) so each friction drop is the explicit 128 mu L Q / (pi D^4) and the
+// checker never iterates to re-derive a card.
+//
+// Arms, and what each one is for:
+//   RP_FLOOD  annulus full to surface (h = L): the column's weight is all taken
+//             off underneath, so the fluid load is only the 10 bar across the
+//             two heads plus friction -- the thin flooded card, and the largest
+//             upthrust of the set.
+//   RP_DEPR   the archetype: level 600 m below surface, 1.5 m stroke, 8 spm,
+//             1.75 in barrel on a 3/4 in string at 1500 m. The load stretches
+//             the string by a quarter of the stroke, so the volumetric
+//             efficiency is ~0.83 -- the number a shot reading is for.
+//   RP_GAUGE  RP_DEPR's well with a 7/8 in string: same load, less stretch,
+//             longer effective stroke, heavier rod weight. The gauge lever.
+//   RP_DEPTH  RP_DEPR at 2500 m with the level 1500 m deep: Fo_max and Wr both
+//             scale with the depth, the stretch constant per unit load does not.
+//   RP_STALL  RP_DEPTH's well with a 5/8 in string and a 1.0 m stroke: the load
+//             stretches the string further than the stroke, so the plunger never
+//             leaves bottom dead centre -- STALLED, S_eff 0, no volume.
+//   RP_IDLE   the same well as RP_DEPR with the annulus charged to 9 MPa: the
+//             underside outranks the tubing side, dp < 0, both valves stand open
+//             and there is no fluid load at all -- the flat NO-LOAD line at the
+//             buoyed rod weight, at zero work.
+//   RP_BUOY   RP_DEPR with a 700 kg/m3 (fibreglass) string lighter than the
+//             fluid it hangs in: the buoyed weight is negative, so the card
+//             straddles the zero-load axis. The arithmetic does not care which
+//             is heavier, and the element says so instead of clamping.
+//   RP_FAST   RP_DEPR's pump at 12 spm: the load, the stretch and the efficiency
+//             are statics and do not move with speed -- only the column friction
+//             the extra rate costs does, and that is the whole second-order
+//             footprint of N on the card.
+//   RP_RIG    the inverse problem: a metered feed of 2.8e-4 m3/s into the intake
+//             and a riser to the separator. The feed closes the pump's own
+//             displacement equation, so the network must find the differential
+//             whose stretch leaves exactly that stroke -- delta_f = S - Q/(A_p N).
+//   RP_ANNFRI the same well as RP_DEPR with the formation feed shut off, so the
+//             whole produced rate comes down the annulus through a narrow bore
+//             and its 1.1 MPa of friction is part of the intake pressure: the
+//             card absorbs a sub-plunger friction, not only a hydrostatic level.
+//
+// The delta_f of a 1.75 in barrel at 1500 m on a 3/4 in string is 1 m of stretch
+// per 24.49 MPa of differential, so no arm here sits within 20 percent of a
+// state boundary: the FULL arms carry between 0.05 and 0.32 m of stretch, the
+// stalled arm is 32 percent past its stroke, and the idle arm is 1.9 MPa the
+// wrong way round.
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    // ---- the wells: intake and discharge solved, level and head fixed ------
+    P1 {} D1 {} H1 { pressure 1.0e6; }  W1 { pressure 2.0e6; }
+    P2 {} D2 {} H2 { pressure 1.0e6; }  W2 { pressure 2.0e6; }
+    P3 {} D3 {} H3 { pressure 1.0e6; }  W3 { pressure 2.0e6; }
+    P4 {} D4 {} H4 { pressure 1.0e6; }  W4 { pressure 2.0e6; }
+    P5 {} D5 {} H5 { pressure 1.0e6; }  W5 { pressure 2.0e6; }
+    P6 {} D6 {} H6 { pressure 9.0e6; }  W6 { pressure 2.0e6; }
+    P7 {} D7 {} H7 { pressure 1.0e6; }  W7 { pressure 2.0e6; }
+    P8 {} D8 {} H8 { pressure 1.0e6; }  W8 { pressure 2.0e6; }
+    P10 {} D10 {} H10 { pressure 1.0e6; } W10 { pressure 2.0e6; }
+
+    // ---- the flow test: a metered feed, a riser, and nothing else ----------
+    P9 {}  D9 {}  W9 { pressure 2.0e6; }
+}
+
+sources
+{
+    // The formation's own contribution to each intake, and the test stand's
+    // metered feed. These are what the pump's rate is balanced against; they
+    // also set the residual scale the solve is judged on.
+    f1  { node P1;  rate 3.0e-4; }
+    f2  { node P2;  rate 3.0e-4; }
+    f3  { node P3;  rate 3.0e-4; }
+    f4  { node P4;  rate 3.0e-4; }
+    f5  { node P5;  rate 3.0e-4; }
+    f6  { node P6;  rate 1.0e-4; }
+    f7  { node P7;  rate 3.0e-4; }
+    f8  { node P8;  rate 4.5e-4; }
+    f9  { node P9;  rate 2.8e-4; }
+    f10 { node P10; rate 0.0; }
+}
+
+pipes
+{
+    // ---- 1. flooded annulus ------------------------------------------------
+    ANN1  { from P1; to H1; length 1500; diameter 0.151; elevation 1500; }
+    RP_FLOOD
+    {
+        from P1; to D1; length 0; diameter 0;
+        rodPlungerDiameter 0.044450; rodStrokeLength 1.5;
+        rodStrokesPerMinute 8; rodDiameter 0.019050;
+        rodLength 1500; rodYoungModulus 2.0e11; rodDensity 7850;
+    }
+    TUB1 { from D1; to W1; length 1500; diameter 0.062; elevation 1500; }
+
+    // ---- 2. the archetype: level 600 m deep --------------------------------
+    ANN2  { from P2; to H2; length 900; diameter 0.151; elevation 900; }
+    RP_DEPR
+    {
+        from P2; to D2; length 0; diameter 0;
+        rodPlungerDiameter 0.044450; rodStrokeLength 1.5;
+        rodStrokesPerMinute 8; rodDiameter 0.019050;
+        rodLength 1500; rodYoungModulus 2.0e11; rodDensity 7850;
+    }
+    TUB2 { from D2; to W2; length 1500; diameter 0.062; elevation 1500; }
+
+    // ---- 3. the same well, a stiffer string --------------------------------
+    ANN3  { from P3; to H3; length 900; diameter 0.151; elevation 900; }
+    RP_GAUGE
+    {
+        from P3; to D3; length 0; diameter 0;
+        rodPlungerDiameter 0.044450; rodStrokeLength 1.5;
+        rodStrokesPerMinute 8; rodDiameter 0.022225;
+        rodLength 1500; rodYoungModulus 2.0e11; rodDensity 7850;
+    }
+    TUB3 { from D3; to W3; length 1500; diameter 0.062; elevation 1500; }
+
+    // ---- 4. 2500 m, level 1500 m deep --------------------------------------
+    ANN4  { from P4; to H4; length 1000; diameter 0.151; elevation 1000; }
+    RP_DEPTH
+    {
+        from P4; to D4; length 0; diameter 0;
+        rodPlungerDiameter 0.044450; rodStrokeLength 1.5;
+        rodStrokesPerMinute 8; rodDiameter 0.019050;
+        rodLength 2500; rodYoungModulus 2.0e11; rodDensity 7850;
+    }
+    TUB4 { from D4; to W4; length 2500; diameter 0.062; elevation 2500; }
+
+    // ---- 5. the same well, a lighter string and a shorter stroke -----------
+    ANN5  { from P5; to H5; length 1000; diameter 0.151; elevation 1000; }
+    RP_STALL
+    {
+        from P5; to D5; length 0; diameter 0;
+        rodPlungerDiameter 0.044450; rodStrokeLength 1.0;
+        rodStrokesPerMinute 8; rodDiameter 0.015875;
+        rodLength 2500; rodYoungModulus 2.0e11; rodDensity 7850;
+    }
+    TUB5 { from D5; to W5; length 2500; diameter 0.062; elevation 2500; }
+
+    // ---- 6. the annulus outranks the tubing: no load -----------------------
+    ANN6  { from P6; to H6; length 900; diameter 0.151; elevation 900; }
+    RP_IDLE
+    {
+        from P6; to D6; length 0; diameter 0;
+        rodPlungerDiameter 0.044450; rodStrokeLength 1.5;
+        rodStrokesPerMinute 8; rodDiameter 0.019050;
+        rodLength 1500; rodYoungModulus 2.0e11; rodDensity 7850;
+    }
+    TUB6 { from D6; to W6; length 1500; diameter 0.062; elevation 1500; }
+
+    // ---- 7. a string lighter than the fluid --------------------------------
+    ANN7  { from P7; to H7; length 900; diameter 0.151; elevation 900; }
+    RP_BUOY
+    {
+        from P7; to D7; length 0; diameter 0;
+        rodPlungerDiameter 0.044450; rodStrokeLength 1.5;
+        rodStrokesPerMinute 8; rodDiameter 0.019050;
+        rodLength 1500; rodYoungModulus 2.0e11; rodDensity 700;
+    }
+    TUB7 { from D7; to W7; length 1500; diameter 0.062; elevation 1500; }
+
+    // ---- 8. the same pump, run faster --------------------------------------
+    ANN8  { from P8; to H8; length 900; diameter 0.151; elevation 900; }
+    RP_FAST
+    {
+        from P8; to D8; length 0; diameter 0;
+        rodPlungerDiameter 0.044450; rodStrokeLength 1.5;
+        rodStrokesPerMinute 12; rodDiameter 0.019050;
+        rodLength 1500; rodYoungModulus 2.0e11; rodDensity 7850;
+    }
+    TUB8 { from D8; to W8; length 1500; diameter 0.062; elevation 1500; }
+
+    // ---- 9. the inverse: an imposed rate finds its own differential --------
+    RP_RIG
+    {
+        from P9; to D9; length 0; diameter 0;
+        rodPlungerDiameter 0.044450; rodStrokeLength 1.5;
+        rodStrokesPerMinute 8; rodDiameter 0.019050;
+        rodLength 1500; rodYoungModulus 2.0e11; rodDensity 7850;
+    }
+    TUB9 { from D9; to W9; length 1500; diameter 0.062; elevation 1500; }
+
+    // ---- 10. all of it down the annulus ------------------------------------
+    ANN10 { from P10; to H10; length 900; diameter 0.030; elevation 900; }
+    RP_ANNFRI
+    {
+        from P10; to D10; length 0; diameter 0;
+        rodPlungerDiameter 0.044450; rodStrokeLength 1.5;
+        rodStrokesPerMinute 8; rodDiameter 0.019050;
+        rodLength 1500; rodYoungModulus 2.0e11; rodDensity 7850;
+    }
+    TUB10 { from D10; to W10; length 1500; diameter 0.062; elevation 1500; }
+}
+
+solve { maxIter 400; tol 1e-11; }

@@ -1009,6 +1009,15 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
                     "gas-lift valve (5.89) is a steady-network injection-string "
                     "element priced on node pressures; the transient row "
                     "advances a momentum equation, it has no bellows to open");
+        if (pd.has("rodPlungerDiameter") || pd.has("rodStrokeLength")
+            || pd.has("rodStrokesPerMinute") || pd.has("rodDiameter")
+            || pd.has("rodLength") || pd.has("rodYoungModulus")
+            || pd.has("rodDensity"))
+            cfFatal("transient: pipe '" + name + "' declares a rod pump: the "
+                    "subsurface rod pump (5.90) is a steady-network element "
+                    "whose rate is its stroke times its barrel; the transient "
+                    "row advances a momentum equation, it has no polished rod "
+                    "to pull a card against");
         p.roughness = pd.getScalarOr("roughness", 0.0);
         p.elevation = pd.getScalarOr("elevation", 0.0);
         p.initialFlow = pd.getScalarOr("initialFlow", 0.0);

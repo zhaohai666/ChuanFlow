@@ -3,6 +3,7 @@ add_library(cf1d STATIC
     src/transient.cpp
     src/beggsBrill.cpp
     src/gasLiftValve.cpp
+    src/rodPump.cpp
     src/twoFluid.cpp
     src/nodal.cpp
 )

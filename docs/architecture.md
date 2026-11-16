@@ -4406,7 +4406,7 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **本增量的边界**：① 只进**稳态单相牛顿**泵曲线（与 §5.81 同处理）；黑油 / PVT march 也经共享 `pumpHeadOf` 读到该乘子，但那里 `p_i` 同样是**声明**而非从解出的节点压强回填。② `p_i` 是**声明的**工况入口压强（相关式测得该乘子时所用的条件），**不**从牛顿解回耦（不改 Jacobian、不引入 `p_i` 与流量的隐式迭代）；把 `p_i` 接成上游节点读数、把 `g` 从黑油自由气解算出来，是后续增量。③ 乘子转录自 Turpin 经验拟合，**非自推物理**（区别于 §5.81 两条自推律）；低含气率 crossover 处乘子略 > 1 是其固有性质，如实记录。④ `H_TP` 在原式是「以混合物密度计的扬程」，本增量把它实现为对单相扬程标量的乘子；两相混合物密度的显式 head 换算不在本格。⑤ 零声明逐位不变的见证是 `steadyEquipmentEsp` + `GAS_Base`/`GAS_G0` 双臂 + 全量回归。
 
-**成本**：内核 ~16 行（`Network.h` 含注释 ~14 / `network.cpp` `pumpHeadOf` +9 / loader 键 2 / 校验 3 条 ~13 / 常量 1）+ 1 case（14 节点 7 管）+ 1 checker（32 判据）+ 1 条 `add_test`，**本增量 CTest 137 → 138**（工作树另有 A11 未核实的条件 MPI 测试，不在本格范围）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+**成本**：内核 ~16 行（`Network.h` 含注释 ~14 / `network.cpp` `pumpHeadOf` +9 / loader 键 2 / 校验 3 条 ~13 / 常量 1）+ 1 case（14 节点 7 管）+ 1 checker（32 判据）+ 1 条 `add_test`，**本增量 CTest 138 → 139**（D4 增量 1 落在 138 之后；A11 的条件 MPI 测试仍在工作树里未核实，不在本格范围）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |

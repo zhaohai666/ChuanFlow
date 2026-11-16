@@ -4472,6 +4472,49 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：内核 ~40 行有效改动（`BeggsBrill.h` +27/−3：`forcedRegime` / `regimeFromMap` / `regimeMapOutlet` / 默认参数；`beggsBrill.cpp` +16/−2；`Network.h` +22 含注释；`network.cpp` +47/−3：`addPipe` 五条拒收 + loader 键与小数校验 + 三处 march 透传 + 报告接线；app +11 条件标记；`transient.cpp` +5 / `twoFluid.cpp` +10 / `nodal.cpp` +7 三处 loader 拒收）+ 1 case（123 行）+ 1 checker（782 行 / 251 判据）+ 1 条 `add_test`，case + 自动臂对照 + 三支孪生 + 八条拒收探针共 2.9 s，**本增量 CTest 140 → 141**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.89 气举阀第一次成为管网里的一条定律（D1 增量 3）：管块换成**零长度点元**，它的 whole law 是两半——**波纹管力平衡**（`Pvo = Pd/(1−R) + St − R/(1−R)·Pt`、`Pvc = Pd + St(1−R)`，Guo–Lyons–Ghalambor 2007 §13.5 Eqs 13.42/13.43，与 API RP 11V6 / CAMCO 阀手册同源）决定**开不开**，**自推等熵喷嘴** `ṁ = Cd Ap √(2ρ₁p₁·k/(k−1)·[r^(2/k) − r^((k+1)/k)])` 决定**过多少**；`r→1` 逐字塌回 Chézy `√(2ρΔp)`、`r ≤ r*` 封顶，而 `r*` 的**位置由通量自己的最大值搜出来**——这一步当场抓出实现里 `1/(k−1)` 的误写（那是喉部**密度**比的指数），k = 1.3 时它把阀钉在 0.628 而不是 0.546、每个通过臂的流量便宜 1.57%
+
+**这一格从哪来**：`docs/gap_analysis.md` 的 **D1** 第三格（气举阀动力学），§5.86 明写「气举阀 / 有杆泵示功图待后续增量」。Pipesim / OLGA 的 AL 模块里气举阀不是一条曲线而是一台**状态机**：先按力平衡判开闭（带 Pvc/Pvo 滞回带），开了才谈得上喷嘴流量；API RP 11V6 甚至把「出厂标定压强（test-rack opening）」「生产压差效应（PPE）」「spread」列为阀的四个出厂读数。此前 ChuanFlow 的稳态管网只能把气举量当**外源**加进节点（§5.34 的 `sources{}`），阀的设定与套管压强毫无关系——这一格把那条因果链装上。估 1 增量，实测约 1：新单元 `GasLiftValve.{h,cpp}` 159 行（两半物理 + 文档），管网装配 ~190 行，声明面五个可选键 + 十余条拒收。
+
+**声明面与解析核心**：管块五个可选键，`liftDomePressure`（**绝对** Pa，氮气腔在阀温下的充压）是开关，其余四个只在它存在时才有意义：`liftAreaRatio R = Ap/Ab ∈ (0,1)`、`liftSpringPressure St ≥ 0`（弹簧预紧折算成传感面积上的压强，Pa）、`liftDischargeCoeff Cd ∈ (0,1]`、`liftKappa k > 1`。`diameter` 在此**是端口孔径 Ap**，`length`/`elevation` 必须为 0。
+
+1. **点元的范围**：`pipeIsLiftValve` 为真时该行**不再有任何壁面定律**——`addPipe` 先把通用几何门（`length > 0 && diameter > 0`）让给阀范围（阀的 `diameter` 是孔径、`length` 天生 0），再依次拒收「有长度的阀」「有高差的阀」「没有孔的阀」，以及**任何共声明**：`roughness`/`valve`/`pumpHead`/`dInner`/`ductHeight`/`eccentricity`/`flowIndex`/`consistency`/`yieldStress`/`coupledResistance`/`flowPattern` 一个都不许与阀同块（`coupledResistance` 与 `flowPattern` 由更上游的**通用**门先接住，报错同样大声且同样正确）。物性上阀只接**表驱动单相气**：`fluid{pvt{}}` 之外的常物性与黑油管网见 `lift*` 即拒——喷嘴要用上游密度，而这两条路上没有 ρ(p)。瞬态行、两流体行与 nodal VLP 井的 loader 同样见键即拒。
+2. **力平衡 half（发表）**：`F_open = Pc(Ab − Ap) + Pt Ap`、`F_close = Pd Ab + St(Ab − Ap)` 除以 Ab 即成对阈值。四个派生读数一并报告，全部是**阀自己的属性**、与是否过气无关：`spread = Pvo − Pvc = R[(Pd − Pt)/(1−R) + St]`、`PPE = R/(1−R)·Pt`（ tubing 压强对带宽的贡献）、`TRO = Pvo |_{Pt = 101325 Pa}`（出厂标定值， racks 上 tubing 侧通大气）。**`spread` 可以反转**：`Pt > Pd + St(1−R)` 时 `Pvc > Pvo`，即阀「runs open」——生产压强自己把端口顶离阀座，此时**先查 `opens`**，故反转臂仍报 OPEN（`VLV_WIDE` 就是这一支）。
+3. **喷嘴 half（自推）**：沿流线积分等熵关系 + 能量方程得质量通量 `G = √(2ρ₁p₁·k/(k−1)·[r^(2/k) − r^((k+1)/k)])`，`ṁ = Cd Ap G`。它不是转录的经验式，因此两个锚必须自己站住：`r → 1` 时括号 `= ((k−1)/k)(1−r) + O((1−r)²)`，于是 `G → √(2ρ₁Δp)`——**每一条 k 都塌回不可压 Chézy**；括号自身的最大值在 `r* = (2/(k+1))^(k/(k−1))`（对括号求导：`2 r^((1−k)/k) = k + 1`），过此下游压强不再被感知、通量**连续地**平头，Newton 不会在阀律上撞到台阶。`pDown ≥ pUp` 时 `ṁ = 0`（单流阀：端口不能把气从油管里抽回去）。
+4. **临界比是被测出来的**：`1/(k−1)` 与 `k/(k−1)` 两个指数在文献里都出现过——前者是**喉部密度比** `ρ*/ρ₀ = (2/(k+1))^(1/(k−1))` 的指数，误抄进压强比就会得到一个**依然光滑、依然有平台**的通量，只是平台位置挪了：k = 1.3 时 0.628 vs 0.546，喉部通量差 1.57%。checker 因此**不引用闭式**：它对自己那份通量括号做 300 趟三分搜索求最大值点，用搜出来的 `r*` 复算每条通过臂的 `ṁ`，再单独断言闭式与搜索结果一致（8.8e-9，即峰顶平坦段能分辨的宽度）。首版实现正是在这一条上被拦下。
+5. **求解装配与三态**：`solveLiftValvePvt` 用 `pFrom`（ manifold）与 `pTo`（**本臂自己流出来的 tubing 节点**压强）判 `opens`，`q = ṁ/ρ(pFrom)`；`PvtFluid` 的节点体积平衡按各管上游密度折算（§5.7x 既有约定），所以报告的 `m` 是**端口**的质量率，`Q` 与 `v` 折算到 manifold 密度——阻塞口的喉部密度远低于此，该行不假装 march 到它。`dpValve = dpTotal`、`dpFriction` 保持 0（点元没有壁可蹭），`frictionFactor = 0` 且 app **不打印** `Re`/`f`（阀行没有壁律）。判决三态 `OPEN` / `CLOSED` / `IN-SPREAD`：稳态解没有历史可继承，落在带内就按「不通过」定价并如实标出，这正是滞回带在只解一次方程时的正确语义。
+6. **雅可比里的手术刀**：电导 `c = dQ/d(dp)` 用中心差分（±max(1e-4·|dp|, 1 Pa)），但**阻塞与关闭的口 `dq/d(dp) ≡ 0` 是真的物理**，于是补下限——下限不是管律那条路的 `1e-6`：本网络里活管斜率量级 1.5e-7，把一只死阀当得比全网活管硬 60 倍，Newton 会照着这个谎话走步（首版残差因此发散到 73），改成 `1e-12` 只为保住流形矩阵非奇异。
+
+**case 与判据**：新增 `tests/cases/steadyGasLiftValve/case.dict`（16 节点 / **21 管**：10 只阀 + 11 根 march）——地面 tie-in `MFL` 把 manifold `ANN` 挂在 8.0 MPa 气藏管汇下（`sources{}` 另有 0.002 m³/s 压缩机注入，保证正压速率存在），每只阀接一段 tubing 到自己的**定压鞋**。fill 是精确落在 `ρ = P/176208.105725`（等温理想气，Rs·T）直线上的四 knot 表，所以插值即闭式、checker 复核的是解析密度。解得 `p_ANN = 7 955 575.09 Pa`（比管汇总压低 44 424.91 Pa，即 tie-in 自己的 drop），47 步 Newton、相对残差 `3.09e-13`。
+
+| 臂 | Pd / R / St / Ap | 设计判决 | Pvo (Pa) | Pvc (Pa) | ṁ (kg/s) | dp (Pa) | r |
+|---|---|---|---|---|---|---|---|
+| VLV_SUB | 7.4 / 0.10 / 0 / 4.76 mm | OPEN | 7 610 836 | 7 400 000 | 0.142148037991 | 2 453 099 | 0.6917 |
+| VLV_CHOK | 7.0 / 0.10 / 0 / 4.76 mm | OPEN SONIC | 7 555 435 | 7 000 000 | 0.149808606193 | 5 954 489 | 0.2515 |
+| VLV_TWIN | 同 CHOK，鞋深 1 MPa | OPEN SONIC | 7 666 596 | 7 000 000 | **0.149808606193** | 6 954 939 | 0.1258 |
+| VLV_SPR | 7.0 / 0.10 / **0.5 MPa** / 同上 | IN-SPREAD | 8 055 556 | 7 450 000 | 0 | — | — |
+| VLV_HARD | 7.0 / 0.10 / **1.5 MPa** / 同上 | CLOSED | 9 055 556 | 8 350 000 | 0 | — | — |
+| VLV_CLOSE | **9.5** / 0.10 / 0 / 同上 | CLOSED | 10 333 333 | 9 500 000 | 0 | — | — |
+| VLV_R05 | 7.4 / **0.05** / 0 / 同上 | OPEN | 7 499 870 | **7 400 000** | **0.142148037991** | 2 453 099 | 0.6917 |
+| VLV_WIDE | 1.0 / 0.10 / 0 / **6 mm** | OPEN（spread 反转） | 244 156 | 1 000 000 | 0.069103292026 | 152 978 | 0.9808 |
+| VLV_UP | 7.0 / 0.10 / 0 / 4.76 mm | OPEN SONIC（上层 mandrel） | 7 555 464 | 7 000 000 | 0.149808606193 | 5 954 754 | 0.2515 |
+| VLV_LO | **8.2** / 0.10 / 0 / 同上（下层） | CLOSED | 8 888 843 | 8 200 000 | 0 | — | — |
+
+`check_steady_gas_lift_valve.py` **236 判据 0 失败**，只用 case 字典与 12 位报表，逐阀从 case 的 Pd/R/St/Cd/k 与解出的两个节点压强**重推两半物理**（阈值 1e-9、速率 1e-9），再逼出跨臂恒等式：
+
+1. **五个出厂读数逐臂复现**：`pvo/pvc/spread/ppe/tro` 全部等于按**本臂自己的 tubing 压强**重算的力平衡（最差 3.2e-12，即报表 12 位的舍入地板），且 `tro − pvo = R/(1−R)·(Pt − 101325)` 精确成立——出厂标定与现场阈值是同一只阀。
+2. **阻塞的口听不见下游**：CHOK 与 TWIN 的鞋整整差 1 MPa、UP 的落点又与 CHOK 差 265 Pa，三个 `dp` 互不相同（5 954 489 / 6 954 939 / 5 954 754），而 `m`/`Q`/`v` 三个字段**逐字节相同**（0.149808606193）；同一 manifold 上未阻塞的 SUB/R05 少过 5.1%（0.142148037991）。这一条是临界比的**执行面**：指数写错时三行的共同速率会变，而它们与 checker 独立搜索出的最大值点对不上。
+3. **波纹管不是喷嘴**：R = 0.10 与 0.05 两只阀同孔径同鞋，`m`/`Q` **逐字节相同**而 `Pvo` 差 110 966 Pa、`spread` 差同样 110 966 Pa（`Pvc` 相同，差全在 `Pvo`）、`PPE` 611 386 vs 289 604，且 `Pvc` 两边同为 7 400 000——`R` 从不进入 `Pvc`，也从不进入 `ṁ`。
+4. **一个弹簧旋钮走三态**：CHOK（无弹簧，OPEN）→ SPR（0.5 MPa，落进带宽内）→ HARD（1.5 MPa，`Pvc = 8.35 MPa > p_ANN`，CLOSED），相邻两臂 `ΔPvc` 分别 450 000 / 900 000 Pa **恰好等于** `ΔSt·(1−R)`；`Pvc` 不随 tubing 变（CHOK 与 TWIN 同为 7.0 MPa，鞋差 1 MPa）。
+5. **无历史可继承 = 如实报带内**：SPR / HARD / CLOSE / LO 四臂速率与 `Q`、`v` 全 0，各自把 tubing 钉在**鞋压原值**（1e-12），死 march 行的 `f` 打印 `6.4e+13 = 64/Re_min`（Churchill 层流支在 Re 下限的极限值，不是除零）。
+6. **r ≈ 1 就是 Chézy**：WIDE 臂 `r = 0.980771`，`ṁ/ṁ_Chézy = 0.988853`（1.1% 的膨胀修正），报表取**精确通量** 0.069103292 而非 Chézy 的 0.069882241；且所有通过臂 `ṁ ≤ ṁ_Chézy`（深阻塞臂低到 0.505）。通量表达式另做三个不靠臂的锚：`r→1` 极限 1e-6 内为 1、峰顶连续（`|[]'(r*)|` 分辨率内不变）、`r > r*` 段单调。
+7. **阀挂在一个真的网络上**：11 根 march 管从**报表上游压强 + 报表速率**独立 24 段重 march 落到报表下游压强（最差 2.4e-12 相对，含 tie-in 的反向臂：它声明 `ANN → SUPPLY` 而气实际倒灌，`Q < 0` 与 Jacobian 对角装配的原因写在 case 头），11 个自由节点按打印行体积闭合（最差 1.9e-12），端口总量 = tie-in + 压缩机（1e-9），五个鞋压逐字等于声明。
+8. **25 条大声拒收**：有长度 / 有高差 / 无孔径的阀、八类共声明、`R ∉ (0,1)`（0 与 1 各一条）、负弹簧、`Cd > 1`、**不声明 Cd**（默认 1 是凭空的产能）、`k = 1`、负压 charge、`lift*` 无 dome、非阀的零长度管、常物性与黑油 fill 上的阀、瞬态行 / 两流体行 / nodal VLP 井三处 loader。
+
+**本增量的边界**：① 阀是**稳态点元**：波纹管不动、没有开启滞后与间歇喷发的时间尺度，气举井的周期起停属于瞬态 / D6 的段塞动力学。② **`Pvc` 与 tubing 无关**是发表律的原样（`Pd + St(1−R)`），因此带内判决只依赖 manifold；真实阀在带内会抖动，本格如实报 `IN-SPREAD` 而不是发明一个占空比。③ 阈值读的是**解出来的** tubing 节点压强，端口不假装给自己的压损回环（阀下游就是 tubing 第一格）。④ 质量率属于端口、体积率折算到 manifold 密度：阻塞口喉部的密度与速度不在该行报告（`v` 是 `ṁ/(ρ_up·Ap)` 的折算孔径速度，不是声速）。⑤ dome 充压按**阀温**给定，不做井底温度下的充压换算（`Pd` 就是那条力平衡里的 Pd）；lift gas 走表驱动单相物性，不做组成、不析出凝析液。⑥ 阀不接 `nodal{}` 的 IPR–VLP 井、不接瞬态与两流体行（见键即拒），气举工作点（按井口产量反算需要多少气举气）是 D1 之外的另一格。⑦ 零声明逐位不变的见证：`lift*` 缺席时 `pipeIsLiftValve` 为假、`solvePipeFlowPvt` 走原 march，且**全仓库只有本 case 声明阀**（`grep -l liftDomePressure tests/cases/` 只命中一支），临界比指数修正不可能扰动任何既有数字。
+
+**成本**：新单元 `src/1d/include/cf/1d/GasLiftValve.h`（85 行：力平衡与喷嘴两半的完整推导文档）+ `src/1d/src/gasLiftValve.cpp`（74 行）+ `src/1d/CMakeLists.txt` 1 行；`network.cpp` +194/−3（阀范围十余条拒收 + 通用几何门让位 + `solveLiftValvePvt` 装配与电导下限 + loader 五键 + PVT 管道路由），`Network.h` +49（`PipeFlowResult` 的五个阀读数与字典语法文档），app +20（`valve <DISP> pvo … pvc … spread … ppe … tro … m … [SONIC]`），`transient.cpp` +7 / `twoFluid.cpp` +14 / `nodal.cpp` +10 三处 loader 拒收 + 1 case（181 行）+ 1 checker（802 行 / 236 判据）+ 1 条 `add_test`，case + 25 条拒收探针 0.48 s，**本增量 CTest 141 → 142**（A11 的 `verify.mpiDecomposition` 仍在工作树里注册而不运行，`-E mpiDecomposition` 排除后跑满 **142/142 / 2117.15 s**，见 `docs/gap_analysis.md` §6 实施日志）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

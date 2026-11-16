@@ -78,6 +78,21 @@ struct NetworkPipe
     // gas interference is a later increment.
     double pumpStages = 1;     // identical stages in series (>= 1)
     double pumpSpeed = 1;      // relative speed N/N_rated (> 0)
+    // ESP gas interference (5.86, D1 increment 2): the catalog head is
+    // degraded by the published Turpin (1986) two-phase correlation, read
+    // through the shared pumpHeadOf so it multiplies the whole curve above
+    // (stages, speed, constant head included). pumpGasFraction g is the free
+    // gas volume fraction at pump intake in [0,1) (=> gas/liquid ratio
+    // q_G/q_L = g/(1-g)); pumpIntakePressure is the ABSOLUTE intake pressure
+    // in Pa (converted to psia for the correlation, p_i). With g > 0 the
+    // returned head is H_tp = H_sp * exp(-a1 * (q_G/q_L)),
+    // a1 = (346430/p_i^2)(q_G/q_L) - 410/p_i, p_i in psia. g absent or 0
+    // short-circuits the multiplier, so the zero-declaration path stays IEEE
+    // bit-identical to 5.81. Turpin is a curve-fit to Lea & Bearden air/water
+    // and diesel/CO2 ESP data (25-500 psia, intake gas fraction to ~50%), a
+    // pump-data match, not a universal predictor.
+    double pumpGasFraction = 0;      // free gas volume fraction at intake [0,1)
+    double pumpIntakePressure = 0;   // Pa, absolute pump intake pressure (p_i)
 
     // Power-law rheology (Metzner & Reed 1955): when `flowIndex` > 0 the
     // pipe's fluid is tau = K gdot^n instead of Newtonian, and the single

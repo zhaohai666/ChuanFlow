@@ -4388,6 +4388,26 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：内核 ~87 行（`beggsBrill.cpp` +55/−14：`beggsBrillPattern` 23 + 梯度调度重构 + march 出口跟踪；`BeggsBrill.h` +32 含注释/grammar）+ app +11 + 绑定 +2 + `test_bindings.py` +66 + checker 463（新）+ case 69（新）；**1 条新 `add_test`（Test #52）、1 个新 case 目录**，本构建 CTest **139**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
 
+### 5.86 ESP 气体干涉第一次按已发表相关式定价（D1 增量 2）：多级 ESP 的 catalog 扬程第一次被 **Turpin (1986) 两相扬程退化**乘子打折——`H_tp = H_sp·exp(−a₁·(q_G/q_L))`、`a₁ = (346430/p_i²)(q_G/q_L) − 410/p_i`（p_i 用 psia），经**共享的** `pumpHeadOf` 读入，所以它乘在整条 5.81 曲线（级数 / 变速 / 常扬程）上；`g` 缺席或 0 就短路乘子，零声明路径与 5.81 **IEEE 逐位相同**
+
+**这一格从哪来**：`docs/gap_analysis.md` 编为 **D1**（人工举升），增量 1（§5.81）把单级离心泵曲线推广到多级 ESP + 亲和律，但边界②明确写「气体干涉（head 随含气率退化）需已发表相关式，留待增量 2」。本增量兑现那条留白：只在 `pumpHeadOf` 一处乘上一个**转录自文献、逐字核对**的经验乘子，钩子、接口、四个 app 全不动。**Gomes SPE 8222 的候选相关式经核查失败**（DOI 解析到一篇无关的充气钻井液论文、无可验证的多项式系数），故不实现；选用被两篇独立开放来源逐字复现的 **Turpin (1986)**。
+
+**声明面与解析核心**：泵管两个新可选键 **`pumpGasFraction g`**（泵入口自由气**体积**分数，`[0,1)`，缺省 0）与 **`pumpIntakePressure p_i`**（**绝对**入口压强，Pa，缺省 0，仅在 g > 0 时必需）。气液比 `q_G/q_L = g/(1−g)`；把声明的 Pa 换算成 psia（`p_i[psia] = pumpIntakePressure / 6894.757293168`，1 psi 的精确值；Ali 2021 写成 `0.145·p_in[kPa]` 是其四舍五入因子，本仓库用精确值、checker 用同一值复算）。退化乘子
+
+**H_tp = H_sp · exp(−a₁·(q_G/q_L))，a₁ = (346430/p_i²)(q_G/q_L) − 410/p_i**
+
+其中 `H_sp` 就是 §5.81 的 `stages·(s²h0 − (h0−h1)(q/q1)²)`（常扬程臂为 `stages·s²·h0`）。乘子只依赖 `(p_i, g)`，与 `q`、级数、转速无关，因此它**整条曲线一起打折**——2 级退化扬程恰为 1 级退化扬程的 2 倍（乘子与级数解耦的直接见证）。`g == 0`（或两键都不声明）时 `if (p.pumpGasFraction > 0)` 分支根本不进入，`H_tp ≡ H_sp`，**IEEE 逐位相同**；`g == 0` 显式声明也走同一短路（`GAS_G0` 臂对 `GAS_Base` 臂逐位相同，是这条短路的直接见证）。
+
+**出处（逐字核对）**：Turpin, J.L., Lea, J.F., Bearden, J.L. (1986)，verbatim 复现于 **SPE 81910-PA**（Pessoa & Prado, *SPE Production & Facilities*, 2003, Eqs 5–6）与 **Ali et al., *Energies* 14(4):896, 2021, Table 2**；两处系数一致。有效性：Lea & Bearden 空气/水与柴油/CO₂ 潜水泵数据，入口压强 **25–500 psia**、入口含气率至 **~50%**；是对泵数据的**曲线拟合**，非普适预测器。
+
+**相关性自身的 crossover（如实记录，不藏）**：`a₁ = 0` 当 `q_G/q_L = p_i/845`——比值**低于**该 crossover 时 `a₁ < 0`，指数为正，乘子**略大于 1**（低含气率 / 高入口压强的经验解给出轻微增益，是相关式本身的行为，本增量不抹平、判据锁符号）；高于则退化。同一 g 下更高入口压强把气体压得更密 → 乘子更大（`GAS_G20HiP` 相对 `GAS_G20` 的见证）。
+
+**case 与判据**：新 case `tests/cases/steadyEquipmentEspGas`（ρ 850、μ 0.1、L 1000、D 0.05，全臂层流，h0 40 / h1 25 / q1 3e-4，14 节点 / 7 管），checker `check_steady_esp_gas.py`（CTest `verify.steadyEquipmentEspGas`，**32 判据 0 失败**）：速率注入臂强加已知 `q = 2e-4`，`dpPump = −ρg·H_sp(q)·F(p_i,g)` 在曲线的**已知点**读出，checker 用**同一相关式独立复算** `F`（自己的算术，不信任内核）1e-6 相对，从不迭代。臂族：单相孪生（`GAS_Base` / `GAS_G0` 逐位=5.81 头）；气分数阶梯（g 0.2 → 0.3，`|dpPump|` 单调降）；压强依赖（3e6 Pa 臂比 1e6 Pa 臂保更多扬程，且 crossover 符号与 `r > p_i/845` 预测一致）；级数解耦（2 级退化 = 2×1 级退化 1e-9）；常扬程 + 气（`H = h0·F`、`q = ρg H/R`、闭合回路 dp = 0）。四条大声拒收：`pumpGasFraction ≥ 1`（体积分数必须严格小于 1）、`g < 0`、气无泵（剥 pumpHead 保留 gas）、气无入口压强。
+
+**本增量的边界**：① 只进**稳态单相牛顿**泵曲线（与 §5.81 同处理）；黑油 / PVT march 也经共享 `pumpHeadOf` 读到该乘子，但那里 `p_i` 同样是**声明**而非从解出的节点压强回填。② `p_i` 是**声明的**工况入口压强（相关式测得该乘子时所用的条件），**不**从牛顿解回耦（不改 Jacobian、不引入 `p_i` 与流量的隐式迭代）；把 `p_i` 接成上游节点读数、把 `g` 从黑油自由气解算出来，是后续增量。③ 乘子转录自 Turpin 经验拟合，**非自推物理**（区别于 §5.81 两条自推律）；低含气率 crossover 处乘子略 > 1 是其固有性质，如实记录。④ `H_TP` 在原式是「以混合物密度计的扬程」，本增量把它实现为对单相扬程标量的乘子；两相混合物密度的显式 head 换算不在本格。⑤ 零声明逐位不变的见证是 `steadyEquipmentEsp` + `GAS_Base`/`GAS_G0` 双臂 + 全量回归。
+
+**成本**：内核 ~16 行（`Network.h` 含注释 ~14 / `network.cpp` `pumpHeadOf` +9 / loader 键 2 / 校验 3 条 ~13 / 常量 1）+ 1 case（14 节点 7 管）+ 1 checker（32 判据）+ 1 条 `add_test`，**本增量 CTest 137 → 138**（工作树另有 A11 未核实的条件 MPI 测试，不在本格范围）。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

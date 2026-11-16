@@ -1,0 +1,92 @@
+// D1 increment 2 (5.86): ESP gas interference -- the published Turpin (1986)
+// two-phase head-degradation correlation, read through the shared pumpHeadOf
+// so it multiplies the whole 5.81 curve (stages, speed, constant head).
+//
+// Two new optional keys on a pump pipe:
+//   pumpGasFraction     g   -- free GAS VOLUME fraction at pump intake, [0,1)
+//                              => gas/liquid ratio q_G/q_L = g/(1-g)
+//   pumpIntakePressure  p_i -- ABSOLUTE intake pressure in Pa (-> psia)
+// Degradation (Turpin 1986; verbatim in SPE 81910-PA Eqs 5-6 and Energies
+// 2021 Table 2):
+//   H_tp = H_sp * exp(-a1 * (q_G/q_L)),   a1 = (346430/p_i^2)(q_G/q_L) - 410/p_i
+// with p_i in psia. g absent or 0 short-circuits the multiplier, so the
+// zero-declaration path is bit-identical to 5.81 -- the standing steadyEquipmentEsp
+// case (and the GAS_Base / GAS_G0 twin arms here) is the witness.
+//
+// Turpin is a curve-fit to Lea & Bearden air/water and diesel/CO2 submersible-
+// pump data (25-500 psia, intake gas fraction to ~50%); it is a pump-data
+// match, not a universal predictor. At low gas fraction below the correlation's
+// own crossover (q_G/q_L < p_i/845) the exponential reads slightly ABOVE 1,
+// which the checker records rather than hides.
+//
+// Every arm is laminar (rho 850, mu 0.1, L 1000, D 0.05) and rate-fed at the
+// KNOWN flow q = 2e-4, so dpPump = -rho g H_sp(q) * F(p_i, g) is read at a
+// fixed point of the curve and the checker never iterates: it re-derives F from
+// the declared (p_i, g) with the same correlation, independently.
+//
+// Verified by tests/check_steady_esp_gas.py (ctest verify.steadyEquipmentEspGas).
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    // rate-fed terminals fixed at 10 bar (degraded lifts only make the free
+    // source nodes MORE positive, so nothing is driven negative). One unique
+    // node pair per pump arm so the imposed source rate is the pipe flow.
+    BaseS {} BaseT { pressure 1.0e6; }
+    G0S  {} G0T  { pressure 1.0e6; }
+    G20S {} G20T { pressure 1.0e6; }
+    G30S {} G30T { pressure 1.0e6; }
+    HiPS {} HiPT { pressure 1.0e6; }
+    St2S {} St2T { pressure 1.0e6; }
+    // constant-head (pumpRate 0) closed loop, both ends equal
+    ChS { pressure 1.0e5; } ChD { pressure 1.0e5; }
+}
+
+pipes
+{
+    // single-phase twin: g absent => F = 1, must equal the 5.81 curve exactly
+    GAS_Base { from BaseS; to BaseT; length 1000; diameter 0.05; roughness 0;
+               pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+               pumpStages 1; pumpSpeed 1.0; }
+    // g = 0 declared explicitly: same short-circuit, same head (bit-identical)
+    GAS_G0   { from G0S; to G0T; length 1000; diameter 0.05; roughness 0;
+               pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+               pumpGasFraction 0.0; pumpIntakePressure 1.0e6; }
+    // gas fraction ladder at a fixed intake pressure (1e6 Pa ~ 145 psia)
+    GAS_G20  { from G20S; to G20T; length 1000; diameter 0.05; roughness 0;
+               pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+               pumpGasFraction 0.2; pumpIntakePressure 1.0e6; }
+    GAS_G30  { from G30S; to G30T; length 1000; diameter 0.05; roughness 0;
+               pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+               pumpGasFraction 0.3; pumpIntakePressure 1.0e6; }
+    // pressure dependence: same g, higher intake pressure (3e6 Pa ~ 435 psia)
+    // keeps the gas compressed -> less degradation (here a hair above 1)
+    GAS_G20HiP { from HiPS; to HiPT; length 1000; diameter 0.05; roughness 0;
+               pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+               pumpGasFraction 0.2; pumpIntakePressure 3.0e6; }
+    // interaction with 5.81 stages: the multiplier is independent of stages,
+    // so a 2-stage degraded head is exactly 2x the 1-stage degraded head
+    GAS_2Stage_G20 { from St2S; to St2T; length 1000; diameter 0.05; roughness 0;
+               pumpHead 25; pumpRate 3.0e-4; pumpShutoffHead 40;
+               pumpStages 2;
+               pumpGasFraction 0.2; pumpIntakePressure 1.0e6; }
+    // constant head + gas: H = h0 * F(p_i, g), q = rho g H / R (closed loop)
+    GAS_Const { from ChS; to ChD; length 1000; diameter 0.05; roughness 0;
+               pumpHead 40; pumpShutoffHead 40; pumpRate 0;
+               pumpGasFraction 0.2; pumpIntakePressure 1.0e6; }
+}
+
+sources
+{
+    sBase  { node BaseS; rate 2.0e-4; }
+    sG0    { node G0S;  rate 2.0e-4; }
+    sG20   { node G20S;  rate 2.0e-4; }
+    sG30   { node G30S;  rate 2.0e-4; }
+    sHiP   { node HiPS;  rate 2.0e-4; }
+    sSt2   { node St2S;  rate 2.0e-4; }
+}
+
+solve { maxIter 50; tol 1e-10; }

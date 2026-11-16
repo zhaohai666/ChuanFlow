@@ -18,6 +18,11 @@ namespace
 {
 
 constexpr double kGravity = 9.80665;
+// 5.86 (D1 increment 2): Turpin's correlation takes the intake pressure in
+// psia. 1 psi = 6894.757293168 Pa exactly (lbf/in^2), so psia = Pa / this.
+// Ali et al. (Energies 2021) print the same law as 0.145*p_in(kPa), a rounded
+// kPa->psi factor; we use the exact one and the checker re-derives it here.
+constexpr double kPascalPerPsi = 6894.757293168;
 
 bool pipeIsAnnulus(const NetworkPipe& p) { return p.annulusInner > 0; }
 
@@ -288,9 +293,22 @@ double pumpHeadOf(const NetworkPipe& p, double q)
     const double h0 = p.pumpShutoffHead > 0 ? p.pumpShutoffHead : p.pumpHead;
     const double stages = p.pumpStages;
     const double s2 = p.pumpSpeed * p.pumpSpeed;
-    if (!(p.pumpRate > 0)) return std::max(stages * s2 * h0, 0.0);
-    const double h = stages * (s2 * h0
-                     - (h0 - p.pumpHead) * q * q / (p.pumpRate * p.pumpRate));
+    double h;
+    if (!(p.pumpRate > 0)) h = stages * s2 * h0;
+    else h = stages * (s2 * h0 - (h0 - p.pumpHead) * q * q / (p.pumpRate * p.pumpRate));
+    // 5.86 (D1 increment 2): Turpin (1986) gas interference, read through the
+    // shared pumpHeadOf so the degradation multiplies the whole curve above.
+    // q_G/q_L = g/(1-g) is the free-gas/liquid ratio at intake; p_i is the
+    // ABSOLUTE intake pressure in psia. H_tp = H_sp * exp(-a1 * (q_G/q_L)),
+    // a1 = (346430/p_i^2)(q_G/q_L) - 410/p_i. The multiplier is skipped
+    // entirely at g == 0, so the zero-declaration path is bit-identical to 5.81.
+    if (p.pumpGasFraction > 0)
+    {
+        const double r = p.pumpGasFraction / (1.0 - p.pumpGasFraction);
+        const double psi = p.pumpIntakePressure / kPascalPerPsi;  // psia
+        const double a1 = (346430.0 / (psi * psi)) * r - 410.0 / psi;
+        h *= std::exp(-a1 * r);
+    }
     return std::max(h, 0.0);
 }
 
@@ -1621,6 +1639,8 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.pumpShutoffHead = pd.getScalarOr("pumpShutoffHead", p.pumpHead);
         p.pumpStages = pd.getScalarOr("pumpStages", 1.0);
         p.pumpSpeed = pd.getScalarOr("pumpSpeed", 1.0);
+        p.pumpGasFraction = pd.getScalarOr("pumpGasFraction", 0.0);
+        p.pumpIntakePressure = pd.getScalarOr("pumpIntakePressure", 0.0);
         p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
         p.annulusInner = pd.getScalarOr("dInner", 0.0);
         if (p.annulusInner < 0)
@@ -1692,6 +1712,22 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             cfFatal("steadyNetwork: pipe '" + name + "' declares pumpStages/"
                     "pumpSpeed without a pump (pumpHead): the affinity laws "
                     "belong to a pump curve, not a bare pipe");
+        // 5.86 (D1 increment 2): Turpin gas interference. g is the free-gas
+        // volume fraction at intake, so it lives in [0,1); it degrades a pump
+        // curve (needs pumpHead) and the correlation needs a positive absolute
+        // intake pressure (pumpIntakePressure) to price p_i.
+        if (p.pumpGasFraction < 0 || p.pumpGasFraction >= 1)
+            cfFatal("steadyNetwork: pipe '" + name + "' has pumpGasFraction "
+                    "outside [0,1): it is a gas VOLUME fraction at the pump "
+                    "intake, so it must be at least 0 and strictly below 1");
+        if (p.pumpGasFraction > 0 && !(p.pumpHead > 0))
+            cfFatal("steadyNetwork: pipe '" + name + "' declares pumpGasFraction "
+                    "without a pump (pumpHead): gas interference degrades a pump "
+                    "curve, not a bare pipe");
+        if (p.pumpGasFraction > 0 && !(p.pumpIntakePressure > 0))
+            cfFatal("steadyNetwork: pipe '" + name + "' declares pumpGasFraction "
+                    "without a positive pumpIntakePressure: the Turpin gas "
+                    "correlation is priced on the absolute intake pressure p_i");
         // The declaration has passed every check. Move it out of the wall-law
         // fields: a coupled pipe's loss is `coupledResistance * q` alone, so
         // leaving a `flowIndex` or `yieldStress` here would let the yielded

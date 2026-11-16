@@ -343,6 +343,19 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyEquipmentEsp/case.dict)
 
+# D1 increment 2 (5.86): ESP gas interference -- the published Turpin (1986)
+# two-phase head-degradation multiplier exp(-a1 qG/qL), a1 = 346430/p_i^2 qG/qL
+# - 410/p_i (psia), read through the shared pumpHeadOf so it degrades the whole
+# 5.81 curve. Rate-fed laminar arms hold dpPump to the checker's own re-derived
+# multiplier; g absent/0 is bit-identical to the single-phase head, and the
+# multiplier is independent of stages.
+add_test(
+    NAME verify.steadyEquipmentEspGas
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_esp_gas.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyEquipmentEspGas/case.dict)
+
 # non-Newtonian pipe friction, one substitution deep: the Metzner-Reed
 # generalized Reynolds number goes where rho*u*d/mu used to go, and because the
 # fluid is then a power law the laminar branch of the same Churchill call stops

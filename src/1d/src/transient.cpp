@@ -993,6 +993,10 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
             cfFatal("transient: pipe '" + name + "' declares ductHeight: the "
                     "rectangular duct (5.80) is a steady-network declaration; "
                     "the transient row does not take one yet");
+        if (pd.has("eccentricity"))
+            cfFatal("transient: pipe '" + name + "' declares eccentricity: the "
+                    "eccentric annulus (5.87) is a steady-network "
+                    "declaration; the transient row does not take one yet");
         p.roughness = pd.getScalarOr("roughness", 0.0);
         p.elevation = pd.getScalarOr("elevation", 0.0);
         p.initialFlow = pd.getScalarOr("initialFlow", 0.0);

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 
 #include "cf/common/Error.h"
@@ -48,14 +49,200 @@ double pipeHydraulicDiameter(const NetworkPipe& p)
     return pipeIsAnnulus(p) ? p.diameter - p.annulusInner : p.diameter;
 }
 
+/// A number quoted in a fatal message, the way the user would write it: a
+/// sentinel like the unresolved-grid spread prints as 1.79769e+308 rather than
+/// the 309 digits std::to_string would spill.
+std::string msgNum(double v)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "%.6g", v);
+    return std::string(buf);
+}
+
+/// Eccentric-annulus cross-section integral K_geom (5.87, C3 increment 2):
+/// the area integral
+///     K_geom = integral_A w dA
+/// of the laminar Poisson solution grad^2 w = -1 with w = 0 on both bores, for
+/// the gap between the outer circle (radius `ro`, centred on the pipe axis)
+/// and the inner one (radius `ri`) whose axis is offset by `ecc` metres. It is
+/// the whole eccentric correction to the flow law: the conductance is
+/// K_geom/(mu L) and the laminar constant is 2 Dh^2 A / K_geom, with A and Dh
+/// themselves eccentricity-independent (both bores stay fully wetted, so
+/// neither the area pi(Ro^2 - Ri^2) nor the wetted perimeter pi(Do + Di)
+/// moves -- only the profile does).
+///
+/// What makes the problem tractable is that BOTH circles are coordinate lines
+/// of the bipolar map
+///     x = a sinh tau /(cosh tau - cos sigma),
+///     y = a sin  sigma/(cosh tau - cos sigma),
+/// whose tau = const curves are circles of radius a/|sinh tau| centred at
+/// a coth tau on the x axis. With the bipolar pole `x0` from the outer centre,
+///     x0 = (e^2 + Ro^2 - Ri^2)/(2 e),   a^2 = x0^2 - Ro^2 = (x0 - e)^2 - Ri^2,
+/// the two circles are tau_o with coth tau_o = -x0/a and tau_i with
+/// coth tau_i = (e - x0)/a -- both negative, since each circle encloses the
+/// opposite pole. Solving that pair through the two difference-of-squares
+/// identities (x0 - a)(x0 + a) = Ro^2 and (x0 - e - a)(x0 - e + a) = Ri^2 keeps
+/// every quantity O(radius):
+///     tau_o = ln(Ro/(x0 + a)),   tau_i = ln(Ri/(x0 - e + a)),
+/// which is what survives as e -> 0, where x0 ~ 1/e and coth tau -> -1.
+///
+/// In those coordinates (scale factor h = a/(cosh tau - cos sigma), and the
+/// Laplacian is conformal so it picks up only h^2) the problem is
+///     (d^2/dtau^2 + d^2/dsigma^2) w = -h^2
+/// on the RECTANGLE [tau_i, tau_o] x [0, 2pi): Dirichlet at both tau ends,
+/// periodic in sigma. Operator, boundary and right-hand side are all separable
+/// in sigma, and the spectrum of h^2 is analytic: with T = |tau|, S = sinh T,
+/// C = cosh T, the Poisson kernel integral and its tau-derivative give
+///     h^2 = a^2 [ C/S^3 + sum_{m>=1} 2 e^{-mT}(C + m S)/S^3 cos m sigma ],
+/// so each cosine mode m solves an independent ODE
+///     W_m'' - m^2 W_m = -a^2 A_m,     W_m = 0 at both tau ends.
+/// On the UNIFORM tau grid -- which is what bipolar coordinates buy, constant
+/// spacing on both boundaries of the strip -- that is a tridiagonal system in
+/// which only the diagonal depends on m, so one Thomas sweep per mode solves
+/// the discrete system exactly (no iteration, no relaxation schedule, no
+/// initial guess, and so no run-to-run path dependence). Parseval then closes
+/// the sigma integral of w h^2:
+///     K_geom = pi a^2 integral [ 2 A_0 W_0 + sum_{m>=1} A_m W_m ] dtau,
+/// trapezoid in tau; the integrand vanishes at both ends, where w = 0, so the
+/// end points contribute nothing and the rule stays second order.
+///
+/// Only tau carries discretisation error, and it is cleanly second order (the
+/// measured convergence ratio is 4.00 at every eccentricity tried, e/gap 0.002
+/// through 0.98), so two grids Richardson-extrapolate. The mode count follows
+/// from the slowest-decaying harmonic across the strip, exp(-m |tau|min), and
+/// the truncation is verified against that tail instead of assumed. The
+/// disagreement of the two grids is the reported error estimate: the narrow gap
+/// of a near-contact annulus is a boundary layer a fixed grid cannot resolve,
+/// and the caller refuses loudly rather than pricing it with a number that is
+/// quietly off.
+///
+/// Returns K_geom (m^4), or -1 when the geometry is unresolvable (eccentricity
+/// at or past contact, the sigma tail not closed within the mode cap, or the
+/// tau spread above the tolerance). `spread` carries the relative Richardson
+/// disagreement of the two grids. As e -> 0 this reproduces the Fredrickson-
+/// Bird closed form below to the extrapolation error (verified at 1e-5
+/// relative), and addPipe does not run it there: e == 0 stays on the concentric
+/// branch, bit for bit.
+double eccentricAnnulusSectionIntegral
+(
+    double ro,
+    double ri,
+    double ecc,
+    double& spread
+)
+{
+    spread = std::numeric_limits<double>::max();
+    const double x0 = (ecc*ecc + ro*ro - ri*ri)/(2.0*ecc);
+    const double a2 = x0*x0 - ro*ro;
+    if (!(a2 > 0.0))
+    {
+        return -1.0; // e >= Ro - Ri: the bores touch, the film pins the flow
+    }
+    const double a = std::sqrt(a2);
+    const double tauOuter = std::log(ro/(x0 + a));
+    const double tauInner = std::log(ri/(x0 - ecc + a));
+    const double tlo = std::min(tauOuter, tauInner);
+    const double thi = std::max(tauOuter, tauInner);
+    const double tmin = std::min(std::abs(tlo), std::abs(thi));
+
+    // Modes: the m-th harmonic of h^2 is down by exp(-m tmin) at the strip's
+    // narrowest |tau|, so 45/tmin of them push the tail under machine zero. The
+    // amplitude ratio A_m/A_0 = 2 exp(-m tmin)(1 + m tanh tmin) is then checked
+    // AT the cut, so a geometry that needs more modes than the cap is refused
+    // rather than silently truncated.
+    const double tailNeedle = 45.0/tmin;
+    if (!(tailNeedle < 20000.0))
+    {
+        return -1.0;
+    }
+    const int mmax = static_cast<int>(std::ceil(tailNeedle)) + 4;
+    const double tail = 2.0*std::exp(-double(mmax)*tmin)
+                      *(1.0 + double(mmax)*std::tanh(tmin));
+    if (!(tail < 1e-14))
+    {
+        return -1.0;
+    }
+
+    auto sweep = [&](int nt) -> double
+    {
+        const double dtau = (thi - tlo)/double(nt);
+        const int n = nt - 1; // interior rows; w = 0 at both ends
+        std::vector<double> amp(n), cp(n), dp(n);
+        double acc = 0.0;
+        for (int m = 0; m <= mmax; ++m)
+        {
+            const double md = double(m)*dtau;
+            const double diag = -(2.0 + md*md);
+            for (int i = 0; i < n; ++i)
+            {
+                const double T = std::abs(tlo + double(i + 1)*dtau);
+                const double S = std::sinh(T);
+                const double C = std::cosh(T);
+                amp[i] = (m == 0)? C/(S*S*S)
+                    : 2.0*std::exp(-double(m)*T)*(C + double(m)*S)/(S*S*S);
+                const double rhs = -a2*amp[i]*dtau*dtau;
+                if (i == 0)
+                {
+                    cp[0] = 1.0/diag;
+                    dp[0] = rhs/diag;
+                }
+                else
+                {
+                    const double beta = diag - cp[i - 1];
+                    if (i + 1 < n)
+                    {
+                        cp[i] = 1.0/beta;
+                    }
+                    dp[i] = (rhs - dp[i - 1])/beta;
+                }
+            }
+            // Parseval: the mean mode carries twice the weight of a cosine
+            const double wt = (m == 0)? 2.0 : 1.0;
+            double prev = dp[n - 1];
+            acc += wt*amp[n - 1]*prev;
+            for (int i = n - 2; i >= 0; --i)
+            {
+                const double w = dp[i] - cp[i]*prev;
+                prev = w;
+                acc += wt*amp[i]*w;
+            }
+        }
+        return 3.14159265358979323846*a2*dtau*acc;
+    };
+
+    const double kc = sweep(400);
+    const double kf = sweep(800);
+    if (!(kf > 0.0))
+    {
+        return -1.0;
+    }
+    spread = std::abs(kf - kc)/kf;
+    if (!(spread < 0.01))
+    {
+        return -1.0;
+    }
+    return kf + (kf - kc)/3.0;
+}
+
 /// Fredrickson-Bird (1958) Newtonian laminar anchor of a concentric annulus,
 /// the exact biharmonic solution
 ///     Q = pi dp /(8 mu L) . [Ro^4 - Ri^4 - (Ro^2 - Ri^2)^2 / ln(Ro/Ri)],
 /// which collapses onto Hagen-Poiseuille as kappa = Ri/Ro -> 0. Expressed as
 /// a conductance so it drops into the same slot the circle's does.
+///
+/// 5.87 (C3 increment 2): an eccentric bore has no closed form, so when
+/// addPipe resolved one it stores the SAME quantity -- the area integral
+/// K_geom, which is pi g/8 concentrically -- and this returns K_geom/(mu L).
+/// The two statements coincide at K_geom = pi g/8, which is what the eccentric
+/// solve is asserted to approach as e -> 0. With ecc == 0 nothing here changes
+/// by one bit.
 double annulusLaminarConductance(const NetworkPipe& p,
                                  const FluidProperties& fluid)
 {
+    if (p.annulusEccK > 0.0)
+    {
+        return p.annulusEccK/(fluid.mu*p.length);
+    }
     const double ro = 0.5 * p.diameter, ri = 0.5 * p.annulusInner;
     const double g = ro * ro * ro * ro - ri * ri * ri * ri
                    - (ro * ro - ri * ri) * (ro * ro - ri * ri)
@@ -69,13 +256,25 @@ double annulusLaminarConductance(const NetworkPipe& p,
 /// which is 64 at kappa = 0 -- so Churchill's laminar line is the kappa = 0
 /// member of this family, and the all-regime blend below only has to swap
 /// that member.
+///
+/// 5.87: eccentrically the bracket no longer exists, but the definition does.
+/// Q = (dp/L) K_geom/mu with v = Q/A and Re_Dh = rho v Dh/mu gives, for ANY
+/// bore shape, C = 2 Dh^2 A / K_geom -- which at K_geom = pi g/8 IS the closed
+/// form above (16 Dh^2(Ro^2-Ri^2)/(pi g/8) reduces to it term for term). So the
+/// eccentric branch reuses the geometry this law already trusts, the area
+/// pi(Ro^2-Ri^2) and Dh = Do - Di, both of which an axis offset leaves alone
+/// because both bores stay fully wetted; only K_geom moves.
 double annulusLaminarConstant(const NetworkPipe& p)
 {
     const double ro = 0.5 * p.diameter, ri = 0.5 * p.annulusInner;
+    const double dh = p.diameter - p.annulusInner;
+    if (p.annulusEccK > 0.0)
+    {
+        return 2.0 * dh * dh * M_PI * (ro * ro - ri * ri)/p.annulusEccK;
+    }
     const double g = ro * ro * ro * ro - ri * ri * ri * ri
                    - (ro * ro - ri * ri) * (ro * ro - ri * ri)
                    / std::log(ro / ri);
-    const double dh = p.diameter - p.annulusInner;
     return 16.0 * dh * dh * (ro * ro - ri * ri) / g;
 }
 
@@ -846,6 +1045,17 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
     if (p.from == p.to) cfFatal("network: pipe '" + p.name + "' connects a node to itself");
     if (!(p.diameter > 0) || !(p.length > 0))
         cfFatal("network: pipe '" + p.name + "' needs positive length and diameter");
+    // 5.87: an axis offset is a statement about an annulus. A negative one is
+    // the mirror image, but declared it is a typo, so it is refused rather than
+    // silently flipped; and without dInner there is no bore to offset.
+    if (p.eccentricity < 0)
+        cfFatal("network: pipe '" + p.name
+                + "' declares a negative eccentricity: an axis offset is a "
+                  "distance");
+    if (p.eccentricity > 0 && !pipeIsAnnulus(p))
+        cfFatal("network: pipe '" + p.name
+                + "' declares an eccentricity without an inner bore (dInner): "
+                  "an axis offset needs an annulus to offset");
     if (pipeIsAnnulus(p))
     {
         // 5.73's declaration scope: the annulus is a single-phase
@@ -863,6 +1073,38 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
             cfFatal("network: pipe '" + p.name
                     + "' declares an annulus on a coupled edge: the partner "
                       "owns that edge's geometry");
+        // 5.87 (C3 increment 2): the axis offset. It is a bore shape, so it is
+        // only meaningful on an annulus, it must leave a gap (the two circles
+        // may touch but not cross), and it is refused on a power-law fill
+        // because the Fredrickson-Bird profile it replaces is concentric by
+        // construction -- its zero-shear radius has no off-axis analogue here.
+        if (p.eccentricity > 0)
+        {
+            if (p.flowIndex > 0)
+                cfFatal("network: pipe '" + p.name
+                        + "' declares an eccentric annulus with a power-law "
+                          "index: the Fredrickson-Bird zero-shear integrals are "
+                          "concentric by construction");
+            const double maxEcc = 0.5*(p.diameter - p.annulusInner);
+            if (p.eccentricity >= maxEcc)
+                cfFatal("network: pipe '" + p.name
+                        + "' declares an eccentricity " + msgNum(p.eccentricity)
+                        + " m >= (diameter - annulusInner)/2 = " + msgNum(maxEcc)
+                        + " m: the bores touch and the narrow gap pins the flow");
+            double spread = 0;
+            const double kg = eccentricAnnulusSectionIntegral
+            (
+                0.5*p.diameter, 0.5*p.annulusInner, p.eccentricity, spread
+            );
+            if (!(kg > 0))
+                cfFatal("network: pipe '" + p.name
+                        + "' failed to resolve its eccentric-annulus profile "
+                          "(e/gap = " + msgNum(p.eccentricity/maxEcc)
+                        + ", grid spread " + msgNum(spread)
+                        + "): this increment refuses an eccentricity its "
+                          "bipolar-coordinate grid cannot resolve");
+            p.annulusEccK = kg;
+        }
         if (p.flowIndex > 0)
         {
             annulusFbIntegrals(p, 1024, p.annulusLambda, p.annulusDimQ);
@@ -1645,6 +1887,12 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.annulusInner = pd.getScalarOr("dInner", 0.0);
         if (p.annulusInner < 0)
             cfFatal("steadyNetwork: pipe '" + name + "' has a negative dInner");
+        // Eccentric annulus (5.87, C3 increment 2): the axis offset of the
+        // inner bore, in metres. Absent or 0 is concentric and the closed
+        // Fredrickson-Bird branch below is untouched. addPipe owns the scope
+        // checks (contact, no-dInner, power-law) and resolves the cross-section
+        // integral once there, so the rate solve reads a number.
+        p.eccentricity = pd.getScalarOr("eccentricity", 0.0);
         p.ductHeight = pd.getScalarOr("ductHeight", 0.0);
         if (p.ductHeight < 0)
             cfFatal("steadyNetwork: pipe '" + name

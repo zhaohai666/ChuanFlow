@@ -1778,6 +1778,9 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
         if (pd.has("ductHeight"))
             cfFatal("twoFluid: pipe '" + g.name + "' declares ductHeight: the "
                     "rectangular duct (5.80) is a steady-network declaration");
+        if (pd.has("eccentricity"))
+            cfFatal("twoFluid: pipe '" + g.name + "' declares eccentricity: the "
+                    "eccentric annulus (5.87) is a steady-network declaration");
         g.roughness = pd.getScalarOr("roughness", 0.0);
         g.angleDeg = pd.getScalarOr("angleDeg", 0.0);
         g.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));
@@ -1846,6 +1849,9 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
         if (pd.has("ductHeight"))
             cfFatal("twoFluid: pipe '" + g.name + "' declares ductHeight: the "
                     "rectangular duct (5.80) is a steady-network declaration");
+        if (pd.has("eccentricity"))
+            cfFatal("twoFluid: pipe '" + g.name + "' declares eccentricity: the "
+                    "eccentric annulus (5.87) is a steady-network declaration");
         g.roughness = pd.getScalarOr("roughness", 0.0);
         g.angleDeg = pd.getScalarOr("angleDeg", 0.0);
         g.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));

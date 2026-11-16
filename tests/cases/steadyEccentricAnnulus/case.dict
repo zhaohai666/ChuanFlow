@@ -1,0 +1,95 @@
+# 5.87 / C3 环空偏心距第一次进稳态管网：内管轴线平移 e 之后，截面积
+# pi(Ro^2-Ri^2) 与湿周 pi(Do+Di) 一位不动（两圈全程被润湿，偏一边就把另一边
+# 让开同样的量），Dh = Do - Di 也不动；动的只有层流剖面——宽边 disproportionately
+# 多带流量，所以电导 K_geom 上升、C = f.Re_Dh 下降。同心成员仍是 Fredrickson-Bird
+# 闭式（e 缺省或 0 时不调解，逐位不变）；偏心成员是双极坐标半解析截面解：sigma
+# 方向用 h^2 的解析谱，tau 方向每模一趟 Thomas 三对角，两网格 Richardson，
+# addPipe 一次性解出 K_geom 存进管子里。
+#
+# 几何（m）：dOuter 0.06，dInner 0.04（kappa = 2/3，gap 0.01）与
+# dInner 0.006（kappa = 0.1，gap 0.027）；mu = 0.05 Pa.s，rho = 850，L = 10。
+# A->B 定压对 dp = 1.0e3（深层流档，Re_Dh 5.7 -> 145，Churchill 的湍流成员
+# < 1e-12 相对，f.Re 就是截面常数本身），
+# C->B 定压对 dp = 4.98e6（湍流档，Re_Dh ~ 9200）。
+#
+# 层流锚（checker 用同一个双极坐标解独立重算，不同网格与截断；C = 2 Dh^2 A/K）：
+#   EccConc     e 缺省       C = 95.739203（FB 闭式，与 5.73 的 kappa=2/3 同值）
+#   EccEps      e/gap 1e-6   C 与 FB 差 < 1e-9（解趋近闭式）
+#   EccMicro    e/gap 0.002  C 与 FB 差 < 5e-4 且严格低于 FB
+#   EccFive     e/gap 0.05   C = 95.388866
+#   EccTwenty   e/gap 0.20   C = 90.430294
+#   EccThirty5  e/gap 0.35   C = 81.175421
+#   EccHalf     e/gap 0.50   C = 70.141018
+#   EccSixty5   e/gap 0.65   C = 59.315741
+#   EccEighty   e/gap 0.80   C = 49.733705
+#   EccNinety5  e/gap 0.95   C = 41.702269
+#   EccWide     kappa 0.1, e/gap 0.5: C = 73.692474（FB 89.371843）
+# 严格双侧界（只用区域单调性 + FB 闭式，不用任何 PDE 解）：内接同心环空
+# (Ro, Ri+e) 的 K 是下界，外包同心环空 (Ro, max(Ri-e,0)) 的 K 是上界。
+#
+# 湍流档记录的是模型的诚实边界：Churchill 混合式的湍流成员只认 Re 与相对粗糙度，
+# 同 Dh 的同心与偏心环空在 Re ~ 9200 处 f 差 < 1e-6——偏心距是层流剖面效应，
+# 越过过渡区就不再分账（5.83 的 Wilson-Thomas 只给圆管 Bingham，环空没有对应式）。
+#
+# 本增量范围：牛顿单相稳态。幂律环空（5.74 的零剪切实径积分按同心构造）、
+# 屈服应力、耦合边、方矩形导管冲突、瞬动量行与两流体行都大声拒绝；
+# e >= (Do-Di)/2（两圈相切）与 e < 0 同样拒绝。
+
+solver
+{
+    type steadyNetwork;
+}
+
+fluid
+{
+    rho 850;
+    mu 0.05;
+}
+
+nodes
+{
+    A { pressure 2.1e4; }
+    C { pressure 5.0e6; }
+    B { pressure 2.0e4; }
+}
+
+pipes
+{
+    # --- 深层流档：A -> B，dp 恰为 1.0e3 Pa ---------------------------------
+    EccConc     { from A; to B; length 10; diameter 0.06; dInner 0.04; }
+    EccZero     { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 0; }
+    EccEps      { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 1.0e-8; }
+    EccMicro    { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 2.0e-5; }
+    EccFive     { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 0.0005; }
+    EccTwenty   { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 0.002; }
+    EccThirty5  { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 0.0035; }
+    EccHalf     { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 0.005; }
+    EccSixty5   { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 0.0065; }
+    EccEighty   { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 0.008; }
+    EccNinety5  { from A; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 0.0095; }
+    EccWide     { from A; to B; length 10; diameter 0.06; dInner 0.006;
+                  eccentricity 0.0135; }
+    CircTwin    { from A; to B; length 10; diameter 0.06; }
+
+    # --- 湍流档：C -> B，dp 恰为 4.98e6 Pa ----------------------------------
+    TurbConc    { from C; to B; length 10; diameter 0.06; dInner 0.04; }
+    TurbHalf    { from C; to B; length 10; diameter 0.06; dInner 0.04;
+                  eccentricity 0.005; }
+}
+
+solve
+{
+    maxIter 100;
+    tol 1e-10;
+    relax 1.0;
+}

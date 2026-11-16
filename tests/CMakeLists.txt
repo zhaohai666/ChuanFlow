@@ -1093,6 +1093,25 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyRectDuct/case.dict)
 
+# 5.87 / C3 increment 2 the eccentric annulus: the bipolar-coordinate section
+# solve as the laminar anchor (f.Re = 2 Dh^2 A/K_geom against an independent
+# spectral re-solve to 5e-6, Q = dp K_geom/(mu L) to 5e-6, and the two read back
+# as ONE K_geom at 1e-9), Fredrickson-Bird as its strict e -> 0 member, a
+# domain-monotonicity bracket from two concentric closed forms around every arm,
+# an invariant area and Dh on every tier, the turbulent Churchill member
+# recorded as shape-blind, and loud rejections outside the declaration scope --
+# including the transient and two-fluid rows refusing the same key. The
+# concentric and circular branches are bit-still: the whole pre-existing suite
+# is the witness.
+add_test(
+    NAME verify.steadyEccentricAnnulus
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_eccentric_annulus.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyEccentricAnnulus/case.dict
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-twofluid>)
+
 # 5.74 / A2 gel strength and sub-threshold creep in the transient row: the
 # gel arm opens exactly on the latch recursion's predicted layer (22 layers
 # after the plain twin -- the restart pressure as calendar), the creep arms

@@ -49,6 +49,21 @@ struct NetworkPipe
                              // this inner diameter (5.73); 0 = circular pipe,
                              // and every number below is bit-identical to the
                              // circular branch
+    // Eccentric annulus (5.87, C3 increment 2): when annulusInner > 0 this is
+    // the axis offset (m) of the inner bore from the outer one, 0 <= e <
+    // (diameter - annulusInner)/2. The bore is still the gap between two
+    // circles, so the area pi(Do^2-Di^2)/4, the wetted perimeter pi(Do+Di) and
+    // Dh = Do - Di are all eccentricity-independent -- an offset closes the gap
+    // on one side exactly as far as it opens it on the other, and both bores
+    // stay fully wetted. What moves is the laminar profile: the wide side
+    // carries disproportionately more of the flow, so the conductance RISES
+    // above Fredrickson-Bird's and C = f.Re_Dh falls (94.713 concentric -> 71.2
+    // at e = 0.5 gap, 43.5 at 0.98). e absent or 0 resolves nothing and every
+    // concentric number is bit-identical. Newtonian single-phase steady only
+    // this increment: the power-law annulus (5.74) is refused because its
+    // zero-shear-radius integrals are concentric by construction, and so are
+    // yield, a coupled edge and a duct clash.
+    double eccentricity = 0; // m; axis offset of the inner bore, 0 = concentric
     // Rectangular duct (5.80): when ductHeight > 0 the bore is a rectangle of
     // width `diameter` and height `ductHeight` (both m). The laminar anchor is
     // the exact Fourier-series solution of the cross-section Poisson equation
@@ -154,6 +169,15 @@ struct NetworkPipe
     // bracket); both depend only on the aspect, never on the rate, so the
     // series is summed once instead of inside every rate solve.
     double rectBracket = 0;
+
+    // Eccentric-annulus cross-section integral (5.87), resolved once by addPipe
+    // when eccentricity > 0: K_geom = integral_A w dA of the laminar Poisson
+    // solution grad^2 w = -1 on the bore, m^4. The whole flow law needs only
+    // this one number -- conductance = K_geom/(mu L) and C = 2 Dh^2 A/K_geom --
+    // and it depends on (Ro, Ri, e) alone, never on the rate, the fluid or the
+    // pressure, so the bipolar-coordinate solve runs at load time instead of
+    // inside every rate solve. 0 = concentric, which stays on the closed form.
+    double annulusEccK = 0;
 
     /// Coupled element (the 1D side of a 1D<->3D interface): when > 0 this
     /// pipe carries NO 1D resistance of its own – its whole loss is

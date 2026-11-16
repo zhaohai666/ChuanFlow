@@ -491,6 +491,26 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyFlowPatternMap/case.dict)
 
+# 5.88 (D4 increment 2): the same surface, writable. Twelve pipes on the 5.85
+# fluid and terminal: four auto arms (which must reproduce 5.85), forced twins
+# on the same geometry, and uphill arms where the declared regime also switches
+# the published inclination coefficient set. The checker re-derives the law
+# actually used - including the >= lambda clamp, the transition blend and which
+# coefficient set prices which regime - and asserts an override that agrees with
+# the map is BYTE-IDENTICAL to its auto twin, that a disagreeing one carries
+# `mapRegime <map> FORCED` and only moves the holdup and the drop, and that
+# flowPattern 1 / out of range / fractional / single-phase / the transient,
+# two-fluid and nodal rows are all refused.
+add_test(
+    NAME verify.steadyFlowPatternForced
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_flow_pattern_forced.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyFlowPatternForced/case.dict
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-twofluid>
+        $<TARGET_FILE:chflow-1d-nodal>)
+
 # partitioned steady 1D<->3D coupling: the same duct solved in 3D replaces the
 # analytic law of edge X, so the checker compares the interface against the
 # closed-form network (branch split, pressure chain), the block against planar

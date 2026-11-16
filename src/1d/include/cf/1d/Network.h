@@ -109,6 +109,23 @@ struct NetworkPipe
     double pumpGasFraction = 0;      // free gas volume fraction at intake [0,1)
     double pumpIntakePressure = 0;   // Pa, absolute pump intake pressure (p_i)
 
+    // Beggs-Brill flow-pattern OVERRIDE (5.88, D4 increment 2): 5.85 made the
+    // pattern map a queryable single source of truth but left the user unable
+    // to say anything back to it. This is that channel: 0 segregated,
+    // 2 intermittent, 3 distributed forces WHICH published holdup law prices
+    // every segment of this two-phase pipe, while the map keeps being evaluated
+    // and keeps reporting its own verdict (regimeFromMap) beside the one used.
+    // The override is legitimate because Beggs-Brill is a correlation and a
+    // field operator routinely knows the pattern; it is contained because it
+    // touches only the two correlations that read a regime -- the horizontal
+    // holdup and the inclination coefficient set -- leaving the published
+    // friction multiplier, the acceleration term and the march itself alone.
+    // 1 is refused: transition is not a holdup law, it is the map's own
+    // interpolation between two of them, and forcing it outside the band that
+    // defines its blend weight has no published meaning. -1 (absent) asks the
+    // map, which is exactly the 5.85 path, bit for bit.
+    int flowPattern = -1;
+
     // Power-law rheology (Metzner & Reed 1955): when `flowIndex` > 0 the
     // pipe's fluid is tau = K gdot^n instead of Newtonian, and the single
     // change to the Darcy-Weisbach law is the Reynolds number in the
@@ -301,6 +318,11 @@ struct PipeFlowResult
     // above stays the along-pipe envelope (regimeMax); these describe the
     // last segment alone, so the map is readable where the march ended.
     int regimeOutlet = -1;
+    // 5.88 (D4 increment 2): what the map said at the outlet segment. Equal to
+    // regimeOutlet unless pipe.flowPattern overrode it, in which case the pair
+    // is the override's footprint on the report: `regimeOutlet` is what was
+    // priced, this is what the correlation would have picked on its own.
+    int regimeFromMapOutlet = -1;
     double lambdaOutlet = 0;
     double nfrOutlet = 0;
     double patternL1 = 0, patternL2 = 0, patternL3 = 0, patternL4 = 0;

@@ -59,8 +59,15 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
     // surface; the gradient reads its regime and boundaries from that single
     // source rather than re-deriving the map inline.
     const BeggsBrillPattern pat = beggsBrillPattern(lambda, fr);
-    const int regime = pat.regime;
+    // 5.88 (D4 increment 2): the map above is still evaluated on every call
+    // and still reported, but a forced regime decides which segment law prices
+    // the holdup. regimeFromMap keeps the map's own verdict visible, so an
+    // override is legible on the readout instead of silently replacing it.
+    // Auto (forcedRegime < 0) selects pat.regime, which is exactly what 5.85
+    // priced, bit for bit.
+    const int regime = in.forcedRegime >= 0 ? in.forcedRegime : pat.regime;
     out.regime = regime;
+    out.regimeFromMap = pat.regime;
     out.l1 = pat.l1;
     out.l2 = pat.l2;
     out.l3 = pat.l3;
@@ -166,7 +173,8 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        double length, double diameter,
                                        double roughness, double sinTheta,
                                        int segments,
-                                       const Rheology& liquidRheology)
+                                       const Rheology& liquidRheology,
+                                       int forcedRegime)
 {
     BeggsBrillMarchOut out;
     const double pFloor = std::max(0.02 * pInPa, 1000.0);
@@ -181,6 +189,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
     double p = pInPa;
     double lastHoldup = 0, lastLambda = 0, lastVm = 0, lastFTp = 0;
     int lastRegime = 0;
+    int lastRegimeMap = 0;
     double lastL1 = 0, lastL2 = 0, lastL3 = 0, lastL4 = 0;
     const double angleDeg = std::asin(std::clamp(sinTheta, -1.0, 1.0))
                           * 180.0 / M_PI;
@@ -208,6 +217,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
         in.roughness = roughness;
         in.angleDeg = angleDeg;
         in.liquidRheology = liquidRheology;
+        in.forcedRegime = forcedRegime;
 
         BeggsBrillOut g;
         if (vsl + vsg > 1e-9)
@@ -225,6 +235,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
             s.holdup = st.bo / vT;
             s.lambdaL = st.bo / vT;
             s.regime = 3;
+            s.regimeFromMap = 3; // no flow, no dispatch to override
             s.fNs = 0;
             s.fTp = 0;
             g = s;
@@ -232,6 +243,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
         lastVm = vsl + vsg;
         lastFTp = g.fTp;
         lastRegime = g.regime;
+        lastRegimeMap = g.regimeFromMap;
         lastL1 = g.l1;
         lastL2 = g.l2;
         lastL3 = g.l3;
@@ -253,6 +265,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
             out.vmOutlet = lastVm;
             out.fTpOutlet = lastFTp;
             out.regimeOutlet = lastRegime;
+            out.regimeMapOutlet = lastRegimeMap;
             out.nfrOutlet = lastVm * lastVm / (kGravity * diameter);
             out.l1Outlet = lastL1;
             out.l2Outlet = lastL2;
@@ -269,6 +282,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
     out.vmOutlet = lastVm;
     out.fTpOutlet = lastFTp;
     out.regimeOutlet = lastRegime;
+    out.regimeMapOutlet = lastRegimeMap;
     out.nfrOutlet = lastVm * lastVm / (kGravity * diameter);
     out.l1Outlet = lastL1;
     out.l2Outlet = lastL2;

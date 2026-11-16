@@ -293,6 +293,13 @@ NodalCase loadNodalCaseFromDict(const Dictionary& caseDict)
     c.well.diameter = wd.getScalar("diameter");
     c.well.roughness = wd.getScalarOr("roughness", 0.0);
     c.well.elevation = wd.getScalarOr("elevation", 0.0);
+    // 5.88 (D4 increment 2): the writable flow-pattern dispatch is a network
+    // pipe declaration. This march keeps the map's own choice, and a key here
+    // would be silently dropped rather than honoured - so it is refused.
+    if (wd.has("flowPattern"))
+        cfFatal("nodal: well declares flowPattern: the writable flow-pattern "
+                "dispatch (5.88) is a steady-network pipe declaration; the VLP "
+                "well marches with the flow-pattern map's own choice");
 
     c.wellheadPressure = caseDict.getScalar("wellheadPressure");
     if (!(c.wellheadPressure > 0))

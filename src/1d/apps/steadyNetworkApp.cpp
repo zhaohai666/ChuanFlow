@@ -64,6 +64,17 @@ int main(int argc, char** argv)
                           + " L2 " + num(f.patternL2)
                           + " L3 " + num(f.patternL3)
                           + " L4 " + num(f.patternL4);
+                    // 5.88 (D4 increment 2): the override's footprint. Printed
+                    // only when a forced pattern actually disagreed with the
+                    // map at the outlet segment, so an auto (or agreeing)
+                    // declaration leaves the line byte-identical to 5.85.
+                    if (f.regimeFromMapOutlet >= 0
+                        && f.regimeFromMapOutlet != f.regimeOutlet)
+                    {
+                        line += " mapRegime "
+                              + std::string(regimeName[f.regimeFromMapOutlet])
+                              + " FORCED";
+                    }
                 }
                 if (f.choked) line += " CHOKED";
             }

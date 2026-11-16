@@ -1781,6 +1781,11 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
         if (pd.has("eccentricity"))
             cfFatal("twoFluid: pipe '" + g.name + "' declares eccentricity: the "
                     "eccentric annulus (5.87) is a steady-network declaration");
+        if (pd.has("flowPattern"))
+            cfFatal("twoFluid: pipe '" + g.name + "' declares flowPattern: the "
+                    "writable flow-pattern dispatch (5.88) overrides the "
+                    "Beggs-Brill map of the steady black-oil network; the "
+                    "two-fluid row classifies its own regimes");
         g.roughness = pd.getScalarOr("roughness", 0.0);
         g.angleDeg = pd.getScalarOr("angleDeg", 0.0);
         g.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));
@@ -1852,6 +1857,11 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
         if (pd.has("eccentricity"))
             cfFatal("twoFluid: pipe '" + g.name + "' declares eccentricity: the "
                     "eccentric annulus (5.87) is a steady-network declaration");
+        if (pd.has("flowPattern"))
+            cfFatal("twoFluid: pipe '" + g.name + "' declares flowPattern: the "
+                    "writable flow-pattern dispatch (5.88) overrides the "
+                    "Beggs-Brill map of the steady black-oil network; the "
+                    "two-fluid row classifies its own regimes");
         g.roughness = pd.getScalarOr("roughness", 0.0);
         g.angleDeg = pd.getScalarOr("angleDeg", 0.0);
         g.sections = static_cast<int>(pd.getScalarOr("sections", 50.0));

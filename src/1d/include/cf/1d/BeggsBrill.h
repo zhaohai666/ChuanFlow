@@ -43,14 +43,26 @@ struct BeggsBrillIn
     // correlations -- none of which reads a viscosity -- exactly as they
     // are. The default is the undeclared fluid, bit for bit.
     Rheology liquidRheology;
+    // 5.88 (D4 increment 2): the WRITABLE side of the flow-pattern dispatch
+    // surface. The map in beggsBrillPattern is the single source of truth and
+    // is ALWAYS evaluated -- its four boundaries and its own verdict stay
+    // readable on the output -- but a non-negative value here selects which
+    // regime's holdup law and inclination coefficients the gradient actually
+    // uses (0 segregated, 1 transition, 2 intermittent, 3 distributed).
+    // Beggs-Brill is a correlation, and field observation routinely knows the
+    // pattern better than the map does, which is why the simulators expose this
+    // override. -1 (the default) means "ask the map", and in that case every
+    // number below is exactly what 5.85 produced, bit for bit.
+    int forcedRegime = -1;
 };
 
 struct BeggsBrillOut
 {
     double dpPerMeter = 0; // Pa/m pressure DROP along the flow direction
     double holdup = 0;     // liquid volume fraction HL
-    int regime = 0;        // 0 segregated, 1 transition, 2 intermittent,
-                           // 3 distributed
+    int regime = 0;        // the regime the gradient was priced with: the
+                           // forced one when forcedRegime >= 0, else
+                           // regimeFromMap below
     double lambdaL = 0;    // no-slip liquid content
     double fNs = 0;        // no-slip Darcy friction factor
     double fTp = 0;        // two-phase Darcy friction factor
@@ -61,6 +73,13 @@ struct BeggsBrillOut
     // numbers that selected the holdup, not a second evaluation.
     double l1 = 0, l2 = 0, l3 = 0, l4 = 0;
     double transitionWeight = 0;
+    // 5.88 (D4 increment 2): the map's OWN verdict at this segment, kept
+    // whether or not a forced regime overrode it. The pair (regime,
+    // regimeFromMap) is how a caller sees the disagreement it just asked for;
+    // `transitionWeight` is the blend weight actually used, which for a forced
+    // transition is the published (L3 - Nfr)/(L3 - L2) held to [0, 1] so a
+    // forced blend stays convex outside the band the map draws it in.
+    int regimeFromMap = 0;
 };
 
 /// 5.85 (D4 increment 1): the Beggs-Brill flow-pattern map as a standalone
@@ -109,6 +128,10 @@ struct BeggsBrillMarchOut
     int regimeOutlet = 0;
     double nfrOutlet = 0;
     double l1Outlet = 0, l2Outlet = 0, l3Outlet = 0, l4Outlet = 0;
+    // 5.88 (D4 increment 2): what the map itself said at the outlet segment.
+    // Equal to regimeOutlet unless a forced regime overrode it, in which case
+    // the difference is the override's footprint on the readout.
+    int regimeMapOutlet = 0;
     bool ok = false;         // false when the march hit the pressure floor
 };
 
@@ -117,6 +140,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        double length, double diameter,
                                        double roughness, double sinTheta,
                                        int segments = 24,
-                                       const Rheology& liquidRheology = {});
+                                       const Rheology& liquidRheology = {},
+                                       int forcedRegime = -1);
 
 } // namespace cf

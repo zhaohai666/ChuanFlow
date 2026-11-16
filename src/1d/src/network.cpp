@@ -1056,6 +1056,35 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
         cfFatal("network: pipe '" + p.name
                 + "' declares an eccentricity without an inner bore (dInner): "
                   "an axis offset needs an annulus to offset");
+    // 5.88: the override names one of Beggs-Brill's three published holdup
+    // laws. Index validity is checked first (a bogus index is a typo whatever
+    // the network solves), then scope: the key means nothing on a single-phase
+    // network, and nothing as regime 1 -- transition is the map's own
+    // interpolation BETWEEN two laws, not a law a caller can order.
+    if (p.flowPattern == 1)
+        cfFatal("network: pipe '" + p.name
+                + "' declares flowPattern 1 (transition): transition is not a "
+                  "holdup law, it is the map's own interpolation between "
+                  "segregated (0) and intermittent (2) across its L2..L3 band; "
+                  "force one of the three published laws (0, 2, 3) or leave "
+                  "the key out and let the map choose");
+    if (p.flowPattern > 3)
+        cfFatal("network: pipe '" + p.name
+                + "' declares flowPattern " + std::to_string(p.flowPattern)
+                + ": the published regimes are 0 segregated, 2 intermittent, "
+                  "3 distributed (1 is the map's blend, refused above), and "
+                  "leaving the key out asks the map");
+    if (p.flowPattern < -1)
+        cfFatal("network: pipe '" + p.name
+                + "' declares a negative flowPattern: the only negative value "
+                  "this key takes is -1, which is what an absent key means "
+                  "(ask the map)");
+    if (p.flowPattern >= 0 && !hasBlackOil)
+        cfFatal("network: pipe '" + p.name
+                + "' declares flowPattern " + std::to_string(p.flowPattern)
+                + " on a single-phase network: the flow-pattern map is a "
+                  "Beggs-Brill two-phase dispatch surface, a single-phase pipe "
+                  "has no pattern to force");
     if (pipeIsAnnulus(p))
     {
         // 5.73's declaration scope: the annulus is a single-phase
@@ -1423,7 +1452,7 @@ double twoPhaseRateForDrop(const NetworkPipe& pipe,
     {
         const BeggsBrillMarchOut m = marchBeggsBrillPipe(
             fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness,
-            sinFlow, 24, liquidRheology);
+            sinFlow, 24, liquidRheology, pipe.flowPattern);
         // choked marches return the floor shortfall: continuous with the
         // unchoked branch (there pOutlet -> pFloor) and correctly scaled
         // for the secant, unlike a fixed sentinel
@@ -1528,12 +1557,13 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
 
     const BeggsBrillMarchOut m = marchBeggsBrillPipe(
         fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness, sinFlow,
-        24, liquidRheology);
+        24, liquidRheology, pipe.flowPattern);
     out.flowRate = forward ? q : -q;
     out.velocity = m.vmOutlet * (forward ? 1.0 : -1.0);
     out.holdup = m.holdupOutlet;
     out.regime = m.regimeMax;
     out.regimeOutlet = m.regimeOutlet;
+    out.regimeFromMapOutlet = m.regimeMapOutlet;
     out.lambdaOutlet = m.lambdaOutlet;
     out.nfrOutlet = m.nfrOutlet;
     out.patternL1 = m.l1Outlet;
@@ -1568,7 +1598,7 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
         const BeggsBrillMarchOut dead =
             marchBeggsBrillPipe(fluid, 0.0, pUp, pipe.length, pipe.diameter,
                                 pipe.roughness, sinFlow, 24,
-                                liquidRheology);
+                                liquidRheology, pipe.flowPattern);
         const double deficit = pLow - dead.pOutlet; // missing pressure
         if (deficit > 0.0)
         {
@@ -1893,6 +1923,20 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         // checks (contact, no-dInner, power-law) and resolves the cross-section
         // integral once there, so the rate solve reads a number.
         p.eccentricity = pd.getScalarOr("eccentricity", 0.0);
+        // Writable flow-pattern dispatch (5.88, D4 increment 2): which
+        // Beggs-Brill holdup law prices this two-phase pipe. -1 (absent) asks
+        // the map, which is 5.85's path untouched; addPipe owns the scope
+        // checks (single-phase network, the transition blend, out of range).
+        p.flowPattern = static_cast<int>(pd.getScalarOr("flowPattern", -1.0));
+        if (pd.has("flowPattern")
+            && pd.getScalar("flowPattern")
+                   != static_cast<double>(p.flowPattern))
+        {
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' declares a fractional flowPattern: it is a regime "
+                      "index (0 segregated, 2 intermittent, 3 distributed), "
+                      "not a fraction");
+        }
         p.ductHeight = pd.getScalarOr("ductHeight", 0.0);
         if (p.ductHeight < 0)
             cfFatal("steadyNetwork: pipe '" + name

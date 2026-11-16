@@ -1,0 +1,123 @@
+// 5.88 (D4 increment 2): the flow-pattern map as a WRITABLE dispatch surface.
+// The same black-oil fluid, the same stock-tank rate and the same fixed
+// terminal as 5.85; what changes is that a pipe may now declare flowPattern
+// 0 (segregated), 2 (intermittent) or 3 (distributed) and say "price me with
+// this segment law", while the map keeps being evaluated and reported.
+//
+// The arms come in families: an auto pipe, which is 5.85 and must be
+// bit-identical, plus its forced twins on the SAME geometry.
+//
+//   H_*  D=0.08, horizontal     the map says intermittent (Nfr ~ 6.4)
+//        H_Auto  (no key)         -> 2
+//        H_Map   flowPattern 2    -> agrees: the readout must be byte-identical
+//                                    to H_Auto apart from the name
+//        H_Seg   flowPattern 0    -> segregated holdup law, map still printed
+//        H_Dist  flowPattern 3    -> distributed holdup law
+//
+//   T_*  D=0.20, horizontal     the map says transition (Nfr ~ 0.066), which
+//        is not a law of its own but a blend of the segregated law and
+//        lambda; forcing 0 or 2 collapses the blend onto one law.
+//        T_Auto / T_Seg / T_Int
+//
+//   D_*  D=0.035, L=20          the map says distributed (Nfr ~ 400)
+//        D_Auto / D_Seg         the opposite direction: a low-Nfr law on a
+//                                pipe the map puts at the far end of the map
+//
+//   I_*  D=0.08, L=500, elevation 100 (sin theta = 0.2, uphill)
+//        The override is not only the holdup law: the published inclination
+//        correction has a coefficient set PER REGIME, and uphill distributed
+//        takes no correction at all. So one declared number moves both.
+//        I_Auto (map intermittent, uphill r=2 set)
+//        I_Seg  (uphill r=0 set: d=0.011, e=-3.768, f=3.539, h=-1.614)
+//        I_Dist (no inclination correction, plus the distributed law)
+//
+// The checker (tests/check_steady_flow_pattern_forced.py) re-derives the
+// black-oil PVT, the map, the holdup law actually used and the inclination
+// set independently from the dictionary, marches each pipe from the reported
+// upstream pressure, and asserts:
+//   * an auto pipe is the 5.85 answer (no mapRegime token, map regime printed),
+//   * an override that AGREES with the map is byte-identical to its auto twin,
+//   * an override that DISAGREES prints mapRegime <map> FORCED, keeps the
+//     map's L1..L4 and lambda, and prices the holdup with the forced law,
+//   * the disagreement actually moves the answer (holdup and dp differ),
+//   * on the inclined arms the forced regime also switches the published
+//     inclination coefficient set (and removes it entirely when forcing 3),
+//   * flowPattern 1 / >3 / <-1 / fractional / single-phase are refused, and
+//     the transient and two-fluid loaders refuse the key as out of scope.
+// A high-GOR twin (lambda < 0.01, the map's Nfr < L1 segregated branch) is
+// forced to distributed, and a decreasing-inclination twin exercises the
+// downhill set.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.75;
+        oilDensity     850;
+        gor            80;    // sm3/sm3
+        waterCut       0;
+        temperature    340;   // K, isothermal
+        surfaceTension 0.025; // N/m
+    }
+}
+
+nodes
+{
+    WH1 {};
+    WH2 {};
+    WH3 {};
+    WH4 {};
+    WT1 {};
+    WT2 {};
+    WT3 {};
+    WD1 {};
+    WD2 {};
+    WI1 {};
+    WI2 {};
+    WI3 {};
+    Outlet { pressure 4.0e6; }
+}
+
+pipes
+{
+    // horizontal, the map's intermittent arm
+    H_Auto { from WH1; to Outlet; length 500; diameter 0.08;  roughness 4.6e-5; elevation 0; }
+    H_Map  { from WH2; to Outlet; length 500; diameter 0.08;  roughness 4.6e-5; elevation 0; flowPattern 2; }
+    H_Seg  { from WH3; to Outlet; length 500; diameter 0.08;  roughness 4.6e-5; elevation 0; flowPattern 0; }
+    H_Dist { from WH4; to Outlet; length 500; diameter 0.08;  roughness 4.6e-5; elevation 0; flowPattern 3; }
+
+    // horizontal, the map's transition arm
+    T_Auto { from WT1; to Outlet; length 500; diameter 0.20;  roughness 4.6e-5; elevation 0; }
+    T_Seg  { from WT2; to Outlet; length 500; diameter 0.20;  roughness 4.6e-5; elevation 0; flowPattern 0; }
+    T_Int  { from WT3; to Outlet; length 500; diameter 0.20;  roughness 4.6e-5; elevation 0; flowPattern 2; }
+
+    // horizontal, the map's distributed arm
+    D_Auto { from WD1; to Outlet; length 20;  diameter 0.035; roughness 4.6e-5; elevation 0; }
+    D_Seg  { from WD2; to Outlet; length 20;  diameter 0.035; roughness 4.6e-5; elevation 0; flowPattern 0; }
+
+    // uphill: the forced regime also selects the inclination coefficient set
+    I_Auto { from WI1; to Outlet; length 500; diameter 0.08;  roughness 4.6e-5; elevation 100; }
+    I_Seg  { from WI2; to Outlet; length 500; diameter 0.08;  roughness 4.6e-5; elevation 100; flowPattern 0; }
+    I_Dist { from WI3; to Outlet; length 500; diameter 0.08;  roughness 4.6e-5; elevation 100; flowPattern 3; }
+}
+
+sources
+{
+    s1  { node WH1; rate 0.004; }
+    s2  { node WH2; rate 0.004; }
+    s3  { node WH3; rate 0.004; }
+    s4  { node WH4; rate 0.004; }
+    s5  { node WT1; rate 0.004; }
+    s6  { node WT2; rate 0.004; }
+    s7  { node WT3; rate 0.004; }
+    s8  { node WD1; rate 0.004; }
+    s9  { node WD2; rate 0.004; }
+    s10 { node WI1; rate 0.004; }
+    s11 { node WI2; rate 0.004; }
+    s12 { node WI3; rate 0.004; }
+}
+
+solve
+{
+    maxIter 100;
+    tol     1e-10;
+}

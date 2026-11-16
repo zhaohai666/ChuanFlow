@@ -997,6 +997,11 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
             cfFatal("transient: pipe '" + name + "' declares eccentricity: the "
                     "eccentric annulus (5.87) is a steady-network "
                     "declaration; the transient row does not take one yet");
+        if (pd.has("flowPattern"))
+            cfFatal("transient: pipe '" + name + "' declares flowPattern: the "
+                    "writable flow-pattern dispatch (5.88) is a steady-network "
+                    "black-oil declaration; the transient row has no "
+                    "Beggs-Brill pattern map to override");
         p.roughness = pd.getScalarOr("roughness", 0.0);
         p.elevation = pd.getScalarOr("elevation", 0.0);
         p.initialFlow = pd.getScalarOr("initialFlow", 0.0);

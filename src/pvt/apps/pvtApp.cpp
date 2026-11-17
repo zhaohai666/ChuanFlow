@@ -9,6 +9,7 @@
 #include "cf/common/Log.h"
 #include "cf/pvt/PvtCase.h"
 #include "cf/pvt/PvtTable.h"
+#include "cf/pvt/Viscosity.h"
 
 using namespace cf;
 using namespace cf::pvt;
@@ -22,7 +23,7 @@ std::string num(double v)
     return os.str();
 }
 
-void reportOne(const FlashCase& c, double p)
+void reportOne(const FlashCase& c, double p, bool wantVisc)
 {
     const FlashResult r = tpFlash(c.feed, c.temperature, p, c.controls);
     log::info("pvt flash T ", num(c.temperature), " p ", num(p),
@@ -37,6 +38,35 @@ void reportOne(const FlashCase& c, double p)
         log::info("pvt y ", c.feed.components()[i].name, " ", num(r.vapourComposition[i]));
     }
     if (!r.converged) log::warn("flash: ", r.message);
+
+    // D7 (5.93): LBC residual viscosity of each flashed phase, gated on a
+    // `viscosity` block so untouched cases keep their exact report. Vm comes
+    // from the phase molar mass / density ( = PR molar volume) and Vc from
+    // PR's critical compressibility, matching the convenience overload.
+    if (wantVisc)
+    {
+        const std::vector<Component>& comps = c.feed.components();
+        std::vector<double> MWs(comps.size()), Tcs(comps.size()),
+            Pcs(comps.size()), Vcs(comps.size());
+        for (std::size_t i = 0; i < comps.size(); ++i)
+        {
+            MWs[i] = comps[i].molarMass * 1.0e3;
+            Tcs[i] = comps[i].Tc;
+            Pcs[i] = comps[i].Pc;
+            Vcs[i] = 0.3074 * kGasConstant * comps[i].Tc / comps[i].Pc;
+        }
+        auto phaseMu = [&](const std::vector<scalar>& zs, scalar M, scalar rho)
+        {
+            if (!(rho > 0.0)) return 0.0;
+            return lbcViscosity(c.temperature, M / rho, zs, MWs, Tcs, Pcs, Vcs);
+        };
+        log::info("pvt viscosity liquid ",
+                  num(phaseMu(r.liquidComposition, r.liquidMolarMass,
+                              r.liquidMassDensity)),
+                  " vapour ",
+                  num(phaseMu(r.vapourComposition, r.vapourMolarMass,
+                              r.vapourMassDensity)));
+    }
 }
 } // namespace
 
@@ -52,17 +82,18 @@ int main(int argc, char** argv)
     {
         const Dictionary caseDict = Dictionary::parseFile(argv[1]);
         const FlashCase c = loadFlashCase(caseDict);
+        const bool wantVisc = caseDict.has("viscosity");
 
         log::info("pvt: ", c.feed.size(), " components, feed ", c.feed.describe(),
                   " molarMass ", num(c.feed.molarMass()));
 
-        for (const double p : c.pressures) reportOne(c, p);
+        for (const double p : c.pressures) reportOne(c, p, wantVisc);
 
         if (c.computeBubblePoint)
         {
             const double pb = bubblePressure(c.feed, c.temperature);
             log::info("pvt bubble T ", num(c.temperature), " p ", num(pb));
-            reportOne(c, pb);
+            reportOne(c, pb, wantVisc);
         }
 
         // A coarse table shows interpolation and EOS agree; the regression

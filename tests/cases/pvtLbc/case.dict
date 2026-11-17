@@ -1,0 +1,28 @@
+// D7 increment 1 (5.93): Lohrenz-Bray-Clark compositional viscosity. A three
+// component feed is flashed over a pressure sweep; the `viscosity` block asks
+// chflow-pvt to report each phase's LBC residual viscosity. The checker
+// re-derives it from the reported phase state (Vm = M/rho, PR critical volume)
+// and validates the formula against the Whitson & Brule worked example.
+
+temperature 300.0;
+
+pressures (1.0e6 4.0e6 1.2e7);
+
+composition
+{
+    methane   0.40;
+    ethane    0.30;
+    propane   0.30;
+}
+
+solve
+{
+    tol 1.0e-12;
+    maxIter 500;
+    bubblePoint yes;
+}
+
+viscosity
+{
+    model lbc;
+}

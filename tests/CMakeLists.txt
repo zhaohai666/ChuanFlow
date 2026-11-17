@@ -1652,6 +1652,16 @@ add_test(
         $<TARGET_FILE:chflow-pvt>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtFlash/case.dict)
 
+# D7 increment 1 (5.93): LBC compositional viscosity. The checker validates the
+# formula against the published Whitson-Brule example and re-derives each phase
+# viscosity from the reported PR state, independent of the C++ kernel.
+add_test(
+    NAME verify.pvtLbc
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_lbc.py
+        $<TARGET_FILE:chflow-pvt>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtLbc/case.dict)
+
 if(CHFLOW_PYTHON_BINDINGS)
     add_test(
         NAME python.bindings

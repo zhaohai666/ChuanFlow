@@ -5,6 +5,7 @@ add_library(cf_pvt STATIC
     src/pvtTable.cpp
     src/pvtCase.cpp
     src/blackOil.cpp
+    src/viscosity.cpp
 )
 
 target_include_directories(cf_pvt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

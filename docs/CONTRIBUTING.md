@@ -1462,6 +1462,20 @@ python3 tests/check_two_fluid.py \
     "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
     "$PWD/tests/cases/twoFluidRheology/case.dict" rheology
 
+# 蜡析出 / 溶解（5.96 / D2 增量 1）：pvt 的无状态 van't Hoff 溶解度
+#   x_sat(T) = exp[-(dHf/R)(1/T - 1/Tf)]，
+# 1D 照抄 hydrate{} 的固相质量平衡 + 潜热耦合温度方程。析出边界是
+#   xsat(T)=z 的 T* = 1/(1/Tf - R ln z / dHf)，不是熔点 Tf 本身。
+# sealed 静止管 + 地温壁温跨析出边界：暖格不析出、冷格单调析蜡。
+# checker 用前帧报表 T 与 w 独立复现逐格隐式欧拉（1e-12）——所以 case 必须
+# reportEvery 1（每步一帧），否则 checker 拿不到中间步温度。
+./build/src/1d/apps/chflow-1d-twofluid tests/cases/twoFluidWaxPrecipitation/case.dict
+python3 tests/check_two_fluid_wax.py \
+    "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
+    "$PWD/tests/cases/twoFluidWaxPrecipitation/case.dict"
+# sibling：case_latent.dict 抬潜热（析出段瞬态 +2 K）、case_nowax.dict 删蜡块
+# （温度与主 case latentHeat=0 逐位相同），由 checker 自动跑。
+
 
 # 黑油 / PVT 混合规则决策（5.76 / A5 增量 2）：黑油 march 的黏度只有
 #   muM = muL*lambda + muG*(1-lambda) 一个入口，PVT march 只有 mu(p) 一个入口；

@@ -4704,6 +4704,32 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本。** `Components.h` +水声明 +Mixture kij API +`kij_` 成员、`components.cpp` +`water()`/registry/错误信息/`setBinaryInteraction`/`binaryInteraction`、`pengRobinson.cpp` 混合规则一处 `×(1−kij)`、`pvtCase.cpp` +嵌套块解析（~22 行），1 case（`pvtBinaryInteraction`，33 行）+ `check_pvt_binary_interaction.py`（282 行独立 Python PR）+ 1 add_test（`verify.pvtBinaryInteraction`，Test #145，0.07 s）。本增量 CTest 147 → 148（`-E mpiDecomposition` 后跑满 148/148 / 2624.11 s，code commit 2602481）。**D7 至此 CLOSED**（命名范围三格用满：LBC 黏度 §5.93 + Weinaug-Katz 表面张力 §5.94 + 声明 kij/含水酸气 §5.95；parachor/kij 内置表、组分物性接进 1D/VOF 另议）。
 
+### 5.96 蜡沉积第一次有了可核实的固液平衡（D2 增量 1）：van't Hoff 析蜡溶解度 + 局部析出/溶解一阶动力学 + 潜热进温度方程
+
+**这一格从哪来。** `docs/gap_analysis.md` 的 D2 原写「在 `src/pvt` 里增加固相质量平衡并与热力场耦合」，但与代码现状不符：`cf_pvt` 是无状态的闪蒸 / 黏度 / 表面张力函数库（`pvtApp.cpp` 逐 flash 报表，无状态成员）。真正的「固相体积分数 + 质量汇 + 潜热耦合温度方程」范式早已在 `src/1d` 的 `hydrate{}` 里（§5.44，`TwoFluidHydrate` / `TwoFluidPipe::hydrateStep`）。所以本增量**不在 pvt 造质量平衡**：pvt 只加一个无状态的 van't Hoff 溶解度纯函数，质量平衡落在 `TwoFluidPipe`，照抄 hydrate 的结构。
+
+**溶解度（理想溶液固液平衡，van't Hoff / Schröder–van Laar）。** 单一析出蜡组分的
+
+    ln x_sat(T) = −(ΔHf/R)(1/T − 1/Tf),   x_sat(T) = exp[−(ΔHf/R)(1/T − 1/Tf)]
+
+是固液平衡在理想溶液、ΔCp = 0、忽略压力依赖下的积分形式（活度系数取 1）。`Tf` 纯蜡熔点、`ΔHf` 摩尔熔化焓、`R = 8.314462618`。`x_sat(Tf) = 1`，低于熔点 `x_sat < 1`（可过饱和析出），高于熔点 `x_sat > 1`（全互溶）。常量取 **n-二十四烷 n-C24H50（CAS 646-31-1）**：`Tf = 323.75 K`（NIST Chemistry WebBook，Domanska 1999，TRC ±0.3 K；NIST 另报 35 值平均 `Tfus = 324±3 K`），`ΔHf = 54890 J/mol @ 324.1 K`（NIST，Domalski & Hearing 1996；另有 Mondieig 2004 的 53800、Hafsaoui 2007 的 59310）。`WaxSolubility.h/.cpp` 只转录这个 `exp`，与 PR 闪蒸完全解耦，checker 用 `math.exp` 独立复现到 12 位报表地板。
+
+**局部析出 / 溶解动力学（照抄 hydrate 的隐式欧拉结构）。** 声明蜡摩尔分数 `z`（液相蜡含量）与沉积蜡体积分数 `w` 满足 `c + w = z`（c 溶解态，逐格 store）。van't Hoff 平衡留 `c = min(z, x_sat(T))` 溶解，故平衡沉积量
+
+    w_eq = max(0, z − x_sat(T))
+
+逐格一阶弛豫 `dw/dt = −k(w − w_eq)`：`w < w_eq` 用 `growthRate`（析出），否则用 `dissolutionRate`（溶解）；隐式欧拉
+
+    w_new = (w/dt + k·w_eq)/(1/dt + k)
+
+无条件把 `w` 夹在 `[0, z]`。析出 `dw>0` 释放熔化潜热（`latentHeat`，J/m³ 液相蜡），溶解吸收，作为源项进 `thermalStep` 的对角 rhs（与 hydrate 同路径，乘 `alpha·dx·area/dt`）。**析出边界不是熔点 Tf 本身，而是 `x_sat(T) = z` 的温度** `T* = 1/(1/Tf − R ln z/ΔHf)`；本 case `z = 0.5` 给 `T* = 313.107 K`，远离 `Tf = 323.75 K`，checker 显式否定「用熔点当判据」的简化。
+
+**声明面与零声明逐位不变。** `wax{}` 七个键：`meltingTemperature`（默认 323.75）/ `fusionEnthalpy`（默认 54890）/ `waxFraction`（默认 0）/ `growthRate`（默认 0）/ `dissolutionRate`（默认 0）/ `latentHeat`（默认 0）/ `initial`（默认 0）。缺席 `wax{}` ⇒ `waxOn = false`：`waxStep` 首行返回、`wax_`/`waxDelta_` 空、温度 rhs 无新项、app 报表不打印 `wax` token——与无蜡孪生温度逐位相同（实测 max diff = 0）。六条大声拒收：负 `meltingTemperature`/`fusionEnthalpy`、`waxFraction` 越界 `[0,1]`、负 rate、`initial` 越界、负 `latentHeat`、声明 `wax{}` 却无 `thermal{}`。rate 与 z 是声明输入（无内置速率表）；latentHeat 允许 0（`latentHeat=0` 是纯输运见证）。
+
+**case 与判据。** `twoFluidWaxPrecipitation`：sealed 静止垂直管（`alpha=1`、`slipVelocity=0`、两端 sealed ⇒ 所有输运通量恒零，逐格独立演化），`length 200`、`sections 20`、地温壁温 `T_w(d) = 300 + 0.15(200 − d_drop)` 从 329.25 K 递减到 300.75 K，跨过析出边界 313.107 K：`T ≥ T*` 的 11 个暖格不析出、`T < T*` 的 9 个冷格单调析蜡。`z=0.5`、`kg=0.01`、`kd=0.02`、`latentHeat=0`（被动示踪）、`initial=0`、`dt=10`、`endTime=2000`、`reportEvery 1`（每步一帧，checker 才能用前帧温度逐步复现）。三个 case：主 case + `case_latent`（`latentHeat=1e9`，析出段瞬态抬温 +2.009 K）+ `case_nowax`（删 wax 块，温度逐位见证）。`check_two_fluid_wax.py` 独立复现：① 每帧每格用前帧报表 T 与 w 重推隐式欧拉（最差 1.583e-12）；② 闭式 `x_sat` 与 `w_eq = max(0,z−x_sat)`；③ 两臂（暖格恒净、冷格单调析出）；④ 末帧收敛到闭式平衡；⑤ `w∈[0,z]` 逐帧有界；⑥ 潜热孪生抬温 + 无蜡孪生逐位；⑦ 六条拒收。**本增量的边界**：沉积蜡是**附壁静止**的，本增量**不随液相 Godunov 通量输运**（蜡输运是增量 2）；溶解蜡是逐格 store 而非输运组分；不改内径 / 粗糙度（沉积层反馈是后续增量）；单一蜡拟组分，无沥青质 / CaCO₃ 结垢、无 PR 活度系数 γ_i、无 CPA/SAFT 缔合 EOS；只进 1D 两流体温度方程，不进 3D 壁面。
+
+**成本。** `WaxSolubility.h`（30 行纯函数 + 物性出处文档）+ `waxSolubility.cpp`（18 行），`TwoFluid.h`（`TwoFluidWax` 结构 + `waxOn`/`wax_` 状态 + `cellWax()`/`waxStep()` 接口），`twoFluid.cpp`（校验 + 初始化 + `waxStep` ~34 行 + step 接线 + 温度 rhs + loader），`twoFluidApp.cpp`（两个 emit 点各加 `wax` token），1 case（3 dict）+ `check_two_fluid_wax.py`（~260 行独立 exp/欧拉复现）+ 1 add_test（`verify.twoFluidWaxPrecipitation`，Test #138，0.67 s）。本增量 CTest 148 → 149（`-E mpiDecomposition` 后跑满 149/149 / 2407.31 s，code commit 2a1c646）。**D2 保持 OPEN**（余增量 2 蜡输运 / 增量 3 沉积反馈与沥青质、结垢）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

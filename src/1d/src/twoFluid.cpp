@@ -356,8 +356,19 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
             cfFatal("twoFluid: initial wax fraction outside [0,1]");
         if (wx.latentHeat < 0)
             cfFatal("twoFluid: negative wax latentHeat");
+        if (wx.depositRoughness < 0)
+            cfFatal("twoFluid: negative wax depositRoughness");
         wax_.assign(n_, wx.initial);
         waxDelta_.assign(n_, 0.0);
+        // 5.98: start the effective diameter at the declared bore. With
+        // feedback off dEff_ is never read by the wall law, so the old
+        // expressions stay bit-for-bit; with feedback on waxStep refreshes
+        // it from the deposit fraction every step.
+        dEff_.assign(n_, diameter_);
+        if (wx.feedback)
+            for (int i = 0; i < n_; ++i)
+                dEff_[i] = diameter_ * std::sqrt(
+                    std::max(1.0 - wax_[i], 1e-12));
     }
 
     if (cfg_.entrainmentOn)
@@ -486,14 +497,22 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     const double rho = mixtureRhoCell(i);
     const double v = std::abs(vM);
     if (v == 0) return 0.0;
+    // 5.98 (D2 increment 3): with feedback off, d == diameter_ and
+    // rr == relrough_[i] EXACTLY, so every expression below is the old law
+    // verbatim. With feedback on the deposit sets both the wall diameter and
+    // the exposed roughness; the thin-layer approximation leaves area() and
+    // the transport faces at the declared bore.
+    const bool fb = cfg_.waxOn && cfg_.wax.feedback;
+    const double d = fb ? dEff_[i] : diameter_;
+    const double rr = fb ? cfg_.wax.depositRoughness / d : relrough_[i];
     if (f.flowIndex <= 0 && !(f.yieldStress > 0))
     {
         // 5.75/5.77: the undeclared branch is the old law verbatim -- the
         // whole standing two-fluid suite is its bit-for-bit witness.
         const double mu = mixtureMu(f, a);
-        const double re = rho * v * diameter_ / mu;
-        const double fr = churchillFriction(re, relrough_[i])
-                        * (dxs_[i] / diameter_) * 0.5 * rho * v * v;
+        const double re = rho * v * d / mu;
+        const double fr = churchillFriction(re, rr)
+                        * (dxs_[i] / d) * 0.5 * rho * v * v;
         return fr;
     }
     // 5.75 (A5): a declared power-law liquid shares the wall with the gas.
@@ -509,7 +528,7 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     // laminar member tends to (4 dx/d) (alpha tau_0) from ABOVE -- the
     // moving-wall law's q = 0 limit is exactly the distributed threshold
     // the held row replaces, the same shape 5.49 gave the lumped row.
-    const double gamma = 8.0 * v / diameter_;
+    const double gamma = 8.0 * v / d;
     double tau;
     if (f.flowIndex > 0)
     {
@@ -527,7 +546,7 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     }
     if (f.yieldStress > 0) tau += a * f.yieldStress;
     const double muEff = tau / gamma;
-    const double re = rho * v * diameter_ / muEff;
+    const double re = rho * v * d / muEff;
     if (f.yieldStress > 0 && re < 1e-9)
     {
         // 5.77: churchillFriction clamps Re at 1e-12. A yielded fluid's
@@ -538,10 +557,10 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
         // the whole law, and its exact identity (4 dx/d) tau_w is finite
         // and independent of v. Above it the normal Churchill blend is
         // bit-for-bit what 5.75 already used.
-        return 4.0 * (dxs_[i] / diameter_) * tau;
+        return 4.0 * (dxs_[i] / d) * tau;
     }
-    const double fr = churchillFriction(re, relrough_[i])
-                    * (dxs_[i] / diameter_) * 0.5 * rho * v * v;
+    const double fr = churchillFriction(re, rr)
+                    * (dxs_[i] / d) * 0.5 * rho * v * v;
     return fr;
 }
 
@@ -574,8 +593,9 @@ double TwoFluidPipe::yieldThresholdPa() const
 {
     if (!(cfg_.fluid.yieldStress > 0)) return 0.0;
     double sum = 0;
+    const bool fb = cfg_.waxOn && cfg_.wax.feedback;
     for (int i = 0; i < n_; ++i)
-        sum += 4.0 * dxs_[i] / diameter_ * alpha_[i]
+        sum += 4.0 * dxs_[i] / (fb ? dEff_[i] : diameter_) * alpha_[i]
              * cfg_.fluid.yieldStress;
     return sum;
 }
@@ -1302,8 +1322,8 @@ void TwoFluidPipe::waxStep(double dt)
 {
     if (!cfg_.waxOn) return;
     const TwoFluidWax& wx = cfg_.wax;
-    // The deposited wax is wall-bound (no convection in this increment), so
-    // every section evolves independently on its own current temperature.
+    // The LOCAL reaction is per section on its own current temperature;
+    // convection of the deposited fraction happens in transportStep (5.97).
     // The dissolved wax is a per-cell store: total wax z (the declared
     // fraction) splits into dissolved c and deposited w, c + w = z. The
     // van't Hoff equilibrium leaves c = min(z, x_sat(T)) dissolved, so the
@@ -1330,6 +1350,11 @@ void TwoFluidPipe::waxStep(double dt)
         // precipitation (dw > 0) releases latent heat per m3 of liquid wax;
         // dissolution absorbs it. The thermal step consumes this source.
         waxDelta_[i] = alpha_[i] * dw;
+        // 5.98: the deposit shrinks the effective wall-shear diameter by the
+        // exact bore-area identity d_eff = D sqrt(1 - w). Refresh it after
+        // both transport (5.97) and this local reaction have set w.
+        if (wx.feedback)
+            dEff_[i] = diameter_ * std::sqrt(std::max(1.0 - wax_[i], 1e-12));
     }
 }
 
@@ -2003,6 +2028,9 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.wax.dissolutionRate = wd.getScalarOr("dissolutionRate", 0.0);
         c.wax.latentHeat = wd.getScalarOr("latentHeat", 0.0);
         c.wax.initial = wd.getScalarOr("initial", 0.0);
+        // 5.98: both keys are absent by default -> the old hydraulic path.
+        c.wax.feedback = wd.has("feedback") && wd.getBool("feedback");
+        c.wax.depositRoughness = wd.getScalarOr("depositRoughness", 0.0);
     }
 
     if (caseDict.has("entrainment"))

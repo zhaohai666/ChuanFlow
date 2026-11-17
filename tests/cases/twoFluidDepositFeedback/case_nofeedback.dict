@@ -1,0 +1,75 @@
+// D2 increment 3 (5.98): thin-layer deposit feedback on wall shear.
+// A horizontal laminar single-phase liquid line carries a STATIC deposited
+// wax fraction w = 0.5 (growthRate = dissolutionRate = 0, and the inlet
+// re-imposes the same fraction, so transport leaves w unchanged). With
+// feedback yes the effective wall-shear diameter is
+//   d_eff = D sqrt(1 - w) = D sqrt(0.5),
+// the exact remaining circular diameter when the deposit occupies fraction
+// w of the bore area. In the laminar Newtonian branch the wall law reduces
+// to dp_fric = 32 mu v dx / d^2, so the total loss must double relative to
+// the no-feedback twin. area(), transport faces and the thermal area stay at
+// the declared bore D (thin-layer approximation).
+fluid
+{
+    rhoL 850;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+    cL   2000;
+    cG   2150;
+}
+
+pipe
+{
+    length 100;
+    diameter 0.05;
+    roughness 0;
+    angleDeg 0;
+    sections 20;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.05; vsg 0; waterFraction 0;
+             waxDepositFraction 0.5; temperature 300; }
+    outlet { type fixedPressure; p 1.0e5; temperature 300; }
+}
+
+thermal
+{
+    wallHeatTransfer 500;
+    wallModel constant;
+    wallTemperature 300;
+}
+
+wax
+{
+    meltingTemperature 323.75;
+    fusionEnthalpy 54890;
+    waxFraction 0.5;
+    growthRate 0;
+    dissolutionRate 0;
+    latentHeat 0;
+    initial 0.5;
+    feedback no;
+    depositRoughness 0;
+}
+
+time
+{
+    dt 10;
+    endTime 10;
+    reportEvery 1;
+}

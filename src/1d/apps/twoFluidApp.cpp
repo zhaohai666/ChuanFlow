@@ -88,6 +88,10 @@ int main(int argc, char** argv)
                     const std::vector<double> wx
                         = nc.perPipe.waxOn ? s.cellWax()
                                            : std::vector<double>();
+                    const std::vector<double> de
+                        = nc.perPipe.waxOn && nc.perPipe.wax.feedback
+                              ? s.cellEffectiveDiameter()
+                              : std::vector<double>();
                     const std::vector<double> ent
                         = nc.perPipe.entrainmentOn ? s.cellEntrained()
                                                    : std::vector<double>();
@@ -99,6 +103,7 @@ int main(int argc, char** argv)
                                   ep.empty() ? "" : (" p " + num(ep[i])),
                                   hy.empty() ? "" : (" h " + num(hy[i])),
                                   wx.empty() ? "" : (" wax " + num(wx[i])),
+                                  de.empty() ? "" : (" dEff " + num(de[i])),
                                   ent.empty() ? ""
                                               : (" entr " + num(ent[i])));
                 }
@@ -162,6 +167,9 @@ int main(int argc, char** argv)
                 = c.hydrateOn ? s.cellHydrate() : std::vector<double>();
             const std::vector<double> wx
                 = c.waxOn ? s.cellWax() : std::vector<double>();
+            const std::vector<double> de
+                = c.waxOn && c.wax.feedback ? s.cellEffectiveDiameter()
+                                            : std::vector<double>();
             const std::vector<double> ent
                 = c.entrainmentOn ? s.cellEntrained()
                                   : std::vector<double>();
@@ -175,6 +183,7 @@ int main(int argc, char** argv)
                           ep.empty() ? "" : (" p " + num(ep[i])),
                           hy.empty() ? "" : (" h " + num(hy[i])),
                           wx.empty() ? "" : (" wax " + num(wx[i])),
+                          de.empty() ? "" : (" dEff " + num(de[i])),
                           ent.empty() ? "" : (" entr " + num(ent[i])));
             }
             if (c.slugOn)

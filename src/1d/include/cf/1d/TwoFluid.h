@@ -411,6 +411,19 @@ struct TwoFluidWax
     double dissolutionRate = 0;         // 1/s, dissolution rate at full drive
     double latentHeat = 0;              // J/m3 of wax precipitated (release)
     double initial = 0;                 // initial deposited wax volume fraction
+    // 5.98 (D2 increment 3): thin-layer hydraulic feedback. feedback=no keeps
+    // the bore and wall roughness exactly as declared (bit-for-bit old path).
+    // feedback=yes replaces the wall-shear diameter per cell by
+    //   d_eff = D sqrt(1 - w)      (deposit occupies fraction w of the bore
+    //                              area; D sqrt(1-w) is the exact remaining
+    //                              circular diameter)
+    // and exposes the deposit's own roughness to the wall law. area(), the
+    // transport face areas and the thermal area stay at D: the thin-layer
+    // approximation keeps area change second order while the wall shear (and
+    // the yield threshold) feel the deposit at first order.
+    bool feedback = false;
+    double depositRoughness = 0;        // m, absolute roughness of the exposed
+                                        // deposit (relative = rough/d_eff)
 };
 
 /// Film-droplet split of the liquid (annular flow, transport level only:
@@ -537,6 +550,10 @@ public:
     /// per-cell store, so the checker reads the equilibrium saturation from
     /// the reported section temperature, not from a transported field.
     std::vector<double> cellWax() const { return wax_; }
+    /// Effective wall-shear diameter per section (5.98). Equals the declared
+    /// bore everywhere unless wax{ feedback yes; } is declared, in which case
+    /// d_eff = D sqrt(1 - w).
+    std::vector<double> cellEffectiveDiameter() const { return dEff_; }
     /// Droplet fraction of the liquid per section (entrainment on);
     /// zeros unless the entrainment{} block is present.
     std::vector<double> cellEntrained() const { return entrained_; }
@@ -773,6 +790,9 @@ private:
                                    // of the liquid per section
     std::vector<double> waxDelta_; // this step's wax precipitation (positive)
                                    // per bulk m3, the latent-heat source
+    std::vector<double> dEff_;     // 5.98: effective wall-shear diameter;
+                                   // D when feedback is off, D sqrt(1-w) when
+                                   // on (area()/transport still use D)
     std::vector<double> entrained_; // droplet fraction of the liquid
                                     // (entrainment on)
     double wallHeatRate_ = 0;

@@ -1,0 +1,64 @@
+// D2 increment 4 (5.99): CaCO3 scale from the declared brine chemistry.
+// A sealed, static, isothermal single-phase line. The saturation ratio
+//   Omega = a(Ca2+) * a(CO3 2-) / Ksp = 1e-4 * 4.95e-5 / 3.311e-9 = 1.49502
+// is supersaturated (Omega > 1), so every cell relaxes toward the declared
+// linear-yield equilibrium
+//   s_eq = z_s * clamp(Omega - 1, 0, 1) = 0.4 * 0.49502 = 0.198008
+// with the same implicit-Euler relaxation wax uses. Ksp defaults to calcite
+// at 25 C (log Ksp = -8.480 +/- 0.020, Plummer & Busenberg 1982, USGS);
+// activities and Ksp are DECLARED case inputs - the kernel carries only the
+// saturation-ratio drive, not a geochemical speciation model.
+fluid
+{
+    rhoL 850;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+    cL   2000;
+    cG   2150;
+}
+
+pipe
+{
+    length 10;
+    diameter 0.05;
+    roughness 0;
+    angleDeg 0;
+    sections 10;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet  { type sealed; }
+    outlet { type sealed; }
+}
+
+scale
+{
+    calciumActivity 1e-4;
+    carbonateActivity 4.95e-5;
+    solubilityProduct 3.311e-9;
+    scaleFraction 0.4;
+    growthRate 0.05;
+    dissolutionRate 0.05;
+    initial 0;
+}
+
+time
+{
+    dt 10;
+    endTime 200;
+    reportEvery 1;
+}

@@ -1649,6 +1649,25 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidDepositFeedback/case.dict)
 
+# D2 increment 4 (5.99): asphaltene onset (declared AOP against the hydraulic
+# pressure profile) and CaCO3 scale (declared Omega = IAP/Ksp). One checker,
+# two modes, both re-deriving the implicit-Euler relaxation and the declared
+# equilibrium from case constants only.
+add_test(
+    NAME verify.twoFluidAsphalteneOnset
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_deposition.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidAsphalteneOnset/case.dict
+        asphaltene)
+add_test(
+    NAME verify.twoFluidScaleSaturation
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_deposition.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidScaleSaturation/case.dict
+        scale)
+
 # temperature equation: lumped-capacity relaxation onto the discrete closed
 # form, the steady heat-exchanger recurrence + wall/stream enthalpy identity,
 # and a shut-in well relaxing onto the geothermal line

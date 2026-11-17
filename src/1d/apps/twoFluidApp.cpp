@@ -92,6 +92,12 @@ int main(int argc, char** argv)
                         = nc.perPipe.waxOn && nc.perPipe.wax.feedback
                               ? s.cellEffectiveDiameter()
                               : std::vector<double>();
+                    const std::vector<double> az
+                        = nc.perPipe.asphalteneOn ? s.cellAsphaltene()
+                                                  : std::vector<double>();
+                    const std::vector<double> sc
+                        = nc.perPipe.scaleOn ? s.cellScale()
+                                             : std::vector<double>();
                     const std::vector<double> ent
                         = nc.perPipe.entrainmentOn ? s.cellEntrained()
                                                    : std::vector<double>();
@@ -104,6 +110,8 @@ int main(int argc, char** argv)
                                   hy.empty() ? "" : (" h " + num(hy[i])),
                                   wx.empty() ? "" : (" wax " + num(wx[i])),
                                   de.empty() ? "" : (" dEff " + num(de[i])),
+                                  az.empty() ? "" : (" asph " + num(az[i])),
+                                  sc.empty() ? "" : (" scale " + num(sc[i])),
                                   ent.empty() ? ""
                                               : (" entr " + num(ent[i])));
                 }
@@ -170,6 +178,11 @@ int main(int argc, char** argv)
             const std::vector<double> de
                 = c.waxOn && c.wax.feedback ? s.cellEffectiveDiameter()
                                             : std::vector<double>();
+            const std::vector<double> az
+                = c.asphalteneOn ? s.cellAsphaltene()
+                                 : std::vector<double>();
+            const std::vector<double> sc
+                = c.scaleOn ? s.cellScale() : std::vector<double>();
             const std::vector<double> ent
                 = c.entrainmentOn ? s.cellEntrained()
                                   : std::vector<double>();
@@ -184,6 +197,8 @@ int main(int argc, char** argv)
                           hy.empty() ? "" : (" h " + num(hy[i])),
                           wx.empty() ? "" : (" wax " + num(wx[i])),
                           de.empty() ? "" : (" dEff " + num(de[i])),
+                          az.empty() ? "" : (" asph " + num(az[i])),
+                          sc.empty() ? "" : (" scale " + num(sc[i])),
                           ent.empty() ? "" : (" entr " + num(ent[i])));
             }
             if (c.slugOn)

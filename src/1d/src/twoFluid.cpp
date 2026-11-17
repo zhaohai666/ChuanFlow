@@ -360,16 +360,50 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
             cfFatal("twoFluid: negative wax depositRoughness");
         wax_.assign(n_, wx.initial);
         waxDelta_.assign(n_, 0.0);
-        // 5.98: start the effective diameter at the declared bore. With
-        // feedback off dEff_ is never read by the wall law, so the old
-        // expressions stay bit-for-bit; with feedback on waxStep refreshes
-        // it from the deposit fraction every step.
-        dEff_.assign(n_, diameter_);
-        if (wx.feedback)
-            for (int i = 0; i < n_; ++i)
-                dEff_[i] = diameter_ * std::sqrt(
-                    std::max(1.0 - wax_[i], 1e-12));
     }
+
+    if (cfg_.asphalteneOn)
+    {
+        // 5.99: the AOP and its ramp are declared experimental/model inputs;
+        // the kernel only implements the onset equilibrium and the kinetics.
+        const TwoFluidAsphaltene& az = cfg_.asphaltene;
+        if (!(az.onsetPressure > 0))
+            cfFatal("twoFluid: asphaltene needs a positive onsetPressure");
+        if (az.onsetWidth < 0)
+            cfFatal("twoFluid: negative asphaltene onsetWidth");
+        if (!(az.asphalteneFraction >= 0) || az.asphalteneFraction > 1)
+            cfFatal("twoFluid: asphalteneFraction outside [0,1]");
+        if (!(az.growthRate >= 0) || !(az.dissolutionRate >= 0))
+            cfFatal("twoFluid: negative asphaltene rate");
+        if (az.initial < 0 || az.initial > 1)
+            cfFatal("twoFluid: initial asphaltene fraction outside [0,1]");
+        asph_.assign(n_, az.initial);
+    }
+
+    if (cfg_.scaleOn)
+    {
+        // 5.99: activities and Ksp are declared; the default Ksp cites
+        // calcite at 25 C. Only the drive Omega = IAP/Ksp vs 1 is physics.
+        const TwoFluidScale& sc = cfg_.scale;
+        if (sc.calciumActivity < 0 || sc.carbonateActivity < 0)
+            cfFatal("twoFluid: negative scale ion activity");
+        if (!(sc.solubilityProduct > 0))
+            cfFatal("twoFluid: scale needs a positive solubilityProduct");
+        if (!(sc.scaleFraction >= 0) || sc.scaleFraction > 1)
+            cfFatal("twoFluid: scaleFraction outside [0,1]");
+        if (!(sc.growthRate >= 0) || !(sc.dissolutionRate >= 0))
+            cfFatal("twoFluid: negative scale rate");
+        if (sc.initial < 0 || sc.initial > 1)
+            cfFatal("twoFluid: initial scale fraction outside [0,1]");
+        scale_.assign(n_, sc.initial);
+    }
+
+    // 5.98/5.99: start the effective diameter from the TOTAL declared
+    // deposit. With feedback off dEff_ is never read by the wall law, so the
+    // old expressions stay bit-for-bit; with feedback on the deposit steps
+    // refresh it every step via refreshDepositDiameter().
+    dEff_.assign(n_, diameter_);
+    refreshDepositDiameter();
 
     if (cfg_.entrainmentOn)
     {
@@ -1350,11 +1384,68 @@ void TwoFluidPipe::waxStep(double dt)
         // precipitation (dw > 0) releases latent heat per m3 of liquid wax;
         // dissolution absorbs it. The thermal step consumes this source.
         waxDelta_[i] = alpha_[i] * dw;
-        // 5.98: the deposit shrinks the effective wall-shear diameter by the
-        // exact bore-area identity d_eff = D sqrt(1 - w). Refresh it after
-        // both transport (5.97) and this local reaction have set w.
-        if (wx.feedback)
-            dEff_[i] = diameter_ * std::sqrt(std::max(1.0 - wax_[i], 1e-12));
+    }
+}
+
+// 5.98/5.99: one owner for the thin-layer diameter. The deposit that shrinks
+// the wall-shear bore is the TOTAL of every depositing species (wax +
+// asphaltene + scale); with only wax declared this is exactly the 5.98
+// behavior, bit for bit.
+void TwoFluidPipe::refreshDepositDiameter()
+{
+    if (!(cfg_.waxOn && cfg_.wax.feedback)) return;
+    for (int i = 0; i < n_; ++i)
+    {
+        const double w = wax_[i]
+            + (cfg_.asphalteneOn ? asph_[i] : 0.0)
+            + (cfg_.scaleOn ? scale_[i] : 0.0);
+        dEff_[i] = diameter_ * std::sqrt(std::max(1.0 - w, 1e-12));
+    }
+}
+
+// 5.99: asphaltene onset. The equilibrium comes from the local cell-centre
+// hydraulic pressure against the DECLARED AOP; the kinetics are the same
+// implicit-Euler first-order relaxation waxStep uses. No latent heat, no
+// transport, no junction mixing (wall-bound local field).
+void TwoFluidPipe::asphalteneStep(double dt)
+{
+    if (!cfg_.asphalteneOn) return;
+    const TwoFluidAsphaltene& az = cfg_.asphaltene;
+    const std::vector<double> pF = nodePressure();
+    for (int i = 0; i < n_; ++i)
+    {
+        const double p = 0.5 * (pF[i] + pF[i + 1]);
+        const double drive = az.onsetWidth > 0
+            ? (az.onsetPressure - p) / az.onsetWidth
+            : (az.onsetPressure - p > 0 ? 1.0 : 0.0);
+        const double aEq = az.asphalteneFraction
+            * std::min(std::max(drive, 0.0), 1.0);
+        const double k = asph_[i] < aEq ? az.growthRate
+                                        : az.dissolutionRate;
+        asph_[i] = std::min(
+            std::max((asph_[i] / dt + k * aEq) / (1.0 / dt + k), 0.0),
+            az.asphalteneFraction);
+    }
+}
+
+// 5.99: CaCO3 scale. Omega = IAP/Ksp from the DECLARED brine chemistry; the
+// deposited fraction relaxes toward z_s * clamp(Omega - 1, 0, 1) with the
+// same implicit-Euler relaxation. No latent heat, no transport.
+void TwoFluidPipe::scaleStep(double dt)
+{
+    if (!cfg_.scaleOn) return;
+    const TwoFluidScale& sc = cfg_.scale;
+    const double omega = sc.calciumActivity * sc.carbonateActivity
+                       / sc.solubilityProduct;
+    const double sEq = sc.scaleFraction * std::min(
+        std::max(omega - 1.0, 0.0), 1.0);
+    for (int i = 0; i < n_; ++i)
+    {
+        const double k = scale_[i] < sEq ? sc.growthRate
+                                         : sc.dissolutionRate;
+        scale_[i] = std::min(
+            std::max((scale_[i] / dt + k * sEq) / (1.0 / dt + k), 0.0),
+            sc.scaleFraction);
     }
 }
 
@@ -1391,6 +1482,9 @@ void TwoFluidPipe::step(double dt)
     entrainmentStep(dt);
     hydrateStep(dt);
     waxStep(dt);
+    asphalteneStep(dt);
+    scaleStep(dt);
+    refreshDepositDiameter();
     thermalStep(dt);
     vMOld_ = vM_;
     t_ += dt;
@@ -2031,6 +2125,39 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         // 5.98: both keys are absent by default -> the old hydraulic path.
         c.wax.feedback = wd.has("feedback") && wd.getBool("feedback");
         c.wax.depositRoughness = wd.getScalarOr("depositRoughness", 0.0);
+    }
+
+    if (caseDict.has("asphaltene"))
+    {
+        // 5.99: the AOP / width / fraction / rates are all case declarations
+        // (an experimental onset, not a kernel correlation).
+        c.asphalteneOn = true;
+        const Dictionary& ad = caseDict.getDict("asphaltene");
+        c.asphaltene.onsetPressure = ad.getScalar("onsetPressure");
+        c.asphaltene.onsetWidth = ad.getScalarOr("onsetWidth", 0.0);
+        c.asphaltene.asphalteneFraction
+            = ad.getScalarOr("asphalteneFraction", 0.0);
+        c.asphaltene.growthRate = ad.getScalarOr("growthRate", 0.0);
+        c.asphaltene.dissolutionRate
+            = ad.getScalarOr("dissolutionRate", 0.0);
+        c.asphaltene.initial = ad.getScalarOr("initial", 0.0);
+    }
+
+    if (caseDict.has("scale"))
+    {
+        // 5.99: brine chemistry is declared; Ksp defaults to calcite at
+        // 25 C (log Ksp = -8.480, Plummer & Busenberg 1982).
+        c.scaleOn = true;
+        const Dictionary& sd = caseDict.getDict("scale");
+        c.scale.calciumActivity = sd.getScalarOr("calciumActivity", 0.0);
+        c.scale.carbonateActivity
+            = sd.getScalarOr("carbonateActivity", 0.0);
+        c.scale.solubilityProduct
+            = sd.getScalarOr("solubilityProduct", 3.311e-9);
+        c.scale.scaleFraction = sd.getScalarOr("scaleFraction", 0.0);
+        c.scale.growthRate = sd.getScalarOr("growthRate", 0.0);
+        c.scale.dissolutionRate = sd.getScalarOr("dissolutionRate", 0.0);
+        c.scale.initial = sd.getScalarOr("initial", 0.0);
     }
 
     if (caseDict.has("entrainment"))

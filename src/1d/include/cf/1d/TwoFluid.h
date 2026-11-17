@@ -426,6 +426,52 @@ struct TwoFluidWax
                                         // deposit (relative = rough/d_eff)
 };
 
+/// 5.99 (D2 increment 4): asphaltene deposition driven by the DECLARED
+/// asphaltene-onset pressure AOP. The onset pressure is an experimental
+/// quantity of the declared fluid system (measured, e.g. by NIR / HPM) - the
+/// kernel does not carry an AOP correlation, exactly as it does not carry a
+/// kij or parachor table. Where the local cell-centre hydraulic pressure
+/// p (nodePressure profile) sits below the onset, the equilibrium deposit is
+/// the declared maximum fraction z_a (onsetWidth > 0 softens the step into a
+/// linear ramp over (pAOP - p)/onsetWidth); above it the asphaltene is fully
+/// soluble. First-order relaxation dw/dt = -k(w - w_eq) with implicit Euler,
+/// identical structure to waxStep. The deposit is wall-bound LOCAL: it is
+/// not convected and does not mix at junctions (transport is future work).
+/// No latent heat: the energy equation is untouched.
+struct TwoFluidAsphaltene
+{
+    double onsetPressure = 0;      // Pa, declared AOP of the fluid system
+    double onsetWidth = 0;         // Pa, 0 = sharp onset step
+    double asphalteneFraction = 0; // z_a, depositable volume fraction
+    double growthRate = 0;         // 1/s, deposition rate below onset
+    double dissolutionRate = 0;    // 1/s, redissolution rate above onset
+    double initial = 0;            // initial deposited volume fraction
+};
+
+/// 5.99 (D2 increment 4): CaCO3 scale deposition driven by the saturation
+/// ratio Omega = IAP / Ksp of the declared brine chemistry. The ion
+/// activities [Ca2+] and [CO3 2-] and the solubility product are DECLARED
+/// case inputs; the default Ksp cites calcite at 25 C, log Ksp = -8.480
+/// (+/- 0.020) (Plummer & Busenberg 1982, USGS; the same -8.48 appears in
+/// the geochemistry literature at large). SI = log10(Omega) is the standard
+/// saturation index. Omega > 1 is supersaturated (scale deposits), Omega < 1
+/// undersaturated (dissolution). The deposited fraction relaxes toward
+///   s_eq = z_s * clamp(Omega - 1, 0, 1)
+/// - a declared linear-yield model over Omega in [1, 2], since the deposit
+/// fraction is a pipeline-geometry quantity, not a thermodynamic one; only
+/// the DRIVE (Omega vs 1) is the verified physics. Same implicit-Euler
+/// relaxation as waxStep, wall-bound local, no latent heat.
+struct TwoFluidScale
+{
+    double calciumActivity = 0;    // declared a(Ca2+), mol/L scale
+    double carbonateActivity = 0;  // declared a(CO3 2-), mol/L scale
+    double solubilityProduct = 3.311e-9; // calcite 25 C: 10^-8.48
+    double scaleFraction = 0;      // z_s, depositable volume fraction
+    double growthRate = 0;         // 1/s, precipitation rate at full drive
+    double dissolutionRate = 0;    // 1/s, dissolution rate
+    double initial = 0;            // initial deposited volume fraction
+};
+
 /// Film-droplet split of the liquid (annular flow, transport level only:
 /// the closure, momentum and mixture properties stay untouched - the
 /// droplet fraction rides the gas but does not feed back yet). E_eq is the
@@ -464,6 +510,10 @@ struct TwoFluidCase
     TwoFluidHydrate hydrate;
     bool waxOn = false;          // wax precipitation solved (wax{} present)
     TwoFluidWax wax;
+    bool asphalteneOn = false;   // asphaltene onset solved (asphaltene{})
+    TwoFluidAsphaltene asphaltene;
+    bool scaleOn = false;        // CaCO3 scale solved (scale{} present)
+    TwoFluidScale scale;
     bool entrainmentOn = false;  // film-droplet split solved (entrainment{}
                                  // present)
     TwoFluidEntrainment entrainment;
@@ -554,6 +604,12 @@ public:
     /// bore everywhere unless wax{ feedback yes; } is declared, in which case
     /// d_eff = D sqrt(1 - w).
     std::vector<double> cellEffectiveDiameter() const { return dEff_; }
+    /// Deposited asphaltene volume fraction per section (5.99); zeros unless
+    /// the asphaltene{} block is present. Wall-bound local field.
+    std::vector<double> cellAsphaltene() const { return asph_; }
+    /// Deposited CaCO3 scale volume fraction per section (5.99); zeros unless
+    /// the scale{} block is present. Wall-bound local field.
+    std::vector<double> cellScale() const { return scale_; }
     /// Droplet fraction of the liquid per section (entrainment on);
     /// zeros unless the entrainment{} block is present.
     std::vector<double> cellEntrained() const { return entrained_; }
@@ -715,6 +771,12 @@ private:
     void entrainmentStep(double dt);
     void hydrateStep(double dt);
     void waxStep(double dt);
+    void asphalteneStep(double dt);
+    void scaleStep(double dt);
+    /// 5.98/5.99: refresh dEff_ from the TOTAL deposit (wax + asphaltene +
+    /// scale) under the thin-layer identity d_eff = D sqrt(1 - w_total).
+    /// With feedback off or nothing deposited this keeps d_eff = D.
+    void refreshDepositDiameter();
     void thermalStep(double dt);
     void formationStep(double dt);
     /// Evaluate the inlet rate schedule at the step midpoint (robust to
@@ -790,6 +852,8 @@ private:
                                    // of the liquid per section
     std::vector<double> waxDelta_; // this step's wax precipitation (positive)
                                    // per bulk m3, the latent-heat source
+    std::vector<double> asph_;     // 5.99: deposited asphaltene fraction
+    std::vector<double> scale_;    // 5.99: deposited CaCO3 scale fraction
     std::vector<double> dEff_;     // 5.98: effective wall-shear diameter;
                                    // D when feedback is off, D sqrt(1-w) when
                                    // on (area()/transport still use D)

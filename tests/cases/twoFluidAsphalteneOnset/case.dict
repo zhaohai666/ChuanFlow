@@ -1,0 +1,64 @@
+// D2 increment 4 (5.99): asphaltene onset deposition. A horizontal laminar
+// single-phase liquid line is pressure-driven (fixedPressure at both ends),
+// so the hydraulic pressure falls LINEARLY from inlet to outlet (uniform
+// friction per cell, no gravity). The declared asphaltene-onset pressure
+// AOP = 101500 Pa cuts the line: cell centres with p < AOP (cells 5..19)
+// deposit toward the declared maximum fraction z_a = 0.4, cells 0..4 (still
+// above onset) stay clean - the pressure analogue of the 5.96 temperature
+// front. Laminar Newtonian, so the checker has the exact closed forms
+//   v = dp D^2 / (32 mu L),  loss per cell = dp / nsec = 32 mu v dx / D^2
+// and reproduces the per-cell implicit-Euler relaxation frame by frame from
+// the reported vm/dp (asphalteneStep uses the same nodePressure profile).
+// AOP is a DECLARED experimental input - the kernel carries no AOP model.
+fluid
+{
+    rhoL 850;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+    cL   2000;
+    cG   2150;
+}
+
+pipe
+{
+    length 100;
+    diameter 0.05;
+    roughness 0;
+    angleDeg 0;
+    sections 20;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet  { type fixedPressure; p 1.02e5; alpha 1; temperature 300; }
+    outlet { type fixedPressure; p 1.00e5; alpha 1; temperature 300; }
+}
+
+asphaltene
+{
+    onsetPressure 101500;
+    asphalteneFraction 0.4;
+    growthRate 0.05;
+    dissolutionRate 0.05;
+    initial 0;
+}
+
+time
+{
+    dt 2;
+    endTime 200;
+    reportEvery 1;
+}

@@ -4644,6 +4644,35 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：新单元 `Viscosity.h`（44 行，三入口 + 完整公式推导文档）+ `viscosity.cpp`（92 行，Stiel-Thodos + Kay 平均 + Herning-Zipperer + 残余多项式 + PR 便捷重载），`pvtApp.cpp` +37（gated 相黏度报表），`src/pvt/CMakeLists.txt` +1，1 case（27 行）+ `check_pvt_lbc.py`（~210 行，公式自核实 + 内核重推 + 物理锚 + gated twin）+ 1 条 `add_test`（`verify.pvtLbc`，Test #143），**本增量 CTest 145 → 146**（`-E mpiDecomposition` 后跑满 **146/146**，见 `docs/gap_analysis.md` §6 实施日志）。**D7 保持 IN_PROGRESS**（余增量 2 组分表面张力、增量 3 含水 / 酸气）。
 
+### 5.94 组分 PVT 第一次有了表面张力（D7 增量 2）：Weinaug-Katz parachor 的界面张力由相态解出
+
+**这一格从哪来。** 增量 1（§5.93）把相黏度从常量变成相态的函数；增量 2 补上同一族里界面这一项：气液界面张力。此前黑油 / VOF / nodal 的 `surfaceTension` 只是一个常量（典型 0.03 N/m），与组成、温度、压力无关；组分闪蒸第一次让 sigma 由两相的摩尔密度与组成解出。
+
+**公式（SI，逐字核实）。** Weinaug-Katz（1943，Ind. Eng. Chem. 35:239）parachor 加权：
+
+    sigma [N/m] = [ sum_i P_i (x_i / Vml − y_i / Vmg) ]^4
+
+P_i 是组分 parachor，SI 单位 [N^0.25 m^2.75 / mol]；Vml / Vmg 是液 / 气相摩尔体积 [m³/mol]，由 PR 相态取 Vm = M / rho（M 相摩尔质量、rho 相质量密度，与 §5.93 黏度同一套相态）；x_i / y_i 是闪蒸液 / 气相摩尔分数。cgs parachor（dyn/cm 制）换算 SI 为 P_SI = P_cgs × 1e-6.75：sigma 由 dyn/cm→N/m 乘 1e-3、开四次方得 10^-0.75，摩尔密度由 mol/cm³→mol/m³ 乘 1e6、parachor 取其倒数故再乘 1e-6，合计 10^(-0.75−6) = 10^-6.75。公式按 MIT 许可的 `chemicals` 库 `Weinaug_Katz` 两个 worked example 逐字核实（复现到 absdiff ≤ 1.4e-17）。忽略气相密度（Vmg→∞）退化为 [sum P_i x_i / Vml]^4。
+
+**声明面与入口。** 新增 `cf/pvt/SurfaceTension.h`，两个入口：纯函数 `weinaugKatzSurfaceTension(parachors, Vml, Vmg, xs, ys)` 做显式算术；便捷重载 `weinaugKatzSurfaceTension(mix, T, p, parachors)` 内部 tpFlash 取相态再算。**parachor 是声明输入**，不是内核硬编码表：case 用 `surfaceTension{ model weinaugKatz; parachors (...); }` 按组分顺序给出 SI 值。内核只转录可核实的方程，不夹带任何未经核实的 parachor 数据表。单态（singlePhase）无气液界面，sigma = 0：x = y、rho_L = rho_V 使括号恒 0，另加 singlePhase 短路双保险。
+
+**case 与判据。** `pvtSurfaceTension`（methane 0.40 / ethane 0.30 / propane 0.30，T 300 K，1 / 4 / 12 MPa + 泡点，parachors (2e-5 3e-5 4e-5) 为**声明的示意 SI 输入**、非查表值）：
+
+| 判据 | 独立参照 | 结果 |
+| --- | --- | --- |
+| 公式自测 | chemicals `Weinaug_Katz` 两个 worked example（含 Vmg→∞） | absdiff ≤ 1.4e-17（atol 1e-12） |
+| 内核重推 | 每两相 flash 由报表相态独立重推 Vml=ML/rhoL、Vmg=MV/rhoV、x/y 再算 sigma 对 C++ 报表 | rtol 1e-9 / atol 1e-15，最差绝对偏差 6.8e-14（报表 12 位舍入地板） |
+| 单相零张力 | 单相气 / 单相液 flash 报表 sigma | 恒 0 |
+| 张力为正且单调 | 两相支 sigma>0；随压力升（向临界收敛）sigma 不增 | σ(4MPa) > σ(泡点) > 0 |
+| 忽略气相极限 | Vmg→∞ 的 sigma 不小于含气相密度者 | 逐 flash 成立 |
+| 门控 | 删去 surfaceTension 块后无 surfaceTension 报表、其余 pvt 行逐位不变 | 通过 |
+
+**实测。** 1 MPa 单相气 sigma = 0；4 MPa 两相（beta 0.885421015521）sigma = 0.0120614461006 N/m；12 MPa 单相液 sigma = 0；泡点 7.67764290488 MPa 两相（beta 2.5349391701e-10）sigma = 7.71340517502e-05 N/m。两相支 sigma(4MPa) > sigma(泡点) > 0，符合向临界收敛界面张力下降的物理。
+
+**本增量的边界。** ① parachor 是声明输入，**内置 parachor 表留待后续**——需可核实来源；NIST（Log/Diky/Huber 2023，Int J Thermophys 44:110）用 REFPROP 纯组分 sigma 关联式推温度依赖 parachor、指数 m=3.87、二元交互参数 δ_ij，且 parachor 截断在 0.9Tc，不是一张干净的常量表，故不在本格硬编码。② 本格是经典 m=4 形式（chemicals `Weinaug_Katz`），不含 NIST 的 m=3.87 与 δ_ij。③ 报表层：尚未接进 1D 摩阻或 VOF 界面力（VOF 仍走常量 / CSF）。④ 含水 / 酸气组分扩展是增量 3。⑤ `surfaceTension{}` 缺席即不报、其余 pvt 行逐位不变；全仓库只有本 case 声明 `model weinaugKatz`（`grep -rl "model weinaugKatz" tests/cases/` 命中一支）。注意 `surfaceTension` 这个词在黑油 / VOF / nodal 另有含义（常量或 advect 开关），故唯一性以 `model weinaugKatz` 计，不以裸 `surfaceTension` 计。
+
+**成本。** `SurfaceTension.h`（35 行，两入口 + 量纲推导文档）+ `surfaceTension.cpp`（42 行）+ `pvtApp.cpp` +34/−3（gated 报表 + 块解析 + parachor 长度校验）+ `src/pvt/CMakeLists.txt` +1，1 case（31 行）+ `check_pvt_surface_tension.py`（160 行）+ 1 add_test（`verify.pvtSurfaceTension`，Test #144，0.23 s）。本增量 CTest 146 → 147（`-E mpiDecomposition` 后跑满 147/147，见 §6）。**D7 保持 IN_PROGRESS**（余增量 3 含水 / 酸气）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

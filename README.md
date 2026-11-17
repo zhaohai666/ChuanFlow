@@ -91,8 +91,11 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 > `chflow.tp_flash` Python 接口；**组分黏度**已补上 Lohrenz-Bray-Clark（1964）残余黏度
 > （`cf_pvt` 的 `lbcViscosity`，临界体积由 PR `Zc=0.3074` 自洽给出，`chflow-pvt` 经
 > `viscosity{ model lbc; }` 逐相报表，公式按 Whitson-Brulé worked example 核实到 1e-12，
-> §5.93 / D7 增量 1）；黑油分离器、导热/组分表面张力关联式、
-> 水合物相平衡与生成条件仍待实现。
+> §5.93 / D7 增量 1）；**组分表面张力**已补上 Weinaug-Katz（1943）parachor 加权
+> （`cf_pvt` 的 `weinaugKatzSurfaceTension`，sigma=[Σ P_i(x_i/Vml−y_i/Vmg)]^4，parachor 为
+> 声明输入、内核只转录经 chemicals worked example 核实的方程，单相 σ=0，`chflow-pvt` 经
+> `surfaceTension{ model weinaugKatz; parachors (...); }` 报表，§5.94 / D7 增量 2）；
+> 黑油分离器、导热关联式、parachor 内置表与含水/酸气扩展、水合物相平衡与生成条件仍待实现。
 
 #### 3. 一维求解层 `src/1d`
 独立子系统，分为稳态求解器与瞬态求解器：
@@ -325,7 +328,7 @@ print(result.pressure_profile)
   黑油物性相关式（Standing 泡点、Vazquez-Beggs Rs/Bo/co、Beggs-Robinson 与
   Lee 黏度、DAK Z）+ `chflow-pvt` 应用 + Python 绑定 + CLI 已落地，
   EOS 内部不变量与解析回归全绿；
-  水合物相平衡/生成条件、EOS 黏度与界面张力、非等温闪蒸、以及把密度实时供给
+  水合物相平衡/生成条件、非等温闪蒸、以及把组分黏度/表面张力（LBC、Weinaug-Katz 报表已落地）与密度实时供给
   1D/3D 求解器待做）
 - M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口 🚧
   （VOF 连续表面力 CSF 与 PISO 动量耦合（静止液滴 Laplace 压差算例）与两相

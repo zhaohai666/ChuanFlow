@@ -33,6 +33,7 @@ Component nHexane();
 Component carbonDioxide();
 Component hydrogenSulphide();
 Component nitrogen();
+Component water();
 
 /// Lookup by the dictionary name (case sensitive, e.g. "nButane").
 /// Returns the component and sets found; use the throwing variant in
@@ -63,11 +64,19 @@ public:
     scalar molarMass() const; // kg/mol of the mixture
     scalar massFraction(std::size_t i) const;
 
+    /// Declared binary-interaction parameter for the PR van der Waals one-fluid
+    /// mixing rule a_ij = sqrt(a_i a_j)(1 - kij). Symmetric with a zero diagonal,
+    /// and zero everywhere until setBinaryInteraction is called, so a mixture
+    /// that declares none is bit-identical to the kij = 0 rule.
+    void setBinaryInteraction(std::size_t i, std::size_t j, scalar kij);
+    scalar binaryInteraction(std::size_t i, std::size_t j) const;
+
     std::string describe() const; // "methane 0.500000 ethane ..."
 
 private:
     std::vector<Component> comps_;
     std::vector<scalar> z_;
+    std::vector<std::vector<scalar>> kij_; // empty == all zero
 };
 
 } // namespace cf::pvt

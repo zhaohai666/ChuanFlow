@@ -28,6 +28,28 @@ FlashCase loadFlashCase(const Dictionary& caseDict)
         cfFatal("pvt: case needs a composition { } block");
     c.feed = loadComposition(caseDict.getDict("composition"));
 
+    // Optional declared binary-interaction parameters: a name-based symmetric
+    // matrix, binaryInteraction { methane { carbonDioxide 0.10; water 0.50; } }.
+    // Absent == kij = 0 everywhere, which is bit-identical to the legacy rule.
+    if (caseDict.has("binaryInteraction"))
+    {
+        const Dictionary& bi = caseDict.getDict("binaryInteraction");
+        for (const std::string& ni : bi.keys())
+        {
+            const std::size_t i = c.feed.index(ni);
+            const Dictionary::Node& nodeI = bi.find(ni);
+            if (nodeI.kind != Dictionary::Kind::block)
+                cfFatal("pvt: binaryInteraction entry '" + ni
+                        + "' must be a block of { component value; } pairs");
+            const Dictionary& row = *nodeI.block;
+            for (const std::string& nj : row.keys())
+            {
+                const std::size_t j = c.feed.index(nj);
+                c.feed.setBinaryInteraction(i, j, row.getScalar(nj));
+            }
+        }
+    }
+
     c.temperature = caseDict.getScalarOr("temperature", 300.0);
     if (caseDict.has("pressures"))
         c.pressures = caseDict.getScalarList("pressures");

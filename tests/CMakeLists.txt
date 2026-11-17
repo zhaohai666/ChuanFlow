@@ -1673,6 +1673,18 @@ add_test(
         $<TARGET_FILE:chflow-pvt>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtSurfaceTension/case.dict)
 
+# D7 increment 3 (5.95): declared PR binary interaction kij + water component.
+# The checker re-derives the whole PR phase state (a_ij = sqrt(a_i a_j)(1-kij),
+# cubic roots, ln phi) independently in Python from the reported composition and
+# the kij parsed from the case; a kij=0 twin must match and the declared kij must
+# differ from it.
+add_test(
+    NAME verify.pvtBinaryInteraction
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_binary_interaction.py
+        $<TARGET_FILE:chflow-pvt>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtBinaryInteraction/case.dict)
+
 if(CHFLOW_PYTHON_BINDINGS)
     add_test(
         NAME python.bindings

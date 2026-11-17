@@ -1,0 +1,34 @@
+// D7 increment 3 (5.95): declared PR binary-interaction parameters kij and a
+// water component. A methane / CO2 / H2S / water feed is flashed over a pressure
+// sweep; the `binaryInteraction` block declares a symmetric, name-based kij
+// matrix for the van der Waals one-fluid mixing rule a_ij = sqrt(a_i a_j)(1-kij).
+// The kij values below are DECLARED illustrative inputs (like the parachors of
+// 5.94), not a tabulated dataset baked into the kernel. The checker re-derives
+// each phase's PR compressibility, density and fugacity coefficients from the
+// reported composition with these kij and the standard component constants,
+// independent of the C++ kernel, and holds a kij=0 twin bit-identical.
+
+temperature 300.0;
+
+pressures (1.0e6 4.0e6 1.2e7);
+
+composition
+{
+    methane          0.70;
+    carbonDioxide    0.10;
+    hydrogenSulphide 0.05;
+    water            0.15;
+}
+
+solve
+{
+    tol 1.0e-12;
+    maxIter 500;
+}
+
+binaryInteraction
+{
+    methane          { carbonDioxide 0.10; hydrogenSulphide 0.08; water 0.50; }
+    carbonDioxide    { water 0.20; }
+    hydrogenSulphide { water 0.10; }
+}

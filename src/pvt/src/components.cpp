@@ -35,6 +35,10 @@ Component nHexane() { return makeComponent("nHexane", 86.178, 507.600, 30.250, 0
 Component carbonDioxide() { return makeComponent("carbonDioxide", 44.010, 304.128, 73.773, 0.2239); }
 Component hydrogenSulphide() { return makeComponent("hydrogenSulphide", 34.081, 373.400, 89.628, 0.0900); }
 Component nitrogen() { return makeComponent("nitrogen", 28.014, 126.192, 33.958, 0.0372); }
+// Water: IAPWS/NIST critical point Tc = 647.096 K, Pc = 22.064 MPa; acentric
+// factor 0.3443 (Reid/Prausnitz/Poling), MW 18.01528 g/mol. PR treats water as
+// a normal fluid; its polar/associating accuracy is a named boundary.
+Component water() { return makeComponent("water", 18.01528, 647.096, 220.64, 0.3443); }
 
 Component componentByName(const std::string& name, bool& found)
 {
@@ -49,6 +53,7 @@ Component componentByName(const std::string& name, bool& found)
     if (name == "carbonDioxide") return carbonDioxide();
     if (name == "hydrogenSulphide") return hydrogenSulphide();
     if (name == "nitrogen") return nitrogen();
+    if (name == "water") return water();
     found = false;
     return Component{};
 }
@@ -60,7 +65,7 @@ Component requireComponent(const std::string& name)
     if (!found)
         cfFatal("pvt: unknown component '" + name
                 + "' (known: methane, ethane, propane, iButane, nButane, "
-                  "nPentane, nHexane, carbonDioxide, hydrogenSulphide, nitrogen)");
+                  "nPentane, nHexane, carbonDioxide, hydrogenSulphide, nitrogen, water)");
     return c;
 }
 
@@ -109,6 +114,25 @@ scalar Mixture::massFraction(std::size_t i) const
 {
     const scalar m = molarMass();
     return m > 0 ? z_[i] * comps_[i].molarMass / m : 0.0;
+}
+
+void Mixture::setBinaryInteraction(std::size_t i, std::size_t j, scalar kij)
+{
+    const std::size_t n = comps_.size();
+    if (i >= n || j >= n)
+        cfFatal("pvt: binaryInteraction index out of range");
+    if (i == j)
+        cfFatal("pvt: binaryInteraction self-pair '" + comps_[i].name
+                + "' is not allowed (kii is identically zero)");
+    if (kij_.empty()) kij_.assign(n, std::vector<scalar>(n, 0.0));
+    kij_[i][j] = kij;
+    kij_[j][i] = kij;
+}
+
+scalar Mixture::binaryInteraction(std::size_t i, std::size_t j) const
+{
+    if (kij_.empty() || i == j) return 0.0;
+    return kij_[i][j];
 }
 
 std::string Mixture::describe() const

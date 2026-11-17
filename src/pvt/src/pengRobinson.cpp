@@ -88,8 +88,11 @@ PengRobinsonParams mixtureParameters(const Mixture& mix, scalar T, scalar p)
         prm.bMix += x[i] * prm.bI[i];
         for (std::size_t j = 0; j < n; ++j)
         {
-            // van der Waals one-fluid rule, binary interaction kij = 0
-            const scalar aij = std::sqrt(prm.aI[i] * prm.aI[j]);
+            // van der Waals one-fluid rule with a declared binary interaction
+            // kij (zero by default: x * (1 - 0) == x exactly, so an undeclared
+            // mixture is bit-identical to the kij = 0 rule).
+            const scalar kij = mix.binaryInteraction(i, j);
+            const scalar aij = std::sqrt(prm.aI[i] * prm.aI[j]) * (1.0 - kij);
             prm.aIJ[i][j] = aij;
             prm.aMix += x[i] * x[j] * aij;
         }

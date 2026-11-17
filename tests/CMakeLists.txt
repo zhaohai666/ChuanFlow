@@ -1662,6 +1662,17 @@ add_test(
         $<TARGET_FILE:chflow-pvt>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtLbc/case.dict)
 
+# D7 increment 2 (5.94): Weinaug-Katz compositional surface tension. The checker
+# validates the equation against the published chemicals worked examples and
+# re-derives sigma from the declared parachors and the reported PR phase state,
+# independent of the C++ kernel.
+add_test(
+    NAME verify.pvtSurfaceTension
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_surface_tension.py
+        $<TARGET_FILE:chflow-pvt>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtSurfaceTension/case.dict)
+
 if(CHFLOW_PYTHON_BINDINGS)
     add_test(
         NAME python.bindings

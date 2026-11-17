@@ -1,0 +1,32 @@
+// D7 increment 2 (5.94): Weinaug-Katz compositional surface tension. A three
+// component feed is flashed over a pressure sweep; the `surfaceTension` block
+// asks chflow-pvt to report the liquid-vapour parachor surface tension. The
+// parachors below are DECLARED illustrative SI inputs [N^0.25 m^2.75/mol], not
+// a tabulated dataset -- this increment transcribes only the verified
+// Weinaug-Katz equation (chemicals worked example), built-in parachors are
+// deferred. The checker re-derives sigma from these declared parachors and the
+// reported PR phase state (Vml = ML/rhoL, Vmg = MV/rhoV, x, y).
+
+temperature 300.0;
+
+pressures (1.0e6 4.0e6 1.2e7);
+
+composition
+{
+    methane   0.40;
+    ethane    0.30;
+    propane   0.30;
+}
+
+solve
+{
+    tol 1.0e-12;
+    maxIter 500;
+    bubblePoint yes;
+}
+
+surfaceTension
+{
+    model weinaugKatz;
+    parachors (2.0e-5 3.0e-5 4.0e-5);
+}

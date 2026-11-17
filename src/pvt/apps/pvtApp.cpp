@@ -9,6 +9,7 @@
 #include "cf/common/Log.h"
 #include "cf/pvt/PvtCase.h"
 #include "cf/pvt/PvtTable.h"
+#include "cf/pvt/SurfaceTension.h"
 #include "cf/pvt/Viscosity.h"
 
 using namespace cf;
@@ -23,7 +24,8 @@ std::string num(double v)
     return os.str();
 }
 
-void reportOne(const FlashCase& c, double p, bool wantVisc)
+void reportOne(const FlashCase& c, double p, bool wantVisc,
+               const std::vector<double>* parachors)
 {
     const FlashResult r = tpFlash(c.feed, c.temperature, p, c.controls);
     log::info("pvt flash T ", num(c.temperature), " p ", num(p),
@@ -67,6 +69,21 @@ void reportOne(const FlashCase& c, double p, bool wantVisc)
                   num(phaseMu(r.vapourComposition, r.vapourMolarMass,
                               r.vapourMassDensity)));
     }
+
+    // D7 (5.94): Weinaug-Katz parachor surface tension of the liquid-vapour
+    // interface, gated on a `surfaceTension` block. Vml/Vmg come from the phase
+    // molar mass / density (= PR molar volume); a single-phase flash has no
+    // interface and reports 0.
+    if (parachors)
+    {
+        scalar sigma = 0.0;
+        if (!r.singlePhase && r.liquidMassDensity > 0.0 && r.vapourMassDensity > 0.0)
+            sigma = weinaugKatzSurfaceTension(
+                *parachors, r.liquidMolarMass / r.liquidMassDensity,
+                r.vapourMolarMass / r.vapourMassDensity,
+                r.liquidComposition, r.vapourComposition);
+        log::info("pvt surfaceTension ", num(sigma));
+    }
 }
 } // namespace
 
@@ -84,16 +101,30 @@ int main(int argc, char** argv)
         const FlashCase c = loadFlashCase(caseDict);
         const bool wantVisc = caseDict.has("viscosity");
 
+        const bool wantSigma = caseDict.has("surfaceTension");
+        std::vector<double> parachors;
+        if (wantSigma)
+        {
+            const Dictionary& st = caseDict.getDict("surfaceTension");
+            const std::string model = st.getWordOr("model", "weinaugKatz");
+            if (model != "weinaugKatz")
+                cfFatal("pvt: unknown surfaceTension model '" + model + "'");
+            parachors = st.getScalarList("parachors");
+            if (parachors.size() != c.feed.size())
+                cfFatal("pvt: surfaceTension parachors must give one value per component");
+        }
+        const std::vector<double>* paraPtr = wantSigma ? &parachors : nullptr;
+
         log::info("pvt: ", c.feed.size(), " components, feed ", c.feed.describe(),
                   " molarMass ", num(c.feed.molarMass()));
 
-        for (const double p : c.pressures) reportOne(c, p, wantVisc);
+        for (const double p : c.pressures) reportOne(c, p, wantVisc, paraPtr);
 
         if (c.computeBubblePoint)
         {
             const double pb = bubblePressure(c.feed, c.temperature);
             log::info("pvt bubble T ", num(c.temperature), " p ", num(pb));
-            reportOne(c, pb, wantVisc);
+            reportOne(c, pb, wantVisc, paraPtr);
         }
 
         // A coarse table shows interpolation and EOS agree; the regression

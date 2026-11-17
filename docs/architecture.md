@@ -4558,6 +4558,42 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：新单元 `src/1d/include/cf/1d/RodPump.h`（137 行：四条陈述 + 三态 + 22 个卡片读数的完整推导文档）+ `src/1d/src/rodPump.cpp`（77 行）+ `src/1d/CMakeLists.txt` 1 行；`network.cpp` +203/−3（`pipeIsRodPump`、泵范围 12 条拒收 + 通用几何门让位 + `solveRodPumpConstant` 装配与电导下限 + loader 七键与两条校验 + fill 路由两条），`Network.h` +82（`RodPumpReadout` 22 个字段与字典语法文档），app +30（`rod <STATE> wmax … wmin … dmax … dmin … wr … fo … fomax … upthrust … stretch … stroke … seff … ev … disp … m … work … power … cbe`），`transient.cpp` +9 / `twoFluid.cpp` +18（两处 loader）/ `nodal.cpp` +12 三处拒收 + 1 case（221 行）+ 1 checker（822 行 / 326 判据）+ 1 条 `add_test`，case + 34 条拒收探针，**本增量 CTest 142 → 143**（`-E mpiDecomposition` 后跑满 **143/143 / 2077.99 s**，见 `docs/gap_analysis.md` §6 实施日志）。
 
+### 5.91 起伏管线的低点第一次有了积液图与段塞起始准则（D6 增量 1）：`terrain{}` 是一层**只读统计**，叠在输运已经解出的持液率与链已经携带的高程上——一个 dip 是高程折线的严格局部极小，它的 basin 向两侧爬到最近的 crest（否则到链端），池子淹到**较低那个边界 crest**（spill level）以下几何容积时即 `fill = inventory / capacity ≥ 1`，段塞起始于是**体积守恒 + 静力学**，不是一条转录来的关联式
+
+**这一格从哪来**：`docs/gap_analysis.md` 的 **D6**（地形诱发段塞，起伏管线低点积液），参考工具 OLGA terrain-induced slugging。此前 `pipes{}` 各 section 已能倾角（§5.7x 两流体链的 `sinT_` / `centerDrop_`），动态闭合的逐格重力驱动 `(1/ρ_G − 1/ρ_L) ρ_m g sinT` 也早已把液相往低处赶——但**没有一张图告诉用户低点在哪、积了多少、什么时候会翻成段塞**。 slug{}（§5.7x）已经示范了「只读统计层」的样子：它在输运解出的 α 上数极大连续段，不加任何物理。本格把同一模式搬到高程上：`terrainDips()` 读 `dxs_`/`sinT_` 折出的高程折线与 `alpha_`，报每个低点的 basin 积液、几何 spill 容量与充满比，**一个方程都不改**。估 1 增量（D6 共 2），实测约 1：内核 `terrainDips()` 71 行 + 头文件两个结构体与文档 41 行 + loader 9 行 + app 15 行 + 1 case + checker terrain 模 ~225 行。
+
+**声明面与几何核心**：`terrain{ minDepth <m>; }` 一个可选块，`minDepth`（默认 0）滤掉竖直落差小于它的 dip；负值大声拒收（`negative terrain minDepth`）。块缺席 ⇒ `terrainOn` 为假、`terrainDips()` 返回空、**输运逐位不变**（checker 的 undeclared twin 逐字节见证）。核心五步全是几何：
+
+1. **高程折线**：`z[f+1] = z[f] + dx·sinT`（angleDeg 正为上坡，与 `centerDrop_` 同号——首版把符号写反，dip 数 0，当场被拦下），`arc[f+1] = arc[f] + dx`。face f 在 cell f 的上游端，face n 是出口。
+2. **dip 与 basin**：dip 是严格局部极小（`z[fd] < z[fd−1] && z[fd] < z[fd+1]`）；basin 上界 `up` = 向左最近的 crest（`z[f] > z[f−1] && z[f] > z[f+1]`，否则链首 0），下界 `dn` = 向右最近的 crest（否则链尾 n）。
+3. **spill level 与 depth**：池子从**较低**那个边界 crest 翻出去，`zSpill = min(z[up], z[dn])`，`depth = zSpill − z[fd]`（dip 底在 spill 面下的竖直深度）；`depth < minDepth` 则跳过。
+4. **几何容量**：basin 里每格贡献其高程落在 spill 面以下的弧长分数——cell 高程从 `z[i]` 线性到 `z[i+1]`，`frac = clamp((zSpill − min(z[i],z[i+1]))/|dz|, 0, 1)`（水平格 `|dz|<1e-14` 时整格在面下取 1 否则 0），`capacity = Σ dx·frac`。这是**单位孔径面积下淹在 spill 自由面里的管长**，纯几何，与流体无关。
+5. **起始准则与读数**：`inventory = Σ_{basin} α·dx`（输运解出的持液率），`fill = inventory / capacity`，`slugReady = fill ≥ 1`（池子已到 spill 点，再来液必翻过 crest 成段塞）；`head = ρ_L g depth` 是段塞要克服的静水举升。`position = arc[fd]`、`basinLength = Σ dx`。
+
+**case 与判据**：新增 `tests/cases/twoFluidTerrain/case.dict`（63 行，**密封 V 形链**：reachA 30 m / −10° / 30 段，dropB 5 m / −60° / 5 段，climbC 5 m / +60° / 5 段，riseD 10 m / +5° / 10 段，共 50 m / 50 段；`closure{ model dynamic; interfacialDrag 1000; }`，`initial{ alpha 0.55; }`，两端 sealed，`terrain{ minDepth 0; }`，dt 0.01 / endTime 60 / 6000 步）。出口是较低边界 crest（z = −4.3378 m）故即 spill level；动态闭合的逐格重力驱动把液相从两侧赶进全局低点（arc 35 m，z = −9.5395 m），basin（整条链，crest 到 crest）收尽密封存量 `α0·L = 27.5 m`，而几何 spill 容量只有 `cap = 25.0190991877 m`。于是 `fill = α0·L/cap ≈ 2α0`：
+
+| 量 | 打印值 | 来源 |
+|---|---|---|
+| position s | 35 m | arc[fd]，低点在 dropB 末 |
+| depth | 5.2016844464 m | zSpill − z[fd] = −4.3378 − (−9.5395) |
+| basinLength | 50 m | 整条链（无内部 crest） |
+| inventory | 27.5 m | α0·L = 0.55×50（密封守恒） |
+| capacity | 25.0190991877 m | Σ dx·frac，淹在出口高程下的弧长 |
+| fill | 1.09916027726 | 27.5 / 25.0190991877 ≥ 1 ⇒ **SLUG-READY** |
+| head | 51011.0987763 Pa | ρ_L g depth = 1000×9.80665×5.2017 |
+
+`check_two_fluid.py` **terrain 模**从 case 自己的 pipes 块（length / angleDeg / sections / diameter）**独立重推**整张图：高程折线、dip、basin、spill 容量一个数都不存，逐帧断言打印的 position/depth/len/cap 对几何（≤1e-8）、head 对 `ρ_L g depth`（1e-9 相对，报表 12 位舍入）、inventory 对**打印格 α 在 basin 上的和**（≤1e-9）、fill 对 inventory/capacity（≤1e-9）、verdict 对 `fill≥1`、**密封总量 Σα·dx 每帧恰等 α0·L**（≤1e-9）。终态另验「液相真的坐在低点」：dip 格 α≈0.9999 而两链端 α≈0.0004/0.0008（已泄成气）。四个 sibling 与一条拒收：
+
+1. **欠充满**（α0=0.40）：同几何、少液 ⇒ `fill = 0.40·L/cap = 0.799389292554 < 1`，**POOLING**（池子还没到 spill 点）。
+2. **minDepth 滤子**（minDepth 10 > depth 5.2）：报 `terrain count 0`。
+3. **单调上坡 reach**（无局部极小）：`terrain count 0`。
+4. **undeclared twin**（删去 `terrain{}`）：终态 cell α / vm / dp **逐字节相同**——terrain 是只读图，不动输运。
+5. **负 minDepth 拒收**：非零退出且点名 `negative terrain minDepth`。
+
+**本增量的边界**：① 这是**起始准则的几何半**，不是段塞动力学：`slugReady` 只标「池子已到 spill 点」，**真正的段塞捕获 / 释放 / 追踪属 D6 增量 2**（本格不移动任何界面、不生成 slug body）。② dip / basin / crest 都读**离散折线**（逐格常倾角），不是连续地形的光滑极值；水平格按整格在面下 / 面上处理。③ capacity 是**单位孔径面积**的淹没弧长（与 slug{} 的 inventory 同量纲），变径链的孔径加权不在本格。④ 只接**串行两流体链**（network 分支的 loader 同样认 `terrain{}` 但 app 暂不打印其图）；head 用 `ρ_L`（液相静水），不扣气相浮力。⑤ 零声明逐位不变：`terrain{}` 缺席即 `terrainOn` 为假、`terrainDips()` 空，且全仓库只有本 case 声明它（`grep -rl "terrain" tests/cases/` 命中一支），不可能扰动任何既有数字——`-E mpiDecomposition` 排除后跑满 **144/144**（A11 的 `verify.mpiDecomposition` 仍在工作树里注册而不运行）。**D6 保持 IN_PROGRESS**（余增量 2 段塞捕获 / 释放动力学）。
+
+**成本**：`src/1d/include/cf/1d/TwoFluid.h` +41（`TwoFluidTerrain` / `TwoFluidTerrainDip` 两结构体 + 起始准则推导文档 + `terrainOn`/`terrain` 字段 + `terrainDips()` 声明），`src/1d/src/twoFluid.cpp` +80（`terrainDips()` 71 行 + loader 9 行），`src/1d/apps/twoFluidApp.cpp` +15（`terrain count N` 与逐 dip `terrain dip k s … depth … len … inv … cap … fill … head … <SLUG-READY|POOLING>`），1 case（63 行）+ checker terrain 模 ~225 行 + 1 条 `add_test`（`verify.twoFluidTerrain`，Test #136），**本增量 CTest 143 → 144**（`-E mpiDecomposition` 后跑满 **144/144**，见 `docs/gap_analysis.md` §6 实施日志）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

@@ -330,6 +330,10 @@ struct TwoFluidSlugBody
 struct TwoFluidTerrain
 {
     double minDepth = 0; // m, smallest dip depth (spill level - bottom) reported
+    /// D6 increment 2: kinematic velocity (m/s) of a captured terrain slug.
+    /// 0 (default) keeps increment 1's read-only pooling map; > 0 enables the
+    /// sealed capture / travel / discharge cycle (terrainSlugStep).
+    double slugVelocity = 0;
 };
 
 struct TwoFluidTerrainDip
@@ -342,6 +346,26 @@ struct TwoFluidTerrainDip
     double fill = 0;        // inventory / capacity (>= 1 = spill point reached)
     double head = 0;        // Pa, rhoL g depth: the hydrostatic lift of a slug
     bool slugReady = false; // fill >= 1
+    int dipFace = 0;        // face index of the dip (cell starting at the dip)
+    int basinStart = 0;     // first basin cell (upstream crest, else 0)
+    int basinEnd = 0;       // one past the last basin cell (downstream crest, else n)
+};
+
+/// D6 increment 2: a captured terrain slug, a lumped liquid volume (per m2 of
+/// bore) that travels downstream at the declared kinematic velocity. On
+/// capture the basin is drawn down to its spill capacity and the excess becomes
+/// this lump; on reaching the outlet the lump is discharged into the downstream
+/// reach's available holdup capacity (1 - alpha) dx, so alpha stays in [0, 1]
+/// and the sealed total liquid sum(alpha dx) + sum(active volume) is conserved
+/// exactly. This is a reduced kinematic cycle (constant travel velocity, no
+/// shedding, no gas-pressure feedback): volume conservation + kinematics, not a
+/// transcribed correlation.
+struct TwoFluidTerrainSlug
+{
+    double front = 0;        // m along the chain, arc of the slug front
+    double volume = 0;       // liquid per m2 of bore carried by the lump
+    bool active = false;     // a lump is in flight
+    double capturedFrom = 0; // basin inventory at the capture instant (diagnostic)
 };
 
 /// Gas-hydrate kinetics (see the class documentation above). The equilibrium
@@ -490,6 +514,13 @@ public:
     /// spill-fill initiation verdict (empty unless the terrain{} block is
     /// present). See TwoFluidTerrain.
     std::vector<TwoFluidTerrainDip> terrainDips() const;
+    /// D6 increment 2: the captured terrain slug lumps, one per dip in flow
+    /// order (empty unless terrain{ slugVelocity > 0 } is declared). See
+    /// TwoFluidTerrainSlug.
+    std::vector<TwoFluidTerrainSlug> terrainSlugs() const;
+    /// Number of slug discharges into the downstream reach so far (the cycle
+    /// count witnessed by the checker); zero unless slug dynamics is on.
+    int terrainDeposits() const { return terrainDeposits_; }
     /// Wall heat the sections absorb this step, W (positive = into the fluid);
     /// zero unless thermal is on.
     double wallHeatRate() const { return wallHeatRate_; }
@@ -624,6 +655,7 @@ private:
     void momentumSolve(double dt);
     void slipStep(double dt);
     void transportStep(double dt);
+    void terrainSlugStep(double dt);
     void entrainmentStep(double dt);
     void hydrateStep(double dt);
     void thermalStep(double dt);
@@ -680,6 +712,8 @@ private:
     std::vector<double> centerDrop_; // vertical drop of each cell centre
                                      // from the chain inlet
     std::vector<double> alpha_, water_, T_;
+    std::vector<TwoFluidTerrainSlug> terrainSlugs_; // D6 inc 2: one lump per dip
+    int terrainDeposits_ = 0; // D6 inc 2: slug discharges so far (cycle count)
     std::vector<double> slip_;    // dynamic closure: vG - vL per section
     std::vector<double> sDotOld_; // last step's ds/dt, the lagged slip
                                   // inertia the mixture momentum feels

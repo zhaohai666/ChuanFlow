@@ -1,0 +1,67 @@
+// D6 increment 2: the terrain slug capture / travel / discharge cycle. The same
+// sealed V-chain as increment 1 (50 m / 50 sections, global low point at arc
+// 35 m, spill capacity cap ~= 25.019 m, sealed liquid alpha0 * L = 27.5 m), now
+// with terrain{ slugVelocity 0.5 } (m/s) enabling the reduced kinematic cycle:
+//   capture   when the basin reaches its spill point (fill >= 1) the excess
+//             above capacity bridges the pipe and becomes a lumped slug; the
+//             basin is drawn down to exactly capacity (proportional drawdown).
+//   travel    the lump front advances at the declared slugVelocity (0.5 m/s).
+//   discharge when the front reaches the outlet the lump is spread into the
+//             downstream reach's available holdup capacity (1 - alpha) dx, so
+//             alpha stays in [0, 1] and the gravity drive then drains it back
+//             toward the low point -> re-pooling -> re-capture (a relaxation
+//             oscillator).
+// The quantitative anchor is EXACT sealed conservation every frame:
+//   sum(alpha dx) + sum(active slug volume) = alpha0 * L,
+// plus the capture relation vol = capturedFrom - cap and the kinematic front
+// advance front += slugVelocity dt. tests/check_two_fluid.py mode terrainslug
+// re-derives the geometry from the pipes block, checks conservation / capture /
+// kinematics / alpha bounds every frame, witnesses >= 2 discharges (a full
+// cycle), and runs the slugVelocity-0 bit-identical twin and a negative-velocity
+// refusal. slugVelocity absent or 0 keeps increment 1's read-only map exactly.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipes
+{
+    reachA { length 30; diameter 0.05; roughness 0; angleDeg -10; sections 30; }
+    dropB  { length 5;  diameter 0.05; roughness 0; angleDeg -60; sections 5; }
+    climbC { length 5;  diameter 0.05; roughness 0; angleDeg 60;  sections 5; }
+    riseD  { length 10; diameter 0.05; roughness 0; angleDeg 5;   sections 10; }
+}
+
+closure
+{
+    model dynamic;
+    interfacialDrag 1000;
+}
+
+initial
+{
+    alpha 0.55;
+    water 0;
+}
+
+boundaries
+{
+    inlet  { type sealed; }
+    outlet { type sealed; }
+}
+
+terrain
+{
+    minDepth 0;
+    slugVelocity 0.5;
+}
+
+time
+{
+    dt 0.01;
+    endTime 120;
+    reportEvery 100;
+}

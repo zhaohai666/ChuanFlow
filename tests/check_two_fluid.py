@@ -3631,6 +3631,206 @@ elif mode == "terrain":
         if not ok:
             fails.append("rejection: negative terrain minDepth")
 
+elif mode == "terrainslug":
+    # 5.92 / D6 (increment 2): the sealed terrain slug capture / travel /
+    # discharge cycle. A reduced kinematic relaxation oscillator layered on the
+    # transport: when a basin reaches its spill point (increment 1's fill >= 1)
+    # the excess above the geometric spill capacity is swept into a lumped slug
+    # and the basin is drawn down to exactly capacity; the lump front advances
+    # at the declared slugVelocity; on reaching the outlet the lump is spread
+    # into the downstream reach's available holdup capacity (1 - alpha) dx, so
+    # alpha stays in [0, 1] and gravity drains it back to the low point ->
+    # re-pooling -> re-capture. The quantitative anchors are EXACT sealed
+    # conservation sum(alpha dx) + sum(active volume) = alpha0 * L every frame,
+    # the capture relation vol = capturedFrom - cap, the kinematic front advance
+    # front += slugVelocity dt (between discharges), alpha in [0, 1], and a
+    # witnessed full cycle (>= 2 discharges with re-capture). The geometry is
+    # re-derived from the case pipes block independently. Siblings: the
+    # slugVelocity-0 / absent bit-identical read-only twin and a negative-velocity
+    # refusal.
+    import os
+    import re as _re
+    import tempfile
+
+    text = open(case).read()
+    secs = []
+    for m in _re.finditer(r"(\w+)\s*\{([^{}]*angleDeg[^{}]*)\}", text):
+        body = m.group(2)
+        def key(k, cast=float):
+            mm = _re.search(k + r"\s+([-\d.eE+]+)", body)
+            return cast(mm.group(1)) if mm else None
+        secs.append((key("length"), key("angleDeg"), key("sections", int)))
+    rhoL = float(_re.search(r"rhoL\s+([-\d.eE+]+)", text).group(1))
+    alpha0 = float(_re.search(r"initial\s*\{[^}]*alpha\s+([-\d.eE+]+)",
+                              text).group(1))
+    us = float(_re.search(r"slugVelocity\s+([-\d.eE+]+)", text).group(1))
+    dx, st = [], []
+    for (L, a, n) in secs:
+        for _ in range(n):
+            dx.append(L / n)
+            st.append(math.sin(math.radians(a)))
+    N = len(dx)
+    Ltot = sum(dx)
+    z = [0.0] * (N + 1)
+    arc = [0.0] * (N + 1)
+    for i in range(N):
+        z[i + 1] = z[i] + dx[i] * st[i]
+        arc[i + 1] = arc[i] + dx[i]
+    def crest(f):
+        return 0 < f < N and z[f] > z[f - 1] and z[f] > z[f + 1]
+    gdips = []
+    for fd in range(1, N):
+        if not (z[fd] < z[fd - 1] and z[fd] < z[fd + 1]):
+            continue
+        up = 0
+        for f in range(fd - 1, 0, -1):
+            if crest(f):
+                up = f
+                break
+        dn = N
+        for f in range(fd + 1, N):
+            if crest(f):
+                dn = f
+                break
+        zSpill = min(z[up], z[dn])
+        cap = 0.0
+        for i in range(up, dn):
+            dz = z[i + 1] - z[i]
+            frac = (1.0 if z[i] <= zSpill else 0.0) if abs(dz) < 1e-14 \
+                else min(1.0, max(0.0, (zSpill - min(z[i], z[i + 1])) / abs(dz)))
+            cap += dx[i] * frac
+        gdips.append({"s": arc[fd], "cap": cap, "face": fd})
+    check("the chain has exactly one terrain low point", len(gdips), 1, 0)
+    gd = gdips[0]
+    cap = gd["cap"]
+    travelTime = (Ltot - gd["s"]) / us
+
+    def run_slug(path):
+        r = subprocess.run([exe, path], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SystemExit(f"terrainslug sibling {path} failed "
+                             f"rc={r.returncode}\n{r.stdout}\n{r.stderr}")
+        fr = []
+        cells, slugs, dep, t, vm, dp = [], [], 0, None, None, None
+        for line in r.stdout.splitlines():
+            tok = line.replace("[chflow]", "").split()
+            if not tok:
+                continue
+            if tok[0] == "t":
+                if t is not None:
+                    fr.append({"t": t, "cells": cells, "slugs": slugs,
+                               "dep": dep, "vm": vm, "dp": dp})
+                t, vm, dp = float(tok[1]), float(tok[3]), float(tok[5])
+                cells, slugs, dep = [], [], 0
+            elif tok[0] == "cell":
+                cells.append(float(tok[3]))
+            elif tok[0] == "terrain" and tok[1] == "deposits":
+                dep = int(tok[2])
+            elif tok[0] == "terrain" and tok[1] == "slug":
+                slugs.append({"front": float(tok[4]), "vol": float(tok[6]),
+                              "from": float(tok[8]),
+                              "active": tok[9] == "ACTIVE"})
+        if t is not None:
+            fr.append({"t": t, "cells": cells, "slugs": slugs, "dep": dep,
+                       "vm": vm, "dp": dp})
+        return fr
+
+    frames = run_slug(case)
+    worst = {"cons": 0.0, "cap": 0.0, "kin": 0.0}
+    amin, amax = 1.0, 0.0
+    prev = None
+    depositTimes = []
+    recapture = 0
+    lastdep = 0
+    for f in frames:
+        a = f["cells"]
+        amin = min(amin, min(a))
+        amax = max(amax, max(a))
+        tot = sum(a[i] * dx[i] for i in range(N)) \
+            + sum(s["vol"] for s in f["slugs"] if s["active"])
+        worst["cons"] = max(worst["cons"], abs(tot - alpha0 * Ltot))
+        for s in f["slugs"]:
+            if s["active"]:
+                worst["cap"] = max(worst["cap"],
+                                   abs(s["vol"] - (s["from"] - cap)))
+                if s["from"] < cap - 1e-9:
+                    fails.append("capturedFrom below capacity")
+        if f["dep"] != lastdep:
+            depositTimes.append(f["t"])
+            if any(s["active"] for s in f["slugs"]):
+                recapture += 1
+            lastdep = f["dep"]
+        if prev is not None and prev["dep"] == f["dep"]:
+            for s in f["slugs"]:
+                if s["active"]:
+                    for p in prev["slugs"]:
+                        if p["active"]:
+                            worst["kin"] = max(
+                                worst["kin"],
+                                abs((s["front"] - p["front"])
+                                    - us * (f["t"] - prev["t"])))
+        prev = f
+    check("sealed total liquid + slug lumps conserved = alpha0 * L",
+          worst["cons"], 0.0, 0, atol=1e-8)
+    check("capture relation vol = capturedFrom - cap", worst["cap"], 0.0, 0,
+          atol=1e-8)
+    check("kinematic front advance = slugVelocity dt (between discharges)",
+          worst["kin"], 0.0, 0, atol=1e-9)
+    check("alpha stays >= 0", float(amin >= -1e-12), 1, 0)
+    check("alpha stays <= 1 (discharge respects available capacity)",
+          float(amax <= 1.0 + 1e-12), 1, 0)
+    check("at least two discharges witnessed (a full cycle)",
+          float(frames[-1]["dep"] >= 2), 1, 0)
+    check("re-capture after discharge (relaxation oscillator)",
+          float(recapture >= 1), 1, 0)
+    if len(depositTimes) >= 2:
+        spacing = max(abs((depositTimes[i + 1] - depositTimes[i]) - travelTime)
+                      for i in range(len(depositTimes) - 1))
+        check("discharge spacing = (L - dipArc) / slugVelocity", spacing, 0.0,
+              0, atol=1.0 + 1e-9)
+    print(f"{'ok:  ' if frames[-1]['dep'] >= 2 else 'FAIL:'} cycle witnessed: "
+          f"{frames[-1]['dep']} discharges at t={depositTimes}, "
+          f"travel time {travelTime:.4f} s, alpha in [{amin:.6f}, {amax:.6f}]")
+
+    # ---- siblings --------------------------------------------------------
+    with tempfile.TemporaryDirectory(prefix="cf_tslug_") as td:
+        def run_txt(name, txt):
+            p = os.path.join(td, name)
+            open(p, "w").write(txt)
+            return run_slug(p)
+
+        # the read-only gate: slugVelocity 0 and slugVelocity absent must be
+        # bit-identical (the cycle short-circuits, no lump, no discharge)
+        zero_fr = run_txt("zero.dict", text.replace("slugVelocity 0.5;",
+                                                    "slugVelocity 0;", 1))
+        absent = _re.sub(r"\s*slugVelocity\s+[-\d.eE+]+;", "", text, count=1)
+        absent_fr = run_txt("absent.dict", absent)
+        same = (zero_fr[-1]["cells"] == absent_fr[-1]["cells"]
+                and zero_fr[-1]["vm"] == absent_fr[-1]["vm"]
+                and zero_fr[-1]["dp"] == absent_fr[-1]["dp"])
+        print(f"{'ok:  ' if same else 'FAIL:'} slugVelocity 0 == absent "
+              "(read-only gate bit-identical)")
+        if not same:
+            fails.append("slugVelocity gate not bit-identical")
+        check("slugVelocity 0 produces no discharge", zero_fr[-1]["dep"], 0, 0)
+        check("slugVelocity 0 keeps no active lump",
+              float(any(s["active"] for s in zero_fr[-1]["slugs"])), 0, 0)
+        # the read-only twin still conserves and reaches the spill verdict
+        ztot = sum(zero_fr[-1]["cells"][i] * dx[i] for i in range(N))
+        check("read-only twin conserves alpha0 * L", ztot, alpha0 * Ltot, 1e-9)
+
+        # rejection: a negative slugVelocity is loud, not a silent default
+        bad = text.replace("slugVelocity 0.5;", "slugVelocity -1;", 1)
+        p = os.path.join(td, "bad.dict")
+        open(p, "w").write(bad)
+        rr = subprocess.run([exe, p], capture_output=True, text=True)
+        ok = rr.returncode != 0 and "negative terrain slugVelocity" in \
+            rr.stdout + rr.stderr
+        print(f"{'ok:  ' if ok else 'FAIL:'} rejecting negative terrain "
+              "slugVelocity: non-zero exit naming the reason")
+        if not ok:
+            fails.append("rejection: negative terrain slugVelocity")
+
 else:
     raise SystemExit(f"unknown mode {mode}")
 

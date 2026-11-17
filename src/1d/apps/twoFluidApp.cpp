@@ -196,6 +196,17 @@ int main(int argc, char** argv)
                               num(dips[k].head),
                               dips[k].slugReady ? " SLUG-READY" : " POOLING");
             }
+            if (c.terrainOn && c.terrain.slugVelocity > 0)
+            {
+                const std::vector<TwoFluidTerrainSlug> slugs = s.terrainSlugs();
+                log::info("terrain deposits ", s.terrainDeposits());
+                for (std::size_t k = 0; k < slugs.size(); ++k)
+                    log::info("terrain slug ", k, " front ",
+                              num(slugs[k].front), " vol ",
+                              num(slugs[k].volume), " from ",
+                              num(slugs[k].capturedFrom),
+                              slugs[k].active ? " ACTIVE" : " IDLE");
+            }
             if (!T.empty())
                 log::info("thermal: qWall ", num(s.wallHeatRate()),
                           " qInlet ", num(s.inletHeatRate()));

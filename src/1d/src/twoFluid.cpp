@@ -1267,6 +1267,7 @@ void TwoFluidPipe::step(double dt)
     else momentumSolve(dt);
     slipStep(dt);
     transportStep(dt);
+    terrainSlugStep(dt);
     entrainmentStep(dt);
     hydrateStep(dt);
     thermalStep(dt);
@@ -1628,9 +1629,87 @@ std::vector<TwoFluidTerrainDip> TwoFluidPipe::terrainDips() const
         d.fill = (cap > 1e-14) ? inv / cap : 0.0;
         d.head = rhoL * kGravity * depth;
         d.slugReady = d.fill >= 1.0;
+        d.dipFace = fd;
+        d.basinStart = up;
+        d.basinEnd = dn;
         out.push_back(d);
     }
     return out;
+}
+
+std::vector<TwoFluidTerrainSlug> TwoFluidPipe::terrainSlugs() const
+{
+    return terrainSlugs_;
+}
+
+void TwoFluidPipe::terrainSlugStep(double dt)
+{
+    const double us = cfg_.terrain.slugVelocity;
+    if (!cfg_.terrainOn || us <= 0 || n_ < 3) return;
+
+    std::vector<TwoFluidTerrainDip> dips = terrainDips();
+    if (terrainSlugs_.size() != dips.size())
+        terrainSlugs_.assign(dips.size(), TwoFluidTerrainSlug{});
+
+    double totalArc = 0;
+    for (int i = 0; i < n_; ++i) totalArc += dxs_[i];
+
+    for (std::size_t k = 0; k < dips.size(); ++k)
+    {
+        TwoFluidTerrainSlug& s = terrainSlugs_[k];
+        const TwoFluidTerrainDip& d = dips[k];
+        if (!s.active)
+        {
+            // initiation: the basin has reached its spill point (increment 1's
+            // fill >= 1). The excess above the geometric spill capacity bridges
+            // the pipe and is swept into a coherent lump; the basin is drawn
+            // down to exactly capacity (proportional drawdown keeps its shape).
+            if (d.fill >= 1.0 && d.inventory > d.capacity)
+            {
+                const double invBefore = d.inventory;
+                const double excess = invBefore - d.capacity;
+                const double factor = d.capacity / invBefore;
+                for (int i = d.basinStart; i < d.basinEnd; ++i)
+                    alpha_[i] *= factor;
+                s.active = true;
+                s.volume = excess;
+                s.front = d.position;
+                s.capturedFrom = invBefore;
+            }
+        }
+        else
+        {
+            // kinematic travel at the declared slug velocity
+            s.front += us * dt;
+            if (s.front >= totalArc)
+            {
+                // discharge into the downstream reach's available holdup
+                // capacity (1 - alpha) dx: alpha_i += V (1 - alpha_i) / avail,
+                // which keeps alpha in [0, 1] and adds exactly V to sum(alpha dx)
+                const int start = d.dipFace;
+                double avail = 0;
+                for (int i = start; i < n_; ++i)
+                    avail += (1.0 - alpha_[i]) * dxs_[i];
+                if (avail > 1e-14)
+                {
+                    const double V = s.volume;
+                    for (int i = start; i < n_; ++i)
+                        alpha_[i] += V * (1.0 - alpha_[i]) / avail;
+                    s.active = false;
+                    s.volume = 0;
+                    s.front = totalArc;
+                    ++terrainDeposits_;
+                }
+                else
+                {
+                    // no available downstream capacity yet: hold the lump at
+                    // the outlet (conserve its volume) until the transport
+                    // frees space, rather than silently dropping the liquid
+                    s.front = totalArc;
+                }
+            }
+        }
+    }
 }
 
 namespace
@@ -1835,6 +1914,9 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.terrain.minDepth = td.getScalarOr("minDepth", 0.0);
         if (c.terrain.minDepth < 0)
             cfFatal("twoFluid: negative terrain minDepth");
+        c.terrain.slugVelocity = td.getScalarOr("slugVelocity", 0.0);
+        if (c.terrain.slugVelocity < 0)
+            cfFatal("twoFluid: negative terrain slugVelocity");
     }
 }
 

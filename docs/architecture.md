@@ -4730,6 +4730,20 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本。** `WaxSolubility.h`（30 行纯函数 + 物性出处文档）+ `waxSolubility.cpp`（18 行），`TwoFluid.h`（`TwoFluidWax` 结构 + `waxOn`/`wax_` 状态 + `cellWax()`/`waxStep()` 接口），`twoFluid.cpp`（校验 + 初始化 + `waxStep` ~34 行 + step 接线 + 温度 rhs + loader），`twoFluidApp.cpp`（两个 emit 点各加 `wax` token），1 case（3 dict）+ `check_two_fluid_wax.py`（~260 行独立 exp/欧拉复现）+ 1 add_test（`verify.twoFluidWaxPrecipitation`，Test #138，0.67 s）。本增量 CTest 148 → 149（`-E mpiDecomposition` 后跑满 149/149 / 2407.31 s，code commit 2a1c646）。**D2 保持 OPEN**（余增量 2 蜡输运 / 增量 3 沉积反馈与沥青质、结垢）。
 
+### 5.97 沉积蜡第一次随液相走（D2 增量 2）：`alpha·w` 搭同一条 Godunov 通量，前锋一格一步、入口落到闭式稳态
+
+**这一格从哪来。** §5.96 把沉积蜡钉成**附壁静止**（sealed 密封管、通量恒零），这是刻意的物理选择——审计曾建议照抄 `hydrate{}` 的输运，但沉积蜡在静止段确实不动。本增量只补上另一半：有流动时沉积蜡分数随液相 Godunov 通量走。范式仍是 hydrate：水 / 水合物 / 夹带液滴三套 `wflux`/`hflux`/`dflux` 已经在 `transportStep` 里并排跑，本增量把**第四套** `wxf` 按同一套 upwind + clamp 语义接进去。**关键不变量**：`flux[j]=0`  ⇒  `wxf[j]=0`，`wax{}` 缺席 ⇒ 整个块短路——所以 §5.96 的 sealed case 重跑与旧输出**逐字节相同**（8645 行 identical: True），老路径一位没动。
+
+**输运律与边界。** 逐面通量 `wxf[j] = w_up·flux[j]`，`w_up` 按 `flux[j]` 符号取迎风值；入口 `phaseRates` 取 `waxDepositFraction·flux[0]`，不然随流向取 `waxDepositFraction` 或 `wax_[0]`；出口对称。逐格更新与 water/hydrate 完全同构：
+
+    (alpha·w)_new = (alpha·w)_old + dt/dx · (wxf[i] − wxf[i+1]),   夹到 [0, alpha]
+
+其中 `awOld` 在**输运前**的 holdup 上取（紧贴 `afOld`/`ahOld`），`aCap → 0` 时 `w=0`。新边界键 `waxDepositFraction` 是**入流液里的沉积蜡分数**，与热力学 `TwoFluidWax::waxFraction`（液相蜡摩尔分数 z）刻意异名——一个是边界组成，一个是热力学声明。network 侧同样补齐：`endWax()` 给 Junction 取端值、`Junction::waxJ` 按 `alpha_L` 加权混合、ghost 边界用 `wax.initial` 装填，与 hydrate 的 `hydrateJ` 一条路径。每步次序 `transportStep → waxStep → thermalStep`（先输运再局部反应），checker 据此逐步闭式复现。
+
+**case 与判据。** `twoFluidWaxTransport`：水平管、`alpha=1`、`wallis` slip 0、`vsl=0.5` ⇒ 液相通量恒为 `F=0.5 m/s`，`length 20`/`sections 20` ⇒ `dx=1`、`cF = dt·F/dx = 0.5`，输运退化为闭式线性 upwind；全场等温 290 K（`x_sat=0.093187`、`w_eq=0.406813`），入口注 `waxDepositFraction=0.1`、初始 `w=0`、`z=0.5`、`kg=kd=0.05`、`dt=1`、`endTime=60`、`reportEvery 1`。`check_two_fluid_wax.py` 新增 `transport` mode：① 用报表逐帧复现「upwind + 隐式反应」递推（最差 9.687e-13）；② 与 sealed 纯反应孪生比对，前锋——`cF=0.5` 使入口扰动**每步恰走一格**，第 n 帧受扰的恰是 `0..n−1`，`≥n` 的格子逐位 identical（t=6 实测 6 格受扰、第 7 格起 diff 精确为 0）；③ 早期入口 inflow `0.1` 高于瞬态沉积，advection 把入口格抬到纯反应之上；④ 后期入口格收敛到**闭式对流/反应稳态** `w_ss = (cF·win + k·dt·w_eq)/(cF + k·dt) = 0.127892109`（报表逐位），因 `win < w_eq` 而严格低于 `w_eq`——这是 `wxf[0]` 边界项在工作的直接见证，也否定「入口格最终必到 w_eq」的简化。sealed 孪生自身逐格相同且匹配独立隐式欧拉（§5.96 路径逐位不变）。**本增量的边界**：只输运**沉积**分数 `alpha·w`，溶解蜡仍逐格 store；case 只走单管 `phaseRates` 入口，出口 `phaseRates` 与 Junction 混合按 hydrate 同构接线但未单独设 case；不改内径 / 粗糙度（沉积层反馈是增量 3）；无沥青质 / CaCO₃ 结垢；不进 3D 壁面。
+
+**成本。** `TwoFluid.h`（`waxDepositFraction` 边界键 + `endWax()` + `Junction::waxJ`），`twoFluid.cpp`（`wxf` 逐面 upwind ~27 行 + 逐格 `alpha·w` 更新 + loader + junction ghost/mixing），1 case（`twoFluidWaxTransport/case.dict`）+ `check_two_fluid_wax.py` 扩 `transport` mode（~90 行）+ 1 add_test（`verify.twoFluidWaxTransport`，Test #139，0.46 s）。本增量 CTest 149 → 150（`-E mpiDecomposition` 后跑满 3061.44 s / 150，code commit 6c5153c）。**D2 保持 OPEN**（余增量 3 沉积反馈 / 沥青质、结垢）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

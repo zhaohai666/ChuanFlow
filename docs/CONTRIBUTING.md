@@ -1476,6 +1476,20 @@ python3 tests/check_two_fluid_wax.py \
 # sibling：case_latent.dict 抬潜热（析出段瞬态 +2 K）、case_nowax.dict 删蜡块
 # （温度与主 case latentHeat=0 逐位相同），由 checker 自动跑。
 
+# 沉积蜡输运（5.97 / D2 增量 2）：alpha*w 搭同一条 Godunov 液相通量。
+#   wxf[j] = w_up * flux[j]（upwind），逐格 alpha*w 更新后夹回 [0, alpha]。
+# 边界新键 waxDepositFraction 是入流液的沉积蜡分数，与 waxFraction（z）异名。
+# case 用 alpha=1 + wallis slip 0 + vsl=0.5 让液相通量恒为 F=0.5，dx=1，
+#   cF = dt*F/dx = 0.5 ⇒ 入口扰动每步恰走一格（checker 据此查因果前锋）。
+# 全场等温 290 K ⇒ w_eq = 0.406813；入口 0.1 < w_eq，所以入口格后期被 inflow
+#   钉在闭式稳态 w_ss = (cF*win + k*dt*w_eq)/(cF + k*dt) = 0.127892109，
+#   不是 w_eq —— 判据不要写成「入口格必高于/最终到 w_eq」。
+# checker 需要第三个参数 transport 才走输运判据；reportEvery 1 仍是必要条件。
+./build/src/1d/apps/chflow-1d-twofluid tests/cases/twoFluidWaxTransport/case.dict
+python3 tests/check_two_fluid_wax.py \
+    "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
+    "$PWD/tests/cases/twoFluidWaxTransport/case.dict" transport
+
 
 # 黑油 / PVT 混合规则决策（5.76 / A5 增量 2）：黑油 march 的黏度只有
 #   muM = muL*lambda + muG*(1-lambda) 一个入口，PVT march 只有 mu(p) 一个入口；

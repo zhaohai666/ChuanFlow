@@ -1501,6 +1501,21 @@ python3 tests/check_two_fluid_deposit_feedback.py \
     "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
     "$PWD/tests/cases/twoFluidDepositFeedback/case.dict"
 
+# 沥青质 / 结垢（5.99 / D2 增量 4）：同一套隐式欧拉弛豫，两种驱动物理。
+#   asphaltene{}：AOP 是声明实验量；a_eq = z_a*clamp((pAOP-p)/onsetWidth,0,1)，
+#     onsetWidth 0 = 阶跃。压驱层流 case 的压力剖面精确线性，checker 只用
+#     报表 vm/dp 重推格心压力。压驱边界必须显式 alpha 1（ghost 缺省 0 渗气）。
+#   scale{}：Omega = IAP/Ksp（活度与 Ksp 声明，Ksp 缺省引 calcite 25C
+#     log Ksp = -8.480）；s_eq = z_s*clamp(Omega-1,0,1) 是声明的线性产率。
+./build/src/1d/apps/chflow-1d-twofluid tests/cases/twoFluidAsphalteneOnset/case.dict
+python3 tests/check_two_fluid_deposition.py \
+    "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
+    "$PWD/tests/cases/twoFluidAsphalteneOnset/case.dict" asphaltene
+./build/src/1d/apps/chflow-1d-twofluid tests/cases/twoFluidScaleSaturation/case.dict
+python3 tests/check_two_fluid_deposition.py \
+    "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
+    "$PWD/tests/cases/twoFluidScaleSaturation/case.dict" scale
+
 
 # 黑油 / PVT 混合规则决策（5.76 / A5 增量 2）：黑油 march 的黏度只有
 #   muM = muL*lambda + muG*(1-lambda) 一个入口，PVT march 只有 mu(p) 一个入口；

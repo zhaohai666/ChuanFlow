@@ -4762,6 +4762,26 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本。** `TwoFluid.h`（`TwoFluidWax` 两键 + `dEff_` 状态 + `cellEffectiveDiameter()`），`twoFluid.cpp`（`cellFriction` 局部 `d`/`rr` + `yieldThresholdPa` + 初始化 / 校验 / `waxStep` 刷新 + loader），`twoFluidApp.cpp`（两个 emit 点各加 `dEff` token），2 case dict + `check_two_fluid_deposit_feedback.py`（~196 行闭式复现 + 湍流粗糙度臂 + 两拒收）+ 1 add_test（`verify.twoFluidDepositFeedback`，Test #140，0.31 s）。本增量 CTest 150 → 151（`-E mpiDecomposition` 后跑满 2729.35 s / 151，code commit 4aa841d）。**D2 保持 IN_PROGRESS**（余增量 4 沥青质 / 结垢；原「3 增量」估计偏乐观，与 D1 由 3 格涨到 4 格同理）。
 
+### 5.99 沥青质与 CaCO₃ 结垢第一次进沉积族（D2 增量 4）：声明的 AOP 与饱和比驱动同一套隐式欧拉弛豫
+
+**这一格从哪来。** D2 命名范围「蜡 / 沥青质 / 结垢」的最后两格。两者都复用 wax 的隐式欧拉弛豫机制 `w_new = (w/dt + k·w_eq)/(1/dt + k)`（k 按方向取 growth/dissolutionRate），差别只在**平衡 `w_eq` 的驱动物理**。两者都是壁面本地场：不随 Godunov 通量输运、不进 Junction 混合、无潜热（能量方程不动），所以也没有 `waxDepositFraction` 那样的边界键。§5.98 的薄层反馈改读**总沉积**（wax + asphaltene + scale），只声明蜡的 case 逐位不变；刷新从 `waxStep` 内移到共享的 `refreshDepositDiameter()`，在三个物种步之后统一调用。
+
+**沥青质（onsetPressure 驱动）。** AOP 是**声明的实验量**（NIR / HPM 实测），内核不内置任何 AOP 相关式——与 kij、parachor、泵曲线同一立场。平衡
+
+    a_eq = z_a · clamp((p_AOP − p)/onsetWidth, 0, 1),   onsetWidth = 0 即阶跃
+
+其中 `p` 是该格**中心的水力压力**（`nodePressure()` 剖面的面值平均）。压差驱动让沥青质析出成为 §5.96 温度前沿的**压力版**：压力剖面跨过 AOP 的那一段沉积、上游保持洁净。
+
+**结垢（饱和比驱动）。** 标准 geochem 框架：`Ω = IAP/Ksp = a(Ca²⁺)·a(CO₃²⁻)/Ksp`、`SI = log10 Ω`。活度与 Ksp 都是**声明输入**；Ksp 缺省引 **calcite 25 °C，log Ksp = −8.480 ± 0.020**（Plummer & Busenberg 1982, USGS；另核 Goyder Institute / MDPI / ACS 三处独立转载一致 −8.48）。`Ω > 1` 过饱和沉积、`Ω < 1` 欠饱和溶解是核实过的物理；沉积量
+
+    s_eq = z_s · clamp(Ω − 1, 0, 1)
+
+是**声明的线性产率模型**（Ω ∈ [1,2] 线性爬升到满产率）——沉积体积分数是管线几何量而非热力学量，内核只认驱动方向，不假装 thermodynamics 给了产率。
+
+**case 与判据。** `twoFluidAsphalteneOnset`：水平层流压驱管线（两端 fixedPressure 1.02e5→1.0e5，`alpha 1` 显式声明——压驱 ghost 缺省 `alpha 0` 是纯气，会让气相渗入管线，是本格踩坑），`dp = 2000 Pa`、层流闭式 `v = dp·D²/(32μL) = 0.15625 m/s`（Re≈664）、逐格损失均匀 ⇒ 压力剖面**精确线性**，checker 只用报表 vm/dp 就能重推每格中心压力；AOP = 101500 Pa 把 20 格切成 **格 5..19 沉积 / 格 0..4 洁净**，且瞬态期间 dp 从 0 涨到 2000、前沿随之推进，逐帧递推全部复现（最差 9.091e-13）。溶解臂（AOP 降到所有格之下 + `initial z_a`）按闭式 `z_a/(1+k·dt)^n` 衰减。`twoFluidScaleSaturation`：密封静置线，`Ω = 1.495016611`（`SI = +0.174646`）、`s_eq = 0.198006645`，末帧对闭式序列 12 位吻合（递推最差 5.759e-13）；欠饱和 sibling（活度缩到 Ω=0.3）恒净、满沉积 sibling 按溶解率衰减。`check_two_fluid_deposition.py` 双模式：①层流闭式 vm/dp/逐格损失 ②onset 前沿分割 ③逐帧隐式欧拉 ④闭式衰减溶解臂 ⑤欠饱和恒净 ⑥互不漏 token 的零声明报表 witness ⑧八条大声拒收（缺/零 AOP、负 onsetWidth、两物种 fraction 越界、负率、负活度、零 Ksp）。
+
+**成本。** `TwoFluid.h`（`TwoFluidAsphaltene`/`TwoFluidScale` 结构 + `asphalteneOn`/`scaleOn` + `asph_`/`scale_` 状态 + `cellAsphaltene()`/`cellScale()` + `asphalteneStep`/`scaleStep`/`refreshDepositDiameter` 接口），`twoFluid.cpp`（校验 + 初始化 + 两步函数 + step 链接线 + loader 两块），`twoFluidApp.cpp`（两个 emit 点各加 `asph`/`scale` token），2 case + `check_two_fluid_deposition.py`（~330 行双模式）+ 2 add_test（`verify.twoFluidAsphalteneOnset` Test #141、`verify.twoFluidScaleSaturation` Test #142，各 0.18/0.16 s）。本增量 CTest 151 → 153（`-E mpiDecomposition` 后跑满 2065.34 s / 153，code commit 428e694）。**D2 至此 CLOSED**（命名范围四格用满：van't Hoff 析蜡 §5.96 + 蜡输运 §5.97 + 薄层反馈 §5.98 + 沥青质/结垢 §5.99；AOP/Ksp 温度依赖、沉积输运、结垢多矿物（BaSO₄/SrSO₄）、3D 壁面另议）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

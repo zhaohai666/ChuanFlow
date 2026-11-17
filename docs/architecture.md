@@ -4673,6 +4673,37 @@ P_i 是组分 parachor，SI 单位 [N^0.25 m^2.75 / mol]；Vml / Vmg 是液 / �
 
 **成本。** `SurfaceTension.h`（35 行，两入口 + 量纲推导文档）+ `surfaceTension.cpp`（42 行）+ `pvtApp.cpp` +34/−3（gated 报表 + 块解析 + parachor 长度校验）+ `src/pvt/CMakeLists.txt` +1，1 case（31 行）+ `check_pvt_surface_tension.py`（160 行）+ 1 add_test（`verify.pvtSurfaceTension`，Test #144，0.23 s）。本增量 CTest 146 → 147（`-E mpiDecomposition` 后跑满 147/147，见 §6）。**D7 保持 IN_PROGRESS**（余增量 3 含水 / 酸气）。
 
+### 5.95 组分 PVT 第一次有了二元交互参数与含水（D7 增量 3）：van der Waals 单流体混合规则带上**声明的** kij——`a_ij = √(a_i a_j)(1−kij)`，缺省 0 时 `×1.0` 逐位回到经典 PR；组分册补水（IAPWS/NIST 临界点），CO₂/H₂S 已在册
+
+**这一格从哪来。** 增量 1（§5.93）黏度、增量 2（§5.94）界面张力都建立在 PR76 相态之上，但混合规则一直是 kij=0 的几何平均 `√(a_i a_j)`——对烃—烃近似尚可，对水—烃、CO₂—烃、H₂S—烃这类强非对称对，kij=0 会高估互溶。Pipesim/OLGA 的组分 PVT 都允许声明二元交互参数。增量 3 把 kij 装上（声明输入、缺省 0 逐位不变），并补上水组分（此前册里只有烃 + CO₂/H₂S/N₂，无 H₂O），使含水酸气体系第一次能闪蒸。
+
+**混合规则（单流体 van der Waals）。**
+
+    a_ij = √(a_i a_j)(1 − kij),  aMix = ΣΣ x_i x_j a_ij,  bMix = Σ x_i b_i
+    A = aMix·p/(RT)²,  B = bMix·p/(RT)
+
+kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723552892138218` / `kOmegaB=0.07779607390388846`（非舍入的 0.45724/0.07780）、`kappa=0.37464+1.54226ω−0.026992ω²`、`alpha=(1+kappa(1−√(T/Tc)))²`。逸度系数 `lnPhi_i` 的混合项 `2Σ_j x_j a_ij/aMix − b_i/bMix` 随之带上 kij，故 kij 同时进密度（经 A）与相平衡（经 lnPhi）。**缺省逐位不变**：`kij_` 空时 `binaryInteraction` 返回 0.0，`(1.0−0.0)=1.0`，`√(a_i a_j)×1.0` 在 IEEE 下精确等于 `√(a_i a_j)`，故未声明 kij 的混合物与经典 PR 一个位都不差。
+
+**水组分。** `water()` = MW 18.01528 g/mol、Tc 647.096 K、Pc 22.064 MPa（IAPWS/NIST 临界点）、ω 0.3443（Reid/Prausnitz/Poling）。PR 把水当正常流体处理——其极性/缔合精度是一条**命名边界**（PR 液相水密度 ~850 kg/m³ 对真实 997，偏差如实记录，不夹带未核实的修正）。CO₂（Tc 304.128 K/Pc 7.3773 MPa/ω 0.2239）与 H₂S（Tc 373.4 K/Pc 8.9628 MPa/ω 0.09）此前已在册。
+
+**声明面与入口。** `Mixture` 增 `setBinaryInteraction(i,j,kij)`/`binaryInteraction(i,j)`（对称、对角拒收、惰性 `kij_` 空=全 0）；case 用嵌套块 `binaryInteraction{ methane{ carbonDioxide 0.10; water 0.50; } ... }` 按组分名声明，`loadFlashCase` 解析（缺席即短路、kij 全 0）。**kij 是声明输入而非内核硬编码表**——内核只实现混合规则，不夹带任何未核实的 kij 数据表。无需改 app（kij 经 `loadFlashCase→c.feed→tpFlash` 自然流进相态）。
+
+**case 与判据。** `pvtBinaryInteraction`（methane 0.70/carbonDioxide 0.10/hydrogenSulphide 0.05/water 0.15，T 300 K，1/4/12 MPa，kij 为**声明的示意输入**非查表值：methane—CO₂ 0.10、methane—H₂S 0.08、methane—water 0.50、CO₂—water 0.20、H₂S—water 0.10）：
+
+| 判据 | 独立参照 | 结果 |
+| --- | --- | --- |
+| 内核重推 | 每相由报表组成 + 声明 kij 独立 Python PR 重推 a_ij/aMix/bMix/立方根/lnPhi，对报表 Z=pM/(ρRT)、ρ、M | rtol 1e-9，最差 Z 1.7e-12 / ρ 3.4e-10（~850 kg/m³ 液相，相对 4e-13）/ M 5.0e-14 |
+| 逸度相等 | K_i=y_i/x_i 对 exp(lnPhiL_i−lnPhiV_i) | 最差 lnK 偏差 4.8e-12 |
+| 门控孪生 | 删 binaryInteraction 块 → kij=0，独立 PR kij=0 重推 | 逐位相符；且声明 kij 报表 ≠ kij=0 报表（kij 可观测） |
+| 物料平衡 | βy+(1−β)x 对进料 z | rtol 1e-8 |
+| 相分离物理 | 水富集于液、甲烷富集于气、液密于气 | 逐 flash 成立 |
+
+**实测。** 三压全两相：1 MPa beta 0.852270642978（7 步，残差 2.35e-13），液 rho 849.347903806 / x_water 0.999925552666，气 rho 8.3924937525 / y_methane 0.821335337003；4 MPa beta 0.850639483097，液 rho 849.699277883 / x_water 0.999761472264；12 MPa beta 0.85030294567，液 rho 850.541047007 / x_water 0.999610008287。kij=0 孪生 1 MPa x_water 0.999498731182 / beta 0.85236020162——正的水—烃 kij 削弱交叉吸引、增强相分离，液相水更纯（x_water 0.99993 对 0.99950）、气相略少（beta 0.85227 对 0.85236），kij 的效果清晰可观测。
+
+**本增量的边界。** ① kij 是声明输入，**内置 kij 表留待后续**（需可核实来源；温度依赖的 kij 关联式不在本格）。② 水是 PR 正常流体，极性/缔合精度是命名边界（液相水密度 ~850 对真实 997），不夹带未核实修正；不含 CPA/SAFT 等缔合 EOS。③ 混合规则是经典单流体 van der Waals（几何平均 + kij），不含 Huron-Vidal/MHV2 等超额 Gibbs 混合规则。④ kij 只进等温 TP 闪蒸相态；接进 1D 摩擦 march / VOF 与黏度/表面张力同台另议。⑤ `binaryInteraction{}` 缺席即 kij 全 0、flash 一位不动，全仓库只有本 case 声明它（`grep -rl binaryInteraction tests/cases/` 命中一支）。
+
+**成本。** `Components.h` +水声明 +Mixture kij API +`kij_` 成员、`components.cpp` +`water()`/registry/错误信息/`setBinaryInteraction`/`binaryInteraction`、`pengRobinson.cpp` 混合规则一处 `×(1−kij)`、`pvtCase.cpp` +嵌套块解析（~22 行），1 case（`pvtBinaryInteraction`，33 行）+ `check_pvt_binary_interaction.py`（282 行独立 Python PR）+ 1 add_test（`verify.pvtBinaryInteraction`，Test #145，0.07 s）。本增量 CTest 147 → 148（`-E mpiDecomposition` 后跑满 148/148 / 2624.11 s，code commit 2602481）。**D7 至此 CLOSED**（命名范围三格用满：LBC 黏度 §5.93 + Weinaug-Katz 表面张力 §5.94 + 声明 kij/含水酸气 §5.95；parachor/kij 内置表、组分物性接进 1D/VOF 另议）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

@@ -95,7 +95,11 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 > （`cf_pvt` 的 `weinaugKatzSurfaceTension`，sigma=[Σ P_i(x_i/Vml−y_i/Vmg)]^4，parachor 为
 > 声明输入、内核只转录经 chemicals worked example 核实的方程，单相 σ=0，`chflow-pvt` 经
 > `surfaceTension{ model weinaugKatz; parachors (...); }` 报表，§5.94 / D7 增量 2）；
-> 黑油分离器、导热关联式、parachor 内置表与含水/酸气扩展、水合物相平衡与生成条件仍待实现。
+> **二元交互参数与含水**已补上声明式 PR kij（van der Waals 单流体混合规则 a_ij=√(a_i a_j)(1−kij)，
+> kij 按组分名声明、缺省 0 时 ×1.0 逐位回到经典 PR）与水组分（IAPWS/NIST Tc=647.096 K、
+> Pc=22.064 MPa、ω=0.3443，CO₂/H₂S 已在册），checker 用独立 Python PR 由报表组成与声明 kij
+> 重推每相 Z/密度/逸度到 ~1e-12、kij=0 孪生逐位相符且声明 kij 可观测（§5.95 / D7 增量 3，
+> **D7 至此 CLOSED**）；黑油分离器、导热关联式、parachor/kij 内置表、水合物相平衡与生成条件仍待实现。
 
 #### 3. 一维求解层 `src/1d`
 独立子系统，分为稳态求解器与瞬态求解器：

@@ -4594,6 +4594,33 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：`src/1d/include/cf/1d/TwoFluid.h` +41（`TwoFluidTerrain` / `TwoFluidTerrainDip` 两结构体 + 起始准则推导文档 + `terrainOn`/`terrain` 字段 + `terrainDips()` 声明），`src/1d/src/twoFluid.cpp` +80（`terrainDips()` 71 行 + loader 9 行），`src/1d/apps/twoFluidApp.cpp` +15（`terrain count N` 与逐 dip `terrain dip k s … depth … len … inv … cap … fill … head … <SLUG-READY|POOLING>`），1 case（63 行）+ checker terrain 模 ~225 行 + 1 条 `add_test`（`verify.twoFluidTerrain`，Test #136），**本增量 CTest 143 → 144**（`-E mpiDecomposition` 后跑满 **144/144**，见 `docs/gap_analysis.md` §6 实施日志）。
 
+### 5.92 低点积液第一次翻成行进的段塞（D6 增量 2）：`terrain{ slugVelocity us; }` 把增量 1 的只读起始准则接成一个**密封弛豫振荡器**—— basin 到 spill 点（`fill ≥ 1`）就把**超出几何容量的那部分液**扫成一个 lumped 段塞、basin 按比例drawdown 到恰好 capacity；段塞前缘按声明的 `us` 运动学行进；到出口把 lump 摊进下游可达的**可用持液容量 `(1−α)dx`**，于是 `α` 保持在 `[0,1]`、重力再把液赶回低点 → 再积液 → 再捕获。定量锚是**每帧精确密封守恒 `Σα·dx + Σactive volume = α0·L`**，加捕获关系 `vol = capturedFrom − cap`、运动学 `front += us·dt`、`α∈[0,1]` 与见证到的完整周期
+
+**这一格从哪来**：§5.91 结尾明写「真正的段塞捕获 / 释放 / 追踪属 D6 增量 2（本格不移动任何界面、不生成 slug body）」。OLGA 的 terrain-induced slugging 是一个**弛豫振荡**：积液 → 桥接 → 段塞产出 → 吹扫 → 再积液。完整机理模型（段塞前后缘的拾取 / 脱落、气压反馈、吹扫波）是研究级题目；本增量装的是它的**运动学还原**——一个守恒的 lumped 段塞在声明速度下行进、到出口按可用容量卸载，**不转录任何未核实的段塞速度 / 持液关联式**，全部陈述自体积守恒 + 运动学推出。`slugVelocity` 缺席或 0 ⇒ `terrainSlugStep` 立即返回、`α` 一位不动（增量 1 的只读图逐位保留，checker 的 slugVelocity-0 == absent twin 逐字节见证）。估 1 增量，实测约 1。
+
+**声明面与三步循环**：`terrain{}` 增一个可选键 `slugVelocity us`（m/s，默认 0 = 关；负值大声拒收 `negative terrain slugVelocity`）。`terrainSlugStep(dt)` 接在 `transportStep` 之后，对每个 dip（复用增量 1 的几何，新增 `dipFace / basinStart / basinEnd` 三个索引字段）走三步：
+
+1. **捕获**（无活动 lump 且 `fill ≥ 1`）：`invBefore = Σ_{basin} α·dx`，`excess = invBefore − cap`，basin 各格 `α *= cap/invBefore`（按比例 drawdown 保形、总量恰好落到 cap），lump `volume = excess`、`front = dip.position`、`capturedFrom = invBefore`。**drawdown 移走的液恰等于 lump 带走的液**——这是守恒锚在捕获步的体现。
+2. **行进**（活动 lump）：`front += us·dt`（运动学，速度是声明常量，不由气压解出）。
+3. **卸载**（`front ≥ L`）：把 `V` 摊进 `[dipFace, n)` 各格的可用容量——`avail = Σ(1−α)dx`，`α_i += V(1−α_i)/avail`。此式把 `α_i` 映到 `α_i(1−V/avail)+V/avail`，故 `V ≤ avail` 时 `α_i ≤ 1` 恒成立，且 `ΣΔα·dx = V/avail·Σ(1−α)dx = V` **精确**（lump 清零、`α` 增 V，守恒不变）。若 `avail ≤ 1e-14`（下游被液填满）则**保持 lump 在出口等待**、不清零（不静默丢液），下一步输运腾出容量再卸。卸载后重力驱动把下游液赶回低点 → 再积液 → 再捕获，密封链因此自持振荡。
+
+**case 与判据**：新增 `tests/cases/twoFluidTerrainSlug/case.dict`（74 行，**与增量 1 同一条密封 V 形链** 50 m / 50 段、低点 arc 35 m、`cap = 25.0190991877 m`、`α0·L = 27.5 m`，`terrain{ minDepth 0; slugVelocity 0.5; }`，dt 0.01 / endTime 120 / reportEvery 100）。首步 basin 即满（fill 1.0992）⇒ 捕获 `excess = 27.5 − 25.019 = 2.48090081228 m`，lump 从 arc 35 以 0.5 m/s 行进 15 m 到出口需 30 s，卸载后再积液再捕获——**周期恰 30 s 的弛豫振荡**，120 s 内见证 **3 次卸载（t = 31 / 61 / 91 s，报表量化到 1 s）**，每周期捕获量同为 2.4809 m（系统落到周期轨道）。`check_two_fluid.py` **terrainslug 模**从 case pipes 块独立重推几何（cap / 低点 / 行程时间），逐帧断言：
+
+| 锚 | 判据 | 实测最差 |
+|---|---|---|
+| 密封守恒 | `Σα·dx + Σactive vol = α0·L` 每帧 | 1.2e-11 |
+| 捕获关系 | `vol = capturedFrom − cap`（活动 lump） | 3.3e-12 |
+| 运动学 | 相邻帧（卸载计数不变）`Δfront = us·Δt` | 0（精确） |
+| 持液界 | `0 ≤ α ≤ 1` 每格每帧 | α∈[8.8e-5, 0.99972] |
+| 周期 | 卸载间距 = `(L − dipArc)/us` = 30 s | 0 |
+| 完整循环 | 卸载 ≥ 2 且卸载后再捕获（振荡器） | 3 次卸载 / 3 次再捕获 |
+
+四个 sibling 与一条拒收：**slugVelocity 0 == absent**（删键与置 0 终态 cell α / vm / dp 逐字节相同，且无卸载、无活动 lump、只读 twin 仍守恒 α0·L）；**负 slugVelocity 拒收**（非零退出点名 `negative terrain slugVelocity`）。运动学判据只在**卸载计数不变**的相邻帧间断言——卸载步 lump 清零并可能当步再捕获（front 从 50 跳回 35），那不是运动学违反而是循环本身，故跳过该区间。
+
+**本增量的边界**：① **运动学还原**：段塞速度是声明常量 `us`，不由气压 / 段塞前后缘动力学解出；无拾取 / 脱落（lump 体积行进中恒定）、无气体压缩反馈、无吹扫波——完整机理段塞模型不在本格。② **一个 dip 一个 lump**：同时只允许一个活动段塞，basin 在 lump 行进期间继续积液（超过 cap 的部分待下次捕获），不做多段塞合并 / 竞争。③ 卸载是**按可用容量摊进下游 reach**（保证 `α≤1` 与精确守恒），不是出口自由出流；密封链因此自持振荡，若改流动边界（rate  inlet / pressure outlet）则段塞产出另需出流记账，不在本格。④ `avail ≤ 1e-14` 时 lump 在出口等待（不丢液），但全液填满的链需要另一种释放机制，本格不建模。⑤ 只接串行两流体链；`slugVelocity` 缺席或 0 逐位回到增量 1，且全仓库只有本 case 声明它（`grep -rl slugVelocity tests/cases/` 命中一支），不可能扰动任何既有数字——`-E mpiDecomposition` 排除后跑满 **145/145**。**D6 至此 CLOSED**（增量 1 §5.91 几何起始准则 + 增量 2 §5.92 捕获 / 行进 / 卸载循环，命名范围「低点积液图 + 段塞起始 + 段塞动态」用满；完整机理段塞 / 多段塞竞争 / 流动边界产出另立项）。
+
+**成本**：`TwoFluid.h` +40（`slugVelocity` 键 + dip 三索引字段 + `TwoFluidTerrainSlug` 结构体与推导文档 + `terrainSlugs()`/`terrainDeposits()` 声明 + `terrainSlugStep` 与状态成员），`twoFluid.cpp` +85（`terrainSlugs()` + `terrainSlugStep()` 三步循环 + step 接线 + loader 键与拒收 + dip 索引赋值），`twoFluidApp.cpp` +12（`terrain deposits N` 与逐 lump `terrain slug k front … vol … from … <ACTIVE|IDLE>`），1 case（74 行）+ checker terrainslug 模 ~210 行 + 1 条 `add_test`（`verify.twoFluidTerrainSlug`，Test #137），**本增量 CTest 144 → 145**（`-E mpiDecomposition` 后跑满 **145/145**，见 `docs/gap_analysis.md` §6 实施日志）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

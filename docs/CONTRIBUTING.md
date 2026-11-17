@@ -1490,6 +1490,17 @@ python3 tests/check_two_fluid_wax.py \
     "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
     "$PWD/tests/cases/twoFluidWaxTransport/case.dict" transport
 
+# 沉积反馈（5.98 / D2 增量 3）：薄层 d_eff = D sqrt(1 - w) 只进壁剪。
+#   area()/输运面/热面积仍用声明的 D，所以质量与焓恒等式不用重写。
+# case 是水平层流静置蜡 w=0.5，闭式 dp = 32 mu v L / (D^2 (1-w))；
+#   twin case_nofeedback.dict 只把 feedback yes 换成 no，dp 恰好一半。
+# checker 还生成一个湍流臂（vsl=5、dt=0.5 守 CFL）验证 depositRoughness
+#   只在湍流支可观测（层流 f=64/Re 与粗糙度无关）。
+./build/src/1d/apps/chflow-1d-twofluid tests/cases/twoFluidDepositFeedback/case.dict
+python3 tests/check_two_fluid_deposit_feedback.py \
+    "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
+    "$PWD/tests/cases/twoFluidDepositFeedback/case.dict"
+
 
 # 黑油 / PVT 混合规则决策（5.76 / A5 增量 2）：黑油 march 的黏度只有
 #   muM = muL*lambda + muG*(1-lambda) 一个入口，PVT march 只有 mu(p) 一个入口；

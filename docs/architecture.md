@@ -4744,6 +4744,24 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本。** `TwoFluid.h`（`waxDepositFraction` 边界键 + `endWax()` + `Junction::waxJ`），`twoFluid.cpp`（`wxf` 逐面 upwind ~27 行 + 逐格 `alpha·w` 更新 + loader + junction ghost/mixing），1 case（`twoFluidWaxTransport/case.dict`）+ `check_two_fluid_wax.py` 扩 `transport` mode（~90 行）+ 1 add_test（`verify.twoFluidWaxTransport`，Test #139，0.46 s）。本增量 CTest 149 → 150（`-E mpiDecomposition` 后跑满 3061.44 s / 150，code commit 6c5153c）。**D2 保持 OPEN**（余增量 3 沉积反馈 / 沥青质、结垢）。
 
+### 5.98 沉积层第一次反馈到水力（D2 增量 3）：薄层 `d_eff = D√(1−w)` 只动壁剪，不动通量面积
+
+**这一格从哪来。** §5.96/§5.97 的沉积蜡只改质量与温度账，docs 一直把「不改内径 / 粗糙度（沉积反馈后续）」写成边界。本增量补上反馈，但**不做全几何改径**：让 `w` 占掉的**截面积**在壁剪上生效，而 `area()` / 输运面 / 热面积仍用声明的 `D`。理由是薄层近似——厚度一阶时面积变化是二阶（`A ∝ d²`，`ΔA/A ≈ 2δ/D`），而壁面应力与 `4dx/d` 是一阶；保持面积不变则 §5.91 的质量守恒、§5.44 的焓账、network junction 的 `area()` 混合**一个恒等式都不用重写**，反馈只出现在 `cellFriction` 与 `yieldThresholdPa`。
+
+**反馈律。** 沉积占面积分数 `w`，剩余圆形直径由**面积恒等式**给出
+
+    d_eff = D √(1 − w)
+
+（`w ≤ z ≤ 1`，内核再夹 `max(1−w, 1e−12)` 防除零）。同一壁律里把直径换成 `d_eff`、相对粗糙度换成 `depositRoughness / d_eff`（沉积层覆壁，暴露的是它自己的粗糙度），Re、剪切率 `γ = 8v/d_eff`、`(4 dx/d_eff)τ_w` 与屈服阈值同步跟着走。层流牛顿支 `f = 64/Re` 与粗糙度无关，于是全程有闭式
+
+    dp = Σ_i 32 μ v dx / d_i² = 32 μ v L / (D²(1 − w))
+
+**声明面与零声明逐位不变。** `wax{}` 增两键：`feedback`（bool，默认否，缺席即 `feedback = false`）/ `depositRoughness`（m，默认 0，负值大声拒收；非 bool 的 `feedback` 也被 `Dictionary::getBool` 拒收）。`feedback` 缺席时 `d ≡ diameter_`、`rr ≡ relrough_[i]` **字面上就是旧表达式**，报表不打印 `dEff` token；全量回归逐位见证。开启时每格报表多一个 `dEff`，值由 `w` 现算而非存表。
+
+**case 与判据。** `twoFluidDepositFeedback`：水平层流单相液管（`alpha=1`、wallis slip 0、`vsl=0.05`、`μ_L=0.01`、`D=0.05`、`L=100`、`sections=20` ⇒ `Re≈212`），静置蜡 `w=0.5`（`growthRate=dissolutionRate=0`，入口 `waxDepositFraction=0.5` 使输运也不改 `w`）。`case_nofeedback.dict` 只把 `feedback yes` 换成 `no`。`check_two_fluid_deposit_feedback.py` 纯用 case 常数独立重推：① 逐格 `dEff` 对 `D√(1−w)`（最差 2.738e-14）；② 无反馈 twin 的 `dp = 32 μ v L/D² = 640 Pa`；③ 反馈 case 的 `dp = 32 μ v L/(D²(1−w)) = 1280 Pa`；④ 比值 `1/(1−w) = 2`；⑤ `dEff < D` 且无反馈 twin 不打印 `dEff`、流场逐位相同；⑥ 湍流臂（`vsl=5`、CFL 安全 `dt=0.5`）里 `depositRoughness 1e−4` 比 0 压降更高——粗糙度在层流支不可见、在湍流支必须可观测；⑦ 负 `depositRoughness` 与非 bool `feedback` 两条拒收。**边界**：薄层近似（通量面积不变，厚沉积层的真实缩小 / 重构流场不在本格）；只反馈壁剪与屈服阈值，不改储热与相平衡；层流支粗糙度无可观测性（`f=64/Re` 本身）；case 是静置蜡，动态沉积过程中 `d_eff` 随 `w` 演化但未设瞬态报告判据；**沥青质与 CaCO₃ 结垢仍未实现**（各需独立可核实的 AOP / Ksp 模型，另列增量 4）；不进 3D 壁面。
+
+**成本。** `TwoFluid.h`（`TwoFluidWax` 两键 + `dEff_` 状态 + `cellEffectiveDiameter()`），`twoFluid.cpp`（`cellFriction` 局部 `d`/`rr` + `yieldThresholdPa` + 初始化 / 校验 / `waxStep` 刷新 + loader），`twoFluidApp.cpp`（两个 emit 点各加 `dEff` token），2 case dict + `check_two_fluid_deposit_feedback.py`（~196 行闭式复现 + 湍流粗糙度臂 + 两拒收）+ 1 add_test（`verify.twoFluidDepositFeedback`，Test #140，0.31 s）。本增量 CTest 150 → 151（`-E mpiDecomposition` 后跑满 2729.35 s / 151，code commit 4aa841d）。**D2 保持 IN_PROGRESS**（余增量 4 沥青质 / 结垢；原「3 增量」估计偏乐观，与 D1 由 3 格涨到 4 格同理）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

@@ -1,0 +1,82 @@
+// D2 increment 2 (5.97): deposited wax TRANSPORT. In 5.96 the deposit was
+// wall-bound in a sealed line; here a rate-driven liquid stream carries the
+// deposited-wax fraction alpha*w with the same Godunov liquid flux as the
+// water cut (wallis slip 0 -> F(a) = vm*a, a linear upwind flux). alpha = 1
+// (single liquid phase, no gas), vsl = 0.5 so vM = 0.5 m/s everywhere and the
+// liquid flux is the constant 0.5 m/s: the transport reduces to the closed
+// form w_i^{n+1} = w_i + dt/dx*F*(w_{i-1} - w_i) plus the per-cell van't Hoff
+// reaction toward w_eq = max(0, z - xsat(T)).
+//
+// The line is isothermal (wall T = fluid T = 290 K), so xsat = 0.093187 and
+// w_eq = 0.406813 everywhere. The inlet injects waxDepositFraction = 0.1
+// (deposit fraction in the inflow liquid) while the line starts clean (w=0):
+// the inlet disturbance convects downstream at 0.5 m/s while reaction pulls
+// every cell up toward w_eq. growthRate is modest (0.05 /s) so transport and
+// reaction have comparable time scales and both are observable.
+//
+// The checker (check_two_fluid_wax.py mode transport) reproduces the linear
+// upwind + implicit-reaction recursion from the reported fields and checks
+// the acoustic front, the inlet boundary, the monotone approach to w_eq and
+// a no-transport (sealed) twin whose wax is purely local.
+fluid
+{
+    rhoL 850;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+    cL   2000;
+    cG   2150;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.05;
+    roughness 0;
+    angleDeg 0;
+    sections 20;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    temperature 290;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.5; vsg 0; waterFraction 0;
+             waxDepositFraction 0.1; temperature 290; }
+    outlet { type fixedPressure; p 1.0e5; temperature 290; }
+}
+
+thermal
+{
+    wallHeatTransfer 500;
+    wallModel constant;
+    wallTemperature 290;
+}
+
+wax
+{
+    meltingTemperature 323.75;
+    fusionEnthalpy 54890;
+    waxFraction 0.5;
+    growthRate 0.05;
+    dissolutionRate 0.05;
+    latentHeat 0;
+    initial 0;
+}
+
+time
+{
+    dt 1;
+    endTime 60;
+    reportEvery 1;
+}

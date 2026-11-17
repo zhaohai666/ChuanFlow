@@ -1625,6 +1625,19 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidWaxPrecipitation/case.dict)
 
+# D2 increment 2 (5.97): deposited-wax transport. The same checker runs in
+# transport mode: it re-derives the linear upwind flux + implicit reaction
+# recursion frame by frame, checks the one-cell-per-step causal front against a
+# sealed pure-reaction twin, and verifies the inlet cell's closed-form
+# advection/reaction steady state.
+add_test(
+    NAME verify.twoFluidWaxTransport
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_wax.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidWaxTransport/case.dict
+        transport)
+
 # temperature equation: lumped-capacity relaxation onto the discrete closed
 # form, the steady heat-exchanger recurrence + wall/stream enthalpy identity,
 # and a shut-in well relaxing onto the geothermal line

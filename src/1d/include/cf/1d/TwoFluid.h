@@ -210,6 +210,10 @@ struct TwoFluidBoundary
                              // inflow ghost cell
     double waterFraction = 0;// water cut of the inflow liquid
     double hydrateFraction = 0; // hydrate fraction of the inflow liquid
+    // 5.97 (D2 increment 2): deposited-wax fraction carried by the inflow
+    // liquid. Gated on wax{} + a rate/pressure face; 0 when no wax. Named
+    // distinctly from TwoFluidWax::waxFraction (the thermodynamic z).
+    double waxDepositFraction = 0;
     double entrainedFraction = 0; // droplet fraction of the inflow liquid
                                   // (entrainment on): rate faces impose it
                                   // as that share of the liquid rate,
@@ -649,6 +653,10 @@ public:
         return cfg_.hydrateOn ? (atInlet ? hydrate_[0] : hydrate_[n_ - 1])
                               : 0.0;
     }
+    double endWax(bool atInlet) const
+    {
+        return cfg_.waxOn ? (atInlet ? wax_[0] : wax_[n_ - 1]) : 0.0;
+    }
     double endEntrained(bool atInlet) const
     {
         return cfg_.entrainmentOn
@@ -929,8 +937,8 @@ private:
         double net = 0;          // last balance residual (diagnostic)
         std::vector<double> rates; // signed per-pipe rates into the node
         // last mixed junction-face state (kept when nothing flows in)
-        double alphaJ = 0, waterJ = 0, hydrateJ = 0, entrJ = 0, tJ = 0,
-               rhoJ = 0;
+        double alphaJ = 0, waterJ = 0, hydrateJ = 0, waxJ = 0, entrJ = 0,
+               tJ = 0, rhoJ = 0;
     };
     void solveNetwork(double dt);
 

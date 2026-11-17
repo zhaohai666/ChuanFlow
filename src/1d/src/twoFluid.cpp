@@ -915,6 +915,7 @@ void TwoFluidPipe::transportStep(double dt)
     const TwoFluidBoundary& out = cfg_.outlet;
     std::vector<double> flux(n_ + 1), wflux(n_ + 1);
     std::vector<double> hflux(n_ + 1, 0.0);
+    std::vector<double> wxf(n_ + 1, 0.0); // 5.97: deposited-wax content flux
     std::vector<double> gvol(n_ + 1, 0.0), gmflux(n_ + 1, 0.0);
     std::vector<double> dflux(n_ + 1, 0.0); // entrained droplet content flux
 
@@ -974,6 +975,33 @@ void TwoFluidPipe::transportStep(double dt)
         else
         {
             wflux[j] = (flux[j] >= 0 ? water_[j - 1] : water_[j]) * flux[j];
+        }
+
+        // 5.97 (D2): the deposited-wax fraction rides the liquid flux beside
+        // the water cut and hydrate, same upwind rule. The inflow composition
+        // carries waxDepositFraction (distinct from the thermodynamic z).
+        if (cfg_.waxOn)
+        {
+            if (flux[j] == 0) wxf[j] = 0;
+            else if (j == 0)
+            {
+                if (in.type == TwoFluidBoundary::Type::phaseRates)
+                    wxf[0] = in.waxDepositFraction * flux[0];
+                else
+                    wxf[0] = (flux[0] >= 0 ? in.waxDepositFraction : wax_[0])
+                           * flux[0];
+            }
+            else if (j == n_)
+            {
+                if (out.type == TwoFluidBoundary::Type::phaseRates)
+                    wxf[n_] = out.waxDepositFraction * flux[n_];
+                else
+                    wxf[n_] = wax_[n_ - 1] * flux[n_];
+            }
+            else
+            {
+                wxf[j] = (flux[j] >= 0 ? wax_[j - 1] : wax_[j]) * flux[j];
+            }
         }
 
         // hydrate fraction rides the liquid flux beside the water cut,
@@ -1141,6 +1169,7 @@ void TwoFluidPipe::transportStep(double dt)
             cfFatal("twoFluid: holdup left [0,1] - reduce dt");
         const double afOld = alpha_[i] * water_[i];
         const double ahOld = cfg_.hydrateOn ? alpha_[i] * hydrate_[i] : 0.0;
+        const double awOld = cfg_.waxOn ? alpha_[i] * wax_[i] : 0.0;
         const double aentOld
             = cfg_.entrainmentOn ? alpha_[i] * entrained_[i] : 0.0;
         double afNew = afOld + dt / dxs_[i] * (wflux[i] - wflux[i + 1]);
@@ -1159,6 +1188,16 @@ void TwoFluidPipe::transportStep(double dt)
                          + dt / dxs_[i] * (hflux[i] - hflux[i + 1]);
             ahNew = std::min(std::max(ahNew, 0.0), aCap);
             hydrate_[i] = aCap > kTol ? ahNew / aCap : 0.0;
+        }
+        if (cfg_.waxOn)
+        {
+            // 5.97: the deposited-wax content alpha*w rides the liquid with
+            // the same upwind rule and clamp semantics as water / hydrate
+            // (awOld was captured against the pre-transport holdup, beside
+            // afOld / ahOld).
+            double awNew = awOld + dt / dxs_[i] * (wxf[i] - wxf[i + 1]);
+            awNew = std::min(std::max(awNew, 0.0), aCap);
+            wax_[i] = aCap > kTol ? awNew / aCap : 0.0;
         }
         if (cfg_.entrainmentOn)
         {
@@ -1821,6 +1860,7 @@ TwoFluidBoundary loadTwoFluidBoundary(const Dictionary& d)
     b.alpha = d.getScalarOr("alpha", 0.0);
     b.waterFraction = d.getScalarOr("waterFraction", 0.0);
     b.hydrateFraction = d.getScalarOr("hydrateFraction", 0.0);
+    b.waxDepositFraction = d.getScalarOr("waxDepositFraction", 0.0);
     b.entrainedFraction = d.getScalarOr("entrainedFraction", 0.0);
     b.temperature = d.getScalarOr("temperature", 0.0);
     return b;
@@ -2254,6 +2294,7 @@ TwoFluidNetwork::TwoFluidNetwork(const TwoFluidNetworkCase& c)
         jn.waterJ = cfg_.perPipe.water0;
         jn.hydrateJ = cfg_.perPipe.hydrateOn ? cfg_.perPipe.hydrate.initial
                                              : 0.0;
+        jn.waxJ = cfg_.perPipe.waxOn ? cfg_.perPipe.wax.initial : 0.0;
         jn.entrJ = cfg_.perPipe.entrainmentOn
                        ? cfg_.perPipe.entrainment.initial
                        : 0.0;
@@ -2317,6 +2358,8 @@ TwoFluidNetwork::TwoFluidNetwork(const TwoFluidNetworkCase& c)
         junctionGhost.waterFraction = pc.water0;
         junctionGhost.hydrateFraction
             = pc.hydrateOn ? pc.hydrate.initial : 0.0;
+        junctionGhost.waxDepositFraction
+            = pc.waxOn ? pc.wax.initial : 0.0;
         junctionGhost.entrainedFraction
             = pc.entrainmentOn ? pc.entrainment.initial : 0.0;
         junctionGhost.temperature = pc.temperature0;
@@ -2579,7 +2622,7 @@ void TwoFluidNetwork::solveNetwork(double dt)
     for (int j = 0; j < nj; ++j)
     {
         Junction& jn = junctions_[j];
-        double qL = 0, qG = 0, wNum = 0, hNum = 0, enNum = 0, eNum = 0,
+        double qL = 0, qG = 0, wNum = 0, hNum = 0, waxNum = 0, enNum = 0, eNum = 0,
                eDen = 0, gNum = 0;
         for (const EndRef& e : jn.ends)
         {
@@ -2599,6 +2642,7 @@ void TwoFluidNetwork::solveNetwork(double dt)
             qG += aG;
             wNum += aL * p.endWater(atInlet);
             hNum += aL * p.endHydrate(atInlet);
+            waxNum += aL * p.endWax(atInlet);
             enNum += aL * p.endEntrained(atInlet);
             eNum += (aL * f.rhoL * f.cL + aG * rhoG * f.cG)
                   * p.endTemperature(atInlet);
@@ -2613,6 +2657,7 @@ void TwoFluidNetwork::solveNetwork(double dt)
             {
                 jn.waterJ = wNum / qL;
                 jn.hydrateJ = hNum / qL;
+                jn.waxJ = waxNum / qL;
                 jn.entrJ = enNum / qL;
             }
             if (eDen > 0) jn.tJ = eNum / eDen;
@@ -2636,6 +2681,7 @@ void TwoFluidNetwork::solveNetwork(double dt)
             b.alpha = jn.alphaJ;
             b.waterFraction = jn.waterJ;
             b.hydrateFraction = jn.hydrateJ;
+            b.waxDepositFraction = jn.waxJ;
             b.entrainedFraction = jn.entrJ;
             b.temperature = jn.tJ;
             b.rhoGInjected = jn.rhoJ;

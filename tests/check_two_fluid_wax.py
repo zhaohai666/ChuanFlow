@@ -114,9 +114,14 @@ def xsat(T, Tf, dHf):
 
 
 def main():
-    if len(sys.argv) != 3:
-        raise SystemExit("usage: check_two_fluid_wax.py <exe> <case.dict>")
+    if len(sys.argv) not in (3, 4):
+        raise SystemExit("usage: check_two_fluid_wax.py <exe> <case.dict> [mode]")
     exe, case = sys.argv[1], sys.argv[2]
+    mode = sys.argv[3] if len(sys.argv) == 4 else "local"
+    if mode == "transport":
+        return check_transport(exe, case)
+    if mode != "local":
+        raise SystemExit(f"unknown wax mode {mode}")
     src, wx, dt, wall, drops, nsec = parse_case(case)
     Tf, dHf = wx["meltingTemperature"], wx["fusionEnthalpy"]
     z, kg, kd = wx["waxFraction"], wx["growthRate"], wx["dissolutionRate"]
@@ -243,6 +248,154 @@ def main():
     print(f"wax: {len(frames)} frames x {nsec} cells, {len(warm)} warm / "
           f"{len(cold)} cold, worst recursion {worst_rec:.3e}, "
           f"T* {Tstar:.3f} K, latent rise {rise:.3f} K - all checks passed")
+
+
+def check_transport(exe, case):
+    """5.97 (D2 increment 2): deposited-wax transport in a rate-driven line.
+
+    wallis slip 0 and alpha = 1 make the liquid flux the constant F = vsl;
+    the deposit alpha*w then upwinds linearly. Each step runs transport FIRST,
+    then the local van't Hoff reaction, so the frame-n deposit is reproduced
+    from frame n-1 by:  w_trans = w + dt/dx*F*(w_up - w);
+                        w_new   = (w_trans/dt + k*w_eq)/(1/dt + k).
+    w_eq = max(0, z - xsat(T)); the case is isothermal so T is constant.
+    """
+    src = open(case).read()
+
+    def scalar(name):
+        m = re.search(r"\b" + name + r"\s+([-\d.eE+]+)\s*;", src)
+        return float(m.group(1)) if m else None
+
+    dt = scalar("dt")
+    db = re.search(r"\binlet\s*\{(.*?)\}", src, re.S)
+    vsl = float(re.search(r"\bvsl\s+([-\d.eE+]+)", db.group(1)).group(1))
+    win = float(re.search(r"\bwaxDepositFraction\s+([-\d.eE+]+)", db.group(1)).group(1))
+    pb = re.search(r"\bpipe\s*\{(.*?)\n\}", src, re.S)
+    length = float(re.search(r"\blength\s+([-\d.eE+]+)", pb.group(1)).group(1))
+    nsec = int(float(re.search(r"\bsections\s+([-\d.eE+]+)", pb.group(1)).group(1)))
+    dx = length / nsec
+    wb = re.search(r"\bwax\s*\{(.*?)\n\}", src, re.S)
+    Tf = float(re.search(r"\bmeltingTemperature\s+([-\d.eE+]+)", wb.group(1)).group(1))
+    dHf = float(re.search(r"\bfusionEnthalpy\s+([-\d.eE+]+)", wb.group(1)).group(1))
+    z = float(re.search(r"\bwaxFraction\s+([-\d.eE+]+)", wb.group(1)).group(1))
+    kg = float(re.search(r"\bgrowthRate\s+([-\d.eE+]+)", wb.group(1)).group(1))
+    kd = float(re.search(r"\bdissolutionRate\s+([-\d.eE+]+)", wb.group(1)).group(1))
+    w0 = float(re.search(r"\binitial\s+([-\d.eE+]+)\s*;", wb.group(1)).group(1))
+    tb = re.search(r"\bthermal\s*\{(.*?)\n\}", src, re.S)
+    Twall = float(re.search(r"\bwallTemperature\s+([-\d.eE+]+)", tb.group(1)).group(1))
+
+    check("transport case parsed",
+          None not in (dt, vsl, win, Tf, dHf, z, kg, kd) and dx > 0,
+          f"dt={dt} vsl={vsl} nsec={nsec}")
+    xs = xsat(Twall, Tf, dHf)
+    weq = max(z - xs, 0.0)
+    # the isothermal reaction drive direction is fixed
+    k = kg if z - xs > 0 else kd
+    F = vsl  # alpha = 1, wallis slip 0
+    check("transport CFL", dt * F / dx <= 1.0 + 1e-12,
+          f"dt*F/dx={dt*F/dx}")
+
+    frames = run(exe, case)
+    check("all frames emitted", len(frames) >= 2, f"{len(frames)} frames")
+    check("every frame has all cells",
+          all(len(f["cells"]) == nsec for f in frames), "cell count")
+    # frame 0 is the initial state (no transport/reaction step yet)
+    for i in range(nsec):
+        near(f"frame 0 cell {i} initial deposit",
+             frames[0]["cells"][i]["wax"], w0, 0, 1e-12)
+
+    # reproduce transport-then-reaction from every frame to the next
+    worst = 0.0
+    for n in range(1, len(frames)):
+        prev, now = frames[n - 1], frames[n]
+        w = [prev["cells"][i]["wax"] for i in range(nsec)]
+        trans = []
+        for i in range(nsec):
+            up = win if i == 0 else w[i - 1]
+            trans.append(w[i] + dt / dx * F * (up - w[i]))
+        for i in range(nsec):
+            pred = (trans[i] / dt + k * weq) / (1.0 / dt + k)
+            worst = max(worst, abs(now["cells"][i]["wax"] - pred))
+            check(f"frame {n} cell {i} deposit bounded",
+                  -1e-12 <= now["cells"][i]["wax"] <= z + 1e-12, "")
+    check("transport+reaction recursion reproduced (1e-9)", worst < 1e-9,
+          f"worst {worst:.3e}")
+
+    # late frames approach the closed-form equilibrium from below everywhere
+    last = frames[-1]
+    for i in range(nsec):
+        check(f"late cell {i} approaches equilibrium",
+              w0 - 1e-9 <= last["cells"][i]["wax"] <= weq + 1e-9,
+              f"w={last['cells'][i]['wax']} weq={weq}")
+    check("equilibrium is above the inlet injection", weq > win,
+          f"weq={weq} win={win}")
+
+    # sealed twin: same wax{} but zero flux -> pure 5.96 local reaction, no
+    # transport, no inflow. Every cell is identical and matches the standalone
+    # implicit-Euler reaction w=(w/dt+k weq)/(1/dt+k). This also witnesses
+    # that adding transport left the old local path bit-for-bit unchanged.
+    sealed = os.path.join(os.path.dirname(case), "case_sealed.dict")
+    twin = src.replace("type phaseRates; vsl 0.5; vsg 0; waterFraction 0;",
+                       "type sealed;")
+    twin = twin.replace("type fixedPressure; p 1.0e5;", "type sealed;")
+    with open(sealed, "w") as fh:
+        fh.write(twin)
+    stw = run(exe, sealed)
+    os.remove(sealed)
+    mx_spread = 0.0
+    mx_react = 0.0
+    for fs in stw:
+        vals = [fs["cells"][i]["wax"] for i in range(nsec)]
+        mx_spread = max(mx_spread, max(vals) - min(vals))
+    for n in range(1, len(stw)):
+        prev_w = stw[n - 1]["cells"][0]["wax"]
+        pred = (prev_w / dt + k * weq) / (1.0 / dt + k)
+        mx_react = max(mx_react, abs(stw[n]["cells"][0]["wax"] - pred))
+    check("sealed twin cells are all identical (pure local reaction)",
+          mx_spread < 1e-12, f"max spread {mx_spread:.3e}")
+    check("sealed twin matches standalone reaction (5.96 path unchanged)",
+          mx_react < 1e-9, f"max {mx_react:.3e}")
+
+    # front causality: compare the transported case to the pure-reaction twin.
+    # Upwind with cF = dt*F/dx = 0.5 carries the inlet disturbance exactly one
+    # cell per step, so at frame n the affected cells are precisely 0..n-1;
+    # every cell >= n must still be bit-for-bit identical to pure reaction.
+    cF = dt * F / dx
+    front_n = 6
+    fb, fs = frames[front_n], stw[front_n]
+    reached = [i for i in range(nsec)
+               if abs(fb["cells"][i]["wax"] - fs["cells"][i]["wax"]) > 1e-12]
+    check("front reaches exactly the upstream cells (one cell per step)",
+          reached == list(range(min(front_n, nsec))),
+          f"reached={reached[:12]} cF={cF}")
+    check("front is causal (cells ahead of the disturbance unchanged)",
+          all(abs(fb["cells"][i]["wax"] - fs["cells"][i]["wax"]) < 1e-12
+              for i in range(front_n, nsec)),
+          "a cell ahead of the front differs from pure reaction")
+
+    # at that early frame the inflow fraction 0.1 is still above the transient
+    # deposit, so advection has ADDED wax at the inlet relative to pure
+    # reaction. (Later the sign flips: the inflow holds w below w_eq.)
+    early_gain = fb["cells"][0]["wax"] - fs["cells"][0]["wax"]
+    check("inlet inflow adds deposit at the front (early frame)",
+          early_gain > 1e-3, f"gain {early_gain:.4f}")
+
+    # late-time inlet cell settles to the closed-form advection/reaction
+    # steady state (cF*win + k*dt*weq)/(cF + k*dt). Since win < weq this sits
+    # strictly below weq, and is far from the sealed twin's weq: a direct
+    # witness that the wxf[0] boundary term is active.
+    w_ss = (cF * win + k * dt * weq) / (cF + k * dt)
+    w_inlet = frames[-1]["cells"][0]["wax"]
+    check("inlet cell approaches advection-reaction steady state",
+          abs(w_inlet - w_ss) < 1e-3, f"got {w_inlet:.6f} want {w_ss:.6f}")
+    check("inlet steady state sits between win and weq",
+          win < w_inlet < weq, f"win={win} w={w_inlet:.6f} weq={weq:.6f}")
+
+    if FAILS:
+        print("\n".join("FAIL: " + m for m in FAILS))
+        raise SystemExit(f"{len(FAILS)} wax-transport check(s) failed")
+    print(f"wax-transport: {len(frames)} frames x {nsec} cells, F={F} dx={dx}, "
+          f"weq={weq:.6f}, worst recursion {worst:.3e} - all checks passed")
 
 
 def tempfile_path():

@@ -181,6 +181,21 @@ int main(int argc, char** argv)
                               num(bodies[k].length), " inv ",
                               num(bodies[k].inventory));
             }
+            if (c.terrainOn)
+            {
+                const std::vector<TwoFluidTerrainDip> dips = s.terrainDips();
+                log::info("terrain count ", dips.size());
+                for (std::size_t k = 0; k < dips.size(); ++k)
+                    log::info("terrain dip ", k, " s ",
+                              num(dips[k].position), " depth ",
+                              num(dips[k].depth), " len ",
+                              num(dips[k].basinLength), " inv ",
+                              num(dips[k].inventory), " cap ",
+                              num(dips[k].capacity), " fill ",
+                              num(dips[k].fill), " head ",
+                              num(dips[k].head),
+                              dips[k].slugReady ? " SLUG-READY" : " POOLING");
+            }
             if (!T.empty())
                 log::info("thermal: qWall ", num(s.wallHeatRate()),
                           " qInlet ", num(s.inletHeatRate()));

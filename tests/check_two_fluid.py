@@ -298,11 +298,13 @@ else:
     cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = None, None, None, [], []
     cur_qwall, cur_qinlet = 0.0, 0.0
     cur_slug_count, cur_bodies = 0, []
+    cur_terrain_count, cur_dips = 0, []
     cur_hold = 0  # 5.77: the serial pipe's static-hold flag
 
     def flush():
         global cur_t, cur_vm, cur_dp, cur_nodes, cur_cells
         global cur_qwall, cur_qinlet, cur_slug_count, cur_bodies
+        global cur_terrain_count, cur_dips
         global cur_hold
         if cur_t is not None:
             times.append(cur_t)
@@ -310,11 +312,14 @@ else:
                            "nodes": cur_nodes, "cells": cur_cells,
                            "qwall": cur_qwall, "qinlet": cur_qinlet,
                            "slug_count": cur_slug_count,
-                           "bodies": cur_bodies, "hold": cur_hold})
+                           "bodies": cur_bodies,
+                           "terrain_count": cur_terrain_count,
+                           "dips": cur_dips, "hold": cur_hold})
             cur_t, cur_vm, cur_dp, cur_nodes, cur_cells = \
                 None, None, None, [], []
             cur_qwall, cur_qinlet = 0.0, 0.0
             cur_slug_count, cur_bodies = 0, []
+            cur_terrain_count, cur_dips = 0, []
             cur_hold = 0
 
     for line in proc.stdout.splitlines():
@@ -337,6 +342,13 @@ else:
                                "front": float(tok[5]),
                                "length": float(tok[7]),
                                "inv": float(tok[9])})
+        elif tok[0] == "terrain" and tok[1] == "count":
+            cur_terrain_count = int(tok[2])
+        elif tok[0] == "terrain" and tok[1] == "dip":
+            cur_dips.append({"s": float(tok[4]), "depth": float(tok[6]),
+                             "len": float(tok[8]), "inv": float(tok[10]),
+                             "cap": float(tok[12]), "fill": float(tok[14]),
+                             "head": float(tok[16]), "verdict": tok[17]})
         elif tok[0] == "cell":
             c = {"alpha": float(tok[3]), "water": float(tok[5]),
                  "vsl": float(tok[7]), "vsg": float(tok[9])}
@@ -3389,6 +3401,235 @@ elif mode == "pressureyield":
               f"exit naming the reason ('{needle}')")
         if not ok:
             fails.append(f"rejection: {what}")
+
+elif mode == "terrain":
+    # 5.91 / D6 (increment 1): the low-point pooling map and its spill-fill
+    # initiation criterion. Every geometric number below is re-derived from
+    # the case's own pipes block (length / angleDeg / sections), NOT stored:
+    # the elevation polyline z(f) = sum dx sinT, its strict local minima (the
+    # dips), each dip's basin (nearest crest uphill on each side, else the
+    # chain end), the spill level (the LOWER bounding crest) and the geometric
+    # capacity (the basin arc submerged below that level). The printed
+    # inventory is held to the summed cell holdup over the basin, the fill to
+    # inventory / capacity, the verdict to fill >= 1, and the sealed total to
+    # alpha0 * L exactly. Siblings (checker runs them): an underfilled pool
+    # (POOLING), a monotone reach (no dip), a minDepth filter, the undeclared
+    # bit-identical twin, and a negative-minDepth rejection.
+    import os
+    import re as _re
+    import tempfile
+
+    def parse_chain(text):
+        secs = []
+        for m in _re.finditer(r"(\w+)\s*\{([^{}]*angleDeg[^{}]*)\}", text):
+            body = m.group(2)
+            def key(k, cast=float):
+                mm = _re.search(k + r"\s+([-\d.eE+]+)", body)
+                return cast(mm.group(1)) if mm else None
+            secs.append((key("length"), key("angleDeg"),
+                         key("sections", int), key("diameter")))
+        rhoL = float(_re.search(r"rhoL\s+([-\d.eE+]+)", text).group(1))
+        am = _re.search(r"initial\s*\{[^}]*alpha\s+([-\d.eE+]+)", text)
+        alpha0 = float(am.group(1)) if am else 0.0
+        md = _re.search(r"terrain\s*\{[^}]*minDepth\s+([-\d.eE+]+)", text)
+        minDepth = float(md.group(1)) if md else 0.0
+        return secs, rhoL, alpha0, minDepth
+
+    def derive(secs, rhoL, minDepth):
+        dx, st = [], []
+        for (L, a, n, D) in secs:
+            for _ in range(n):
+                dx.append(L / n)
+                st.append(math.sin(math.radians(a)))
+        N = len(dx)
+        z = [0.0] * (N + 1)
+        arc = [0.0] * (N + 1)
+        for i in range(N):
+            z[i + 1] = z[i] + dx[i] * st[i]
+            arc[i + 1] = arc[i] + dx[i]
+        def crest(f):
+            return 0 < f < N and z[f] > z[f - 1] and z[f] > z[f + 1]
+        dips = []
+        for fd in range(1, N):
+            if not (z[fd] < z[fd - 1] and z[fd] < z[fd + 1]):
+                continue
+            up = 0
+            for f in range(fd - 1, 0, -1):
+                if crest(f):
+                    up = f
+                    break
+            dn = N
+            for f in range(fd + 1, N):
+                if crest(f):
+                    dn = f
+                    break
+            zSpill = min(z[up], z[dn])
+            depth = zSpill - z[fd]
+            if depth < minDepth:
+                continue
+            cap = 0.0
+            blen = 0.0
+            for i in range(up, dn):
+                blen += dx[i]
+                dz = z[i + 1] - z[i]
+                if abs(dz) < 1e-14:
+                    frac = 1.0 if z[i] <= zSpill else 0.0
+                else:
+                    frac = min(1.0, max(0.0, (zSpill - min(z[i], z[i + 1]))
+                                        / abs(dz)))
+                cap += dx[i] * frac
+            dips.append({"s": arc[fd], "depth": depth, "len": blen,
+                         "cap": cap, "up": up, "dn": dn,
+                         "head": rhoL * G * depth})
+        return dx, dips
+
+    def run_terrain(path):
+        r = subprocess.run([exe, path], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise SystemExit(f"terrain sibling {path} failed "
+                             f"rc={r.returncode}\n{r.stdout}\n{r.stderr}")
+        fr = []
+        cells, dips, tc, vm, dp = [], [], 0, None, None
+        for line in r.stdout.splitlines():
+            tok = line.replace("[chflow]", "").split()
+            if not tok:
+                continue
+            if tok[0] == "t":
+                if vm is not None:
+                    fr.append({"cells": cells, "dips": dips, "tc": tc,
+                               "vm": vm, "dp": dp})
+                cells, dips, tc = [], [], 0
+                vm, dp = float(tok[3]), float(tok[5])
+            elif tok[0] == "cell":
+                cells.append(float(tok[3]))
+            elif tok[0] == "terrain" and tok[1] == "count":
+                tc = int(tok[2])
+            elif tok[0] == "terrain" and tok[1] == "dip":
+                dips.append({"s": float(tok[4]), "depth": float(tok[6]),
+                             "len": float(tok[8]), "inv": float(tok[10]),
+                             "cap": float(tok[12]), "fill": float(tok[14]),
+                             "head": float(tok[16]), "verdict": tok[17]})
+        if vm is not None:
+            fr.append({"cells": cells, "dips": dips, "tc": tc,
+                       "vm": vm, "dp": dp})
+        return fr
+
+    text = open(case).read()
+    secs, rhoL, alpha0, minDepth = parse_chain(text)
+    dx, gdips = derive(secs, rhoL, minDepth)
+    Ltot = sum(dx)
+    check("the chain has exactly one terrain low point", len(gdips), 1, 0)
+    gd = gdips[0]
+
+    # every frame: the printed map is the re-derived geometry, the inventory
+    # is the summed cell holdup, the fill is their ratio, the verdict is the
+    # criterion, and the sealed total liquid is conserved exactly
+    worst = {"s": 0, "depth": 0, "len": 0, "cap": 0, "head": 0,
+             "inv": 0, "fill": 0, "cons": 0}
+    for f in frames:
+        check_t = f["terrain_count"]
+        if check_t != 1 or len(f["dips"]) != 1:
+            fails.append("terrain count not 1")
+            continue
+        d = f["dips"][0]
+        worst["s"] = max(worst["s"], abs(d["s"] - gd["s"]))
+        worst["depth"] = max(worst["depth"], abs(d["depth"] - gd["depth"]))
+        worst["len"] = max(worst["len"], abs(d["len"] - gd["len"]))
+        worst["cap"] = max(worst["cap"], abs(d["cap"] - gd["cap"]))
+        worst["head"] = max(worst["head"], abs(d["head"] - gd["head"]))
+        inv = sum(f["cells"][i]["alpha"] * dx[i]
+                  for i in range(gd["up"], gd["dn"]))
+        worst["inv"] = max(worst["inv"], abs(d["inv"] - inv))
+        fill = inv / gd["cap"]
+        worst["fill"] = max(worst["fill"], abs(d["fill"] - fill))
+        tot = sum(f["cells"][i]["alpha"] * dx[i] for i in range(len(dx)))
+        worst["cons"] = max(worst["cons"], abs(tot - alpha0 * Ltot))
+        want = "SLUG-READY" if fill >= 1.0 else "POOLING"
+        if d["verdict"] != want:
+            fails.append(f"verdict {d['verdict']} != {want}")
+    for k in ("s", "depth", "len", "cap"):
+        check(f"printed dip {k} = re-derived geometry", worst[k], 0.0, 0,
+              atol=1e-8)
+    check("printed dip head = rhoL g depth", frames[-1]["dips"][0]["head"],
+          gd["head"], 1e-9)
+    check("printed inventory = summed basin cell holdup", worst["inv"], 0, 0,
+          atol=1e-9)
+    check("printed fill = inventory / capacity", worst["fill"], 0, 0,
+          atol=1e-9)
+    check("sealed total liquid conserved = alpha0 * L", worst["cons"], 0, 0,
+          atol=1e-9)
+    last = frames[-1]
+    check("the overfilled base case reaches SLUG-READY",
+          float(last["dips"][0]["verdict"] == "SLUG-READY"), 1, 0)
+    check("base fill = alpha0 * L / cap (closed form)",
+          last["dips"][0]["fill"], alpha0 * Ltot / gd["cap"], 1e-9)
+    # the pool really sits at the low point: the dip cell is near-full liquid
+    # while the two chain ends have drained to gas
+    dipcell = int(round(gd["s"] / dx[0])) if dx[0] > 0 else 0
+    a = [c["alpha"] for c in last["cells"]]
+    ok_pool = a[min(dipcell, len(a) - 1)] > 0.9 and a[0] < 0.1 and a[-1] < 0.1
+    print(f"{'ok:  ' if ok_pool else 'FAIL:'} liquid pools at the low point "
+          f"(dip alpha {a[min(dipcell, len(a)-1)]:.4f}, ends {a[0]:.4f} / "
+          f"{a[-1]:.4f})")
+    if not ok_pool:
+        fails.append("pool not at low point")
+
+    # ---- siblings --------------------------------------------------------
+    with tempfile.TemporaryDirectory(prefix="cf_terrain_") as td:
+        def run_txt(name, txt):
+            p = os.path.join(td, name)
+            open(p, "w").write(txt)
+            return run_terrain(p), p
+
+        # underfilled: same geometry, less liquid -> POOLING, fill < 1
+        pool_fr, _ = run_txt("pool.dict", text.replace("alpha 0.55;",
+                                                       "alpha 0.40;", 1))
+        pl = pool_fr[-1]["dips"][0]
+        check("underfilled sibling stays POOLING",
+              float(pl["verdict"] == "POOLING"), 1, 0)
+        check("underfilled fill = 0.40 * L / cap", pl["fill"],
+              0.40 * Ltot / gd["cap"], 1e-9)
+        check("underfilled fill is below the spill point",
+              float(pl["fill"] < 1.0), 1, 0)
+
+        # minDepth filter: a threshold above the dip depth hides it
+        filt_fr, _ = run_txt("filt.dict", text.replace("minDepth 0;",
+                                                       "minDepth 10;", 1))
+        check("minDepth above the dip depth reports no dip",
+              filt_fr[-1]["tc"], 0, 0)
+
+        # monotone uphill reach: no local minimum, no dip
+        mono = text
+        mono = _re.sub(r"pipes\s*\{.*?\n\}",
+                       "pipes\n{\n    reach { length 50; diameter 0.05; "
+                       "roughness 0; angleDeg 30; sections 50; }\n}",
+                       mono, count=1, flags=_re.S)
+        mono_fr, _ = run_txt("mono.dict", mono)
+        check("a monotone reach has no low point", mono_fr[-1]["tc"], 0, 0)
+
+        # the undeclared twin: removing terrain{} changes no transported number
+        twin = _re.sub(r"terrain\s*\{[^}]*\}\s*", "", text, count=1)
+        twin_fr, _ = run_txt("twin.dict", twin)
+        same = (twin_fr[-1]["cells"] == a
+                and twin_fr[-1]["vm"] == last["vm"]
+                and twin_fr[-1]["dp"] == last["dp"])
+        print(f"{'ok:  ' if same else 'FAIL:'} the undeclared twin is "
+              "bit-identical (terrain is a read-only map)")
+        if not same:
+            fails.append("terrain twin not bit-identical")
+        check("the twin reports no terrain map", twin_fr[-1]["tc"], 0, 0)
+
+        # rejection: a negative minDepth is loud, not a silent default
+        bad = text.replace("minDepth 0;", "minDepth -1;", 1)
+        p = os.path.join(td, "bad.dict")
+        open(p, "w").write(bad)
+        rr = subprocess.run([exe, p], capture_output=True, text=True)
+        ok = rr.returncode != 0 and "negative terrain minDepth" in \
+            rr.stdout + rr.stderr
+        print(f"{'ok:  ' if ok else 'FAIL:'} rejecting negative terrain "
+              "minDepth: non-zero exit naming the reason")
+        if not ok:
+            fails.append("rejection: negative terrain minDepth")
 
 else:
     raise SystemExit(f"unknown mode {mode}")

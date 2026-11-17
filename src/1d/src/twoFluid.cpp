@@ -1562,6 +1562,77 @@ std::vector<TwoFluidSlugBody> TwoFluidPipe::slugBodies() const
     return out;
 }
 
+std::vector<TwoFluidTerrainDip> TwoFluidPipe::terrainDips() const
+{
+    std::vector<TwoFluidTerrainDip> out;
+    if (!cfg_.terrainOn || n_ < 3) return out;
+
+    // elevation of every cell face above the chain inlet, the polyline the
+    // dips are read from; face f sits at the upstream end of cell f, so face
+    // n is the outlet. angleDeg is positive uphill, so elevation accumulates
+    // +dx sinT along the chain (the same sign as centerDrop_)
+    std::vector<double> z(n_ + 1, 0.0);
+    std::vector<double> arc(n_ + 1, 0.0);
+    for (int i = 0; i < n_; ++i)
+    {
+        z[i + 1] = z[i] + dxs_[i] * sinT_[i];
+        arc[i + 1] = arc[i] + dxs_[i];
+    }
+    auto isCrest = [&](int f)
+    {
+        return f > 0 && f < n_ && z[f] > z[f - 1] && z[f] > z[f + 1];
+    };
+
+    const double rhoL = cfg_.fluid.rhoL;
+    for (int fd = 1; fd < n_; ++fd)
+    {
+        // a dip is a strict local minimum of the elevation polyline
+        if (!(z[fd] < z[fd - 1] && z[fd] < z[fd + 1])) continue;
+
+        // basin bounds: nearest crest uphill on each side, else the chain end
+        int up = 0;
+        for (int f = fd - 1; f >= 1; --f)
+            if (isCrest(f)) { up = f; break; }
+        int dn = n_;
+        for (int f = fd + 1; f < n_; ++f)
+            if (isCrest(f)) { dn = f; break; }
+
+        // the pool spills over the LOWER bounding crest
+        const double zSpill = std::min(z[up], z[dn]);
+        const double depth = zSpill - z[fd];
+        if (depth < cfg_.terrain.minDepth) continue;
+
+        double inv = 0, cap = 0, len = 0;
+        for (int i = up; i < dn; ++i)
+        {
+            inv += alpha_[i] * dxs_[i];
+            len += dxs_[i];
+            // arc fraction of this cell submerged below the spill level: the
+            // cell elevation runs linearly from z[i] to z[i+1]
+            const double dz = z[i + 1] - z[i];
+            double frac;
+            if (std::abs(dz) < 1e-14)
+                frac = (z[i] <= zSpill) ? 1.0 : 0.0;
+            else
+                frac = std::min(1.0, std::max(
+                    0.0, (zSpill - std::min(z[i], z[i + 1])) / std::abs(dz)));
+            cap += dxs_[i] * frac;
+        }
+
+        TwoFluidTerrainDip d;
+        d.position = arc[fd];
+        d.depth = depth;
+        d.basinLength = len;
+        d.inventory = inv;
+        d.capacity = cap;
+        d.fill = (cap > 1e-14) ? inv / cap : 0.0;
+        d.head = rhoL * kGravity * depth;
+        d.slugReady = d.fill >= 1.0;
+        out.push_back(d);
+    }
+    return out;
+}
+
 namespace
 {
 
@@ -1755,6 +1826,15 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
             cfFatal("twoFluid: slug alphaThreshold must be in (0, 1)");
         if (c.slug.minLength < 0)
             cfFatal("twoFluid: negative slug minLength");
+    }
+
+    if (caseDict.has("terrain"))
+    {
+        c.terrainOn = true;
+        const Dictionary& td = caseDict.getDict("terrain");
+        c.terrain.minDepth = td.getScalarOr("minDepth", 0.0);
+        if (c.terrain.minDepth < 0)
+            cfFatal("twoFluid: negative terrain minDepth");
     }
 }
 

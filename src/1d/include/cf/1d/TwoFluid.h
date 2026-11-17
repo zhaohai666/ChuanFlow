@@ -310,6 +310,40 @@ struct TwoFluidSlugBody
     double inventory = 0; // liquid volume per m2 of bore, sum alpha dx
 };
 
+/// Terrain-induced slugging, increment 1 (D6): the low-point pooling map and
+/// its spill-fill initiation criterion. Like slug{} this is a statistics
+/// layer over the holdup the transport already solves and the elevation the
+/// chain already carries -- it adds no physics. A dip is a local minimum of
+/// the chain's elevation polyline (a face lower than both neighbours); its
+/// basin runs uphill on both sides to the nearest crest (or the chain end).
+/// The pool spills when its liquid inventory reaches the geometric volume
+/// the basin holds below the LOWER bounding crest -- the spill level. That
+/// volume is pure geometry: each basin cell contributes the arc fraction
+/// whose elevation lies below the spill level, so the capacity is the pipe
+/// length submerged at the spill free surface, per unit bore area. The
+/// initiation criterion is therefore volume conservation plus hydrostatics,
+/// not a transcribed correlation: fill = inventory / capacity >= 1 means the
+/// dip has filled to its spill point and any further liquid arrival must
+/// leave over the crest as a slug. `head` is the hydrostatic lift rhoL g
+/// depth a slug must overcome, depth being the dip bottom below the spill
+/// level. minDepth filters out dips shallower than a chosen vertical drop.
+struct TwoFluidTerrain
+{
+    double minDepth = 0; // m, smallest dip depth (spill level - bottom) reported
+};
+
+struct TwoFluidTerrainDip
+{
+    double position = 0;    // m along the chain, arc of the dip face
+    double depth = 0;       // m, spill level minus dip bottom (vertical)
+    double basinLength = 0; // m, arc length of the basin (crest to crest)
+    double inventory = 0;   // liquid per m2 of bore in the basin, sum alpha dx
+    double capacity = 0;    // m, basin arc submerged below the spill level
+    double fill = 0;        // inventory / capacity (>= 1 = spill point reached)
+    double head = 0;        // Pa, rhoL g depth: the hydrostatic lift of a slug
+    bool slugReady = false; // fill >= 1
+};
+
 /// Gas-hydrate kinetics (see the class documentation above). The equilibrium
 /// curve ln(p[Pa]) = curveA + curveB / T_eq is the first-order Clausius
 /// form of the dissociation line; the defaults anchor roughly on methane
@@ -368,6 +402,8 @@ struct TwoFluidCase
     TwoFluidEntrainment entrainment;
     bool slugOn = false;         // slug-body statistics solved (slug{} present)
     TwoFluidSlug slug;
+    bool terrainOn = false;      // low-point pooling map solved (terrain{} present)
+    TwoFluidTerrain terrain;
     bool networkMode = false;    // branch-network member: the junction end
                                  // boundary is owned by the TwoFluidNetwork
                                  // (mutated every step), so the constructor
@@ -449,6 +485,11 @@ public:
     /// with alpha >= alphaThreshold and length >= minLength, in flow
     /// order (empty unless the slug{} block is present). See TwoFluidSlug.
     std::vector<TwoFluidSlugBody> slugBodies() const;
+    /// Low-point pooling map of the chain's elevation profile: each dip's
+    /// basin inventory, geometric spill capacity and fill fraction, with the
+    /// spill-fill initiation verdict (empty unless the terrain{} block is
+    /// present). See TwoFluidTerrain.
+    std::vector<TwoFluidTerrainDip> terrainDips() const;
     /// Wall heat the sections absorb this step, W (positive = into the fluid);
     /// zero unless thermal is on.
     double wallHeatRate() const { return wallHeatRate_; }

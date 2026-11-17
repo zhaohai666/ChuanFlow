@@ -4621,6 +4621,29 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **成本**：`TwoFluid.h` +40（`slugVelocity` 键 + dip 三索引字段 + `TwoFluidTerrainSlug` 结构体与推导文档 + `terrainSlugs()`/`terrainDeposits()` 声明 + `terrainSlugStep` 与状态成员），`twoFluid.cpp` +85（`terrainSlugs()` + `terrainSlugStep()` 三步循环 + step 接线 + loader 键与拒收 + dip 索引赋值），`twoFluidApp.cpp` +12（`terrain deposits N` 与逐 lump `terrain slug k front … vol … from … <ACTIVE|IDLE>`），1 case（74 行）+ checker terrainslug 模 ~210 行 + 1 条 `add_test`（`verify.twoFluidTerrainSlug`，Test #137），**本增量 CTest 144 → 145**（`-E mpiDecomposition` 后跑满 **145/145**，见 `docs/gap_analysis.md` §6 实施日志）。
 
+### 5.93 组分 PVT 第一次有了黏度（D7 增量 1）：`cf_pvt` 在 PR76 密度之外补上 **Lohrenz-Bray-Clark（1964, SPE 915）残余黏度**——`mu[cP] = mu0[cP] + (poly⁴ − 1e-4)/xi`，`poly = 0.1023 + 0.023364 rr + 0.058533 rr² − 0.040758 rr³ + 0.0093724 rr⁴`，`xi = Tc^(1/6)/(√MW·Pc[atm]^(2/3))`，`rr = Vc/Vm`；`mu0` 是逐组分 **Stiel-Thodos** 稀释气黏度经 **Herning-Zipperer** `√MW` 加权混合，`Tc/Pc/MW/Vc` 按 **Kay** 摩尔分数平均。临界体积不查表而由 **PR 自己的临界压缩因子 `Zc = 0.3074`** 给出 `Vc_i = Zc·R·Tc_i/Pc_i`，摩尔体积 `Vm` 来自 PR 态（`M/ρ`），于是整条黏度与 EOS 自洽、无需任何未核实的表格数据。公式按 Whitson & Brulé（2000）worked example（`chemicals` 库转载）逐字核实，**a4 = 0.0093724 正是核实而非回忆定下的**
+
+**这一格从哪来**：D7（组分 PVT 扩展）此前 `OPEN`。`cf_pvt` 早有 PR76 立方 EOS（密度、逸度、flash）与黑油 Beggs-Robinson / Lee-Gonzalez-Eakin 黏度，但**组分路径只有密度、没有黏度**——`EosState` 给 `massDensity/molarVolume`，却没有一条 LBC。LBC 是储层组分黏度的标准残余黏度关联式（对应态约化密度多项式），它把黏度写成「稀释气极限 `mu0` + 约化密度残余项」，残余项只依赖 `rr = Vc/Vm`，因此**一旦 EOS 给了 `Vm`，黏度就跟着出来**。本增量装的是这条关联式的**核实转录**（不是自推律，故按项目「绝不转录未核实关联式」的规矩，先从可核对源把每一个系数与单位钉死）：`chemicals` 开源库的 `Lorentz_Bray_Clarke` 文档给出完整公式与一个 worked example，checker 用纯 Python 重述同一公式并**复现该 example 到 1e-12（实测 absdiff 0）**，由此锁定 a4 = 0.0093724（不是常见误记的 0.0093324）、`xi` 用 Pc[atm] 与 MW[g/mol]、Stiel-Thodos 的两支（`Tr>1.5` 与否则）与 cP→Pa·s 的 1e-3 换算、Herning-Zipperer 的 `√MW` 权、`rr = Vc/Vm`。估 1 增量，实测约 1。
+
+**声明面与两条黏度入口**：`chflow-pvt` 的 case 增一个可选块 **`viscosity{ model lbc; }`**——它只是**报表开关**：声明后每次 flash 追加一行 `pvt viscosity liquid <muL> vapour <muV>`（Pa·s），用各相自己的组成 `x/y`、`Vm = M/ρ`（= PR 摩尔体积）与 PR 临界体积调用纯函数 `lbcViscosity(T, Vm, zs, MWs, Tcs, Pcs, Vcs)`；**删去该块，flash 报表逐字节不变**（checker 的 gated twin 见证）。`cf_pvt` 新增 `Viscosity.h` / `viscosity.cpp` 三个入口：`stielThodosViscosity(T, Tc, Pc, MW)`（纯组分稀释气，Pa·s）、`lbcViscosity(T, Vm, zs, MWs, Tcs, Pcs, Vcs)`（核实转录的核心，显式接受临界体积故可复现 worked example 的表格 Vcs）、`lbcViscosity(const Mixture&, T, p, RootPreference)`（EOS 自洽便捷重载：PR 态给 `Vm`、`Zc = 0.3074` 给 `Vc_i`）。核心函数对 `Vm ≤ 0` 与组分长度不一致大声拒收。
+
+**case 与判据**：新增 `tests/cases/pvtLbc/case.dict`（三组分 methane 0.40 / ethane 0.30 / propane 0.30，T 300 K，压力扫 1 / 4 / 12 MPa + bubble point，`viscosity{ model lbc; }`）。`tests/check_pvt_lbc.py` **两条独立验证**：
+
+| 锚 | 判据 | 实测最差 |
+|---|---|---|
+| 公式核实 | 纯 Python LBC 复现 Whitson-Brulé published example | 0（absdiff，门 1e-12） |
+| 内核液相 | 每 flash 由报表相态（`Vm=M/ρ`、PR `Vc`、Kay 常数）独立重推 `muL` | 4.3e-16 |
+| 内核气相 | 同上重推 `muV` | 1.2e-16 |
+| 稀释气极限 | 最低压气相 `mu ≈ mu0`（残余项是小修正） | < 10% |
+| 混合界 | Herning-Zipperer `mu0` 落在纯组分黏度 min..max 内 | 逐 flash |
+| 物理序 | 两相支液相黏度 > 气相黏度；`mu > 0` | 逐 flash |
+
+实测：1 MPa 单相气 `mu = 9.94691630161e-6 Pa·s`（贴近稀释气极限）；4 MPa 两相 `muL = 7.36108732865e-5`、`muV = 1.172942913e-5`（液 > 气）；12 MPa 单相液 `4.85234731893e-5`；bubble point（7.678 MPa）`muL = 3.30294629056e-5`、`muV = 2.02525745061e-5`。**gated twin**：删 `viscosity{}` 后无 `pvt viscosity` 行、且每条 `pvt flash` 行与 base 逐字节相同（未触动路径位不变）。
+
+**本增量的边界**：① **报表层**：LBC 黏度目前由 `chflow-pvt` 报告并经 checker 核实，**尚未接进 1D 摩擦 march**（黑油 / PVT 表驱动行仍用各自的 `mu(p)`）；把组分黏度接进管网摩擦是后续增量。② **临界体积取 PR `Zc = 0.3074`** 而非表格 / 调参值——这是 EOS 自洽的可自推选择，标准 LBC 常用表格 `Vc`（甚至按实测纯组分黏度调参）；便捷重载因此与用表格 Vcs 的 worked example 数值不同（核心函数显式接受 Vcs 故仍能复现该 example），调参 `Vc` 留待后续。③ **表面张力仍只有常量**（黑油 `surfaceTension = 0.03`），parachor / Weinaug-Katz 组分表面张力是 D7 增量 2；含水 / 酸气组分扩展是增量 3。④ 纯 LBC 形式（Whitson-Brulé 现代形式，气液同一残余多项式），不含原始 1964 的气相表格压力修正（该修正在现代形式里被弃用以免气液黏度不连续）。⑤ `viscosity{}` 缺席即不报黏度、flash 一位不动，且全仓库只有本 case 声明 LBC（`grep -rl "model lbc" tests/cases/` 命中一支），不可能扰动任何既有数字——`-E mpiDecomposition` 排除后跑满 **146/146**。
+
+**成本**：新单元 `Viscosity.h`（44 行，三入口 + 完整公式推导文档）+ `viscosity.cpp`（92 行，Stiel-Thodos + Kay 平均 + Herning-Zipperer + 残余多项式 + PR 便捷重载），`pvtApp.cpp` +37（gated 相黏度报表），`src/pvt/CMakeLists.txt` +1，1 case（27 行）+ `check_pvt_lbc.py`（~210 行，公式自核实 + 内核重推 + 物理锚 + gated twin）+ 1 条 `add_test`（`verify.pvtLbc`，Test #143），**本增量 CTest 145 → 146**（`-E mpiDecomposition` 后跑满 **146/146**，见 `docs/gap_analysis.md` §6 实施日志）。**D7 保持 IN_PROGRESS**（余增量 2 组分表面张力、增量 3 含水 / 酸气）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

@@ -1,0 +1,85 @@
+// D2 increment 1 (5.96): wax precipitation / dissolution in a sealed,
+// stagnant, vertical line whose geothermal wall profile crosses the wax
+// melting point. alpha = 1, slipVelocity = 0 and both boundaries sealed, so
+// every transport flux is identically zero and each section evolves on its
+// own: the temperature relaxes onto its wall value T_w(d) = surface +
+// gradient * (inletDepth - drop_i), and the deposited wax relaxes onto the
+// van't Hoff equilibrium w_eq = max(0, z - x_sat(T_i)) with
+//   x_sat(T) = exp[-(dHf/R)(1/T - 1/Tf)].
+//
+// The deep half (small drop_i) sits above Tf = 323.75 K -> x_sat > 1 -> no
+// deposit; the shallow half sits below Tf -> x_sat < 1 -> wax precipitates.
+// The declared z = 0.5 and dHf = 54890 J/mol, Tf = 323.75 K are the NIST
+// n-tetracosane (n-C24H50) constants; growthRate / dissolutionRate are
+// declared first-order rates (no built-in table). latentHeat = 0 here makes
+// the wax a passive tracer of the temperature field, so the checker can
+// reproduce the section recursion from the reported T and w alone with no
+// thermal-source feedback. A sibling (case_latent) turns latentHeat on to
+// witness the heat release; a no-wax twin witnesses bit-for-bit invariance.
+//
+// tests/check_two_fluid_wax.py mode wax replicates the per-section implicit
+// Euler recursion and checks the closed-form equilibrium, the two arms, the
+// monotone bounds, the latent-heat twin and all six rejections.
+fluid
+{
+    rhoL 850;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+    cL   2000;
+    cG   2150;
+}
+
+pipe
+{
+    length 200;
+    diameter 0.05;
+    roughness 0;
+    angleDeg 90;
+    sections 20;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 1;
+    temperature 340;
+}
+
+boundaries
+{
+    inlet  { type sealed; }
+    outlet { type sealed; }
+}
+
+thermal
+{
+    wallHeatTransfer 2000;
+    wallModel geothermal;
+    surfaceTemperature 300;
+    gradient 0.15;
+    inletDepth 200;
+}
+
+wax
+{
+    meltingTemperature 323.75;
+    fusionEnthalpy 54890;
+    waxFraction 0.5;
+    growthRate 0.01;
+    dissolutionRate 0.02;
+    latentHeat 0;
+    initial 0;
+}
+
+time
+{
+    dt 10;
+    endTime 2000;
+    reportEvery 1;
+}

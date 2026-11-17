@@ -8,6 +8,7 @@
 #include "cf/common/Error.h"
 
 #include "cf/1d/Network.h" // churchillFriction
+#include "cf/pvt/WaxSolubility.h" // van't Hoff wax saturation (5.96)
 #include "DenseSolve.h"
 
 namespace cf
@@ -337,6 +338,26 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
                     " exceeds 1");
         hydrate_.assign(n_, hy.initial);
         hydrateDelta_.assign(n_, 0.0);
+    }
+
+    if (cfg_.waxOn)
+    {
+        if (!(cfg_.thermalOn))
+            cfFatal("twoFluid: wax precipitation needs a thermal{} block");
+        const TwoFluidWax& wx = cfg_.wax;
+        if (!(wx.meltingTemperature > 0) || !(wx.fusionEnthalpy > 0))
+            cfFatal("twoFluid: wax needs positive meltingTemperature and"
+                    " fusionEnthalpy");
+        if (!(wx.waxFraction >= 0) || wx.waxFraction > 1)
+            cfFatal("twoFluid: waxFraction outside [0,1]");
+        if (!(wx.growthRate >= 0) || !(wx.dissolutionRate >= 0))
+            cfFatal("twoFluid: negative wax rate");
+        if (wx.initial < 0 || wx.initial > 1)
+            cfFatal("twoFluid: initial wax fraction outside [0,1]");
+        if (wx.latentHeat < 0)
+            cfFatal("twoFluid: negative wax latentHeat");
+        wax_.assign(n_, wx.initial);
+        waxDelta_.assign(n_, 0.0);
     }
 
     if (cfg_.entrainmentOn)
@@ -1238,6 +1259,41 @@ void TwoFluidPipe::hydrateStep(double dt)
     }
 }
 
+void TwoFluidPipe::waxStep(double dt)
+{
+    if (!cfg_.waxOn) return;
+    const TwoFluidWax& wx = cfg_.wax;
+    // The deposited wax is wall-bound (no convection in this increment), so
+    // every section evolves independently on its own current temperature.
+    // The dissolved wax is a per-cell store: total wax z (the declared
+    // fraction) splits into dissolved c and deposited w, c + w = z. The
+    // van't Hoff equilibrium leaves c = min(z, x_sat(T)) dissolved, so the
+    // equilibrium deposit is
+    //   w_eq = max(0, z - x_sat(T))
+    // and the cell relaxes to it at first order:
+    //   dw/dt = -k (w - w_eq),  k = growthRate if w < w_eq (precipitation),
+    //                                dissolutionRate otherwise.
+    // Implicit Euler keeps w in [0, w_eq] <= z unconditionally and is exactly
+    // reproducible by a checker using nothing but exp and the two declared
+    // constants: w_new = (w/dt + k w_eq) / (1/dt + k).
+    for (int i = 0; i < n_; ++i)
+    {
+        const double xSat = pvt::waxSaturationMoleFraction(
+            sectionTemperature(i), wx.meltingTemperature, wx.fusionEnthalpy);
+        const double drive = wx.waxFraction - xSat;
+        const double wEq = std::max(drive, 0.0);
+        const double k = drive > 0 ? wx.growthRate : wx.dissolutionRate;
+        const double wNew = std::min(
+            std::max((wax_[i] / dt + k * wEq) / (1.0 / dt + k), 0.0),
+            wx.waxFraction);
+        const double dw = wNew - wax_[i];
+        wax_[i] = wNew;
+        // precipitation (dw > 0) releases latent heat per m3 of liquid wax;
+        // dissolution absorbs it. The thermal step consumes this source.
+        waxDelta_[i] = alpha_[i] * dw;
+    }
+}
+
 void TwoFluidPipe::applySchedule(double dt)
 {
     const std::vector<TwoFluidSchedulePoint>& sch = cfg_.inlet.schedule;
@@ -1270,6 +1326,7 @@ void TwoFluidPipe::step(double dt)
     terrainSlugStep(dt);
     entrainmentStep(dt);
     hydrateStep(dt);
+    waxStep(dt);
     thermalStep(dt);
     vMOld_ = vM_;
     t_ += dt;
@@ -1315,6 +1372,13 @@ void TwoFluidPipe::thermalStep(double dt)
             // hydrate formation releases its latent heat into the section
             // (dissociation absorbs it), J/s over the cell bulk volume
             rhs[i] += cfg_.hydrate.latentHeat * hydrateDelta_[i] * area
+                    * dxs_[i] / dt;
+        }
+        if (cfg_.waxOn)
+        {
+            // wax precipitation releases its latent heat into the section
+            // (dissolution absorbs it), J/s over the cell bulk volume
+            rhs[i] += cfg_.wax.latentHeat * waxDelta_[i] * area
                     * dxs_[i] / dt;
         }
     }
@@ -1883,6 +1947,22 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.hydrate.gasContent = hd.getScalar("gasContent");
         c.hydrate.latentHeat = hd.getScalar("latentHeat");
         c.hydrate.initial = hd.getScalarOr("initial", 0.0);
+    }
+
+    if (caseDict.has("wax"))
+    {
+        c.waxOn = true;
+        const Dictionary& wd = caseDict.getDict("wax");
+        // Tf / dHf default to the n-C24H50 NIST constants; the rates and
+        // wax fraction are case declarations (no built-in rate table).
+        c.wax.meltingTemperature
+            = wd.getScalarOr("meltingTemperature", 323.75);
+        c.wax.fusionEnthalpy = wd.getScalarOr("fusionEnthalpy", 54890.0);
+        c.wax.waxFraction = wd.getScalarOr("waxFraction", 0.0);
+        c.wax.growthRate = wd.getScalarOr("growthRate", 0.0);
+        c.wax.dissolutionRate = wd.getScalarOr("dissolutionRate", 0.0);
+        c.wax.latentHeat = wd.getScalarOr("latentHeat", 0.0);
+        c.wax.initial = wd.getScalarOr("initial", 0.0);
     }
 
     if (caseDict.has("entrainment"))

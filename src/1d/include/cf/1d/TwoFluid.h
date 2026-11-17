@@ -385,6 +385,30 @@ struct TwoFluidHydrate
     double initial = 0;              // initial hydrate fraction of the slurry
 };
 
+/// Wax precipitation / dissolution (5.96, D2 increment 1). A single
+/// precipitating wax component obeys the ideal-solution van't Hoff solid-liquid
+/// equilibrium x_sat(T) = exp[-(dHf/R)(1/T - 1/Tf)]. The declared mole fraction
+/// z is the wax content of the liquid; supersaturation z > x_sat(T) drives
+/// first-order precipitation at growthRate, undersaturation drives dissolution
+/// at dissolutionRate. The precipitated (solid) wax volume fraction rides the
+/// liquid as a deposited fraction; dissolution returns it to the liquid. The
+/// latent heat of fusion is released into the section energy equation.
+///
+/// This increment is LOCAL: the deposited wax is wall-bound and is NOT
+/// convected with the liquid, and the dissolved wax is a per-cell store rather
+/// than a transported component. Wax transport, deposition changing the bore,
+/// asphaltenes and scale are named boundaries of later increments.
+struct TwoFluidWax
+{
+    double meltingTemperature = 323.75; // K, pure-wax Tf (n-C24H50: NIST)
+    double fusionEnthalpy = 54890;      // J/mol, dHf (n-C24H50: NIST/Domalski)
+    double waxFraction = 0;             // z, wax mole fraction of the liquid
+    double growthRate = 0;              // 1/s, precipitation rate at full drive
+    double dissolutionRate = 0;         // 1/s, dissolution rate at full drive
+    double latentHeat = 0;              // J/m3 of wax precipitated (release)
+    double initial = 0;                 // initial deposited wax volume fraction
+};
+
 /// Film-droplet split of the liquid (annular flow, transport level only:
 /// the closure, momentum and mixture properties stay untouched - the
 /// droplet fraction rides the gas but does not feed back yet). E_eq is the
@@ -421,6 +445,8 @@ struct TwoFluidCase
     TwoFluidFormation formation;
     bool hydrateOn = false;      // hydrate kinetics solved (hydrate{} present)
     TwoFluidHydrate hydrate;
+    bool waxOn = false;          // wax precipitation solved (wax{} present)
+    TwoFluidWax wax;
     bool entrainmentOn = false;  // film-droplet split solved (entrainment{}
                                  // present)
     TwoFluidEntrainment entrainment;
@@ -502,6 +528,11 @@ public:
     /// Hydrate volume fraction of the liquid+hydrate slurry per section;
     /// zeros unless the hydrate{} block is present.
     std::vector<double> cellHydrate() const { return hydrate_; }
+    /// Deposited (solid) wax volume fraction of the liquid per section;
+    /// zeros unless the wax{} block is present. The dissolved wax is a
+    /// per-cell store, so the checker reads the equilibrium saturation from
+    /// the reported section temperature, not from a transported field.
+    std::vector<double> cellWax() const { return wax_; }
     /// Droplet fraction of the liquid per section (entrainment on);
     /// zeros unless the entrainment{} block is present.
     std::vector<double> cellEntrained() const { return entrained_; }
@@ -658,6 +689,7 @@ private:
     void terrainSlugStep(double dt);
     void entrainmentStep(double dt);
     void hydrateStep(double dt);
+    void waxStep(double dt);
     void thermalStep(double dt);
     void formationStep(double dt);
     /// Evaluate the inlet rate schedule at the step midpoint (robust to
@@ -729,6 +761,10 @@ private:
     std::vector<double> hydrateDelta_; // this step's hydrate volume change
                                        // per bulk m3 (the latent-heat source
                                        // the thermal step consumes)
+    std::vector<double> wax_;      // deposited (solid) wax volume fraction
+                                   // of the liquid per section
+    std::vector<double> waxDelta_; // this step's wax precipitation (positive)
+                                   // per bulk m3, the latent-heat source
     std::vector<double> entrained_; // droplet fraction of the liquid
                                     // (entrainment on)
     double wallHeatRate_ = 0;

@@ -7,6 +7,7 @@ add_library(cf_pvt STATIC
     src/blackOil.cpp
     src/viscosity.cpp
     src/surfaceTension.cpp
+    src/waxSolubility.cpp
 )
 
 target_include_directories(cf_pvt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

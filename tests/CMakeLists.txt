@@ -1615,6 +1615,16 @@ foreach(tcase twoFluidFront twoFluidSteadyHoldupWallis
             ${mode})
 endforeach()
 
+# D2 increment 1 (5.96): wax precipitation / dissolution. Separate checker
+# (check_two_fluid_wax.py) because the van't Hoff recoil is re-derived from a
+# per-frame temperature recursion rather than a single steady state.
+add_test(
+    NAME verify.twoFluidWaxPrecipitation
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_wax.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidWaxPrecipitation/case.dict)
+
 # temperature equation: lumped-capacity relaxation onto the discrete closed
 # form, the steady heat-exchanger recurrence + wall/stream enthalpy identity,
 # and a shut-in well relaxing onto the geothermal line

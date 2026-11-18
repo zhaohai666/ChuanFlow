@@ -1,0 +1,15 @@
+[package]
+name = "chflow-gui"
+version = "0.1.0"
+edition = "2021"
+description = "ChuanFlow M5: minimal Tauri 2 GUI for the 1D steady pipe-network solver"
+
+# Keep the whole GUI crate self-contained under gui/. All dependencies are
+# resolved from the local cargo registry cache with --offline.
+[dependencies]
+tauri = { version = "2" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+tauri-build = { version = "2" }

@@ -1896,3 +1896,64 @@ if(CARGO_EXECUTABLE)
     set_tests_properties(cli.runPvt PROPERTIES
         ENVIRONMENT "CHUANFLOW_BIN_DIR=$<TARGET_FILE_DIR:chflow-pvt>")
 endif()
+
+# 5.110 increment D: opt-in built-in Weinaug-Katz (1943) parachor table. The
+# checker transcribes the published values independently, re-derives sigma
+# from the reported PR phase state, and holds an explicit-declaration twin
+# byte-identical; `fromTable` with a table-absent component fails loudly.
+add_test(
+    NAME verify.pvtBuiltinTables
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_builtin_tables.py
+        $<TARGET_FILE:chflow-pvt>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtBuiltinTables/case.dict)
+
+# README IO: OpenFOAM ASCII polyMesh import. The checker re-parses the same
+# polyMesh files in Python, re-derives volumes by the divergence theorem and
+# holds gated twins / refusals.
+add_test(
+    NAME verify.openfoamMesh
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_openfoam_mesh.py
+        $<TARGET_FILE:chflow-openfoam-mesh>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/openfoamBox/case.dict)
+
+# README M6: cf::backend CPU parallel-for abstraction. The checker restates
+# both closed-form checksums and requires active/serial/analytic to agree bit
+# for bit.
+add_test(
+    NAME verify.backendCpu
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_backend.py
+        $<TARGET_FILE:chflow-3d-backend>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/backendCpu/case.dict)
+
+# README M6: black-oil separator cascade (Standing / Vazquez-Beggs / DAK
+# re-derived independently; per-stage mass closure; gated twin refused).
+add_test(
+    NAME verify.pvtSeparator
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_separator.py
+        $<TARGET_FILE:chflow-separator>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtSeparator/case.dict)
+
+# README M5: Tauri GUI (command-layer Rust unit tests, offline build, and the
+# DOM-free frontend pure-function tests). Only registered when cargo / node
+# exist, so a bare environment keeps every CTest green.
+find_program(CHFLOW_GUI_CARGO cargo)
+find_program(CHFLOW_GUI_NODE node)
+if(CHFLOW_GUI_CARGO AND CHFLOW_GUI_NODE)
+    add_test(NAME gui.unit
+        COMMAND ${CHFLOW_GUI_CARGO} test --offline --quiet
+            --manifest-path ${PROJECT_SOURCE_DIR}/gui/Cargo.toml
+            --target-dir ${CMAKE_BINARY_DIR}/gui)
+    add_test(NAME gui.build
+        COMMAND ${CHFLOW_GUI_CARGO} build --offline --quiet
+            --manifest-path ${PROJECT_SOURCE_DIR}/gui/Cargo.toml
+            --target-dir ${CMAKE_BINARY_DIR}/gui)
+    add_test(NAME gui.frontend
+        COMMAND ${CHFLOW_GUI_NODE} --test
+            ${PROJECT_SOURCE_DIR}/gui/tests/frontend.test.mjs)
+    # first offline resolution walks the full cached dependency tree
+    set_tests_properties(gui.unit gui.build PROPERTIES TIMEOUT 900)
+endif()

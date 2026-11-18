@@ -1,0 +1,32 @@
+// Increment D (5.110): opt-in built-in parachor table. This case is the
+// pvtSurfaceTension case re-declared with `parachors fromTable;` instead of an
+// explicit list: the parachors are taken from the published Weinaug & Katz
+// (1943) pure-substance table (Table 18.1 of Adewumi, Penn State), not from
+// case input. The checker re-derives sigma from the table values and the
+// reported PR phase state, and verifies that a `fromTable` case and an
+// explicit-declaration case with the same numbers agree byte-for-byte (apart
+// from the provenance line).
+
+temperature 300.0;
+
+pressures (1.0e6 4.0e6 1.2e7);
+
+composition
+{
+    methane   0.40;
+    ethane    0.30;
+    propane   0.30;
+}
+
+solve
+{
+    tol 1.0e-12;
+    maxIter 500;
+    bubblePoint yes;
+}
+
+surfaceTension
+{
+    model weinaugKatz;
+    parachors fromTable;
+}

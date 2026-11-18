@@ -23,6 +23,28 @@ enable_testing()
 
 add_subdirectory(src/common)
 add_subdirectory(src/pvt)
+# Optional parallel backends (README M6). Both default OFF: the default build
+# is the serial CPU backend, which every checker requires to be bit-identical.
+# A requested backend that cannot be found downgrades to CPU with a warning
+# (same QUIET philosophy as the optional MPI / Python-bindings blocks).
+option(CHFLOW_WITH_OPENMP "Use OpenMP in the cf::backend parallelFor" OFF)
+option(CHFLOW_WITH_KOKKOS "Use a Kokkos backend (needs the Kokkos SDK)" OFF)
+if(CHFLOW_WITH_KOKKOS)
+    find_package(Kokkos CONFIG QUIET)
+    if(Kokkos_FOUND)
+        set(CF_BACKEND_KOKKOS ON)
+    else()
+        message(WARNING "CHFLOW_WITH_KOKKOS=ON but no Kokkos SDK found; keeping the CPU backend")
+    endif()
+elseif(CHFLOW_WITH_OPENMP)
+    find_package(OpenMP QUIET)
+    if(OpenMP_CXX_FOUND)
+        set(CF_BACKEND_OPENMP ON)
+    else()
+        message(WARNING "CHFLOW_WITH_OPENMP=ON but no OpenMP found; keeping the CPU backend")
+    endif()
+endif()
+
 add_subdirectory(src/1d)
 add_subdirectory(src/3d)
 add_subdirectory(src/coupling)

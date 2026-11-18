@@ -34,3 +34,9 @@ target_link_libraries(chflow-3d-compressible PRIVATE cf3d)
 add_executable(chflow-3d-parallel parallelApp.cpp)
 target_link_libraries(chflow-3d-parallel PRIVATE cf3d)
 
+
+add_executable(chflow-openfoam-mesh openFoamMeshApp.cpp)
+target_link_libraries(chflow-openfoam-mesh PRIVATE cf3d)
+
+add_executable(chflow-3d-backend backendApp.cpp)
+target_link_libraries(chflow-3d-backend PRIVATE cf3d)

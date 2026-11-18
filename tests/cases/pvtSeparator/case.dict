@@ -1,0 +1,29 @@
+// M6 industrial model: a three-stage black-oil separator cascade.
+//
+// Per sm3 of stock-tank oil the feed carries gor = 180 sm3 gas and waterCut
+// 0.05. The three stages drop from 2 MPa to near-atmospheric. Each stage
+// re-flashes the liquid that actually arrived (the gas still in solution),
+// so the bubble point falls as gas is removed and every stage liberates gas:
+//
+//   stage i: gas_i = rs_in - rs_out,   liquidMass_i = m_oil + rs_out*m_gas + m_water
+//   closure: liquidMass_i + cumGasMass_i == blackOilMassPerOilSm3(fluid)
+//
+// The checker restates Standing / Vazquez-Beggs / DAK and the rhoOil mass
+// balance independently, and verifies the gated twin (no separator block)
+// is refused.
+separator
+{
+    pressure (2.0e6 5.0e5 1.01325e5);
+    temperature 340;
+
+    fluid
+    {
+        blackoil
+        {
+            gasGravity  0.75;
+            oilDensity  850;
+            gor         180;
+            waterCut    0.05;
+        }
+    }
+}

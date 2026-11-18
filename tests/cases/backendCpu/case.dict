@@ -1,0 +1,11 @@
+// M6 backend CPU verification case.
+//
+// n     number of indices the parallel backend sweeps
+// mode  square     -> out[i] = i*i                     (sum = (n-1)n(2n-1)/6)
+//       divide     -> out[i] = (i+1)/2 (GradDivide style; sum = n(n+1)/4)
+//
+// The checker restates both closed forms independently and requires the
+// active backend, the serial reference and the closed form to agree bit for
+// bit. Probe cases mutate n / mode to exercise the parse-time refusals.
+n    100000;
+mode square;

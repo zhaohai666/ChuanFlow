@@ -1,0 +1,14 @@
+// OpenFOAM ASCII polyMesh import regression.
+//
+// The mesh is a 2x1x1 box [0,2]x[0,1]x[0,1] split at x=1 into two hexes:
+//   12 points, 11 faces (1 internal + 10 boundary), 2 cells.
+// Closed-form anchors: total volume 2, each cell volume 1, every face area 1,
+// total external area 10, bounding box (0,0,0)->(2,1,1).
+// Boundary patch types exercise the conservative mapping:
+//   patch -> wall, 67 -> wall, empty -> symmetry, wall -> wall.
+
+mesh
+{
+    format    openfoam;
+    directory polyMesh;
+}

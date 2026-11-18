@@ -7,6 +7,7 @@
 
 #include "cf/common/Dictionary.h"
 #include "cf/common/Log.h"
+#include "cf/pvt/ComponentData.h"
 #include "cf/pvt/PvtCase.h"
 #include "cf/pvt/PvtTable.h"
 #include "cf/pvt/SurfaceTension.h"
@@ -109,7 +110,25 @@ int main(int argc, char** argv)
             const std::string model = st.getWordOr("model", "weinaugKatz");
             if (model != "weinaugKatz")
                 cfFatal("pvt: unknown surfaceTension model '" + model + "'");
-            parachors = st.getScalarList("parachors");
+            const Dictionary::Node& pn = st.find("parachors");
+            if (pn.kind == Dictionary::Kind::word
+                && st.getWord("parachors") == "fromTable")
+            {
+                // Opt-in built-in Weinaug-Katz (1943) parachors. Explicit
+                // declaration (the list branch below) is untouched and stays
+                // byte-identical; a table lookup is only ever requested by the
+                // `fromTable` token.
+                parachors = parachorsFromTableSi(c.feed.components());
+                log::info("pvt surfaceTension parachors fromTable (Weinaug-Katz 1943)");
+            }
+            else if (pn.kind == Dictionary::Kind::list)
+            {
+                parachors = st.getScalarList("parachors");
+            }
+            else
+            {
+                cfFatal("pvt: surfaceTension parachors must be a list or 'fromTable'");
+            }
             if (parachors.size() != c.feed.size())
                 cfFatal("pvt: surfaceTension parachors must give one value per component");
         }

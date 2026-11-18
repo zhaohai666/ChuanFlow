@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ChuanFlow 管网编辑器</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>ChuanFlow · 管网编辑器</h1>
+      <span class="subtitle">M5 · 1D 稳态管网 + 实时曲线面板</span>
+    </header>
+
+    <main>
+      <section class="editor">
+        <h2>算例编辑</h2>
+        <label class="field">
+          <span>求解器可执行文件</span>
+          <input id="exePath" type="text" spellcheck="false" />
+        </label>
+        <label class="field grow">
+          <span>case 字典（nodes / pipes / sources）</span>
+          <textarea id="caseText" spellcheck="false"></textarea>
+        </label>
+        <div class="actions">
+          <button id="runBtn" class="primary">应用并运行</button>
+          <button id="validateBtn">仅校验</button>
+          <button id="resetBtn">恢复示例</button>
+        </div>
+        <pre id="status" class="status">就绪。编辑算例后点击“应用并运行”。</pre>
+      </section>
+
+      <section class="panels">
+        <div class="panel">
+          <h2>节点压力 (Pa)</h2>
+          <div id="nodeChart" class="chart-box"></div>
+        </div>
+        <div class="panel">
+          <h2>管道流量 Q (m³/s)</h2>
+          <div id="pipeChart" class="chart-box"></div>
+        </div>
+        <div class="panel convergence" id="convergence">
+          <h2>求解状态</h2>
+          <p>等待运行…</p>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

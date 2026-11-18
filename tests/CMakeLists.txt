@@ -1769,6 +1769,18 @@ add_test(
         $<TARGET_FILE:chflow-pvt>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtBinaryInteraction/case.dict)
 
+# D9 increment 2 (5.104): analytic-gradient steady-network calibration. The
+# checker ties the implicit-function-theorem gradient to an independent
+# Hagen-Poiseuille closed form, central finite differences and the real C++
+# kernel, then confirms one analytic gradient costs one forward solve.
+add_test(
+    NAME verify.gradientMatch
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_gradient_match.py
+        $<TARGET_FILE:chflow-1d-steady>)
+set_tests_properties(verify.gradientMatch PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python")
+
 if(CHFLOW_PYTHON_BINDINGS)
     add_test(
         NAME python.bindings

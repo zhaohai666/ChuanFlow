@@ -202,6 +202,70 @@ python3 tests/check_dpm_two_way.py \
     "$PWD/build/src/3d/apps/chflow-3d-dpm" \
     "$PWD/tests/cases/dpmTwoWay/case.dict"
 
+# 3D 灰体辐射 P1（5.105 / D8 增量 4）：radiation{ absorption; scattering;
+# mediumTemperature; } + patches{} 里各壁的 wallTemperature（黑体壁
+# G = 4 sigma T^4，sigma 是 CODATA 2019 常量、case 不可改）。
+# P1 方程  div(1/(3 beta) grad G) - kappa_a G + 4 kappa_a sigma T^4 = 0
+# （beta = kappa_a + kappa_s），q_r = -1/(3 beta) grad G，
+# S_rad = kappa_a (G - 4 sigma T^4)，均为已发表式（Modest / Siegel & Howell）。
+# checker 独立重推双曲闭式（O(dx^2) 松）、壁 G=4sigmaT^4（1e-9）、
+# 精确离散守恒 int(S_rad) + surface(q_r.n) = 0（7.7e-14，用同 laplacian 的
+# orthoCoeff + BC 线性化），外加 flux/source 律与 4 条拒收。约 0.5 s。
+./build/src/3d/apps/chflow-3d-p1 tests/cases/radiationP1Slab/case.dict
+python3 tests/check_p1_slab.py \
+    "$PWD/build/src/3d/apps/chflow-3d-p1" \
+    "$PWD/tests/cases/radiationP1Slab/case.dict"
+
+# 组分输运 + 单步燃烧（5.106 / D8 增量 5）：combustion{ diffusivity;
+# preExp; activationE; temperature; stoich; fixedOxidiser; fuelInlet; }。
+# fixedOxidiser >= 0 钉死氧化剂，燃料方程线性、静置有 sinh 闭式
+#   Y(x) = Y0 sinh(p(L-x))/sinh(p L), p = sqrt(k Yo / D), k = A exp(-Ea/RT)
+# 否则两物种 Picard 交替冻结求解（当前 checker 只覆盖 fixedOxidiser 锚）。
+# A/Ea/s 是声明输入、R = 8.314462618 是 CODATA 常量；R 不随 case 变。
+# checker 用独立 math.exp 重算三段 k(T)、sinh 剖面、rate=k Yf Yo、
+# 燃料守恒 in-out=int(sink)（紧）；pinned 氧是无限库、刻意不验氧通量守恒。
+./build/src/3d/apps/chflow-3d-combustion tests/cases/combustionFixedOxidiser/case.dict
+python3 tests/check_combustion.py \
+    "$PWD/build/src/3d/apps/chflow-3d-combustion" \
+    "$PWD/tests/cases/combustionFixedOxidiser/case.dict"
+
+# 群平衡两点 QMOM（5.107 / D8 增量 6）：qmom{ beta; m0..m3; dt; steps; }。
+# 常数核 Smoluchowski 聚并矩律（Friedlander）：
+#   dM0/dt=-beta M0^2/2, dM1=0, dM2=beta M1^2, dM3=3 beta M1 M2
+# 闭式 M0=M00/(1+beta M00 t/2)、M1 const、M2=M20+beta M10^2 t、
+# M3=M30+3 beta M10 M20 t+1.5 beta^2 M10^2 t^2。两点求积重建用
+#   A=c3/(2 var), B=sqrt(var+A^2), 权重 M0(1 +/- A/B)
+# （首版误用三次方程二分给出负节点/退化权重，已修）。
+# checker 逐步重放欧拉、验求积恒等式 sum w_i v_i^k = M_k 与 M1 守恒。
+./build/src/3d/apps/chflow-3d-qmom tests/cases/qmomCoagulation/case.dict
+python3 tests/check_qmom.py \
+    "$PWD/build/src/3d/apps/chflow-3d-qmom" \
+    "$PWD/tests/cases/qmomCoagulation/case.dict"
+
+# 共轭传热 multiRegion（5.108 / D8 增量 7）：cht{ solid{} fluid{} }，
+# 每区带自己的 block{}（含 xmin/xmax 命名 patch）、k、outerT 与
+# outerPatch/interfacePatch。两区各自稳态 div(k gradT)=0，界面温度
+# 用割线法迭代到通量连续 q_s.n + q_f.n = 0（两侧外法线相反）。
+# 一维串联闭式 R=L_s/k_s+L_f/k_f, q=(T_L-T_R)/R, T_i=T_L-q L_s/k_s。
+# checker 独立重推闭式、界面通量连续、双层格心线性剖面、4 条拒收。
+./build/src/3d/apps/chflow-3d-cht tests/cases/chtTwoLayer/case.dict
+python3 tests/check_cht.py \
+    "$PWD/build/src/3d/apps/chflow-3d-cht" \
+    "$PWD/tests/cases/chtTwoLayer/case.dict"
+
+# 动网格 ALE/GCL（5.109 / D8 增量 8）：ale{ motion translate|expand;
+# translation(...); expansionRate; dt; steps; }。polyMesh::movePoints 替换
+# 顶点并重置缓存、下次几何访问从新点重算；GCL/SCL 守恒
+#   dV_c/dt = sum_faces U_m,f . Sf_f （面速度取顶点平均、Sf 用移动后几何）。
+# 刚体平移逐 cell GCL 恒 0 到机器精度；均匀膨胀 U_m=rate*x 前向欧拉 O(dt)。
+# checker 验平移 GCL ~1e-17、膨胀体积 V0(1+rate dt)^(3N)、GCL 误差随 dt 减半、
+# 5 条拒收。边界：未把相对通量 (U-U_m).Sf 接进 SIMPLE/PISO 对流项。
+./build/src/3d/apps/chflow-3d-ale tests/cases/aleTranslation/case.dict
+python3 tests/check_ale.py \
+    "$PWD/build/src/3d/apps/chflow-3d-ale" \
+    "$PWD/tests/cases/aleTranslation/case.dict" \
+    "$PWD/tests/cases/aleExpansion/case.dict"
+
 # 多边分区耦合：一张管网同时挂两块三维详细区（X1 在并联支里、X2 在串联位置上）。
 # app 按"初值集"逐个跑整趟外层回路，逐趟**对每条边**打印 R/q/dpBlock/残差/趟数与块收敛位，
 # 再给 name-keyed 的逐边 dp/q、节点压力与管流、每边的块自测；每边各自的 vtu 只在最后一组

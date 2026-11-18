@@ -4855,6 +4855,57 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本与边界。** 纯新增、零 C++ 改动：`python/gradient_match.py`（~330 行，顶层模块，**刻意不进 `chflow` 包**以免触发过期绑定 import）+ `tests/check_gradient_match.py`（~185 行）+ `tests/CMakeLists.txt` 一个 `add_test`。code commit 667cd19，全量回归 2672.54 s / 157（`-E mpiDecomposition`，157/157，rc=0；CTest 156 → 157）。**边界**：灵敏度只对**层流**管闭式成立（`g = πd⁴/(128μL)`、`∂q/∂d = 4q/d`），湍流/两相持液率定律的 ∂残差/∂参数需另推（增量 3 瞬态/两流体伴随才碰）；参数面只有三个管径，粗糙度在本 case 层流不可观测故不入参；定流量源下流量灵敏度恒零，是 case 的可观测性结构而非梯度缺陷；噪声自由合成观测、无协方差加权/多工况联标；LM 是局部法，非凸多解不保证全局最优；梯度在 Python 层重推前向而非改 C++ 内核，故与内核的一致性靠 checker 的 subprocess 通道见证而非共享代码。A11 MPI 与并发 D8 工作树改动严格隔离在本提交之外（partial-hunk staging 只取本格 `add_test`）。
 
+### 5.105 灰体辐射第一次进 3D（D8 增量 4）：P1 扩散近似、黑体壁 `G=4σT⁴`、精确离散守恒
+
+**这一格从哪来。** D8 审计确认全仓无 radiation 任何一行——零起点。落点选**独立 app** `chflow-3d-p1`，不碰 SIMPLE/能量：`src/3d` 的 FVM 层已能装 steady 对流-扩散方程，`fvMatrix` 的 `laplacian` + `sp` + `addRhs(vol·src)` 三件套与能量方程同形。P1 是已发表模型（Modest《Radiative Heat Transfer》3rd ed. ch.10；Siegel & Howell），**不是**未确认相关式：
+
+    div(1/(3β) grad G) - κ_a G + 4 κ_a σ T⁴ = 0,   β = κ_a + κ_s
+    q_r = -1/(3β) grad G,   S_rad = κ_a (G - 4 σ T⁴)
+
+其中 `σ = 5.670374419e-8 W/m²K⁴`（CODATA 2019 精确值，case 不可改），`G` 是角积分入射辐射 [W/m²]。黑体壁 `G_w = 4πI_b = 4σT_w⁴`（`I_b = σT⁴/π`），case 用 `wallTemperature` 声明、app 以 `fixedValue` 设进 `volScalarField`。**源项的体积缩放踩坑**：`fvm::sp` 不像 laplacian/rhs 那样隐含体积，必须传 `vol·κ_a`；首版漏乘 vol 使吸收项高估 ~1/vol≈4000 倍，G 在边界层内假性崩塌到 117（正确应到 1.6e5），checker 的解析剖面立刻抓红。
+
+**case 与判据。** `radiationP1Slab`（40 cell、1D 灰体板，两黑体壁 1500/900 K、介质 1200 K、κ_a=1/κ_s=0.5）。稳态 P1 有双曲闭式 `G(x)=4σT_m⁴+C₁cosh(mx)+C₂sinh(mx)`、`m²=3βκ_a`，两常数由两壁值定。`check_p1_slab.py` 判据：① 逐 cell G 对双曲闭式（O(dx²) 松容差，最差 6.68e-4 相对）；② 打印壁 G 对 `4σT⁴`（1e-9）；③ **精确离散守恒** `∫S_rad dV + ∮q_r·n dA = 0` 到 7.7e-14——边界通量用与 laplacian 装配同一 `orthoCoeff × BC 线性化`，故是恒等式而非近似；④ `q_r=-γ∇G`（中心差分）与 `S_rad=κ_a(G−4σT⁴)`（1e-9）；⑤ G 单调降；⑥ 四条拒收（负 κ_a/κ_s、零 T、无块）。`verify.radiationP1Slab`（Test #19，0.3–0.6 s）。**边界**：温度单向（T→辐射），辐射不反馈能量（留后续）；灰体、均匀介质 T、常数 κ；黑体 Dirichlet 壁（Marshak/Robin 界面未建）；稳态单区，不接流动/RANS/VOF/PISO/1D↔3D/MPI；无散射相函数各向异性、无光谱。
+
+### 5.106 组分第一次带反应（D8 增量 5）：稳态物种输运 + 已发表 Arrhenius 单步 `F+sO→P`
+
+**这一格从哪来。** 复用 `scalarTransportApp` 的 `fvMatrix` 装配（对流用 continuity flux `phi`、扩散 `laplacian`、反应 `sp`+`addRhs(vol·src)`）。**单步总包反应**是标准燃烧降阶基元（Turns《An Introduction to Combustion》ch.2），Arrhenius `k(T)=A exp(−Ea/RT)` 是温度律本身、不是转录的经验相关式；`A`/`Ea`/`s` 是 case **声明输入**（与 kij/parachor/泵曲线同一立场），`R=8.314462618`（CODATA 2019）。物种方程按单位质量写、密度相消：
+
+    div(u Y_f) - div(D grad Y_f) = -k Y_f Y_o,   div(u Y_o) - div(D grad Y_o) = -s k Y_f Y_o
+
+两种模式：`fixedOxidiser yo` 时氧化剂钉死（无限库），燃料方程线性、静置有 sinh 闭式 `Y(x)=Y₀sinh(p(L−x))/sinh(pL)`、`p=√(kYo/D)`；否则两物种 Picard 交替冻结求解。**独立 app** `chflow-3d-combustion`，不碰能量（化学→温度反馈留界外）。
+
+**case 与判据。** `combustionFixedOxidiser`（40 cell、静置、Yo=1、D=1、A=100/Ea=5e4/T=1200 ⇒ k=0.6662、左 Y_f=1 右 0）。`check_combustion.py`：① 三段温度 `k(T)` 对**独立 math.exp**（1e-9）；② 逐 cell Y_f 对 sinh 闭式（O(dx²) 松容差）；③ `rate=kY_fY_o`（1e-9）；④ Yo 恒=钉值；⑤ **燃料守恒** in−out=∫sink（离散恒等式，紧）；⑥ 四拒收（负 D/A/Ea、无块）。pinned 氧化剂是无限库、**刻意不要求氧通量守恒**（app 明确打印 `ox pinned (reservoir...)`）。`verify.combustionFixedOxidiser`（Test #20）。**边界**：温度单向均匀声明，无能量反馈/放热/点火/熄火；一个总包不可逆步、无中间物种/可逆/平衡；常 D、层流稳态单区，不接 RANS/湍流-化学/可压/VOF/PISO/MPI；无相间传质。
+
+### 5.107 群平衡第一次有矩闭合（D8 增量 6）：两点 QMOM + 常数核 Smoluchowski 聚并
+
+**这一格从哪来。** 零起点（全仓无 moments/PBE）。QMOM 是已发表方法（McGraw 1997；Marchisio & Fox 专著 ch.5），用前四矩 `M_k=∫n(v)v^k dv` 经两点高斯求积闭合。聚并取**常数核 β**——Smoluchowski 标准结果（Friedlander《Smoke, Dust and Haze》；Ramabhadran & Seinfeld），矩方程与闭式均可自推核实：
+
+    dM₀/dt = -(β/2)M₀²,  dM₁/dt = 0,  dM₂/dt = βM₁²,  dM₃/dt = 3βM₁M₂
+    M₀(t)=M₀₀/(1+βM₀₀t/2),  M₁=M₁₀,  M₂=M₂₀+βM₁₀²t,
+    M₃=M₃₀+3βM₁₀M₂₀t+(3/2)β²M₁₀²t²
+
+两点求积重建用中心矩恒等式 `var=B²−A², c₃=2A·var`（`A=c₃/(2var)`、`B=√(var+A²)`、权重 `M₀(1±A/B)/2`）——**修掉首版误用三次方程二分**（给出负节点/退化权重）。独立 app `chflow-3d-qmom`（空间均匀 population balance，显式欧拉逐步）。
+
+**case 与判据。** `qmomCoagulation`（β=0.05、M=(1,1,1.2,1.5)、dt=0.5、20 步，合法正测度 `M₀M₂>M₁²`/`M₁M₃>M₂²`）。`check_qmom.py`：① 逐步重放同一 Smoluchowski 欧拉规则（1e-9）；② 末态对闭式（O(dt) 松）；③ **求积恒等式** `Σwᵢvᵢᵏ=Mₖ`（k=0..3，1e-8，直接验闭合定义、不信任重建算法）；④ M₁ 守恒、节点正且随聚并右移；⑤ 五拒收（负 β/负矩/违反矩不等式/零 steps/无块）。`verify.qmomCoagulation`（Test #21）。**边界**：常数核（无剪切/布朗/湍流核），空间均匀无输运，无破碎/成核/长大/沉降，两点（M₀..M₃）闭合无更高矩，显式欧拉受 dt 限制；尚未接进 DPM/组分的单元源框架（本格建的是闭合核）。
+
+### 5.108 共轭传热第一次有双区（D8 增量 7）：multiRegion 双 mesh、界面 Dirichlet–Neumann 迭代
+
+**这一格从哪来。** CHT 此前只有单侧（1D 径向地层 §5.82/5.84、3D 单相 EnergyModel），3D 无 solid region 概念。审计指出改 `PolyMesh` 为多区 cellZone 风险高，故选**两个独立 `polyMesh`**（各从 `BlockMesh::fromDict` 建）+ 界面耦合，零改 PolyMesh 结构。每区稳态导热 `div(k grad T)=0`，外壁定温、界面定温 `T_i`；界面用**割线法**迭代到通量连续 `q_s.n + q_f.n = 0`（两侧外法线相反）。一维双层串联闭式（checker 独立重推）：
+
+    R = L_s/k_s + L_f/k_f,   q = (T_L-T_R)/R,   T_i = T_L - q L_s/k_s
+
+独立 app `chflow-3d-cht`。**case 与判据。** `chtTwoLayer`（solid x∈[0,0.5] k=2 外 500 K，fluid x∈[0.5,1] k=0.5 外 300 K ⇒ R=1.25、q=160 W/m²、T_i=460 K）。`check_cht.py`：① 界面 T 对闭式（1e-8）；② 两侧界面通量 ±160 且和≈0（通量连续）；③ 各层格心线性剖面对闭式；④ 外壁通量同 |q|；⑤ 割线 ≤10 趟（实测 3）；⑥ 四拒收（负 k、外温相同、坏 relax、无块）。`verify.chtTwoLayer`（Test #22）。**边界**：稳态纯导热，流体区无对流/无流动（流体对流耦合留后续）；两区平界面、各自单 mesh、无 general polyhedral 界面映射；常数 k/无接触热阻；不接 RANS/辐射/可压/1D↔3D/MPI。
+
+### 5.109 网格第一次能动（D8 增量 8）：`polyMesh::movePoints` + ALE 几何守恒律 GCL/SCL
+
+**这一格从哪来。** 审计确认 `polyMesh` 的 `points_` 只读、`calcGeometry()` 一次性（flag 保护）、全仓无 `movePoints`/ALE。本格做**最小侵入几何地基改造**：给 `polyMesh` 加 `movePoints(newPoints)`，替换顶点并重置 `geomCalculated_`，使下次几何访问从新 points 重算面法向/面积/体积/心/deltaCoeff；拓扑（faces/owner/neighbour/patches）固定。ALE 的物理核实用**空间守恒律**（GCL 的几何部分）：
+
+    d V_c / dt = Σ_faces U_m,f · Sf_f
+
+面网格速度取该面顶点速度平均（线性面运动精确），Sf 用移动后几何。独立 app `chflow-3d-ale`，两种运动：刚体平移（`U_m` 常数，Sf 不变 ⇒ GCL 逐 cell 恒 0 到机器精度）与均匀膨胀（`U_m=rate·x`，位置每步 ×(1+rate·dt)，GCL 前向欧拉截断 O(dt)）。
+
+**case 与判据。** `aleTranslation`（v=(1,0,0)）+ `aleExpansion`（rate=1）。`check_ale.py`：① 平移 max|GCL|<1e-12（实测 1.5e-17）、刚体位移 `xMax=xMax₀+vt`、体积恒定；② 膨胀体积 `V₀(1+rate·dt)^{3N}` 与 `xMax` 闭式；③ **GCL 误差一阶收敛**——同一末态 t=0.1 用 dt=0.01/0.005/0.0025，末 max|GCL| 比值 1.98/1.99（halving）；④ 五拒收（负 dt/零 steps/坏 motion/零 rate/无块）。`verify.aleMovingMesh`（Test #23）。**成本与边界。** 本格是五增量里唯一改既有核心结构的：polyMesh.h +9、`polyMesh.cpp` +11（其余四格纯新增）。**边界**：只做几何与 GCL 核，**未把相对通量 `φ=(U−U_m)·Sf` 接进 SIMPLE/PISO 的对流项**（真 ALE 流动求解留后续增量）；面速度取顶点平均对非线性面运动是近似；膨胀用前向欧拉有一阶截断；拓扑固定、无重分网/滑移界面；场在移动网格上的守恒靠 GCL 核保证、本格未解任何输运场。**D8 至此 CLOSED**（八格：热耦合 + DPM 单向/双向 + 辐射 + 组分燃烧 + QMOM + CHT + 动网格）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

@@ -19,6 +19,17 @@ std::string num(double v)
     os << std::setprecision(12) << v;
     return os.str();
 }
+
+// The opt-in composition-generated PVT table echo needs round-trip precision:
+// a checker rebuilds an explicit-table twin from these numbers and requires
+// the solver readout to be byte-identical. 17 significant digits is a full
+// double round-trip; only the 5.110 echo uses it.
+std::string num17(double v)
+{
+    std::ostringstream os;
+    os << std::setprecision(17) << v;
+    return os.str();
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -34,6 +45,24 @@ int main(int argc, char** argv)
         const Dictionary caseDict = Dictionary::parseFile(argv[1]);
         const OneDNetwork net = loadNetworkFromDict(caseDict);
         const SteadyControls ctl = loadSteadyControls(caseDict);
+
+        // 5.110 (increment A): opt-in echo of the composition-generated PVT
+        // table so a checker can verify rho(p)/mu(p) point by point against an
+        // independent PR76 + LBC re-derivation. Absent the declaration, not a
+        // single byte of output changes.
+        if (caseDict.has("fluid"))
+        {
+            const Dictionary& fd = caseDict.getDict("fluid");
+            if (fd.has("pvt") && fd.getDict("pvt").has("compositional"))
+            {
+                for (std::size_t i = 0; i < net.pvtFluid.pressure.size(); ++i)
+                {
+                    log::info("pvtTable p ", num17(net.pvtFluid.pressure[i]),
+                              " rho ", num17(net.pvtFluid.rho[i]),
+                              " mu ", num17(net.pvtFluid.mu[i]));
+                }
+            }
+        }
 
         log::info("network: ", net.nNodes(), " nodes, ", net.pipes.size(), " pipes");
 

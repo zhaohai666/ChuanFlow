@@ -1,0 +1,49 @@
+// 5.110 (compositional properties into 1D, increment A): opt-in generation
+// of the PVT table from a declared composition. The `compositional{}` sub-block
+// under `fluid{ pvt{} }` tells the loader to fill rho(p)/mu(p) at each grid
+// node from PR76 phase density + Lohrenz-Bray-Clark residual viscosity, instead
+// of reading literal rho/mu lists. The march machinery (solvePipeFlowPvt /
+// marchPvtPipe) is completely unchanged: it still reads the same PvtFluid.
+//
+// The feed is pure methane at 260 K, above its critical temperature (190.56 K)
+// but at pressures where a single supercritical-dense root is selected by the
+// stable (LowestGibbs) preference. This makes rho = p M/(Z R T) independently
+// re-derivable from the PR cubic with NO two-phase ambiguity, and mu from the
+// published LBC worked form. The checker rebuilds both from first principles.
+//
+// Measured anchors are filled by the checker from the printed summary.
+
+fluid
+{
+    pvt
+    {
+        pressure ( 2.0e6 5.0e6 1.0e7 2.0e7 );
+
+        compositional
+        {
+            composition { methane 1.0; }
+            temperature 260.0;
+            phase stable;   // LowestGibbs root
+        }
+    }
+}
+
+nodes
+{
+    W  {}
+    T  { pressure 3.0e6; }
+}
+
+pipes
+{
+    Line
+    {
+        from W; to T;
+        length 500; diameter 0.076; roughness 4.6e-5;
+        elevation 0;
+    }
+}
+
+sources { feed { node W; rate 0.004; } }
+
+solve { maxIter 100; tol 1e-11; }

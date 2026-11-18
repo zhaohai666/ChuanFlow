@@ -13,6 +13,12 @@
 #include "cf/1d/RodPump.h"
 #include "cf/1d/SolverGates.h"
 
+#include "cf/pvt/Components.h"
+#include "cf/pvt/Flash.h"
+#include "cf/pvt/PengRobinson.h"
+#include "cf/pvt/PvtCase.h"
+#include "cf/pvt/Viscosity.h"
+
 #include "DenseSolve.h"
 
 namespace cf
@@ -2174,8 +2180,59 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             const Dictionary& pd = fd.getDict("pvt");
             net.hasPvtFluid = true;
             net.pvtFluid.pressure = pd.getScalarList("pressure");
-            net.pvtFluid.rho = pd.getScalarList("rho");
-            net.pvtFluid.mu = pd.getScalarList("mu");
+            if (pd.has("compositional"))
+            {
+                // 5.110 (compositional properties into 1D, increment A):
+                // opt-in path. rho(p)/mu(p) are GENERATED from a declared
+                // composition with PR76 phase density + LBC residual
+                // viscosity, evaluated at each pressure-grid node. The
+                // march (solvePipeFlowPvt / marchPvtPipe) is untouched: it
+                // still reads the same PvtFluid table. Without the opt-in
+                // block the code below is byte-for-byte the original table
+                // path.
+                if (pd.has("rho") || pd.has("mu"))
+                    cfFatal("steadyNetwork: fluid pvt cannot declare rho/mu"
+                            " together with compositional");
+                const Dictionary& comp = pd.getDict("compositional");
+                if (!comp.has("composition"))
+                    cfFatal("steadyNetwork: fluid pvt compositional needs a composition block");
+                const pvt::Mixture mix = pvt::loadComposition(comp.getDict("composition"));
+                if (!comp.has("temperature"))
+                    cfFatal("steadyNetwork: fluid pvt compositional needs temperature");
+                const double T = comp.getScalar("temperature");
+                if (!(T > 0.0))
+                    cfFatal("steadyNetwork: compositional temperature must be positive");
+                const std::string phase = comp.getWordOr("phase", "stable");
+                pvt::RootPreference pref = pvt::RootPreference::LowestGibbs;
+                if (phase == "liquid") pref = pvt::RootPreference::Liquid;
+                else if (phase == "vapour" || phase == "vapor") pref = pvt::RootPreference::Vapor;
+                else if (phase != "stable")
+                    cfFatal("steadyNetwork: unknown compositional phase '" + phase + "'");
+                const std::size_t nc = net.pvtFluid.pressure.size();
+                if (nc < 2)
+                    cfFatal("steadyNetwork: compositional needs a pressure grid");
+                net.pvtFluid.rho.resize(nc);
+                net.pvtFluid.mu.resize(nc);
+                for (std::size_t i = 0; i < nc; ++i)
+                {
+                    const double p = net.pvtFluid.pressure[i];
+                    if (!(p > 0.0))
+                        cfFatal("steadyNetwork: compositional pressures must be positive");
+                    if (i > 0 && !(p > net.pvtFluid.pressure[i - 1]))
+                        cfFatal("steadyNetwork: compositional pressures must ascend");
+                    const pvt::EosState st = pvt::pengRobinsonState(mix, T, p, pref);
+                    net.pvtFluid.rho[i] = st.massDensity;
+                    net.pvtFluid.mu[i] = pvt::lbcViscosity(mix, T, p, pref);
+                    if (!(net.pvtFluid.rho[i] > 0.0) || !(net.pvtFluid.mu[i] > 0.0))
+                        cfFatal("steadyNetwork: compositional generated non-positive"
+                                " rho/mu at pressure " + std::to_string(p));
+                }
+            }
+            else
+            {
+                net.pvtFluid.rho = pd.getScalarList("rho");
+                net.pvtFluid.mu = pd.getScalarList("mu");
+            }
             const std::size_t n = net.pvtFluid.pressure.size();
             if (n < 2 || net.pvtFluid.rho.size() != n
                 || net.pvtFluid.mu.size() != n)

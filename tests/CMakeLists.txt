@@ -525,6 +525,18 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyPvtColumn/case.dict)
 
+# 5.110 (compositional properties into 1D, increment A): opt-in generation of
+# the PVT table from a declared composition (PR76 stable-root density + LBC
+# residual viscosity) with the march untouched. Checker re-derives the table
+# from first principles, replays the march, gates against an explicit-table
+# twin and checks four loud refusals.
+add_test(
+    NAME verify.steadyPvtCompositional
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_pvt_compositional.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyPvtCompositional/case.dict)
+
 # 5.76 / A5 increment 2: the black-oil and PVT rows no longer refuse a wall
 # law. The LIQUID share of the BB no-slip mixture viscosity and the PVT
 # table's Newtonian baseline are repriced on the mixture wall rate

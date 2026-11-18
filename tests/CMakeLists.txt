@@ -581,6 +581,16 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientCoupled1d3d/case.dict)
 
+# D8 increment 1: the same hydraulic region now closes an energy pass with the
+# 1D side. The checker rebuilds the 1D lumped implicit-Euler recurrence and the
+# 3D wall/enthalpy balance, and asserts the undeclared twin is byte-identical.
+add_test(
+    NAME verify.coupledThermal1d3d
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_coupled_thermal_1d3d.py
+        $<TARGET_FILE:chflow-coupled-1d3d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupledThermal1d3d/case.dict)
+
 # two detailed regions on one network: a parallel duct whose rate the split
 # decides and a series duct whose rate topology pins, so the checker reads the
 # interface per edge, the network laws off the 1D side alone, each block's field

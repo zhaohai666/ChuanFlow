@@ -9,6 +9,7 @@
 #include "cf/common/Dictionary.h"
 #include "cf/common/Labels.h"
 #include "cf/common/Rheology.h"
+#include "cf/fvm/EnergySolver.h"
 #include "cf/fvm/Fields.h"
 #include "cf/fvm/GeneralizedNewtonian.h"
 #include "cf/fvm/FvMatrix.h"
@@ -119,6 +120,50 @@ struct CompressibleConfig
 
 /// Read `compressible{ pRef; RsT; mu; }` from ONE detail{} dictionary.
 CompressibleConfig readCompressible(const Dictionary& detailDict);
+
+/// D8 increment 1: an OPTIONAL conjugate-heat pass over a coupled edge.
+/// The 1D side has no temperature field of its own (Network.h/Transient.h are
+/// hydraulic), so this increment gives the coupled edge a lumped thermal node:
+/// `C dT1/dt = rho cp q (Tsource - T1) + Qwall`, where `Qwall` is the heat the
+/// 3D energy solve reports through the declared wall patch. Each interface
+/// pass hands `T1` to the 3D inlet as a fixed temperature and reads `Qwall`
+/// back as a line heat rate `q' = Qwall / length`. An undeclared case builds no
+/// energy model, calls no thermal hook and solves exactly the old hydraulic
+/// problem bit for bit.
+struct ThermalCouplingConfig
+{
+    bool enabled = false;
+    scalar sourceTemperature = 0;   // K, 1D fluid entering the lumped node
+    scalar initial1dTemperature = 0;// K, the node's starting temperature
+    scalar capacity1d = 0;          // J/K, lumped heat capacity of the 1D node
+    scalar relax = 1.0;             // Picard relaxation of T1 between passes
+    scalar tolerance = 1e-6;        // K, absolute agreement of the T1 balance
+    scalar length = 0;              // m, length Qwall is divided by to get q'
+    std::string wallPatch;          // 3D patch held at `wallTemperature`
+    scalar wallTemperature = 0;     // K
+    EnergyProps energy;             // the 3D energy{} block of the detail dict
+
+    void validate() const;
+};
+
+/// Read `thermal{ ... }` plus the `energy{ ... }` it needs from ONE detail{}
+/// dictionary. `enabled false` (or an absent block) leaves every field at its
+/// default; a detail dict that declares energy without thermal is refused
+/// instead of silently solving a field nobody reads.
+ThermalCouplingConfig readThermalCoupling(const Dictionary& detailDict);
+
+/// What the 3D partner measured on the last thermal pass. Zero/disabled for
+/// every analytic element and every case without `thermal{}`.
+struct ThermalLedger
+{
+    bool enabled = false;
+    scalar inletTemperature = 0;  // K, the T the interface handed the 3D inlet
+    scalar wallHeatRate = 0;      // W through the declared wall patch, into the fluid
+    scalar inletHeatRate = 0;     // W conducted through the fixed-T inlet patch
+    scalar enthalpyOut = 0;       // W, rho cp net enthalpy flux out of the block
+    scalar heatBalance = 0;       // W, Qwall + Qinlet + source - enthalpyOut
+    scalar length = 0;            // m, section over which q' is quoted
+};
 
 /// The along-duct isothermal march, station by station. `p2Slope` is the
 /// analytic d(p^2)/dx; a checker rebuilds it from the dict alone and compares
@@ -264,6 +309,16 @@ public:
     /// lets a regression tell "the interface forwarded a different n" from
     /// "the block solved a different wall stress".
     virtual Rheology rheology() const { return {}; }
+
+    /// Hand the partner the 1D side's temperature for this interface pass.
+    /// The default is a no-op: an analytic law, or a block whose case declared
+    /// no `thermal{}`, has no temperature field to move.
+    virtual void setThermalBoundary(scalar /*temperature*/) {}
+
+    /// The wall heat / enthalpy account of the last solve, read back as a
+    /// ledger just like `profileLedger()`. Disabled for every partner that
+    /// carries no energy model.
+    virtual ThermalLedger thermalLedger() const { return {}; }
 };
 
 /// What the last solve of a `DetailBlock` produced. Every number is measured on
@@ -386,7 +441,8 @@ public:
                 const Rheology& rheology = Rheology{},
                 const GeneralizedNewtonianControls& gnCtl = {},
                 const PhaseConfig& phases = PhaseConfig{},
-                const CompressibleConfig& compressible = CompressibleConfig{});
+                const CompressibleConfig& compressible = CompressibleConfig{},
+                const ThermalCouplingConfig& thermal = ThermalCouplingConfig{});
 
     DetailBlock(const DetailBlock&) = delete;
     DetailBlock& operator=(const DetailBlock&) = delete;
@@ -422,6 +478,13 @@ public:
 
     /// The fluid of this block, straight from the coupled edge's declaration.
     Rheology rheology() const override { return rheology_; }
+
+    /// D8 increment 1: write the 1D temperature onto the 3D inlet patch and
+    /// hand the wall heat rate back on the next ledger read. No-op for every
+    /// block whose case declared no `thermal{}`.
+    void setThermalBoundary(scalar temperature) override;
+    ThermalLedger thermalLedger() const override;
+
     /// The per-face viscosity law the last solve assembled, or null when the
     /// block is Newtonian (which is every case that declares no fluid).
     const GeneralizedNewtonianViscosity* generalizedNewtonian() const
@@ -577,6 +640,15 @@ private:
     /// constant-density FVM equations.
     CompressibleConfig compressCfg_;
     CompressibleMeasure compressMeasure_;
+
+    /// 5.101's thermal twin: owned only when `thermal.enabled`, so an
+    /// undeclared case keeps both the null energy pointer and its old solve.
+    ThermalCouplingConfig thermalCfg_;
+    label thermalWallPatch_ = -1;
+    scalar thermalInletT_ = 0;
+    /// Declared after the flux it reads; dies before the mesh and flux it
+    /// borrows. The SIMPLE loop gets this as its ONE energy hook.
+    std::unique_ptr<EnergyModel> energy_;
 };
 
 // ------------------------------------------------------------------
@@ -679,6 +751,23 @@ struct EdgeExchange
     /// carries: the whole number where the case charges the row, 0 where it only
     /// reports it. `rowDropPa` contains it, `chordPa` does not.
     scalar convectiveRowPa = 0;
+
+    /// D8 increment 1: the temperature/line-heat exchange on this pass.
+    /// `inletTemperature` is what this side handed the 3D inlet, `wallHeatRate`
+    /// is what the 3D energy solve reported through the declared wall patch,
+    /// and `lineHeatFlux` is that heat per declared length (W/m). `t1d` is the
+    /// 1D lumped node's temperature at the start of the pass; `thermalResidual`
+    /// is the K the node still has to move for its enthalpy balance to close.
+    /// All seven stay at zero/default on an edge with no `thermal{}`.
+    bool thermalOn = false;
+    scalar inletTemperature = 0;
+    scalar wallHeatRate = 0;
+    scalar inletHeatRate = 0;
+    scalar enthalpyOut = 0;
+    scalar lineHeatFlux = 0;
+    scalar t1d = 0;
+    scalar thermalResidual = 0;
+    scalar thermalBalance = 0;
 };
 
 /// One pass of the steady interface: every coupled edge evaluated against the
@@ -831,6 +920,11 @@ struct TransientCoupledControls
     /// not a silent fallback: the case asked the block for a momentum flux the
     /// region's wall cannot account for.
     std::vector<int> convectiveIntoRowPerEdge;
+
+    /// The optional conjugate-heat pass, read from the 3D detail dict and
+    /// handed to the interface as well as to each partner block. Disabled by
+    /// default: every existing case keeps the hydraulic-only loop.
+    ThermalCouplingConfig thermal;
 };
 
 /// One interface exchange inside one time step: every coupled edge evaluated
@@ -853,6 +947,9 @@ struct TransientCoupledStep
     std::vector<double> pressure;    // every node, at the accepted state
     std::vector<double> flowRate;    // every pipe, at the accepted state
     std::vector<TransientInterfacePass> history;
+    /// D8 increment 1: worst absolute T1-balance mismatch over the coupled
+    /// edges at this accepted step (K). Zero on a case without `thermal{}`.
+    scalar thermalResidual = 0;
 };
 
 struct TransientCoupledResult

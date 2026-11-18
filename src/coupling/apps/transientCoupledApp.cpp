@@ -146,6 +146,19 @@ int main(int argc, char** argv)
         // 5.78: a two-phase partner block (absent in every older case).
         const PhaseConfig blockPhases = readPhases(dd);
         const CompressibleConfig blockCompressible = readCompressible(dd);
+        // 5.101 / D8 increment 1: an optional energy pass over the coupled
+        // edge. An undeclared detail{} leaves this disabled and the interface
+        // runs the hydraulic-only loop it always ran.
+        const ThermalCouplingConfig blockThermal = readThermalCoupling(dd);
+        ctl.thermal = blockThermal;
+        if (blockThermal.enabled)
+            log::info("transient thermal: sourceT ", num(blockThermal.sourceTemperature),
+                      " initialT ", num(blockThermal.initial1dTemperature),
+                      " C1 ", num(blockThermal.capacity1d),
+                      " wall ", blockThermal.wallPatch, " Tw ",
+                      num(blockThermal.wallTemperature), " length ",
+                      num(blockThermal.length), " kappa ",
+                      num(blockThermal.energy.kappa));
         log::info("transient network+block: block has ", mesh.nCells(), " cells and ",
                   mesh.nPatches(), " patches; nu ", num(c.fluid.mu / c.fluid.rho),
                   "; dt ", num(tc.dt), " endTime ", num(tc.endTime),
@@ -161,7 +174,7 @@ int main(int argc, char** argv)
             DetailBlock block(mesh, c.fluid.mu / c.fluid.rho, c.fluid.rho, schemes,
                                blockCtl, probeMin, probeMax, blockTurb, "flat",
                                blockRheology, gnCtl, blockPhases,
-                               blockCompressible);
+                               blockCompressible, blockThermal);
 
             // and one fresh network: the agreed coefficient carries from step to
             // step, so a reused instance would start the series where the
@@ -196,7 +209,16 @@ int main(int argc, char** argv)
                           " passes ", st.passes, " subPasses ", st.history.size(),
                           " sweeps ", ex.sweeps, " newton ", num(p.newtonResidual),
                           " M ", num(ex.inertance),
-                          " blockConverged ", (ex.blockConverged ? 1 : 0));
+                          " blockConverged ", (ex.blockConverged ? 1 : 0),
+                          (ex.thermalOn ? (" thermal 1 Tin " + num(ex.inletTemperature)
+                                           + " T1 " + num(ex.t1d)
+                                           + " qWall " + num(ex.wallHeatRate)
+                                           + " qIn " + num(ex.inletHeatRate)
+                                           + " qPrime " + num(ex.lineHeatFlux)
+                                           + " tres " + num(ex.thermalResidual)
+                                           + " hOut " + num(ex.enthalpyOut)
+                                           + " hbal " + num(ex.thermalBalance))
+                                        : std::string(" thermal 0")));
 
                 std::ostringstream nodes;
                 nodes << std::setprecision(17);

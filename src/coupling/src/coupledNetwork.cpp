@@ -315,6 +315,61 @@ CompressibleConfig readCompressible(const Dictionary& detailDict)
     return cfg;
 }
 
+void ThermalCouplingConfig::validate() const
+{
+    if (!enabled) return;
+    if (!std::isfinite(sourceTemperature) || !std::isfinite(initial1dTemperature)
+        || !std::isfinite(wallTemperature))
+        cfFatal("coupling: thermal temperatures must all be finite");
+    if (!(capacity1d > 0) || !std::isfinite(capacity1d))
+        cfFatal("coupling: thermal capacity1d must be finite and positive (J/K)");
+    if (!(length > 0) || !std::isfinite(length))
+        cfFatal("coupling: thermal length must be finite and positive (m)");
+    if (!(relax > 0 && relax <= 1) || !std::isfinite(relax))
+        cfFatal("coupling: thermal relax must be in (0, 1]");
+    if (!(tolerance > 0) || !std::isfinite(tolerance))
+        cfFatal("coupling: thermal tolerance must be finite and positive (K)");
+    if (wallPatch.empty())
+        cfFatal("coupling: thermal{} needs a wallPatch name when enabled");
+    energy.validate();
+}
+
+ThermalCouplingConfig readThermalCoupling(const Dictionary& detailDict)
+{
+    ThermalCouplingConfig cfg;
+    if (!detailDict.has("thermal"))
+    {
+        if (detailDict.has("energy"))
+            cfFatal("detailBlock: energy{} is declared without thermal{}; the"
+                    " coupling app would solve a temperature field no edge"
+                    " could read");
+        return cfg;
+    }
+    const Dictionary& td = detailDict.getDict("thermal");
+    if (td.has("enabled") && !td.getBool("enabled"))
+    {
+        if (detailDict.has("energy"))
+            cfFatal("detailBlock: energy{} is declared while thermal enabled no;"
+                    " the coupling app would solve a field no edge could read");
+        return cfg;
+    }
+    cfg.enabled = true;
+    cfg.sourceTemperature = td.getScalarOr("sourceTemperature", 0.0);
+    cfg.initial1dTemperature = td.getScalarOr("initial1dTemperature", 0.0);
+    cfg.capacity1d = td.getScalarOr("capacity1d", 0.0);
+    cfg.relax = td.getScalarOr("relax", cfg.relax);
+    cfg.tolerance = td.getScalarOr("tolerance", cfg.tolerance);
+    cfg.length = td.getScalarOr("length", 0.0);
+    cfg.wallPatch = td.getWordOr("wallPatch", "");
+    cfg.wallTemperature = td.getScalarOr("wallTemperature", 0.0);
+    if (!detailDict.has("energy"))
+        cfFatal("detailBlock: thermal{} needs an energy{} block in the same"
+                " detail{} dictionary");
+    cfg.energy = EnergyProps::fromCase(detailDict);
+    cfg.validate();
+    return cfg;
+}
+
 PhaseField::PhaseField(const polyMesh& mesh, int axis, int flowSign,
                        scalar rhoRef, scalar nuRef, const PhaseConfig& cfg)
 {
@@ -412,7 +467,8 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
                          const Rheology& rheology,
                          const GeneralizedNewtonianControls& gnCtl,
                          const PhaseConfig& phases,
-                         const CompressibleConfig& compressible)
+                         const CompressibleConfig& compressible,
+                         const ThermalCouplingConfig& thermal)
     : mesh_(std::move(mesh)),
       nu_(nu),
       rho_(rho),
@@ -428,7 +484,8 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
       rheology_(rheology),
       gnCtl_(gnCtl),
       phaseCfg_(phases),
-      compressCfg_(compressible)
+      compressCfg_(compressible),
+      thermalCfg_(thermal)
 {
     if (!(nu_ > 0) || !(rho_ > 0))
         cfFatal("detailBlock: nu and rho must be positive");
@@ -533,6 +590,55 @@ DetailBlock::DetailBlock(polyMesh mesh, scalar nu, scalar rho,
                     " schemes ddt '" + schemes_.ddt + "' would give it a"
                     " history lossAt(q) cannot carry");
     }
+
+    // A thermal partner owns the SIMPLE energy hook. This increment keeps it
+    // single-owner and steady: a phase field, a compressible march, a RANS or
+    // non-Newtonian wall model, or a region carrying its own du/dt would each
+    // claim the same constitutive answer, so every such combination is refused
+    // rather than silently resolved by precedence.
+    if (thermalCfg_.enabled)
+    {
+        if (compressCfg_.enabled || phaseCfg_.enabled || !rheology_.isNewtonian()
+            || turb_.model != "laminar" || unsteady_)
+            cfFatal("detailBlock: thermal coupling is only available on a"
+                    " steady Newtonian laminar block without phases or a"
+                    " compressible march; this increment owns the energy hook"
+                    " and refuses to share it");
+        thermalWallPatch_ = mesh_.patchIdByName(thermalCfg_.wallPatch);
+        if (thermalWallPatch_ == inletPatch_ || thermalWallPatch_ == outletPatch_)
+            cfFatal("detailBlock: thermal wallPatch '" + thermalCfg_.wallPatch
+                    + "' is the inlet or outlet patch; the heat boundary must"
+                      " be on a separate wall");
+        thermalInletT_ = thermalCfg_.initial1dTemperature;
+        energy_ = std::make_unique<EnergyModel>(mesh_, phi_, schemes_,
+                                                thermalCfg_.energy, nu_);
+        volScalarField& t = energy_->temperature();
+        t.setPatchValue(inletPatch_, "fixedValue", thermalInletT_);
+        t.setPatchValue(thermalWallPatch_, "fixedValue", thermalCfg_.wallTemperature);
+        energy_->initialize();
+    }
+}
+
+void DetailBlock::setThermalBoundary(scalar temperature)
+{
+    if (!energy_) return;
+    thermalInletT_ = temperature;
+    energy_->temperature().setPatchValue(inletPatch_, "fixedValue", temperature);
+}
+
+ThermalLedger DetailBlock::thermalLedger() const
+{
+    ThermalLedger ledger;
+    if (!energy_) return ledger;
+    ledger.enabled = true;
+    ledger.inletTemperature = thermalInletT_;
+    ledger.wallHeatRate = energy_->patchHeatRate(thermalWallPatch_);
+    ledger.inletHeatRate = energy_->patchHeatRate(inletPatch_);
+    ledger.enthalpyOut = energy_->netEnthalpyRate();
+    ledger.heatBalance = ledger.wallHeatRate + ledger.inletHeatRate
+                       + energy_->volumetricHeatRate() - ledger.enthalpyOut;
+    ledger.length = thermalCfg_.length;
+    return ledger;
 }
 
 void DetailBlock::buildSections()
@@ -1025,9 +1131,13 @@ scalar DetailBlock::lossAt(scalar qMag)
     // so the SIMPLE call below is the old one bit for bit.
     if (phase_ && phaseCfg_.viscosityMix)
         viscosity = static_cast<IEddyViscosity*>(phase_.get());
-    IEnergyCoupling* energy = phase_
-                                  ? static_cast<IEnergyCoupling*>(phase_.get())
-                                  : nullptr;
+    // A thermal block owns the ONE energy hook; a phase field without thermal
+    // keeps the pointer it always had. Both cannot be enabled (checked in the
+    // constructor), so no case can silently lose one of the two answers.
+    IEnergyCoupling* energy = energy_
+                                  ? static_cast<IEnergyCoupling*>(energy_.get())
+                                  : (phase_ ? static_cast<IEnergyCoupling*>(phase_.get())
+                                            : nullptr);
     const SimpleResult res = solveIncompressibleSimple(mesh_, U_, p_, phi_, nu_,
                                                        schemes_, ctl_,
                                                        viscosity, energy);
@@ -1450,6 +1560,12 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
     if (!(endTime > 0))
         cfFatal("coupling: the transient run needs a positive endTime ("
                 + fmt(endTime) + ")");
+    ctl.thermal.validate();
+    const bool thermalOn = ctl.thermal.enabled;
+    // The 1D side of D8 increment 1: one lumped thermal node per coupled edge.
+    // It starts where the case says and is advanced only at an agreed pass,
+    // exactly like the hydraulic coefficients the interface carries.
+    std::vector<scalar> t1(edges.size(), ctl.thermal.initial1dTemperature);
     const std::size_t nSteps = static_cast<std::size_t>(endTime / dt + 0.5);
     if (nSteps < 1)
         cfFatal("coupling: endTime " + fmt(endTime) + " is shorter than one"
@@ -1578,6 +1694,11 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
             }
         }
 
+        // The thermal node's implicit-Euler base is this level's committed
+        // temperature: every pass may re-evaluate the wall heat at a new T1,
+        // but none may move the time level it is stepping away from.
+        const std::vector<scalar> t1Start = t1;
+
         // Re-solve the same step from the same committed start until every
         // partner's drop belongs to the rate the step delivers through its edge.
         // Nothing is advanced in here, so the refresh is a real iteration on one
@@ -1590,6 +1711,7 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
             rec.pass = pass;
             rec.newtonResidual = newton;
             scalar worst = 0;
+            scalar worstThermal = 0;
             for (std::size_t i = 0; i < edges.size(); ++i)
             {
                 const label edge = edges[i];
@@ -1602,6 +1724,10 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                     cfFatal("coupling: the transient step delivers no rate through"
                             " coupled pipe '" + ex.name + "'; a partner cannot be"
                             " evaluated at zero rate");
+                // D8 increment 1: the temperature this edge's 1D node carries
+                // is the inlet condition the 3D energy solve must answer at.
+                // An undeclared case never calls this hook.
+                if (thermalOn) blocks[i]->setThermalBoundary(t1[i]);
                 ex.dpPa = blocks[i]->lossAt(ex.q);
                 ex.inertance = net.pipeInertia(edge);
                 ex.unsteady = blocks[i]->unsteadyDrop();
@@ -1678,13 +1804,45 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                               ? (ex.rowDropPa - ex.dpPa) / ex.dpPa : 0.0;
                 ex.sweeps = blocks[i]->lastSweeps();
                 ex.blockConverged = blocks[i]->lastConverged();
+
+                if (thermalOn)
+                {
+                    const ThermalLedger tl = blocks[i]->thermalLedger();
+                    if (!tl.enabled || !(tl.length > 0))
+                        cfFatal("coupling: transient pipe '" + ex.name
+                                + "' is asked for a thermal exchange but its"
+                                  " partner reports no energy ledger");
+                    ex.thermalOn = true;
+                    ex.inletTemperature = tl.inletTemperature;
+                    ex.wallHeatRate = tl.wallHeatRate;
+                    ex.inletHeatRate = tl.inletHeatRate;
+                    ex.enthalpyOut = tl.enthalpyOut;
+                    ex.lineHeatFlux = tl.wallHeatRate / tl.length;
+                    ex.t1d = t1[i];
+                    ex.thermalBalance = tl.heatBalance;
+                    // One lumped node per coupled edge: advection brings the
+                    // source temperature in, the 3D wall heat goes in, and the
+                    // node's own capacity is the only storage. A pass is
+                    // agreed only when the candidate equals the T that was
+                    // just handed to the 3D inlet.
+                    const scalar rhoCp = ctl.thermal.energy.rho * ctl.thermal.energy.cp;
+                    const scalar advection =
+                        rhoCp * ex.q * (ctl.thermal.sourceTemperature - t1[i]);
+                    const scalar candidate = t1Start[i]
+                        + dt / ctl.thermal.capacity1d * (advection + ex.wallHeatRate);
+                    ex.thermalResidual = candidate - t1[i];
+                    worstThermal = std::max(worstThermal, std::abs(ex.thermalResidual));
+                    t1[i] += ctl.thermal.relax * ex.thermalResidual;
+                }
                 worst = std::max(worst, ex.residual);
                 rec.edges.push_back(ex);
             }
             step.history.push_back(rec);
             passes = pass;
+            step.thermalResidual = worstThermal;
 
-            if (worst <= ctl.tolerance)
+            if (worst <= ctl.tolerance
+                && (!thermalOn || worstThermal <= ctl.thermal.tolerance))
             {
                 agreed = true;
                 break;
@@ -1740,7 +1898,9 @@ TransientCoupledResult solveTransientCoupled1d3d(TransientNetwork& net,
                     + std::to_string(s + 1) + " after "
                     + std::to_string(passes) + " passes (worst edge '" + worst.name
                     + "': residual " + fmt(worst.residual) + ", rate "
-                    + fmt(worst.q) + " m3/s at t " + fmt(net.time() + dt) + " s)");
+                    + fmt(worst.q) + " m3/s, thermal residual "
+                    + fmt(step.thermalResidual) + " K at t "
+                    + fmt(net.time() + dt) + " s)");
         }
 
         // the accepted step is the one solved with the coefficients it reports,

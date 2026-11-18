@@ -1,0 +1,20 @@
+// qmomCoagulation: spatially-uniform two-node QMOM with constant-kernel
+// Smoluchowski coagulation. Moments are chosen to be a valid positive measure
+// (M0 M2 > M1^2, M1 M3 > M2^2) and the explicit horizon stays in that cone.
+// The checker reconstructs the closed-form moment trajectory
+//   M0(t) = M00/(1+beta M00 t/2), M1 const,
+//   M2(t) = M20 + beta M10^2 t,
+//   M3(t) = M30 + 3 beta M10 M20 t + (3/2) beta^2 M10^2 t^2
+// and independently verifies the two-node Gaussian quadrature reproduces all
+// four moments at every reported step.
+qmom
+{
+    beta 0.05;
+    m0 1.0;
+    m1 1.0;
+    m2 1.2;
+    m3 1.5;
+    dt 0.5;
+    steps 20;
+    reportEvery 2;
+}

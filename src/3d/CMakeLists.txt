@@ -22,6 +22,11 @@ add_library(cf3d STATIC
     src/solvers/pisoSolver.cpp
     src/solvers/energySolver.cpp
     src/dpm/dpm.cpp
+    src/dpm/radiation.cpp
+    src/dpm/combustion.cpp
+    src/dpm/qmom.cpp
+    src/dpm/cht.cpp
+    src/dpm/ale.cpp
     src/multiphase/vof.cpp
     src/multiphase/plic.cpp
     src/multiphase/plicAdvect.cpp

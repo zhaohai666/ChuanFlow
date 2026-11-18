@@ -1,0 +1,54 @@
+// combustionFixedOxidiser: a 1D stagnant slab with a linear fuel equation.
+// With the oxidiser pinned (fixedOxidiser 1) and zero velocity the steady
+// species equation reduces to  D Y'' - k Yo Y = 0, k = A exp(-Ea/RT), whose
+// closed form with Y(0)=fuelInlet, Y(L)=0 is
+//   Y(x) = Y0 sinh(p (L-x)) / sinh(p L),   p = sqrt(k Yo / D).
+// The checker rebuilds k(T) with its own math.exp and the whole profile from
+// the case constants. y/z are symmetry/empty so the field varies only in x.
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (40 1 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type symmetry; }
+    ymax  { name top;    type symmetry; }
+    zmin  { name front;  type empty;    }
+    zmax  { name back;   type empty;    }
+}
+
+combustion
+{
+    diffusivity 1.0;
+    preExp 100.0;
+    activationE 50000.0;
+    gasConstant 8.314462618;
+    temperature 1200.0;
+    stoich 2.0;
+    fixedOxidiser 1.0;
+    fuelInlet 1.0;
+    oxInlet 1.0;
+}
+
+velocity (0 0 0);
+
+patches
+{
+    left  { fuelValue 1.0; }
+    right { fuelValue 0.0; }
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian none;
+    grad      linear;
+}
+
+output
+{
+    vtk out_combustion.vtu;
+}

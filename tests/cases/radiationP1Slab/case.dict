@@ -1,0 +1,46 @@
+// radiationP1Slab: 1D grey participating slab with two black boundaries at
+// different temperatures and a uniform medium temperature. The steady P1
+// equation  gamma G'' - kappa_a G + 4 kappa_a sigma T_m^4 = 0  has the closed
+// form  G(x) = 4 sigma T_m^4 + C1 cosh(m x) + C2 sinh(m x), m^2 = kappa_a/gamma
+// = 3 beta kappa_a. With black walls G(0)=4 sigma T_L^4, G(L)=4 sigma T_R^4
+// both constants follow, so the checker reconstructs the whole field from the
+// case constants alone. y is symmetry, z is empty: the field varies only in x.
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (40 1 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type symmetry; }
+    ymax  { name top;    type symmetry; }
+    zmin  { name front;  type empty;    }
+    zmax  { name back;   type empty;    }
+}
+
+radiation
+{
+    absorption 1.0;
+    scattering 0.5;
+    mediumTemperature 1200;
+}
+
+patches
+{
+    left  { wallTemperature 1500; }
+    right { wallTemperature 900;  }
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian none;      // orthogonal 1D slab: no non-orthogonal correction
+    grad      linear;
+}
+
+output
+{
+    vtk out_p1_slab.vtu;
+}

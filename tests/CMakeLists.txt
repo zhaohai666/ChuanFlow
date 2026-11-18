@@ -125,6 +125,58 @@ add_test(
         $<TARGET_FILE:chflow-3d-dpm>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/dpmTwoWay/case.dict)
 
+# D8 increment 4: steady P1 radiative transfer in a grey participating slab.
+# The checker rebuilds the double-exponential closed form, the black-wall
+# G=4sigmaT^4 condition, the exact discrete energy balance and the flux/source
+# laws from the case constants alone; four refusals must be loud.
+add_test(
+    NAME verify.radiationP1Slab
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_p1_slab.py
+        $<TARGET_FILE:chflow-3d-p1>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/radiationP1Slab/case.dict)
+
+# D8 increment 5: steady species transport with one-step Arrhenius chemistry.
+# Checker rebuilds k(T) with its own math.exp, the sinh closed form of the
+# pinned-oxidiser fuel equation, the rate law and the sharp fuel balance.
+add_test(
+    NAME verify.combustionFixedOxidiser
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_combustion.py
+        $<TARGET_FILE:chflow-3d-combustion>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/combustionFixedOxidiser/case.dict)
+
+# D8 increment 6: two-node QMOM for constant-kernel coagulation. Checker
+# replays the Smoluchowski moment ODEs, checks the closed form, verifies the
+# two-node quadrature reproduces all four moments and mass is conserved.
+add_test(
+    NAME verify.qmomCoagulation
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_qmom.py
+        $<TARGET_FILE:chflow-3d-qmom>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/qmomCoagulation/case.dict)
+
+# D8 increment 7: two-region conjugate heat transfer. Checker rebuilds the
+# 1D two-layer series-resistance closed form (interface T, flux, both linear
+# profiles) and requires flux continuity across the coupled interface.
+add_test(
+    NAME verify.chtTwoLayer
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_cht.py
+        $<TARGET_FILE:chflow-3d-cht>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/chtTwoLayer/case.dict)
+
+# D8 increment 8: moving-mesh geometry (polyMesh::movePoints) and the
+# Geometric Conservation Law. Checker verifies rigid-translation GCL at
+# roundoff, the expansion volume law, and first-order GCL error vs dt.
+add_test(
+    NAME verify.aleMovingMesh
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_ale.py
+        $<TARGET_FILE:chflow-3d-ale>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/aleTranslation/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/aleExpansion/case.dict)
+
 add_test(
     NAME verify.startedChannel
     COMMAND ${Python3_EXECUTABLE}

@@ -260,4 +260,15 @@ Vector polyMesh::maxX() const
     return m;
 }
 
+void polyMesh::movePoints(const Field<Vector>& newPoints)
+{
+    if (newPoints.size() != points_.size())
+        cfFatal("polyMesh::movePoints: point count changed; topology is fixed in ALE");
+    points_ = newPoints;
+    // Invalidate every lazy cache. The next cellVolumes()/faceSf()/... call
+    // recomputes all geometry from the new points, so the caller always sees
+    // a consistent moving mesh.
+    geomCalculated_ = false;
+}
+
 } // namespace cf

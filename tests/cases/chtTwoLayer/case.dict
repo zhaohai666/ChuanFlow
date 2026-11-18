@@ -1,0 +1,60 @@
+// chtTwoLayer: conjugate heat transfer across a solid layer (x in [0,0.5],
+// k=2) and a fluid layer (x in [0.5,1], k=0.5), outer walls at 500 K and 300 K.
+// The interface (x=0.5) is the solid's `right` patch and the fluid's `left`
+// patch. Series resistance R = 0.5/2 + 0.5/0.5 = 1.25, so q = 200/1.25 = 160
+// W/m2 and T_interface = 500 - 160*0.25 = 460 K. Each layer has a linear T
+// profile; the checker rebuilds all of it from the case constants.
+cht
+{
+    interfaceTol 1e-10;
+    maxIterations 40;
+    relax 1.0;
+
+    solid
+    {
+        k 2.0;
+        outerT 500.0;
+        outerPatch left;
+        interfacePatch right;
+        block
+        {
+            min (0 0 0);
+            max (0.5 0.1 0.1);
+            cells (20 1 1);
+            xmin { name left;  type wall; }
+            xmax { name right; type wall; }
+            ymin { name bottom; type symmetry; }
+            ymax { name top;    type symmetry; }
+            zmin { name front;  type empty; }
+            zmax { name back;   type empty; }
+        }
+    }
+
+    fluid
+    {
+        k 0.5;
+        outerT 300.0;
+        outerPatch right;
+        interfacePatch left;
+        block
+        {
+            min (0.5 0 0);
+            max (1 0.1 0.1);
+            cells (20 1 1);
+            xmin { name left;  type wall; }
+            xmax { name right; type wall; }
+            ymin { name bottom; type symmetry; }
+            ymax { name top;    type symmetry; }
+            zmin { name front;  type empty; }
+            zmax { name back;   type empty; }
+        }
+    }
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian none;
+    grad      linear;
+}

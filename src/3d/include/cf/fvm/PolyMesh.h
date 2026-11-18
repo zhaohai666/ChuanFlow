@@ -71,6 +71,15 @@ public:
     Vector minX() const;
     Vector maxX() const;
 
+    // ------------------------------------------------------------------
+    // Moving mesh (D8 increment 8, ALE). Replaces the vertex positions and
+    /// invalidates every cached geometric quantity; the next geometry accessor
+    /// recomputes face areas/normals, cell volumes/centres and deltaCoeff from
+    /// the new points. Topology (faces / owner / neighbour / patches) is fixed.
+    /// The caller must supply a mesh-velocity field separately for the ALE flux;
+    /// this method owns only the geometry.
+    void movePoints(const Field<Vector>& newPoints);
+
 private:
     void calcGeometry() const;
 

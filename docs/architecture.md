@@ -4810,6 +4810,27 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本与边界。** `CoupledNetwork.h`（+99 行：`ThermalCouplingConfig`/`ThermalLedger`、两个虚钩子、EdgeExchange/Step 字段、`TransientCoupledControls::thermal`），`coupledNetwork.cpp`（+174：配置读取/校验、`DetailBlock` 能量模型与两个钩子、SIMPLE 唯一能量指针、瞬态 pass 内的 T₁ 迭代），`transientCoupledApp.cpp`（+26：解析/日志），1 case + 1 checker + 1 add_test（`verify.coupledThermal1d3d`，Test #61，66.45 s）。**边界**：只有一条耦合边、层流牛顿稳态块；热容是 case 声明的集总量而非 1D 网格积分，不做 1D 沿程温度分布；不做相变/潜热、辐射、组分燃烧、固体区域或多区 cellZone（D8 后续增量）；不接 two-fluid / nodal / PVT 绑定；热与水力只通过 `Q壁` 单向影响温度，本格 `expansion=0` 故不反馈浮力。code commit df35477，全量回归 2739.74 s / 154（`-E mpiDecomposition`，154/154）。
 
+### 5.102 3D 第一次有拉格朗日粒子（D8 增量 2）：载体先解后冻，球阻轨道单向采样 `U`
+
+**这一格从哪来。** D8 审计确认全仓此前没有 Particle / Lagrange / DPM / parcel / randomWalk 任何一行代码——这是零起点，不是补一个钩子。载体侧则现成：`solveIncompressibleSimple` 能先解出稳态不可压流场，`polyMesh` 有 cell-centre 与包围盒，`volVectorField::internalField()` 可直接按 cell 读速度。因此本格把问题切成两半：先在原 SIMPLE 路上把载体解到收敛，然后**冻结**它，只在粒子侧积分；`U` / `p` / `phi` 在轨道阶段一个字节都不写。新 app `chflow-3d-dpm` 因此在 `dpm carrier frozen` 行前后各打一次 `uMax` 与 `Σ|U|`，checker 要求四个数逐位相等——这是单向耦合的可执行证据，不是注释里的承诺。
+
+**声明面。** `dpm{ dt; maxSteps; carrierRho; gravity (…); drag schillerNaumann; reportEvery; traceId; traceSteps; stream0{ point; velocity; diameter; density; count; } stream1{ … } }`。`streamN` 按字典键前缀扫描，可声明任意多条，每条内所有粒子共享初值与粒径/密度；`count` 整数展开成独立 `DpmParticle`。缺省 `drag` 就是 `schillerNaumann`，但其他字符串**大声拒收**（`drag law '…' is not implemented`），不静默替换成近似律。`dpm{}` 缺席直接拒收（`needs a dpm{} declaration`），`dt` / `carrierRho` / 粒径 / 密度 / `count` 逐条校验有限且为正。
+
+**阻力与积分。** 单球 Schiller–Naumann（1935）发表律：
+
+    Re = rho_f |U_f − U_p| d / mu
+    Cd = 24/Re · (1 + 0.15 Re^0.687),  Re ≤ 1000
+    Cd = 0.44,                          Re > 1000
+    a_drag = (3 rho_f Cd / (4 rho_p d)) (U_f − U_p)
+
+`Re → 0` 时代数上塌回 Stokes 极限 `a = 18 mu/(rho_p d²)(U_f−U_p)`；实现里在 `Re < 1e-6` 直接切到该线性式，避免 `24/Re × (U_f−U_p)` 里一大一小相乘的 0/0。浮力修正的体力单独由积分器加：`(1 − rho_f/rho_p) g`，与 `a_drag` 分开打印，便于 checker 分别判分。显式 Euler：**先更新速度，再用新速度更新位置**（`u ← u + dt(a_drag + body)`，`x ← x + dt·u`）；出口按粒子中心越过 `x ≥ x_max − d/2`、壁面按中心进入半径带判定，耗尽 `maxSteps` 记 `expired` 并让 app 非零退出（不能静默丢弃粒子）。
+
+**定位。** `polyMesh` 没有 `locateCell`，`volVectorField::faceValue` 又对内部面不适用，故 `locateDpmCell` 用**最近 cell-centre + 包围盒保护**，采样是零阶：所属单元速度就是该粒子的载体速度。严格半空间测试在出口面附近会把网格仍拥有的粒子误判为 outside，最近中心定位一直定义到出口边；包围盒只在注入点/粒子真正飞出网格时大声拒收。这样代价是 O(nCells) 每步一次定位（本 case 1000 格 × 8.7 万步可承受），换来不需要一套新的面穿透几何。
+
+**case 与判据。** `dpmChannel`（83 行）是 1 m × 0.2 m × 0.1 m 的 50×20×1 平面槽道，`nu 1e-5`、入口 `U (0.1 0 0)`，SIMPLE 55 趟收敛（`continuity 1.65697906271e-3`）；`rho_f = 1000` ⇒ `mu = 0.01`。两股各一颗：`stream0` 在 `(0.05 0.15 0.05)` 静止释放 1 mm / 2500 kg·m⁻³ 球，`stream1` 在 `(0.05 0.02 0.05)` 以 `(0 −0.5 0)` 释放 3 mm / 8000 kg·m⁻³ 重球；`dt 1e-4`、`maxSteps 120000`、`traceId 0 traceSteps 4`。实测 `U` 前后 checksum 逐位相同；particle 0 在 `t = 8.711 s` 到出口（`x ≈ (0.999502433564, 0.141194507016, 0.05)`，`u_x ≈ 0.11894`），particle 1 在 `t = 0.0466 s` 撞底壁（`x ≈ (0.0520979545101, 0.00147850150608, 0.05)`），summary `particles 2 outlet 1 wall 1 expired 0`。`check_dpm_channel.py`（214 行）六条判据：① 载体冻结 checksum 逐位相等；② launch 状态/粒径/密度 + 两终点状态与落点 + summary；③ 从 case 常数独立重算 `Re`/`Cd`/`a_drag`（相对 < 1e-9、`|Δa| < 1e-7`）；④ 从打印样本逐步复现显式 Euler 的速度（< 1e-10）与位置（< 1e-12）；⑤ 粒子 0 从静止趋近载体（`u_x` 0 → >0.05 且落在 0.12±0.05）；⑥ 三条拒收（未知 drag law、负直径、删掉 `dpm{}`）。终点落点用 `1e-5` / `1e-4` 容差，因为出口/壁面是在离散步上判越界，不是解析落在面上。
+
+**成本与边界。** 纯新增：`Dpm.h`（125 行）+ `dpm.cpp`（250）+ `dpmApp.cpp`（184）+ case（83）+ checker（214）+ `src/3d/CMakeLists.txt` / `src/3d/apps/CMakeLists.txt` / `tests/CMakeLists.txt` 各一处注册（`verify.dpmChannel`，CTest 154 → 155，单项 4.81 s）。**边界**：只做单向——粒子不写回动量/连续/能量，载体不是两相流；单球刚性球体、粒径与密度常量、无随机游走/湍流弥散/破碎/聚并/碰撞/反弹/壁面沉积/传热传质；零阶采样无插值，定位 O(nCells)；层流稳态单区载体，不接 RANS/可压/VOF/瞬态 PISO、不接 1D↔3D 耦合接口；无 MPI 轨道分解。A11 MPI 工作树改动仍未进提交（stage 脚本按字节剥离 `chflow-3d-mpi` 与 `verify.mpiDecomposition` 后恢复）。code commit 79242a4，全量回归 3121.50 s / 155（`-E mpiDecomposition`，155/155，rc=0）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|
@@ -4821,6 +4842,7 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 | `fvVectorMatrix` / `solve(UEqn == −grad(p))` | `fvMatrix`（多分量）+ apps 手写回路 |
 | `lduMatrix` + PBiCGStab | `SparseMatrix` + 右预处理 BiCGStab |
 | `simpleFoam` | `solveIncompressibleSimple` + `chflow-simple-foam` |
+| `kinematicCloud` / `particle` 的单向轨道 | `DpmConfig` / `runDpm` + `chflow-3d-dpm`（Schiller–Naumann 单球阻力 + 最近 cell-centre 零阶采样 + 显式 Euler，载体冻结不写回，见 5.102） |
 | `pisoFoam` | `solveTransientIncompressiblePiso` + `chflow-piso-foam` |
 | `rhoCentralFoam` / 密度基可压缩 Euler 回路（`divScheme` 的 Riemann 通量） | `chflow-3d-compressible`（`src/3d/apps/compressibleApp.cpp`：多面体网格上的广延守恒量递推 + 一阶 Godunov HLLC 面通量 + 理想气体，见 5.16） |
 | `system/fvSchemes` 字典 | case.dict 的 `schemes{}`（`loadSchemes`） |

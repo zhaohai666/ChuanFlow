@@ -175,6 +175,20 @@ python3 tests/check_coupled_thermal_1d3d.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient" \
     "$PWD/tests/cases/coupledThermal1d3d/case.dict"
 
+# 3D DPM 单向轨道（5.102 / D8 增量 2）：先用 SIMPLE 解 1 m x 0.2 m 槽道的
+# 稳态层流载体，再冻结 U；stream0 的 1 mm 静止球从入口侧漂到出口，stream1
+# 的 3 mm 重球撞底壁。dpm{} 声明 dt / maxSteps / carrierRho / gravity /
+# drag schillerNaumann / streamN{ point velocity diameter density count; }。
+# 阻力是 Schiller-Naumann 球律（低 Re 切 Stokes 极限）、体力是
+# (1 - rho_f/rho_p) g、积分是先速度后位置的显式 Euler；粒子只采样 U，
+# 不写回动量或连续方程。checker 独立重算 Re/Cd/a 与逐步 Euler，并要求
+# 轨道前后载体 checksum 逐位相同；删掉 dpm{} / 负直径 / 未知 drag 三条拒收。
+# 约 5 s（55 趟 SIMPLE + 2 颗粒子 + 3 条拒收）。
+./build/src/3d/apps/chflow-3d-dpm tests/cases/dpmChannel/case.dict
+python3 tests/check_dpm_channel.py \
+    "$PWD/build/src/3d/apps/chflow-3d-dpm" \
+    "$PWD/tests/cases/dpmChannel/case.dict"
+
 # 多边分区耦合：一张管网同时挂两块三维详细区（X1 在并联支里、X2 在串联位置上）。
 # app 按"初值集"逐个跑整趟外层回路，逐趟**对每条边**打印 R/q/dpBlock/残差/趟数与块收敛位，
 # 再给 name-keyed 的逐边 dp/q、节点压力与管流、每边的块自测；每边各自的 vtu 只在最后一组

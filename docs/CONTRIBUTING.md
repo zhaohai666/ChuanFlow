@@ -266,6 +266,57 @@ python3 tests/check_ale.py \
     "$PWD/tests/cases/aleTranslation/case.dict" \
     "$PWD/tests/cases/aleExpansion/case.dict"
 
+# 组分物性进 1D（5.110）：fluid{ pvt; compositional{ composition{...}
+# temperature T; } } opt-in 从组分经 PR76+LBC 预计算 rho/mu 表进 1D march；
+# marchPvtPipe/Newton 零改动，零声明路径无 pvtTable 行、逐位不变。checker
+# 独立重推 PR 密度/LBC 黏度逐点、从打印表重放 march、kij=0 twin。
+./build/src/1d/apps/chflow-1d-steady tests/cases/steadyPvtCompositional/case.dict
+python3 tests/check_steady_pvt_compositional.py \
+    "$PWD/build/src/1d/apps/chflow-1d-steady" \
+    "$PWD/tests/cases/steadyPvtCompositional/case.dict"
+
+# 内置 parachor 表（5.111）：surfaceTension{ parachors fromTable; } 查
+# Weinaug-Katz (1943) 发表值（ComponentData.h 含完整出处）；查不到大声
+# cfFatal；显式声明路径逐位不变；kij 有意不内置（checker 用显式 kij=0
+# twin 证明无内置 kij 偷查）。
+./build/src/pvt/apps/chflow-pvt tests/cases/pvtBuiltinTables/case.dict
+python3 tests/check_pvt_builtin_tables.py \
+    "$PWD/build/src/pvt/apps/chflow-pvt" \
+    "$PWD/tests/cases/pvtBuiltinTables/case.dict"
+
+# OpenFOAM 网格导入（5.112）：chflow-openfoam-mesh 读 constant/polyMesh
+# 五文件（points/faces/owner/neighbour/boundary ASCII），严格校验 patch
+# 覆盖/索引越界/binary 拒绝。checker 纯 Python 独立解析并用散度定理
+# sum_f Sf.Cf/3 重推体积/面积/bbox + gated twin + 3 拒收。
+./build/src/3d/apps/chflow-openfoam-mesh tests/cases/openfoamBox/case.dict
+python3 tests/check_openfoam_mesh.py \
+    "$PWD/build/src/3d/apps/chflow-openfoam-mesh" \
+    "$PWD/tests/cases/openfoamBox/case.dict"
+
+# 并行后端抽象（5.114）：cf::backend::parallelFor CPU 串行默认逐位不变；
+# CHFLOW_WITH_OPENMP / CHFLOW_WITH_KOKKOS 可选（缺 SDK 降级 CPU 并
+# WARNING）。checker 用 Fraction 精确闭式要求 active/serial/analytic 三份
+# checksum 逐位相等。边界：未接入既有 domain kernel（另行增量）。
+./build/src/3d/apps/chflow-3d-backend tests/cases/backendCpu/case.dict
+python3 tests/check_backend.py \
+    "$PWD/build/src/3d/apps/chflow-3d-backend" \
+    "$PWD/tests/cases/backendCpu/case.dict"
+
+# 黑油分离器（5.115）：separator{ pressure (...); temperature ...;
+# fluid{ blackoil{...} } } 逐级再闪蒸（gorStd 重置为剩余溶解气），逐级
+# 质量闭式 liquidMass + cumGasMass == massIn。checker 独立重述
+# Standing/Vazquez-Beggs/DAK 与逐级级联 + gated twin。
+./build/src/pvt/apps/chflow-separator tests/cases/pvtSeparator/case.dict
+python3 tests/check_pvt_separator.py \
+    "$PWD/build/src/pvt/apps/chflow-separator" \
+    "$PWD/tests/cases/pvtSeparator/case.dict"
+
+# Tauri GUI（5.116 / M5）：离线 Tauri 2 + WKWebView，命令层纯函数
+# （parse_case_text / parse_solver_output / run_case）spawn 引擎解析 stdout。
+# 无头验证不启 WebView；首次离线编译解析缓存全链约 3 分钟。
+(cd gui && cargo test --offline)
+node --test gui/tests/frontend.test.mjs
+
 # 多边分区耦合：一张管网同时挂两块三维详细区（X1 在并联支里、X2 在串联位置上）。
 # app 按"初值集"逐个跑整趟外层回路，逐趟**对每条边**打印 R/q/dpBlock/残差/趟数与块收敛位，
 # 再给 name-keyed 的逐边 dp/q、节点压力与管流、每边的块自测；每边各自的 vtu 只在最后一组

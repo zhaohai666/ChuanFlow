@@ -57,8 +57,13 @@
 - **群平衡两点 QMOM**：`qmom{ beta; m0..m3; dt; steps; }` 让 `chflow-3d-qmom` 追踪 M₀..M₃ 经两点高斯求积闭合，配常数核 Smoluchowski 聚并（闭式矩轨迹）；checker 逐步重放矩欧拉、验求积恒等式 Σwᵢvᵢᵏ=Mₖ 与 M₁ 守恒（§5.107 / D8 增量 6；CTest `verify.qmomCoagulation`；边界：常数核、空间均匀、无破碎/成核、显式欧拉）
 - **共轭传热有双区（CHT）**：`cht{ solid{} fluid{} }` 各带自己的 block mesh，界面 Dirichlet–Neumann 割线迭代到热流连续；`chflow-3d-cht` 对一维串联热阻闭式（q=160 W/m²、Tᵢ=460 K）、双层线性剖面与界面通量连续（§5.108 / D8 增量 7；CTest `verify.chtTwoLayer`；边界：稳态纯导热、流体区无对流、平界面双 mesh、常数 k）
 - **网格能动（ALE/GCL）**：`polyMesh::movePoints` 替换顶点并重算几何，`chflow-3d-ale` 验几何守恒律 `dV/dt=ΣU_m·Sf`——刚体平移到机器精度（1.5e−17）、均匀膨胀误差一阶收敛（比值 1.98/1.99）（§5.109 / D8 增量 8，D8 至此 CLOSED；CTest `verify.aleMovingMesh`；边界：只做几何+GCL 核，未把相对通量接进 Solver）
-- **多入口使用形态**：C++ 原生库 / Python API / CLI 命令行 / Tauri 桌面GUI，集群自动化、本地交互都支持
-- **标准IO兼容**：支持 Gmsh msh、VTK/VTU、HDF5，可导入 OpenFOAM 网格，结果直接用 ParaView 可视化
+- **组分物性进 1D 求解器**：`fluid{ pvt; compositional{...} }` opt-in 从组分经 PR76+LBC 预计算 rho/mu 表进 1D march（march 与 Newton 零改动，零声明逐位不变），checker 独立重推 PR 密度/LBC 黏度并重放 march（§5.110 / CTest `verify.steadyPvtCompositional`；边界：表预计算、单相区、WK 接两相 march 与 VOF 逐格 sigma 另格）
+- **内置 parachor 表（opt-in）**：`surfaceTension{ parachors fromTable; }` 查 Weinaug–Katz (1943) 发表值（12 组分、含完整出处），查不到大声报错；显式声明路径逐位不变、kij 有意不内置（§5.111 / CTest `verify.pvtBuiltinTables`）
+- **OpenFOAM 网格导入**：`chflow-openfoam-mesh` 读 ASCII polyMesh 五文件，严格校验（patch 覆盖/索引越界/binary 拒绝），2×1×1 盒散度定理闭式（§5.112 / CTest `verify.openfoamMesh`）
+- **并行后端抽象（M6 第一格）**：`cf::backend::parallelFor` CPU 串行默认逐位不变，可选 OpenMP/Kokkos（CMake 双 OFF、缺 SDK 降级 CPU）；checker 用 Fraction 精确闭式要求 active/serial/analytic 三份逐位相等（§5.114 / CTest `verify.backendCpu`；边界：未接入既有 domain kernel，GPU 化 scatter 核需放宽容差）
+- **黑油分离器级联**：`separateBlackOil` 逐级再闪蒸（泡点逐级下降、只解放剩余溶解气、逐级质量闭式 1e−11），checker 独立重述 Standing/Vazquez-Beggs/DAK 逐级核对（§5.115 / CTest `verify.pvtSeparator`）
+- **多入口使用形态**：C++ 原生库 / Python API / CLI 命令行 / Tauri 桌面GUI（GUI 最小闭环已落地：`gui/` 离线 Tauri 2 + WKWebView，case 编辑→跑稳态管网→SVG 实时曲线，命令层 9 + 前端 10 个无头测试，§5.116 / CTest `gui.unit`/`gui.build`/`gui.frontend`）
+- **标准IO兼容**：Gmsh msh、VTK/VTU 已落地；**OpenFOAM ASCII polyMesh 导入已落地**（`OpenFoamMesh::fromDirectory` 解析 points/faces/owner/neighbour/boundary 五文件零重排直连 polyMesh，散度定理独立重推体积/面积，§5.112 / CTest `verify.openfoamMesh`）；HDF5 为可选后端（`CF_HAVE_HDF5`，需系统 libhdf5，无库时调用大声报错、VTU 仍是默认，§5.113）
 
 ## 📁 项目目录结构
 ```
@@ -113,7 +118,7 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 > kij 按组分名声明、缺省 0 时 ×1.0 逐位回到经典 PR）与水组分（IAPWS/NIST Tc=647.096 K、
 > Pc=22.064 MPa、ω=0.3443，CO₂/H₂S 已在册），checker 用独立 Python PR 由报表组成与声明 kij
 > 重推每相 Z/密度/逸度到 ~1e-12、kij=0 孪生逐位相符且声明 kij 可观测（§5.95 / D7 增量 3，
-> **D7 至此 CLOSED**）；黑油分离器、导热关联式、parachor/kij 内置表、水合物相平衡与生成条件仍待实现。
+> **D7 至此 CLOSED**）；黑油分离器与内置 parachor 表已落地（§5.115 / §5.111），导热关联式、水合物相平衡与生成条件仍待实现；kij 有意保持声明式——不存在与混合规则/温度无关的单一发表 kij 表，编造「标准表」会违反可核实来源要求。
 
 #### 3. 一维求解层 `src/1d`
 独立子系统，分为稳态求解器与瞬态求解器：
@@ -345,9 +350,10 @@ print(result.pressure_profile)
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
   黑油物性相关式（Standing 泡点、Vazquez-Beggs Rs/Bo/co、Beggs-Robinson 与
   Lee 黏度、DAK Z）+ `chflow-pvt` 应用 + Python 绑定 + CLI 已落地，
-  EOS 内部不变量与解析回归全绿；
-  水合物相平衡/生成条件、非等温闪蒸、以及把组分黏度/表面张力（LBC、Weinaug-Katz 报表已落地）与密度实时供给
-  1D/3D 求解器待做）
+  EOS 内部不变量与解析回归全绿；**组分黏度/密度已接进 1D 求解器**（§5.110）、
+  **内置 WK parachor 表 opt-in**（§5.111）、**黑油分离器级联**（§5.115）；
+  表面张力接 1D 两相 march 与 3D VOF 逐格 sigma、每站真闪蒸回调、水合物相平衡/生成条件、
+  非等温闪蒸待做）
 - M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口 🚧
   （VOF 连续表面力 CSF 与 PISO 动量耦合（静止液滴 Laplace 压差算例）与两相
   耦合——解出通量输运 α、椭圆液滴振荡验密度匹配 Lamb 周期——已落地；
@@ -1474,8 +1480,8 @@ print(result.pressure_profile)
   仍 `NEVER`（补给不够把节点拉到天花板以下）。行算术**一行未改**；**84** 条判据、3 个 case 文件（ctest Test #91：单独跑 **5.52 s**）、
   `beta` × 静止支与耦合边两笔账照旧拒收（docs/architecture.md 5.62）。
   Euler-Euler 双流体在此）
-- M5：Tauri GUI 管网编辑器、实时曲线面板
-- M6：Kokkos GPU 加速、更多工业模型扩充
+- M5：Tauri GUI 管网编辑器、实时曲线面板 🚧（最小闭环已落地：case 编辑→稳态管网求解→SVG 实时曲线，离线 Tauri 2 + WKWebView，命令层/前端无头测试全绿，§5.116；管网拖拽建模与瞬态曲线面板待做）
+- M6：Kokkos GPU 加速、更多工业模型扩充 🚧（并行后端抽象 `cf::backend::parallelFor` 已落地：CPU 串行默认逐位不变、可选 OpenMP/Kokkos 开关，§5.114；黑油分离器已落地 §5.115；Kokkos 实接入 domain kernel 与 GPU 验证需 SDK 机器，导热关联式/水合物相平衡待做）
 
 已落地部分的实现细节与概念映射见 [docs/architecture.md](docs/architecture.md)。
 

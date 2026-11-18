@@ -4906,7 +4906,48 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **case 与判据。** `aleTranslation`（v=(1,0,0)）+ `aleExpansion`（rate=1）。`check_ale.py`：① 平移 max|GCL|<1e-12（实测 1.5e-17）、刚体位移 `xMax=xMax₀+vt`、体积恒定；② 膨胀体积 `V₀(1+rate·dt)^{3N}` 与 `xMax` 闭式；③ **GCL 误差一阶收敛**——同一末态 t=0.1 用 dt=0.01/0.005/0.0025，末 max|GCL| 比值 1.98/1.99（halving）；④ 五拒收（负 dt/零 steps/坏 motion/零 rate/无块）。`verify.aleMovingMesh`（Test #23）。**成本与边界。** 本格是五增量里唯一改既有核心结构的：polyMesh.h +9、`polyMesh.cpp` +11（其余四格纯新增）。**边界**：只做几何与 GCL 核，**未把相对通量 `φ=(U−U_m)·Sf` 接进 SIMPLE/PISO 的对流项**（真 ALE 流动求解留后续增量）；面速度取顶点平均对非线性面运动是近似；膨胀用前向欧拉有一阶截断；拓扑固定、无重分网/滑移界面；场在移动网格上的守恒靠 GCL 核保证、本格未解任何输运场。**D8 至此 CLOSED**（八格：热耦合 + DPM 单向/双向 + 辐射 + 组分燃烧 + QMOM + CHT + 动网格）。
 
+### 5.110 组分物性第一次进 1D 求解器：`fluid{ pvt; compositional{...} }` opt-in 表生成
+
+**这一格从哪来。** README 349-350 与 gap_analysis 长期声明「把组分黏度/表面张力与密度实时供给 1D/3D 求解器待做」——LBC/PR76 一直只在 `chflow-pvt` 报表层。本格做**最小零风险接线**：`fluid{ pvt }` 下新增 opt-in `compositional{ composition{...} temperature T; }` 子块，loader 用现成 `loadComposition` + PR76 闪蒸 + `lbcViscosity` 在 case 压力网格上预计算 rho/mu 表填进 `PvtFluid`——**`marchPvtPipe` 与 Newton 一行不改**（仍走 network.cpp 的查表插值路径）。`steadyNetworkApp` 在声明 compositional 时以 17 位精度回显 `pvtTable` 行供 checker 逐点验证；零声明路径不打印任何新行、逐位不变（gated twin 见证）。
+
+**case 与判据。** `steadyPvtCompositional`（甲烷单相柱、4 点压力网格、L=1200 m、D=0.076 m）。`check_steady_pvt_compositional.py`：① 纯 Python 独立 PR 立方根（stable root）重推 4 点 rho=pM/(ZRT) 与 LBC 黏度，对内核 `pvtTable` 行逐点 rtol 1e-9；② 从表构建分段线性插值重放 march，闭式 dp=Σ f·ρ_m v²/2D·dz/D 对照求解器出口压强 rtol 1e-6；③ kij=0 twin 逐位相同；④ 拒收（composition 与 pvt 表同声明、T≤0、组分名未注册）。`verify.steadyPvtCompositional`。**边界**：表预计算而非每站真闪蒸（PR/TP-flash 每站回调留后续增量）；两相区根选择未入本格（case 固定单相区）；WK 表面张力接 1D 两相 march（Beggs-Brill）另格。
+
+### 5.111 内置 parachor 表（opt-in）：Weinaug–Katz (1943) `ComponentData.h` + `parachors fromTable;`
+
+**这一格从哪来。** gap_analysis D7 边界明确「内置 parachor 表留待后续（需可核实来源）」。本格遵守政策红线：新建 `src/pvt/include/cf/pvt/ComponentData.h` + `componentData.cpp`，`inline` 具名查询函数携带**完整出处注释**——Weinaug & Katz (1943) 纯物质 parachor（Adewumi Penn State 教材 Table 18.1 转载；原文 DOI 10.1021/ie50407a023），cgs 值 CO₂ 78.0 / N₂ 41.0 / C1 77.0 / C2 108.0 / C3 150.3 / iC4 181.5 / nC4 189.9 / iC5 225.0 / nC5 231.5 / nC6 271.0 / nC7 312.5 / nC8 351.5，SI 换算 `P_SI=P_cgs·10^-6.75`。**绝不写进 `Component` 默认构造或 `Mixture` 默认填充**——只有 case 显式写 `surfaceTension{ parachors fromTable; }` 才查表；查不到（如水）大声 `cfFatal`，绝不静默默认。**kij 有意不内置**：不存在与混合规则、温度无关的单一发表 kij 表，编造「标准表」会违反可核实来源要求，kij 保持声明式（本格 checker 用显式 kij=0 twin 证明内核不偷查任何内置 kij）。
+
+**case 与判据。** `pvtBuiltinTables`（`pvtSurfaceTension` 的 fromTable 重述版）。`check_pvt_builtin_tables.py`：① 独立转录 WK 表 + SI 换算，从报表 PR 相态（Vml=ML/rhoL）重推 WK sigma 对内核 rtol 1e-9；② **gated twin**：显式声明同值 list 的 case 输出与 fromTable 逐字节相同（除出处行）；③ 拒收（water + fromTable 大声报错、非 list 非 fromTable 词拒绝、kij=0 显式 twin 证明无内置 kij 偷查）。`verify.pvtBuiltinTables`。**边界**：表无插值/外推，表外组分必须显式声明；kij 与温度依赖关联式不在本格。
+
+### 5.112 OpenFOAM ASCII polyMesh 导入：`OpenFoamMesh::fromDirectory`
+
+**这一格从哪来。** README:61/84/198 三处声明「可导入 OpenFOAM 网格」但全仓零实现。本格新建 `src/3d/include/cf/fvm/OpenFoamMesh.h` + `openFoamMesh.cpp`：自写词法器解析 `constant/polyMesh/` 五文件（FoamFile 头跳过、`N ( ... )` 列表、boundary 的 `name { type; nFaces; startFace; }` 子块），直接调 public `polyMesh` 构造——OpenFOAM faces 恰好 internal 在前 boundary 在后，`startFace/nFaces` 与 `polyMesh::Patch` 语义同构，**零重排直连**。严格校验（声明计数一致、索引越界、patch 连续覆盖 `[nInternal, nFaces)`、binary 明确拒绝）。独立 app `chflow-openfoam-mesh`（`mesh{ format openfoam; directory ...; }`），type 保守映射（patch/67→wall，empty/symmetryPlane→symmetry，case `patches{}` 可覆盖）。
+
+**case 与判据。** `openfoamBox`：手写 2×1×1 六面体（12 点、11 面=1 内部+10 边界、2 格、6 patch 覆盖全部映射分支），闭式锚：总体积 2、每格 1、每面面积 1、总外表面积 10、bbox (0,0,0)→(2,1,1)。`check_openfoam_mesh.py` 纯 Python 独立解析同一批文件并用散度定理 `Σ_f Sf·Cf/3` 重推体积/面积/bbox 逐项核对 + gated twin（format 大写+空白容忍、gmsh 拒收）+ 三拒收（坏 faces/owner 越界/缺 boundary）。`verify.openfoamMesh`。**边界**：ASCII 子集（binary 拒绝）、无 `MeshLoader::fromCase` 集成（独立 app 路径，接进全部求解器留后续）、无写回。
+
+### 5.113 HDF5 结果写出（可选后端）：`Hdf5Writer` + `CF_HAVE_HDF5`
+
+**这一格从哪来。** 同上 README 三处声明 HDF5。本机无 libhdf5/头文件/h5py 且无网络——审计结论：手写「无库 HDF5 兼容写出」技术上可行但**验证闭环断裂**（无第三方工具回读即循环论证），明确不做。本格落地为**诚实可选后端**：`src/3d/include/cf/fvm/Hdf5Writer.h` + `hdf5Write.cpp`，API 镜像 `VtkWriter`（`addCellScalar/addCellVector/write`）；`hdf5Write.cpp` **无条件编译**（无库时走 fallback 分支，调用即 `cfFatal("HDF5 support not compiled")`，不静默丢数据）；CMake `find_package(HDF5 QUIET COMPONENTS C)` 找到库才定义 `CF_HAVE_HDF5` 并链接——默认构建零影响，有库机器上可由 h5dump/h5py 独立回读验证。**边界**：本机未验证真实 HDF5 文件（无可验证工具即不声称能力）；README 相应改为「可选后端」口径；VTU 仍是默认结果写出。
+
+### 5.114 并行后端抽象 `cf::backend::parallelFor`：CPU 串行默认 + 可选 OpenMP/Kokkos
+
+**这一格从哪来。** README M6「Kokkos GPU 加速」但本机无 SDK/GPU 编译器/网络。审计结论：GPU 化 scatter 累加核（`sum[owner]+=flux`）会被 atomic 改浮点累加顺序、威胁项目「逐位一致」核心不变量，故本格只做**接口契约 + 本机可验 CPU 后端**：新建 `src/3d/include/cf/parallel/Backend.h`（header-only 模板 `parallelFor`，三后端：默认串行逐位不变 / `CF_WITH_OPENMP` 走 `omp parallel for schedule(static)` / `CF_WITH_KOKKOS` 走 `Kokkos::parallel_for`，接口完整、注释写明需 SDK）+ `backend.cpp`。顶层 `option(CHFLOW_WITH_OPENMP/CHFLOW_WITH_KOKKOS)` 双 OFF，找不到 SDK 降级 CPU 并 WARNING（与 MPI QUIET 同哲学）。app `chflow-3d-backend` 两种 mode（square=i²、divide=GradDivide 风格）打印 active/serial/analytic 三份 checksum。
+
+**case 与判据。** `backendCpu`。`check_backend.py`：Fraction 精确闭式（Σi²=(n−1)n(2n−1)/6、Σ⌊(i+1)/2⌋=n(n+1)/4）独立重算，要求三份逐位相等 + 拒收（n≤0、未知 mode）。`verify.backendCpu`。**边界**：本格是独立抽象层，**未把 `domainGradDivide` 等既有 kernel 改成调 parallelFor**（那是 tracked 文件，接入需单独增量 + 逐位一致性对照）；OpenMP/Kokkos 分支本机不可编译验证（宏未定义时 pragma 忽略，默认构建不受影响）；scatter 核 GPU 化需放宽容差并写入边界。
+
+### 5.115 黑油分离器级联：`separateBlackOil` 逐级再闪蒸
+
+**这一格从哪来。** README:116「黑油分离器仍待实现」。本格新建 `src/pvt/include/cf/pvt/Separator.h` + `separator.cpp`（无状态）：每级把 `gorStd` 重置为「仍在溶液中的气」后复用现成 `evaluateBlackOil` 逐级再闪蒸，泡点逐级下降、每级只解放上一级剩余溶解气；`rhoGasStd` 由 `blackOilMassPerOilSm3(gor=1)−blackOilMassPerOilSm3(gor=0)` 反推（不重复单位常数）；逐级质量闭式 `liquidMass_i + cumGasMass_i == massIn`。app `chflow-separator` 读 `separator{ pressure (...); temperature ...; fluid{ blackoil{...} } }`，支持 `temperatures (...)` 逐级覆盖。
+
+**case 与判据。** `pvtSeparator`（三级 2 MPa→0.5 MPa→0.101 MPa，gg 0.75/ρ850/GOR 180/wc 0.05/T340）。`check_pvt_separator.py` 纯 Python 独立重述 Standing Rs+Bo、Standing 拟临界、DAK 二分 Z、rhoOil 质量式与逐级级联，逐级核对 rs/bo/bg/z/gasMass/liquidMass/liveApi + 质量闭合 1e-11 + gated twin（删 separator 块报 refusal）+ 拒收（负压力、waterCut≥1）。`verify.pvtSeparator`。**边界**：黑油相关式级联（非组分多级 RR 闪蒸）；等温或逐级恒温；无能量平衡、无阀/管损耗。
+
+### 5.116 Tauri GUI 最小闭环（M5）：`gui/` 管网编辑器 + 实时曲线面板
+
+**这一格从哪来。** README M5 声明 Tauri GUI 但 `gui/` 目录不存在。本格零依赖离线落地：`gui/`（Tauri 2 + serde，`tauri-build` 绕开缺失的 tauri CLI——`generate_context!` 编译期要求 `frontendDist` 存在故静态前端签入 `gui/frontend/dist/`，系统 WKWebView + cargo 缓存全链 408 包离线编译）。命令层 `gui/src/commands.rs` 全纯函数可无头 `#[test]`：`parse_case_text`（nodes/pipes/sources 简化 case）、`parse_solver_output`（解析引擎 stdout 的 node/pipe/steady 行）、`run_case`（spawn `chflow-1d-steady` 解析输出）、`run_case_text`（校验→写临时 dict→跑→清理）。前端零 npm install：case 文本域 + SVG 节点压力柱状/管道 Q 折线，IPC 走最小 shim 对齐 tauri 2.12.5 `__TAURI_INTERNALS__.invoke` 签名。**刻意规避 Python 绑定路径**（3.13/3.14 ABI 陷阱），MVP 全程不用 Python。
+
+**验证与判据。** `cargo test --offline`（9 个命令层单测：正常/空/坏行/未知节点 case、solver 完整/NOT converged/噪声解析、假 shell 脚本端到端、缺 exe 报错、真引擎端到端）+ `node --test gui/tests/frontend.test.mjs`（10 个纯函数测试）+ `cargo build --offline`（27 MB WebView 二进制，0 warning）。CTest 注册 `gui.unit`/`gui.build`/`gui.frontend`（cargo/node 存在才注册，TIMEOUT 900 容纳首次 408 包离线解析）。**边界**：不产 .app bundle/签名（缺完整 Xcode 与 tauri CLI）；前端静态 JS 非 npm 构建；命令层覆盖稳态管网闭环，瞬态曲线面板留后续增量。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
+
 | OpenFOAM-dev | ChuanFlow |
 |---|---|
 | `polyMesh` / `primitiveMesh` | `polyMesh`（`src/3d/include/cf/fvm/PolyMesh.h`） |

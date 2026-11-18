@@ -4831,6 +4831,20 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本与边界。** 纯新增：`Dpm.h`（125 行）+ `dpm.cpp`（250）+ `dpmApp.cpp`（184）+ case（83）+ checker（214）+ `src/3d/CMakeLists.txt` / `src/3d/apps/CMakeLists.txt` / `tests/CMakeLists.txt` 各一处注册（`verify.dpmChannel`，CTest 154 → 155，单项 4.81 s）。**边界**：只做单向——粒子不写回动量/连续/能量，载体不是两相流；单球刚性球体、粒径与密度常量、无随机游走/湍流弥散/破碎/聚并/碰撞/反弹/壁面沉积/传热传质；零阶采样无插值，定位 O(nCells)；层流稳态单区载体，不接 RANS/可压/VOF/瞬态 PISO、不接 1D↔3D 耦合接口；无 MPI 轨道分解。A11 MPI 工作树改动仍未进提交（stage 脚本按字节剥离 `chflow-3d-mpi` 与 `verify.mpiDecomposition` 后恢复）。code commit 79242a4，全量回归 3121.50 s / 155（`-E mpiDecomposition`，155/155，rc=0）。
 
+### 5.103 粒子第一次把动量还给流体（D8 增量 3）：逐单元阻力反作用冲量 → SIMPLE 体源 → Picard 闭合
+
+**这一格从哪来。** §5.102 的粒子只采样 `U`，载体解剖学上完全不变；本格要闭合的第二半是「粒子对流体做什么」。审计先排掉两条看似现成实则不能用的路：`fvMatrix::explicitOperator` 只把显式算子写进诊断输出，不进解；`EnergyModel` 只有边界热条件、没有体积热源，所以本格**只做动量反馈**，能量反馈明确留界外。稳态 SIMPLE 此前只有均匀 `bodyForce` 与能量钩子给的浮力，没有逐单元源；PISO 的 `PisoControls::cellForce` 有，但那是瞬态求解器。于是在 `SimpleControls` 上补一个与 PISO 同形的 `const Field<Vector>* cellForce`，进入动量右端 `V·f`：HbyA 与通量看到的就是压力要平衡的同一个力，而不是只改单元速度的旁门。指针为 null 时表达式保持原样（先复制到局部 `force`，不做 `+0`），因此所有旧 case 逐位不变。
+
+**反作用账。** `runDpm` 沿轨道累计每单元 `Σ_p m_p ∫a_drag dt`（`m_p = rho_p π d³/6`），只累计**阻力**反作用：重力是作用在粒子上的外力，不是从载体借走的动量。app 用最长粒子寿命 `T` 作稳态平均窗口，把冲量换成加速度
+
+    f_c = − (Σ_p m_p ∫a_drag dt)_c / (rho_f · V_c · T)
+
+再外层 Picard：`solve(cellForce=f^{(k)}) → runDpm(U^{(k)}) → 新源 f* → f^{(k+1)} = (1−ω)f^{(k)} + ω f*`。`dpm{ twoWay yes; outerIterations; twoWayRelax; twoWayTol; }` 四个键都缺席时走 §5.102 的**同一条**一次性路径，一个打印都不多；`twoWay no` 显式声明亦同。case `dpmTwoWay` 把 `dpmChannel` 的 SIMPLE 容差收紧到 1e-7/1e-8 以分辨小源，`relax 0.9 / tol 1e-4`，实测 **5 趟**收敛（残差 `1 → 9.998e-2 → 9.996e-3 → 9.994e-4 → 9.993e-5`），`maxForce 1.96067474677e-4 m/s²`；载体 `uMax 0.115372776038 → 0.115373332647`、`Σ|U| 99.6621328125 → 99.6621183142`，而最终那次轨道前后 checksum 仍逐位相同——反馈发生在载体求解阶段，不是轨道阶段偷偷写 `U`。
+
+**判据。** `check_dpm_two_way.py`（223 行）六条判据：① Picard 残差单调进预算、末残差 ≤ `twoWayTol`；② 载体确实移动（`|ΔuMax| > 1e-9`、`|ΔΣU| > 1e-8`）且最终轨道前后 checksum **逐位相同**；③ **总冲量独立重建**——从每颗粒子打印的 `(u_end − u_0) − body·t` 乘自身质量求和，对打印的逐单元冲量之和（本 case 51 个非零单元）到 1e-8；④ 每单元 `force = −impulse/(rho_f V_c T)` 到 1e-8（几何从 case 的 `min/max/cells` 重算，不读 app 的网格）；⑤ 在 `dpmChannel` 上显式加 `twoWay no` 的孪生与该 case **stdout 逐字节相同**；⑥ 三条拒收（`outerIterations 0`、`twoWayRelax 1.5`、`twoWayTol 0`）。CTest `verify.dpmTwoWay`（Test #18，13.98 s），原 `verify.dpmChannel` 仍 3.26 s 全绿。
+
+**成本与边界。** 本格改动：`Dpm.h` +18、`dpm.cpp` +26、`dpmApp.cpp` +87、`SimpleSolver.h` +7、`simpleSolver.cpp` 一行改写成条件取力、1 case + 1 checker + 1 add_test（CTest 155 → 156）。**边界**：只做动量、不做粒子→能量或组分；只累计阻力反作用，没有虚质量/Basset/压力梯度力；冲量按最长粒子寿命做稳态平均，短寿命粒子被同窗的更长寿命粒子稀释是多寿命流的诚实近似而非精确浓度场；所有粒子零阶定位/零阶采样、无湍流弥散与随机游走；载体仍是层流稳态单区 SIMPLE，不接 RANS/可压/VOF/PISO/1D↔3D/MPI；`cellForce` 是每趟 SIMPLE 的固定体源，不在动量线性解内重算粒子响应。code commit 2e928e5，全量回归 3462.57 s / 156（`-E mpiDecomposition`，156/156，rc=0）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|
@@ -4843,6 +4857,7 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 | `lduMatrix` + PBiCGStab | `SparseMatrix` + 右预处理 BiCGStab |
 | `simpleFoam` | `solveIncompressibleSimple` + `chflow-simple-foam` |
 | `kinematicCloud` / `particle` 的单向轨道 | `DpmConfig` / `runDpm` + `chflow-3d-dpm`（Schiller–Naumann 单球阻力 + 最近 cell-centre 零阶采样 + 显式 Euler，载体冻结不写回，见 5.102） |
+| `particleCloud` 的双向动量源（如 `U! = cloud.U()/rho`） | `DpmResult::cellDragImpulse` → `SimpleControls::cellForce`（稳态 SIMPLE 的逐单元加速度源）+ `twoWay{}` Picard 回路，见 5.103 |
 | `pisoFoam` | `solveTransientIncompressiblePiso` + `chflow-piso-foam` |
 | `rhoCentralFoam` / 密度基可压缩 Euler 回路（`divScheme` 的 Riemann 通量） | `chflow-3d-compressible`（`src/3d/apps/compressibleApp.cpp`：多面体网格上的广延守恒量递推 + 一阶 Godunov HLLC 面通量 + 理想气体，见 5.16） |
 | `system/fvSchemes` 字典 | case.dict 的 `schemes{}`（`loadSchemes`） |

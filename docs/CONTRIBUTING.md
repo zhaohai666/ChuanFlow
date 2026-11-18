@@ -189,6 +189,19 @@ python3 tests/check_dpm_channel.py \
     "$PWD/build/src/3d/apps/chflow-3d-dpm" \
     "$PWD/tests/cases/dpmChannel/case.dict"
 
+# 3D DPM 双向动量反馈（5.103 / D8 增量 3）：在 dpm{} 里加
+#   twoWay yes; outerIterations 8; twoWayRelax 0.9; twoWayTol 1e-4;
+# 每次外层先解带逐单元 cellForce 的稳态载体、再跑轨道，把阻力反作用冲量
+#   -sum(m_p integral(a_drag dt)) / (rho_f V_cell T)
+# 作为体源回填，按 (1-relax) 阻尼到收敛。只有阻力反馈，重力是粒子外力。
+# checker 从粒子终态独立重建总冲量（du/dt = aDrag + body），从 case 重算
+# 每单元 V 与力，并断言 dpmChannel 上显式 twoWay no 的孪生逐字节相同。
+# 约 14 s（5 趟 Picard + 51 个源单元 + 孪生 + 3 条拒收）。
+./build/src/3d/apps/chflow-3d-dpm tests/cases/dpmTwoWay/case.dict
+python3 tests/check_dpm_two_way.py \
+    "$PWD/build/src/3d/apps/chflow-3d-dpm" \
+    "$PWD/tests/cases/dpmTwoWay/case.dict"
+
 # 多边分区耦合：一张管网同时挂两块三维详细区（X1 在并联支里、X2 在串联位置上）。
 # app 按"初值集"逐个跑整趟外层回路，逐趟**对每条边**打印 R/q/dpBlock/残差/趟数与块收敛位，
 # 再给 name-keyed 的逐边 dp/q、节点压力与管流、每边的块自测；每边各自的 vtu 只在最后一组

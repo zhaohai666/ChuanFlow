@@ -1845,6 +1845,18 @@ add_test(
 set_tests_properties(verify.gradientMatch PROPERTIES
     ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python")
 
+# D9 increment 3 (5.117): discrete stepwise adjoint of the transient tank-and-
+# pipe march with checkpointing. The checker ties the diameter gradient to a
+# forward tangent-linear sensitivity, central finite differences and the real
+# C++ transient kernel, and proves checkpointed sweeps reproduce store-all.
+add_test(
+    NAME verify.transientAdjoint
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_adjoint.py
+        $<TARGET_FILE:chflow-1d-transient>)
+set_tests_properties(verify.transientAdjoint PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python")
+
 if(CHFLOW_PYTHON_BINDINGS)
     add_test(
         NAME python.bindings

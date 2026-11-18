@@ -163,6 +163,18 @@ python3 tests/check_transient_coupled_1d3d.py \
     "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient" \
     "$PWD/tests/cases/transientCoupled1d3d/case.dict"
 
+# 1D↔3D 双向热耦合（5.101 / D8 增量 1）：detail{} 里加 energy{} 与 thermal{}。
+#   1D 侧没有温度场，接口给耦合边一个集总热节点：
+#     C1 (T1[n+1] - T1[n])/dt = rho cp q (T源 - T1) + Q壁,  q' = Q壁/L
+#   每个 pass 把 T1 写成 3D 入口温度、跑含能量的 SIMPLE、再读回墙热与焓账；
+#   Q壁 > 0 时 T1 单调上升。删掉 energy{}/thermal{} 后水力输出逐字节回到父 case。
+#   只支持单条耦合边、层流牛顿稳态块；与 phase / 可压缩 / 湍流 / 非牛顿 / 自身 du/dt
+#   互斥（同时声明会大声拒收）。约 66 s（10 步 + 无声明孪生 + 3 条拒收）。
+./build/src/coupling/apps/chflow-coupled-1d3d-transient tests/cases/coupledThermal1d3d/case.dict
+python3 tests/check_coupled_thermal_1d3d.py \
+    "$PWD/build/src/coupling/apps/chflow-coupled-1d3d-transient" \
+    "$PWD/tests/cases/coupledThermal1d3d/case.dict"
+
 # 多边分区耦合：一张管网同时挂两块三维详细区（X1 在并联支里、X2 在串联位置上）。
 # app 按"初值集"逐个跑整趟外层回路，逐趟**对每条边**打印 R/q/dpBlock/残差/趟数与块收敛位，
 # 再给 name-keyed 的逐边 dp/q、节点压力与管流、每边的块自测；每边各自的 vtu 只在最后一组

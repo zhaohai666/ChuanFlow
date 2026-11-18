@@ -4794,6 +4794,22 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本与边界。** 纯新增，无 C++ 改动：`python/chflow/history_match.py`（305 行）+ `tests/python/test_history_match.py`（107 行）+ `tests/CMakeLists.txt` 一个 `add_test`（`python.history_match`）；主构建 `CHFLOW_WITH_PYTHON=OFF` 故 CTest 153 计数与全量回归不受影响，启用绑定的构建里 `python.bindings` 与 `python.history_match` 双绿。code commit 96a38d9，全量回归 3122.90 s / 153（`-E mpiDecomposition`，153/153）。**边界**：参数面只有三个管径，粗糙度 / 长度 / 流体物性 / 源项固定（绑定里粗糙度虽可写，但本 case 全是层流 `f=64/Re`，粗糙度不可观测——拿它做反演只会得到无识别度的平坦方向）；观测是噪声自由合成数据，未做加权协方差 / 多工况联标；Nelder–Mead 是无导数的局部法，非凸多解时不保证全局最优；A11 MPI 工作树改动仍严格隔离在提交之外。
 
+### 5.101 1D 与 3D 第一次交换热量（D8 增量 1）：`T₁ → 3D 入口`、`Q壁 → q′ → 1D 集总节点`
+
+**这一格从哪来。** D8 审计确认两侧求解器都已在：3D 的 `EnergyModel` 把能量方程接在 SIMPLE 的同一股 `phi` 上，并能逐 patch 报出热流与焓账；1D 的 formation / two-fluid 链有完整导热与潜热。缺的**只是接口**——`EdgeExchange` 只带 `q/dp/inertance/beta`，`ICoupledElement` 只有 `lossAt` 与水力钩子，`DetailBlock` 连 `EnergyModel` 都没有。本格只补接口，不改任一侧求解器，也不改 A11 MPI 工作树改动。
+
+**双向 pass。** `detail{ energy{...} thermal{...} }` 缺席时整条路径短路：`energy_` 为空、所有新钩子是默认实现、SIMPLE 收到的能量指针仍是原来的 `phase_` 或 `nullptr`，旧 case 逐位不变。声明后 `DetailBlock` 拥有一个 `EnergyModel`，并占用 SIMPLE 的**唯一**能量钩子（与 phase / 可压缩 march / RANS / 非牛顿 / 自身 `du/dt` 互斥并大声拒收）。每个 interface pass：① `setThermalBoundary(T₁)` 把这一边的 1D 集总温度写成 3D 入口的 `fixedValue`；② `lossAt(q)` 跑含能量的 SIMPLE；③ `thermalLedger()` 读回声明墙 patch 的 `Q壁`、入口导热 `Q入`、`H出 = rho cp ∮phi T` 与 `Q壁+Q入+源−H出`。`EdgeExchange` 尾部追加 `Tin/T₁/Q壁/Q入/H出/q′/tres` 七个数，`TransientCoupledStep.thermalResidual` 记该步最差 T₁ 失衡。
+
+**1D 侧账。** 耦合用的 `Network.h` / `Transient.h` 没有温度场，故本格给每条耦合边一个**集总热节点**（case 声明 `C₁` [J/K]）：
+
+    C₁ (T₁^{n+1} − T₁ⁿ)/dt = rho cp q (T源 − T₁) + Q壁,    q′ = Q壁 / L
+
+这里 `rho cp q (T源−T₁)` 是把入口流体带到节点温度的焓流，`Q壁` 是 3D 刚报出的壁热；两个时间层之间只有这一个存储项。pass 内用 Picard 迭代（case 声明 `relax`），以本层起始的 `T₁ⁿ` 为隐式欧拉基点，接受条件是水力残差与 `|tres| ≤ tolerance` [K] **同时**成立。热流不改水力系数：3D 的 `expansion` 本 case 为 0，故 `dp/q` 与不声明能量的孪生逐位同路。
+
+**case 与判据。** `coupledThermal1d3d`（135 行）沿用 `transientCoupled1d3d` 的 0.5 m 平面管道与两支路网络，只把 `endTime` 缩到 0.2 s（10 步，仍在上升段），并声明 `energy{ rho 800; cp 1000; kappa 60; }` 与 `thermal{ sourceTemperature 300; wallPatch bottom; wallTemperature 350; capacity1d 5000; length 0.5; tolerance 1e-4; }`。首步实测 `T₁ = 300.012029 K`、`Q壁 = 3032.1905 W`、`q′ = 6064.3810 W/m`、3D 热账 `3032.19 − 22.67 − 3009.52 = 4.6e-9 W`。`check_coupled_thermal_1d3d.py`（193 行）七判据：① 每步都有 thermal token 且 T₁ 单调升；② `Tin ≡ T₁`、`q′ ≡ Q壁/L` 到 1e-12、`tres ≤ 1e-4 K`；③ 独立重算 3D 热账 < 1e-5 W；④ 从 case 常数独立重推 1D 隐式欧拉递推（差 ≤ 2×case 容差）；⑤ 删掉 `energy`/`thermal` 两块的孪生与父 case 的 0.2 s 截断版**逐字节相同 stdout**；⑥ 启热的水力 q/dp 与孪生相对差 < 1e-5；⑦ 三条拒收（energy 无 thermal、缺 wallPatch、`capacity1d 0`）。
+
+**成本与边界。** `CoupledNetwork.h`（+99 行：`ThermalCouplingConfig`/`ThermalLedger`、两个虚钩子、EdgeExchange/Step 字段、`TransientCoupledControls::thermal`），`coupledNetwork.cpp`（+174：配置读取/校验、`DetailBlock` 能量模型与两个钩子、SIMPLE 唯一能量指针、瞬态 pass 内的 T₁ 迭代），`transientCoupledApp.cpp`（+26：解析/日志），1 case + 1 checker + 1 add_test（`verify.coupledThermal1d3d`，Test #61，66.45 s）。**边界**：只有一条耦合边、层流牛顿稳态块；热容是 case 声明的集总量而非 1D 网格积分，不做 1D 沿程温度分布；不做相变/潜热、辐射、组分燃烧、固体区域或多区 cellZone（D8 后续增量）；不接 two-fluid / nodal / PVT 绑定；热与水力只通过 `Q壁` 单向影响温度，本格 `expansion=0` 故不反馈浮力。code commit df35477，全量回归 2739.74 s / 154（`-E mpiDecomposition`，154/154）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

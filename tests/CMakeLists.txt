@@ -114,6 +114,17 @@ add_test(
         $<TARGET_FILE:chflow-3d-dpm>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/dpmChannel/case.dict)
 
+# D8 increment 3: the same particles now give their drag impulse back to the
+# steady carrier. The checker rebuilds the total impulse from the printed end
+# states and the per-cell acceleration from the case geometry, and requires an
+# explicit `twoWay no` twin to be byte-identical to the one-way case.
+add_test(
+    NAME verify.dpmTwoWay
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_dpm_two_way.py
+        $<TARGET_FILE:chflow-3d-dpm>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/dpmTwoWay/case.dict)
+
 add_test(
     NAME verify.startedChannel
     COMMAND ${Python3_EXECUTABLE}

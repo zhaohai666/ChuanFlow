@@ -26,6 +26,8 @@ bool finiteVector(const Vector& v)
     return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
 }
 
+constexpr scalar piScalar = 3.14159265358979323846;
+
 } // namespace
 
 void DpmConfig::validate() const
@@ -46,6 +48,15 @@ void DpmConfig::validate() const
                 " only owns the published Schiller-Naumann sphere law");
     if (reportEvery < 1 || traceSteps < 0 || traceId < 0)
         cfFatal("dpm: reportEvery must be >= 1 and traceId/traceSteps non-negative");
+    if (twoWay)
+    {
+        if (outerIterations < 1)
+            cfFatal("dpm: twoWay outerIterations must be at least 1");
+        if (!(twoWayRelax > 0) || twoWayRelax > 1)
+            cfFatal("dpm: twoWayRelax must be in (0, 1]");
+        if (!(twoWayTol > 0) || !std::isfinite(twoWayTol))
+            cfFatal("dpm: twoWayTol must be finite and positive");
+    }
     for (std::size_t i = 0; i < streams.size(); ++i)
     {
         const DpmStream& s = streams[i];
@@ -76,6 +87,10 @@ DpmConfig readDpmConfig(const Dictionary& caseDict)
     cfg.reportEvery = static_cast<int>(d.getScalarOr("reportEvery", cfg.reportEvery));
     cfg.traceId = static_cast<int>(d.getScalarOr("traceId", cfg.traceId));
     cfg.traceSteps = static_cast<int>(d.getScalarOr("traceSteps", cfg.traceSteps));
+    if (d.has("twoWay")) cfg.twoWay = d.getBool("twoWay");
+    cfg.outerIterations = static_cast<int>(d.getScalarOr("outerIterations", cfg.outerIterations));
+    cfg.twoWayRelax = d.getScalarOr("twoWayRelax", cfg.twoWayRelax);
+    cfg.twoWayTol = d.getScalarOr("twoWayTol", cfg.twoWayTol);
     if (d.has("gravity")) cfg.gravity = vectorFromList(d.getScalarList("gravity"), "gravity");
 
     for (const std::string& key : d.keys())
@@ -172,6 +187,7 @@ DpmResult runDpm(const polyMesh& mesh, const volVectorField& U,
     const Vector lo = mesh.minX();
     const Vector hi = mesh.maxX();
     DpmResult out;
+    out.cellDragImpulse.assign(static_cast<std::size_t>(mesh.nCells()), Vector::zero());
     int id = 0;
 
     for (std::size_t s = 0; s < cfg.streams.size(); ++s)
@@ -190,6 +206,9 @@ DpmResult runDpm(const polyMesh& mesh, const volVectorField& U,
             p.cell = startCell;
             p.diameter = stream.diameter;
             p.rhoParticle = stream.density;
+            // A rigid sphere's mass, fixed for the whole trajectory.
+            const scalar particleMass = p.rhoParticle * piScalar
+                * p.diameter * p.diameter * p.diameter / 6.0;
 
             for (int step = 0; step <= cfg.maxSteps; ++step)
             {
@@ -221,6 +240,12 @@ DpmResult runDpm(const polyMesh& mesh, const volVectorField& U,
                 const Vector drag = particleDragAcceleration(
                     uFluid, p.u, cfg.carrierRho, p.rhoParticle, p.diameter, mu);
                 const Vector body = (1.0 - cfg.carrierRho / p.rhoParticle) * cfg.gravity;
+                // Only the drag reaction is momentum taken from the carrier:
+                // gravity is an external body force on the particle. Sum the
+                // impulse m_p a_drag dt in the cell that supplied U_f.
+                out.cellDragImpulse[static_cast<std::size_t>(p.cell)] =
+                    out.cellDragImpulse[static_cast<std::size_t>(p.cell)]
+                    + particleMass * drag * cfg.dt;
                 p.u = p.u + cfg.dt * (drag + body);
                 p.x = p.x + cfg.dt * p.u;
                 p.age = (step + 1) * cfg.dt;
@@ -241,6 +266,7 @@ DpmResult runDpm(const polyMesh& mesh, const volVectorField& U,
             if (p.status == DpmStatus::outlet) ++out.outletCount;
             else if (p.status == DpmStatus::wall) ++out.wallCount;
             else ++out.expiredCount;
+            out.sourceWindow = std::max(out.sourceWindow, p.age);
             out.particles.push_back(p);
         }
     }

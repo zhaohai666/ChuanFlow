@@ -38,6 +38,13 @@ struct SimpleControls
                             // to |p| (0 = relaxP from the first sweep)
     Vector bodyForce = Vector::zero(); // acceleration (m/s2), i.e. -grad(p)/rho
 
+    /// Optional per-cell acceleration (m/s2) added to bodyForce; null means
+    /// none. The counterpart of PisoControls::cellForce for a steady solve:
+    /// it enters the momentum right-hand side as V*f, so HbyA and the flux
+    /// see the same force the pressure balances. A null pointer takes the
+    /// original expression unchanged (bit for bit).
+    const Field<Vector>* cellForce = nullptr;
+
     /// A physical time step for the momentum equation. Zero -- every case that
     /// has ever asked for a steady solve -- leaves the equation exactly as it
     /// was; with it, `fvm::ddt(UEqn, *uTimeOld, dt)` joins the balance, so the

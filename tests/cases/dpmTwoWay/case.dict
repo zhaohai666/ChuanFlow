@@ -1,0 +1,87 @@
+// dpmTwoWay: the same duct as dpmChannel, but the drag reaction of the tracked
+// spheres is fed back into the steady carrier (D8 increment 3). The one-way
+// path is still available by deleting the four twoWay* keys: with those keys
+// absent this file's stdout is byte-identical to dpmChannel's.
+block
+{
+    min   (0 0 0);
+    max   (1 0.2 0.1);
+    cells (50 20 1);
+
+    xmin  { name inlet;   type inlet;    }
+    xmax  { name outlet;  type outlet;   }
+    ymin  { name bottom;  type wall;     }
+    ymax  { name top;     type wall;     }
+    zmin  { name front;   type symmetry; }
+    zmax  { name back;    type symmetry; }
+}
+
+nu 1e-5;
+
+patches
+{
+    inlet  { U (0.1 0 0); UType fixedValue;  pType zeroGradient; }
+    outlet { UType zeroGradient; p 0;        pType fixedValue;   }
+    bottom { U (0 0 0);   UType fixedValue;  pType zeroGradient; }
+    top    { U (0 0 0);   UType fixedValue;  pType zeroGradient; }
+}
+
+initial { U (0.1 0 0); }
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+simple
+{
+    maxIterations 300;
+    continuityTol 1e-8;
+    pcorrTol      1e-7;
+    momentumTol   1e-7;
+    relaxU        0.9;
+    relaxP        0.03;
+    pRelaxStart   0.02;
+}
+
+dpm
+{
+    dt 0.0001;
+    maxSteps 120000;
+    carrierRho 1000;
+    gravity (0 -9.81 0);
+    drag schillerNaumann;
+    reportEvery 10000;
+    traceId 0;
+    traceSteps 4;
+
+    twoWay yes;
+    outerIterations 8;
+    twoWayRelax 0.9;
+    twoWayTol 1e-4;
+
+    // The light sphere relaxes along the duct; the heavy one dives into the
+    // bottom wall. Their drag reaction is the only particle-to-fluid term.
+    stream0 {
+        point (0.05 0.15 0.05);
+        velocity (0 0 0);
+        diameter 1e-3;
+        density 2500;
+        count 1;
+    }
+    stream1 {
+        point (0.05 0.02 0.05);
+        velocity (0 -0.5 0);
+        diameter 3e-3;
+        density 8000;
+        count 1;
+    }
+}
+
+output
+{
+    vtk out_dpm_two_way.vtu;
+}

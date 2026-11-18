@@ -41,6 +41,13 @@ struct DpmConfig
     int traceId = 0;          // particle whose trajectory is printed
     int traceSteps = 4;       // print EVERY step of this many first steps
 
+    // Two-way option. Absent (the default) keeps the increment-2 one-way path
+    // byte for byte: one frozen carrier solve and one trajectory pass.
+    bool twoWay = false;
+    int outerIterations = 5;  // carrier <-> trajectory Picard sweeps
+    scalar twoWayRelax = 0.5; // relaxation of the cell force between sweeps
+    scalar twoWayTol = 1e-3;  // relative change of the cell force to stop
+
     void validate() const;
 };
 
@@ -115,6 +122,17 @@ struct DpmResult
     label outletCount = 0;
     label wallCount = 0;
     label expiredCount = 0;
+
+    /// Drag reaction impulse (kg m/s) accumulated in every cell over the
+    /// trajectories: sum_particles m_p integral(a_drag dt). The app converts
+    /// it to a cell acceleration with
+    ///   -impulse / (rho_f * V_cell * sourceWindow).
+    /// Only the drag reaction is fed back: particle gravity is an external
+    /// body force, not momentum taken from the carrier.
+    std::vector<Vector> cellDragImpulse;
+    /// Longest participating particle lifetime (s), used as the steady
+    /// averaging window. Zero when no particle moved.
+    scalar sourceWindow = 0;
 };
 
 /// `mu` is the carrier's dynamic viscosity (rho_f * nu); the app owns it

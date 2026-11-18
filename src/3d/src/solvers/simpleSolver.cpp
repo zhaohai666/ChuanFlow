@@ -101,8 +101,10 @@ SimpleResult solveIncompressibleSimple(polyMesh& mesh,
             const std::size_t u = static_cast<std::size_t>(c);
             // the buoyancy of the previous sweep's temperature, so the force and
             // the field that produced it belong to the same sweep
+            Vector force = ctl.bodyForce;
+            if (ctl.cellForce) force = force + (*ctl.cellForce)[u];
             const Vector rhs =
-                vol[u] * (ctl.bodyForce + (buoy ? (*buoy)[u] : Vector::zero()) - gradPn[u]);
+                vol[u] * (force + (buoy ? (*buoy)[u] : Vector::zero()) - gradPn[u]);
             for (int comp = 0; comp < 3; ++comp)
             {
                 UEqn.addRhs(c, comp, rhs[comp]);

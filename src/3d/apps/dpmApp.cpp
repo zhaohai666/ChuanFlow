@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iomanip>
+#include <limits>
 #include <sstream>
 #include <string>
 
@@ -51,6 +52,26 @@ CarrierCheck carrierState(const cf::volVectorField& U)
         c.sumU += static_cast<double>(mag(u));
     }
     return c;
+}
+
+/// Turn the accumulated drag reaction impulse into the cell acceleration the
+/// steady momentum equation understands. The averaging window is the longest
+/// particle lifetime, so the impulse of a short-lived cloud is not diluted by
+/// an arbitrary maxSteps*dt horizon.
+cf::Field<cf::Vector> forceFromImpulse(const cf::polyMesh& mesh,
+                                       const cf::DpmResult& result,
+                                       cf::scalar rhoF)
+{
+    cf::Field<cf::Vector> f(static_cast<std::size_t>(mesh.nCells()), cf::Vector::zero());
+    if (!(result.sourceWindow > 0)) return f;
+    const auto& vol = mesh.cellVolumes();
+    for (cf::label c = 0; c < mesh.nCells(); ++c)
+    {
+        f[static_cast<std::size_t>(c)] =
+            -1.0 * result.cellDragImpulse[static_cast<std::size_t>(c)]
+            / (rhoF * vol[static_cast<std::size_t>(c)] * result.sourceWindow);
+    }
+    return f;
 }
 
 } // namespace
@@ -130,8 +151,70 @@ int main(int argc, char** argv)
                   num(flow.finalContinuityError));
 
         const DpmConfig cfg = readDpmConfig(caseDict);
-        const CarrierCheck before = carrierState(U);
-        const DpmResult result = runDpm(mesh, U, cfg, cfg.carrierRho * nu);
+        const scalar mu = cfg.carrierRho * nu;
+        CarrierCheck before;
+        DpmResult result;
+
+        if (cfg.twoWay)
+        {
+            const CarrierCheck baseline = carrierState(U);
+            Field<Vector> force(static_cast<std::size_t>(mesh.nCells()), Vector::zero());
+            scalar lastResidual = std::numeric_limits<scalar>::infinity();
+            int usedOuter = 0;
+            for (int outer = 1; outer <= cfg.outerIterations; ++outer)
+            {
+                SimpleControls twoCtl = ctl;
+                twoCtl.cellForce = &force;
+                const SimpleResult coupled =
+                    solveIncompressibleSimple(mesh, U, p, phi, nu, schemes, twoCtl);
+                if (!coupled.converged)
+                {
+                    log::error("dpmApp: two-way carrier flow did not converge");
+                    return 1;
+                }
+                const DpmResult trial = runDpm(mesh, U, cfg, mu);
+                const Field<Vector> source = forceFromImpulse(mesh, trial, cfg.carrierRho);
+                scalar delta = 0, scale = 0;
+                for (label c = 0; c < mesh.nCells(); ++c)
+                {
+                    const std::size_t u = static_cast<std::size_t>(c);
+                    delta = std::max(delta, static_cast<scalar>(mag(source[u] - force[u])));
+                    scale = std::max(scale, static_cast<scalar>(mag(source[u])));
+                }
+                lastResidual = delta / std::max(scale, 1.0e-30);
+                for (label c = 0; c < mesh.nCells(); ++c)
+                {
+                    const std::size_t u = static_cast<std::size_t>(c);
+                    force[u] = (1.0 - cfg.twoWayRelax) * force[u]
+                               + cfg.twoWayRelax * source[u];
+                }
+                log::info("dpm twoWay outer ", outer, " residual ", num(lastResidual),
+                          " maxForce ", num(scale));
+                usedOuter = outer;
+                if (lastResidual <= cfg.twoWayTol) break;
+            }
+            log::info("dpm twoWay outerUsed ", usedOuter, " residual ", num(lastResidual));
+            const CarrierCheck finalCarrier = carrierState(U);
+            log::info("dpm twoWay carrier baseline uMax ", num(baseline.uMax),
+                      " sumU ", num(baseline.sumU), " final uMax ", num(finalCarrier.uMax),
+                      " final sumU ", num(finalCarrier.sumU));
+            before = carrierState(U);
+            result = runDpm(mesh, U, cfg, mu);
+            const Field<Vector> finalSource = forceFromImpulse(mesh, result, cfg.carrierRho);
+            for (label c = 0; c < mesh.nCells(); ++c)
+            {
+                const std::size_t u = static_cast<std::size_t>(c);
+                if (mag(result.cellDragImpulse[u]) > 0)
+                    log::info("dpm source cell ", c, " impulse ",
+                              vec(result.cellDragImpulse[u]), " force ", vec(finalSource[u]));
+            }
+        }
+        else
+        {
+            before = carrierState(U);
+            result = runDpm(mesh, U, cfg, mu);
+        }
+
         const CarrierCheck after = carrierState(U);
         log::info("dpm carrier frozen: nu ", num(nu), " mu ",
                   num(cfg.carrierRho * nu), " uMaxBefore ", num(before.uMax),

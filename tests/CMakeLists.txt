@@ -104,6 +104,16 @@ add_test(
         $<TARGET_FILE:chflow-simple-foam>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/poiseuilleChannel/case.dict)
 
+# D8 increment 2: one-way Lagrangian spheres in a solved duct. The checker
+# rebuilds Schiller-Naumann drag, the explicit-Euler update and the carrier
+# checksum from the case dict; no particle writes back to the flow.
+add_test(
+    NAME verify.dpmChannel
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_dpm_channel.py
+        $<TARGET_FILE:chflow-3d-dpm>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/dpmChannel/case.dict)
+
 add_test(
     NAME verify.startedChannel
     COMMAND ${Python3_EXECUTABLE}

@@ -21,6 +21,7 @@ add_library(cf3d STATIC
     src/solvers/generalizedNewtonian.cpp
     src/solvers/pisoSolver.cpp
     src/solvers/energySolver.cpp
+    src/dpm/dpm.cpp
     src/multiphase/vof.cpp
     src/multiphase/plic.cpp
     src/multiphase/plicAdvect.cpp

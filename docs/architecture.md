@@ -4845,6 +4845,16 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本与边界。** 本格改动：`Dpm.h` +18、`dpm.cpp` +26、`dpmApp.cpp` +87、`SimpleSolver.h` +7、`simpleSolver.cpp` 一行改写成条件取力、1 case + 1 checker + 1 add_test（CTest 155 → 156）。**边界**：只做动量、不做粒子→能量或组分；只累计阻力反作用，没有虚质量/Basset/压力梯度力；冲量按最长粒子寿命做稳态平均，短寿命粒子被同窗的更长寿命粒子稀释是多寿命流的诚实近似而非精确浓度场；所有粒子零阶定位/零阶采样、无湍流弥散与随机游走；载体仍是层流稳态单区 SIMPLE，不接 RANS/可压/VOF/PISO/1D↔3D/MPI；`cellForce` 是每趟 SIMPLE 的固定体源，不在动量线性解内重算粒子响应。code commit 2e928e5，全量回归 3462.57 s / 156（`-E mpiDecomposition`，156/156，rc=0）。
 
+### 5.104 稳态标定第一次有了解析梯度（D9 增量 2）：隐函数定理 `dp/dd = −J⁻¹(∂r/∂d)` 复用 conductance 雅可比的一次 LU，一个梯度只花一次前向求解
+
+**这一格从哪来。** 增量 1（§5.100）用无导数 Nelder–Mead 把「标定」跑通，但每步单纯形要 O(参数) 次前向求值去探方向。D9 审计早已指出稳态 Newton 的解析 conductance 雅可比（`network.cpp:1549-1557`）是现成骨架，缺的只是 ∂目标/∂参数行。本格补上这一行：把「管径 → 节点压力/流量」的灵敏度用**隐函数定理**解析求出，标定从 O(参数×迭代) 次前向降到**每次迭代一个梯度 = 一次前向装配**。仍不碰 C++、不引入 adjoint/autodiff，纯 Python 新增。
+
+**机理。** 稳态网络残差 `r(p(d), d) = 0` 对参数 `d_k` 全微分给出 `J·dp/dd_k = −(∂r/∂d_k)|_p`，其中 `J = ∂r/∂p` 正是 Newton 用的 conductance 雅可比。层流管 `q_k = g_k(p_a − p_b − ρg·elev_k)`、`g_k = πd_k⁴/(128μL_k)`，故 `∂q_k/∂d_k = 4q_k/d_k`，参数导数源项只在管 `k` 的两端节点上注入 `∓4q_k/d_k`。**一次 LU 分解**（Doolittle 部分主元）同时供前向解 `J p = −r₀` 与所有参数灵敏度回代，于是 `dp/dd` 全矩阵只多花 O(参数×n²) 次回代、不多装配雅可比。流量灵敏度 `dq_jj/dd_k = δ_jk·4q_jj/d_jj + g_jj(dp_a/dd_k − dp_b/dd_k)`。目标取 (压力, 流量) 两尺度归一的加权平方和，梯度在对数管径空间 `θ = ln d`（正性由参数化保证）里是 `2·d_k·Σ_i jac_d[i][k]·r_i`；优化器是自写 **Levenberg–Marquardt** `(JᵀJ + λ diag(JᵀJ))δ = −Jᵀr`，接受 `λ/=3`、拒绝 `λ*=3`，最优历史单调不增。
+
+**case 与判据。** 沿用 §5.100 的三管汇流拓扑（两口定流量井进 M、M 进定压终端，5 m / 10 m 高程）。`check_gradient_match.py`（~185 行）**39 项**判据，把解析梯度钉在**三条独立通道**上：① 前向压力对独立 Hagen–Poiseuille 串并联闭式 < 1e-12、对真实 C++ 内核（subprocess `chflow-1d-steady`，解析 node 行）< 1e-8（实测最差 9.261e-13），流量对源项质量守恒；② 解析 `dp/dd` 对闭式中心差分 < 1e-6、对 C++ 内核差分 < 1e-5（实测最差 1.064e-07，`h = 1e-5·d`）；③ **定流量源不变量**——源项钉死流量时 `dq/dd ≡ 0`（实测 max 5.55e-17 < 1e-9），故流量残差为零、不参与梯度，这条显式守住「哪些参数可观测」；④ 目标对数梯度对中心差分 < 1e-5（实测最差 2.499e-10）；⑤ **一个解析梯度 = 一次 `solve_state` 调用**（monkeypatch 计数器证明 O(1) 而非 O(参数)）；⑥ LM 从 (0.040, 0.060, 0.042) 反演 (0.055, 0.045, 0.050)，参数误差 < 1e-6（实测 3.811e-12）、目标 < 1e-16（实测 2.591e-22）、前向求值 < 60（实测 **7**）、历史单调；⑦ 确定性 + 三类拒收（参数个数/负值/nan、零尺度、`max_iter=0`）。CTest `verify.gradientMatch`（注册 Test #154，0.23 s），**无条件注册**——不依赖 Python 绑定，故主构建（绑定关闭）也跑。
+
+**成本与边界。** 纯新增、零 C++ 改动：`python/gradient_match.py`（~330 行，顶层模块，**刻意不进 `chflow` 包**以免触发过期绑定 import）+ `tests/check_gradient_match.py`（~185 行）+ `tests/CMakeLists.txt` 一个 `add_test`。code commit 667cd19，全量回归 2672.54 s / 157（`-E mpiDecomposition`，157/157，rc=0；CTest 156 → 157）。**边界**：灵敏度只对**层流**管闭式成立（`g = πd⁴/(128μL)`、`∂q/∂d = 4q/d`），湍流/两相持液率定律的 ∂残差/∂参数需另推（增量 3 瞬态/两流体伴随才碰）；参数面只有三个管径，粗糙度在本 case 层流不可观测故不入参；定流量源下流量灵敏度恒零，是 case 的可观测性结构而非梯度缺陷；噪声自由合成观测、无协方差加权/多工况联标；LM 是局部法，非凸多解不保证全局最优；梯度在 Python 层重推前向而非改 C++ 内核，故与内核的一致性靠 checker 的 subprocess 通道见证而非共享代码。A11 MPI 与并发 D8 工作树改动严格隔离在本提交之外（partial-hunk staging 只取本格 `add_test`）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

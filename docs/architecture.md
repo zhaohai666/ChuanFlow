@@ -4782,6 +4782,18 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本。** `TwoFluid.h`（`TwoFluidAsphaltene`/`TwoFluidScale` 结构 + `asphalteneOn`/`scaleOn` + `asph_`/`scale_` 状态 + `cellAsphaltene()`/`cellScale()` + `asphalteneStep`/`scaleStep`/`refreshDepositDiameter` 接口），`twoFluid.cpp`（校验 + 初始化 + 两步函数 + step 链接线 + loader 两块），`twoFluidApp.cpp`（两个 emit 点各加 `asph`/`scale` token），2 case + `check_two_fluid_deposition.py`（~330 行双模式）+ 2 add_test（`verify.twoFluidAsphalteneOnset` Test #141、`verify.twoFluidScaleSaturation` Test #142，各 0.18/0.16 s）。本增量 CTest 151 → 153（`-E mpiDecomposition` 后跑满 2065.34 s / 153，code commit 428e694）。**D2 至此 CLOSED**（命名范围四格用满：van't Hoff 析蜡 §5.96 + 蜡输运 §5.97 + 薄层反馈 §5.98 + 沥青质/结垢 §5.99；AOP/Ksp 温度依赖、沉积输运、结垢多矿物（BaSO₄/SrSO₄）、3D 壁面另议）。
 
+### 5.100 历史拟合第一次只靠绑定读回闭环（D9 增量 1）：参数向量 → `NetworkPipe` 可写字段 → 结构化观测 → 自写 Nelder-Mead
+
+**这一格从哪来。** D9 审计确认 pybind11 已把稳态网络 / nodal / 瞬态 / PVT 四条前向链闭环，且绑定读回是 double 结构而不是 `12` 位报表文本；本格不碰 C++、不引入 adjoint，先把「标定」这件事完整跑通，作为后续稳态解析梯度（增量 2）与瞬态伴随（增量 3）的参照基线。
+
+**黑盒通道。** 新模块 `python/chflow/history_match.py` 把三个管径映射成 `NetworkPipe.diameter`（长度 / 高程固定为 `tests/cases/steadyNetwork/case.dict` 的三管汇流拓扑，两口定流量井进 M、M 进定压终端），每次目标函数求值构造一个**新的** `OneDNetwork`，调未改动的 `chflow.solve_steady_network`，然后只用 `SteadyNetworkResult.node_pressure` 与 `pipe_flows[].flow_rate` 组装残差——不解析任何文字输出，也没有跨调用的可变内核状态。`Observation` 按节点名 / 管名存读数，并对非有限值大声拒收；`objective` 用 (pressure, flow-rate) 两个尺度归一后取加权平方和，未收敛求解给有限大罚值让单纯形自行离开。
+
+**优化器。** 不引入 NumPy/SciPy 硬依赖：`fit` 是确定性 Nelder–Mead（反射 1 / 扩张 2 / 外缩 0.5 / 内缩 0.5 / 收缩 0.5），在**对数管径空间**走单纯形，故正性由参数化本身保证、16% 初始步长对应 `step=0.15`；停止判据同时看单纯形对数直径与最佳目标扩散，`FitResult` 带回参数、初末目标、迭代/求值次数、收敛标记与**单调不增的最优历史**。同一初值两次拟合逐位相同。
+
+**case 与判据。** CTest `python.history_match`（只在 `CHFLOW_PYTHON_BINDINGS` 打开时注册，与 `python.bindings` 同样设置 `PYTHONPATH`）六条判据：① 正向读数对**独立的 Hagen–Poiseuille 串并联闭式**（含 5 m / 10 m 高程静压头）相对误差 < 1e-8，两口井流量与汇管流量也对上源项；② 真值处目标 < 1e-18、偏移初值处 > 1；③ 从 (0.040, 0.060, 0.042) 反演 (0.055, 0.045, 0.050) 三管径，相对误差 < 1e-4、目标 < 1e-16、最优历史单调不增；④ 拟合确定性（参数 / 目标 / 求值次数逐位相同）；⑤ 目标尺度缩放 10 倍恰乘 100 且拟合结果不变；⑥ 参数个数 / 正性 / 尺度非法的三条拒收。
+
+**成本与边界。** 纯新增，无 C++ 改动：`python/chflow/history_match.py`（305 行）+ `tests/python/test_history_match.py`（107 行）+ `tests/CMakeLists.txt` 一个 `add_test`（`python.history_match`）；主构建 `CHFLOW_WITH_PYTHON=OFF` 故 CTest 153 计数与全量回归不受影响，启用绑定的构建里 `python.bindings` 与 `python.history_match` 双绿。code commit 96a38d9，全量回归 3122.90 s / 153（`-E mpiDecomposition`，153/153）。**边界**：参数面只有三个管径，粗糙度 / 长度 / 流体物性 / 源项固定（绑定里粗糙度虽可写，但本 case 全是层流 `f=64/Re`，粗糙度不可观测——拿它做反演只会得到无识别度的平坦方向）；观测是噪声自由合成数据，未做加权协方差 / 多工况联标；Nelder–Mead 是无导数的局部法，非凸多解时不保证全局最优；A11 MPI 工作树改动仍严格隔离在提交之外。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 | OpenFOAM-dev | ChuanFlow |
 |---|---|

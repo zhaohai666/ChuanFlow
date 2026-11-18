@@ -1516,6 +1516,16 @@ python3 tests/check_two_fluid_deposition.py \
     "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
     "$PWD/tests/cases/twoFluidScaleSaturation/case.dict" scale
 
+# 黑盒历史拟合（5.100 / D9 增量 1）：只用 pybind11 的结构化读回，不解析文本报表。
+#   需要 -DCHFLOW_WITH_PYTHON=ON 的构建（chflow_core 与 Python 解释器 ABI 匹配）；
+#   harness 把三个管径写到 NetworkPipe.diameter，观测是 node_pressure 与
+#   pipe_flows[].flow_rate，优化器是自写 Nelder-Mead（无 scipy 依赖）。
+cmake -S . -B build-python -DCHFLOW_WITH_PYTHON=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build-python --target chflow_core -j4
+ctest --test-dir build-python -R '^python\.' --output-on-failure
+#   单项：ctest --test-dir build-python -R '^python.history_match$' --output-on-failure
+#   注意：粗糙度在本 case 全是层流 f=64/Re，不可观测，故参数面只有管径。
+
 
 # 黑油 / PVT 混合规则决策（5.76 / A5 增量 2）：黑油 march 的黏度只有
 #   muM = muL*lambda + muG*(1-lambda) 一个入口，PVT march 只有 mu(p) 一个入口；

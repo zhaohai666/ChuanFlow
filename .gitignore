@@ -1,4 +1,5 @@
 build/
+build-python/
 cmake-build-*/
 *.o
 *.obj

@@ -1753,6 +1753,11 @@ if(CHFLOW_PYTHON_BINDINGS)
     endif()
     set_tests_properties(python.bindings PROPERTIES
         ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    add_test(
+        NAME python.history_match
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_history_match.py)
+    set_tests_properties(python.history_match PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
 endif()
 
 # ---- CLI (Rust) ----

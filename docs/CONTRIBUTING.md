@@ -105,6 +105,29 @@ python3 tests/check_euler.py \
     "$PWD/build/src/3d/apps/chflow-3d-compressible" \
     "$PWD/tests/cases/sodShockTube/case.dict"
 
+# 可压缩 Navier–Stokes（5.129）：同一 HLLC 核上的 opt-in 黏性（Stokes）与热通量
+# （Fourier）。app 声明 eos{}/viscous{}/heatFlux{} 才走 NS 路径并在 VTU 加 T/c 场；
+# check_compressible_ns.py 守恒精确、从 VTU 独立重推 T=p/(ρR) 与 c=√(γp/ρ)（1e-9）、
+# μ/κ 参数扫描证耗散单调、零声明孪生与 4 拒收
+./build/src/3d/apps/chflow-3d-compressible tests/cases/compressibleNsSod/case.dict
+python3 tests/check_compressible_ns.py \
+    "$PWD/build/src/3d/apps/chflow-3d-compressible" \
+    "$PWD/tests/cases/compressibleNsSod/case.dict" \
+    "$PWD/tests/cases/sodShockTube/case.dict"
+
+# 高阶重构（5.130）：MUSCL + minmod/vanLeer/MC/superbee 的独立算子验证 app，
+# 逐面打印 exact/recon/err。check_reconstruction.py 独立重推闭式与限制器：
+# linear 机器精度、sine 二阶收敛（对 fine 网格）、step 用未限制外推对照探针证 TVD
+./build/src/3d/apps/chflow-reconstruction tests/cases/reconstructionLinear/case.dict
+python3 tests/check_reconstruction.py \
+    "$PWD/build/src/3d/apps/chflow-reconstruction" \
+    "$PWD/tests/cases/reconstructionLinear/case.dict"
+# 收敛阶臂（粗 + fine 两网格一起喂给 checker）
+python3 tests/check_reconstruction.py \
+    "$PWD/build/src/3d/apps/chflow-reconstruction" \
+    "$PWD/tests/cases/reconstructionSine/case.dict" \
+    "$PWD/tests/cases/reconstructionSineFine/case.dict"
+
 # 三维区域分解首增量：同一个块按 1/2/3/5/7/8/16 域各切一次、逐域跑显式算子，
 # 每次域数写一份**全局单元序**的 vtu。check_parallel.py 从 vtu 的几何自己重跑
 # 同一套坐标中位数分解，断言分区性与面数重装配、分解算子与串行逐位相等、
@@ -1787,8 +1810,9 @@ python3 tests/check_coupled_multiphase.py \
 # 零声明时 lossAt 不进新分支，SIMPLE 调用逐字不变；同名块放在顶层
 #   （不属于 detail{}）是 checker 的零声明 twin，11 个量 0 容差。
 # 四条互斥拒收：phases / 非牛顿 / RANS / ddt Euler 都不能与可压同台。
-#   `chflow-3d-compressible` 是闭盒 Sod 管（只有 main、无 inlet/outlet），
-#   没有可复用的库级求解器，所以可压律在伙伴块内部自解，不动 src/3d。
+#   `chflow-3d-compressible` 是闭盒 Sod 管（只有 main、无 inlet/outlet）；
+#   5.129 后库级 `cf::compressible`（CompressibleFlow.h）可复用 HLLC/EOS/黏性/热通量，
+#   但仍无 inlet/outlet 与 SIMP 型开放流道入口，所以可压律在伙伴块内部自解，不动 src/3d。
 # 判据（126 条；9 臂 + 8 拒收探针全写系统临时目录）：
 #   主臂 pRef 10000 / RsT 300000 / q_in 2.4e-4
 #     -> pOut 9075.24104363, dp 924.758956369 Pa,

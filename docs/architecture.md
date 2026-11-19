@@ -5068,6 +5068,39 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界。** cp(T) 是线性声明近似（真实工质需分段多项式或 NASA 系数，可后续以同样"声明输入"方式扩展）；焓基准是 referenceT 理想气体零点，混合不同 referenceT 的 case 无意义；departure 焓取最大实根（气相）用于液相 departure 时仍在两相稳定性范围内成立（PR 焓 departure 公式对任一实根均成立，根的选择由 tpFlash 相态决定）；Kokkos 分支已真库（Serial host）编译+实跑验证、PETSc 分支已真库编译+实跑验证（§5.124/§5.126 与台账，code 70775ee）；仅剩 CUDA/HIP GPU 硬件执行需 GPU 机器。
 
+### 5.129 可压缩 Navier–Stokes：HLLC 核上的 opt-in 黏性应力与 Fourier 热通量
+
+> **状态（2026-11-19）**：已提交 1acb592，CTest `verify.compressibleNs`（#38），`verify.sodShockTube`（#37）逐位守护仍绿，全量回归 **182/182（3048.92 s，rc=0）**。
+
+**可行性评估先行。** §5.110 交付的是闭盒 Sod 管一阶 Godunov/HLLC Euler（app 内裸 `std::vector`，无库级入口）；可压缩 NS 只差三件事：① 一套**库级**的 `State/Flux/EOS/transport` 声明面（把 app 内逐字一致的 HLLC 抽出来）；② 黏性应力——逐分量速度梯度 `gradU` 的范式在 `generalizedNewtonian.cpp:84-109` 已有先例，`Tensor3`（outer/trace/doubleContract）在 `common/Vector.h:63-96` 已存在；③ 热通量——温度梯度 + `kappa ∇T`，与 1D 管流的热量行同构。三项均无需新数据、不碰 `sodShockTube` 逐位守护路径，故实现。
+
+**库（`src/3d/include/cf/fvm/CompressibleFlow.h`，`src/solvers/compressibleFlow.cpp`）。** 纯函数、命名空间 `cf::compressible`：
+- `State{rho, mom, rhoE}` / `Flux{mass, mom, energy}`——与 app 原型逐字一致；`IdealGasEos::fromCase(caseDict)`（gamma 从 `fluid{}`、R 从 opt-in `eos{}` 块）+ `pressure/soundSpeed/temperature` 闭式；
+- `physicalFlux/twoRarefactionPressure/hllc`——与 app 逐字一致（HLLC 递推原样上移）；
+- `TransportConfig::fromCase`（mu 从 opt-in `viscous{}`、kappa 从 opt-in `heatFlux{}`）；
+- `velocityGradients`（逐分量 Gauss 梯度，corrected）+ `viscousStressFaceFlux`（Stokes 体积项 `-(2/3)μ∇·U`）+ `viscousStressDivergence`；
+- `cellGradient/heatFluxFace/heatFluxDivergence`（Fourier）；壁面 free-slip/adiabatic（无黏性/热交换）。
+
+**接线与零声明逐位不变。** `compressibleApp.cpp` 全部 gated：存在 `viscous{}`/`heatFlux{}` 才在壁面循环后追加速度散度（`dmom += ∇·τ·V`、`dE += (U·∇·τ)·V`）与热散度（`dE += ∇·q·V`）；存在 `eos{}` 才打印 `compressible eos:` 行并在 VTU 加 T/c 场；`heatFlux{}` 无 `eos{}` 时 `cfFatal`（T 无从定义）。零声明路径与 `sodShockTube` case 输出逐位一致（checker 孪生臂守护）。
+
+**判据（`tests/check_compressible_ns.py`）。** 五段：① 守恒——质量/动量+壁冲量精确、密度能量正性、CFL 摘要；② EOS 闭式——从 VTU 独立重推 `T = p/(ρR)`、`c = √(γp/ρ)`（1e-9，常数从 case 读不信自报）；③ 耗散单调——μ/kappa 参数扫描，更大 μ 耗散更多末态能量（物理锚）；④ gated 孪生——删掉 opt-in 块后无新行、无新 VTU 场；⑤ 4 条拒收（`heatFlux` 无 `eos`、负 mu 等，cfFatal 非零退出）。
+
+**边界。** 一阶 Godunov 基座不变（高阶空间精度归 §5.130 的重构算子）；μ/kappa 是常物性标量（温度依赖输运需 pvt 接线，`cf3d` 目前不 link `cf_pvt`）；壁面只有 free-slip/adiabatic（no-slip 等温壁是后续格）；只有均匀六面体 block 网格路径。
+
+### 5.130 高阶重构：MUSCL + TVD 限制器库 `cf::reconstruction`
+
+> **状态（2026-11-19）**：已提交 1acb592，CTest `verify.reconstructionLinear`（#39）/ `verify.reconstructionSine`（#40）/ `verify.reconstructionStep`（#41），全量回归 182/182。sine 二阶收敛 order=2.056、线性场精确 4.44e-16、step TVD 无 overshoot。
+
+**可行性评估先行。** fvm 层全局 grep 确无 limiter/MUSCL/TVD/slope（仅 PLIC 与 Menter production limiter，均与 FVM 无关）；`fvm::div` 仅 upwind/linear/blend，`fvc::grad` 仅 Gauss(linear/corrected)。审计钉死两个约束：① 不能用 `makeInternalOwnerWeights` 的 clamp[0,1] 权重做外推（破坏线性场精确性），必须用原始向量 `faceCentres − cellCentres`；② 边界 zeroGradient 会把 1D 线性场首格 Gauss 梯度减半（grad=0.5 而非 1），故用「上风侧一阶差分 + 入口 ghost cell `2Tu − Td`」——内部格等价 Gauss 投影、入口 r=1 ⇒ phi=1，线性场全域精确。
+
+**库（`src/3d/include/cf/fvm/Reconstruction.h`，`src/discrete/reconstruction.cpp`）。** 纯函数、命名空间 `cf::reconstruction`：`Limiter{Minmod, VanLeer, MC, Superbee}`、`parseLimiter`（未知即 cfFatal）、`limiterPhi(r, L)`（审计 r-form：vanLeer=2r/(1+r)、MC=min(2r, 0.5(1+r), 2)、minmod=min(r,1)、superbee=max(min(2r,1),min(r,2))，r≤0 → 0）、`limitedSlope`、`upwindFaceValues`、`musclFaceValues`。几何显式用 `deltaCoeffVec()[f]`，外推用 `faceCentres − cellCentres`，无 clamp 权重；逐面 clamp 到相邻两 cell 值保 TVD。
+
+**app（`src/3d/apps/reconstructionApp.cpp`）。** 解析场 profile=constant|linear|quadratic|step|sine；velocity 支持 `(Ux Uy Uz)` 或 `{type uniform|rotation; ...}`；`schemes{ reconstruction none|muscl; limiter ...; }` 默认 none；逐面 17 位打印 exact/recon/err + L1/L∞ 汇总；4 条拒收。
+
+**判据（`tests/check_reconstruction.py`）。** 独立重推解析闭式与 limiter 函数（与 C++ 互为独立非拷贝）、逐面核对（max|Δ|≤2.22e-16）；linear 臂要求逐位机器精度；sine 臂双网格（粗+fine）收敛阶 muscl≥1.7、upwind∈[0.8,1.3]（实测 2.056 / 0.982）；step 臂用**未限制外推**做 overshoot 对照探针（对照 0.5、限值后 0）证明 TVD 生效。
+
+**边界。** 只覆盖标量场对流的重构（速度重构与 Riemann 求解器耦合是后续格）；限制器是 r-form 一族（无 WENO/限制器的光滑开关）；`fvMatrix::registerCorrector` 的 deferred correction 接线（把 muscl 进真实 `fvm::div`）是下一格——本格先把算子本身在解析 profile 上钉死。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

@@ -350,7 +350,7 @@ print(result.pressure_profile)
   internal/coupled/boundary/messages 与写出的 `domain` 场，并独立重算 Σ t·V、min/max
   与 halo 校验和。两点踩过的坑：质心有 1e-16 舍入噪声，同一层格的切点与对称块的轴向
   都会被噪声决定，故坐标带宽内视为相等、按格号定序并优先 x）
-  已落地，可压缩 Navier–Stokes（黏性应力与热通量）、高阶重构待做；
+  已落地，可压缩 Navier–Stokes（黏性应力与热通量，§5.129）与高阶 MUSCL 限制重构（§5.130）也已落地；
   **真实 MPI 传输 + 跨域矩阵求解**——`mpiTransport.h` 用 MPI_Sendrecv 按分解收发计划填 halo、MPI_Allreduce 归约（`cf3d` 库仍 MPI-free，§5.119），
   `chflow-mpi-linear-solver` 一 rank 一域、分布式 CSR 对角预条件 CG（matvec = halo + 本地 CSR 乘、dot = Allreduce），
   分布式解对串行 `solveCG` 与解析解 maxDiff 2.7e-15、matvec 逐位一致，np=1/2/4 实跑全绿（§5.122）——已落地；

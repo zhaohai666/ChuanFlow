@@ -5018,7 +5018,7 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **机理。** `solveWithBackend(..., LinearBackend::PETSc)` 分支：`MatCreateSeqAIJ` + 逐 triplet `MatSetValues` 装配同一 CSR，`KSPGMRES` + `PCILU` 求解，`KSPGetConvergedReason`/迭代数填 `SolverReport`，测同一 CSR 的 inf-norm 残差。`CHFLOW_WITH_PETSC` option 用 `find_package(PETSc QUIET)`，找到才编译（`cf_common` 加 include/link），找不到 WARNING + 自动 OFF（**实测该降级行为**，本机即如此），与 HDF5/Kokkos 同惯例。`chflow-solver-backend` 在 PetscInitialize/Finalize 之间跑并打印结果，checker 在有库机器上会额外校验 PETSc 收敛/与 native 交叉差 <1e-6。
 
-**判据/状态（2026-11-19）**：PETSc 分支代码完整，本机无库故**未编译验证**（`verify.solverBackend` 在 native-only 构建下 PASS，明确打印 "petsc backend not compiled in"）。有 PETSc 库的机器上 `cmake -DCHFLOW_WITH_PETSC=ON` 即启用并跑交叉检查。按项目"降级决策如实记录"惯例，不声称本机验证过 PETSc 求解。代码已提交 b677821，全量回归 **176/176（911.08 s）通过**（native-only 形态）；**待有库机器编译验证 PETSc 分支**。
+**判据/状态（2026-11-19 真库验证回填）**：PETSc 分支已用**真实 PETSc 3.23.4**（源码构建：`--with-mpi=0 --with-debugging=0`、Accelerate BLAS、静态库，安装于 /tmp/petsc-install，工具链不入库）编译并实跑验证。真库暴露并修复两个真实 bug（见台账与 code 70775ee）：① `PetscInt`（本机 32 位 int）与 `cf::label`（64 位）宽度不匹配——`MatSetValues`/`VecSetValues` 直传 `label*` 编译失败，改为显式宽度无关 `static_cast`（对 32/64 位 PETSc 均兼容）；② `MatCreateSeqAIJ(...,0,nullptr,...)` 零预分配导致真实插入报 "New nonzero at (0,0) caused a malloc"——改为从 CSR rowStart 精确逐行预分配。CMake 侧：PETSc 3.23+ 安装布局不再生成 CMake package config，`find_package(PETSc)` 无模块命中，增 `PETSC_DIR` 手工前缀发现兜底（含 `-framework Accelerate` 链接；无 PETSC_DIR 时搜索行为不变）。三后端同一二进制交叉检查：native 120 迭代 / err 2.140e-08、Eigen 1 步 / err 0、**PETSc（GMRES+PCILU）1 步 / err 1.599e-14 / residual 1.332e-15**，cross-backend max diff 2.140e-08（恰为 native 自身误差）全 PASS。默认构建重编后 `verify.backendCpu`/`verify.solverBackend` 复跑通过（零声明逐位不变）。code 70775ee，全量回归 **178/178（861.05 s，rc=0）**。
 
 ### 5.125 GUI 拖拽管网建模 + 瞬态曲线面板（D12 增量 2）
 
@@ -5038,7 +5038,7 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **为什么不接 reduction。** `accumulateFaceSums`/`assembledDivPhi`/`fvc::div`/`divPhi`/曲率累加都含 `dst[cell] += flux`：并行化要么需要 atomic（结果依赖调度次序、破坏逐位一致），要么改变浮点累加顺序。这些维持串行，与 §5.114 能力边界一致。
 
-**判据与状态（2026-11-19）。** 默认 `cpu-serial` 分支与手写 `for` 同源同机器码，逐位不变：受影响 checker **9/9** 全绿——`verify.backendCpu`（active==serial==analytic 逐位，#172）、`verify.parallelDecomposition`/`Tet`（#38/39，验 `assembledGrad`/`divPhi`）、`verify.dpmChannel`/`dpmTwoWay`（#17/18）、`verify.vofTranslation`/`Rotation`/`Droplet`/`SigmaField`（#28-32）。code commit a6d8c27，全量回归 **176/176（525.72 s，rc=0）**。**边界**：OpenMP/Kokkos 构建下 `fvc::interpolate` 的调用方 `faceValueOf` 必须线程安全（BC 线性化是纯函数、满足）；Kokkos 分支的 lambda 需 device-callable 与按值捕获，本机无 SDK 未编译验证；本格不改任何 reduction 路径、不改数值结果。
+**判据与状态（2026-11-19）。** 默认 `cpu-serial` 分支与手写 `for` 同源同机器码，逐位不变：受影响 checker **9/9** 全绿——`verify.backendCpu`（active==serial==analytic 逐位，#172）、`verify.parallelDecomposition`/`Tet`（#38/39，验 `assembledGrad`/`divPhi`）、`verify.dpmChannel`/`dpmTwoWay`（#17/18）、`verify.vofTranslation`/`Rotation`/`Droplet`/`SigmaField`（#28-32）。code commit a6d8c27，全量回归 **176/176（525.72 s，rc=0）**。**边界**：OpenMP/Kokkos 构建下 `fvc::interpolate` 的调用方 `faceValueOf` 必须线程安全（BC 线性化是纯函数、满足）；Kokkos 分支已于 2026-11-19 用真实 Kokkos 4.4.01（Serial host 执行空间）真库编译验证——cf3d 全库（五处接入 kernel 的 KOKKOS_LAMBDA 路径）编译通过，`backendApp` 增 `Kokkos::initialize/finalize` 守卫后 check_backend.py 12/12 ok（square 与 divide 两 mode、active==serial==analytic 逐位）；CUDA/HIP GPU 执行仍需 GPU 硬件（本机 x86_64 无 NVIDIA/ROCm）；本格不改任何 reduction 路径、不改数值结果。
 
 ### 5.127 声明输入闭包：Prandtl 导热与水合物 Clausius–Clapeyron（D13 增量 4）
 
@@ -5066,7 +5066,7 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **判据（`tests/check_pvt_non_isothermal.py`）。** checker 复用独立 Python PR 实现（cubic_real_roots/pr_state/tp_flash，与 check_steady_pvt_flash.py 同源）：自行推导 daI/dT、daMix/dT、H^R 与混合焓，对 app 输出的每个 `enthalpyAt` 点独立重推（常数从 case 读、不信 app 自报）匹配 1e-6；phFlash 臂用 case 声明 hTarget=242384.567025（对应探测 320 K 的焓）验证解回 T=320.000000、且独立 H(T*)=hTarget <1e-6；H 随 T 单调；5 条拒收（Tmin≥Tmax、hTarget 超出区间等，经 cfFatal 非零退出）；零声明孪生 flash 行逐位相同且无新 token。
 
-**边界。** cp(T) 是线性声明近似（真实工质需分段多项式或 NASA 系数，可后续以同样"声明输入"方式扩展）；焓基准是 referenceT 理想气体零点，混合不同 referenceT 的 case 无意义；departure 焓取最大实根（气相）用于液相 departure 时仍在两相稳定性范围内成立（PR 焓 departure 公式对任一实根均成立，根的选择由 tpFlash 相态决定）；Kokkos GPU 与 PETSc 分支仍待有库机器（D13 整体边界）。
+**边界。** cp(T) 是线性声明近似（真实工质需分段多项式或 NASA 系数，可后续以同样"声明输入"方式扩展）；焓基准是 referenceT 理想气体零点，混合不同 referenceT 的 case 无意义；departure 焓取最大实根（气相）用于液相 departure 时仍在两相稳定性范围内成立（PR 焓 departure 公式对任一实根均成立，根的选择由 tpFlash 相态决定）；Kokkos 分支已真库（Serial host）编译+实跑验证、PETSc 分支已真库编译+实跑验证（§5.124/§5.126 与台账，code 70775ee）；仅剩 CUDA/HIP GPU 硬件执行需 GPU 机器。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 

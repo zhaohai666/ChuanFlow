@@ -4956,6 +4956,70 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **成本与边界。** 纯新增、零 C++ 改动：`python/transient_adjoint.py`（~434 行，顶层模块，**刻意不进 `chflow` 包**以免触发过期绑定 import）+ `tests/check_transient_adjoint.py`（~200 行）+ `tests/CMakeLists.txt` 一个 `add_test`。code commit b652515，全量回归 2131.98 s / 171（`-E mpiDecomposition`，171/171，rc=0；CTest 170 → 171）。**边界**：灵敏度只对**层流线性壁律**闭式成立（Churchill→64/Re），湍流/两相持液率/两流体动量斜率的伴随需另推——本格是**单相瞬态伴随**，两流体伴随是后续子增量；参数面只有管径 `d`，噪声自由合成观测、无协方差加权/多工况联标；Illinois secant 是局部根查找、假设 `grad_log(θ)` 单调单根，非凸多解不保证全局最优；梯度在 Python 层重推前向而非改 C++ 内核，故与内核一致性靠 checker 的 subprocess 通道见证而非共享代码。**并发碰撞处置**：首版回归绿（163/163，3854.12 s）后并发 D10–D13 agent 提交 1f0241a/9712dfb，覆盖了本格在 `tests/CMakeLists.txt` 的 `add_test` hunk 并占用 §5.110–5.116；按 collision playbook 在新 HEAD 的 gradientMatch 块后重加 hunk、改号 **§5.117**、重配（Test #160，171）、对当前 1D 二进制 standalone 复验仍 PASS、重跑全量回归 171/171（2131.98 s）才提交；A11 mpi hunk 与全部 D10–D13/A11 新文件保持未暂存（`git add` 只取本格三文件）。
 
+### 5.118 两流体伴随：密封 dynamic-slip 静止柱上界面阻力的 O(1) 梯度（D9 增量 4）
+
+> **状态（2026-11-19 回填）**：已提交 b677821，CTest `verify.twoFluidAdjoint` 计入全量回归 **176/176（911.08 s）通过**；§5.118 落点正式确认。
+
+**这一格从哪来。** §5.117 的单相瞬态伴随对 implicit-Euler `(Q,p)` 线性 march 闭式成立，但两流体分布式行——动量斜率是有限差分（`twoFluid.cpp:810`）、闪蒸是迭代（`flash.cpp:89`）——其伴随需另推。本格选一个动量求解被跳过的极限先把两流体伴随立起来：密封垂直柱、dynamic-slip 闭合、混合速度 `vM ≡ 0`，于是每步是两个**显式可微映射**，无隐式求解即无隐函数定理改造。
+
+**机理。** 每格两步：① 有理滑移更新 `s_new = (s_old/dt + drive/K_s)/(1/dt + C|s_old|D/K_s)`，其中 `K_s = 1+α(1−α)(ρ_G−ρ_L)²/(ρ_Lρ_G)`、`drive = (1/ρ_G−1/ρ_L)ρ_m g sinθ`、`D = 1/(ρ_Lα)+1/(ρ_G(1−α))`；② Godunov 二次持液输运 `flux_j = Godunov(F(a)=s_face a² − s_face a, α[j−1], α[j])`、`s_face = (s_new[j−1]+s_new[j])/2`、`α_new[i] = α[i]+dt/dx(flux_i−flux_{i+1})`，两端 sealed。**反向伴随**逐步穿过 Godunov **活动分支** Riemann 雅可比与有理滑移映射，对标量界面阻力 `C`（在 `ln C` 中工作保正）给 `dJ/dC`，与跨多少步/多少格无关；forward tangent-linear 同步 marsh 作独立见证，中心 FD 作第二证伪通道；checkpointing 每 k 步存状态、反向段内前向重算，与 store-all 逐位相同。
+
+**case 与判据。** `python/twofluid_adjoint.py`（616 行，纯 stdlib、顶层模块）在 Python 层重推前向（不 import chflow，绑定关闭构建也跑）；`tests/check_two_fluid_adjoint.py`（243 行）把梯度钉在五条独立通道——闭合道路、Godunov 雅可比、tangent、中心 FD、真实 C++ `chflow-1d-twofluid` 内核。`tests/CMakeLists.txt` 注册 `verify.twoFluidAdjoint`（Test #161）。2026-11-19 实跑 **PASS**：12 通道最差 adjoint/FD 1.715e-09、adjoint/cppFD 2.418e-08、adjoint/tangent 5.736e-16、checkpoint equality 0、forward/cpp alpha 4.934e-13 / slip 4.547e-12、godunov/jac 4.493e-11、fit/param 1.481e-07；17 拒收；fit 11 次伴随扫掠恢复 `C=1500.0`（cost 2.11e-26）；checkpoint 301→13 状态 @ k=25。
+
+**边界。** 仅对界面阻力 `C`、仅 `vM=0` 的 dynamic-slip 密封柱闭式成立；湍流/两相持液率/含闪蒸的两流体动量斜率（`twoFluid.cpp:810` 有限差分、`flash.cpp:89` 迭代）需隐函数定理改造，非本格；参数面只有 `C`，噪声自由合成观测、无协方差加权/多工况联标；Godunov 在激波/声点切分支，伴随与 tangent 微分同一活动分支、在分支边界的零测集外与 FD 一致。
+
+### 5.119 真实 MPI halo 传输：按 Decomposition 计划 Sendrecv（A11 第一格）
+
+> **状态（2026-11-19 复核更正）**：本格原审计基于工作树里的 `src/3d/apps/mpiApp.cpp` + `tests/check_mpi.py`，后来发现该 app 调用**不存在**的 `parallel::domainGradDivide` / `domainGradAccumulate` / `domainDivPhiAccumulate`，源码编译不过；早前"ranks [1,2,3,5,7,8,16] PASS"是**陈旧二进制**造成的误判，不纳入交付。真实传输实现收敛到 `src/3d/apps/mpiTransport.h`，由 §5.122 的 `chflow-mpi-linear-solver` 实际使用并验证；`mpiApp.cpp` / `check_mpi.py` / `tests/cases/mpiDecomposition/` 不注册、不提交。传输正确性由 §5.122 见证；已提交 b677821，全量回归 **176/176（911.08 s）通过**。
+
+**这一格从哪来。** §5 的三维并行首增量只做了与传输后端无关的区域分解核（递归坐标中位数切片、halo 槽位、收发计划、Allreduce），本机当时无 `mpirun/mpi.h` 所以收发缓冲按 Isend/Recv 形状备好但未接真实传输。本格把那条串口 copy-loop 换成真正的 MPI 消息。本机现已有 MPICH 4.2.3（`/Users/haizai/opt/mpich-4.2.3`，用户环境提供、非本次安装），`CMakeCache.txt` 的 `MPIEXEC_EXECUTABLE` 已指向它。
+
+**机理。** `src/3d/apps/mpiTransport.h`：按 `Decomposition` 的 index-matched 消息计划，每个 peer 一条 `MPI_Sendrecv`，发送方 owned 槽位 ↔ 接收方 halo 槽位逐一对齐（标量 1 分量、矢量 3 分量），`MPI_Allreduce` 做 `reduceSum/Min/Max`；`cf3d` 库本身保持 MPI-free，MPI 只在验证 app 里。该头文件不依赖任何不存在的 API，是 §5.122 分布式 matvec 的 halo 通道。
+
+**判据。** `mpiTransport::exchange` 的逐位正确性由 §5.122 的 `verify.mpiLinearSolver` 见证：分布式 matvec 与串行 CSR product **逐位一致（matvecDev=0）**，np=1/2/4 分布式解与串行 `cf::solveCG` 最大差 2.66e-15；不再单独注册基于半成品 `mpiApp.cpp` 的 `verify.mpiDecomposition`。
+
+**边界。** 只验 owned↔halo 的标量/矢量交换与全局归约，不含负载均衡；SUM 用 `MPI_Allreduce` 按树序加和，对串行左到右 `std::accumulate` 只到舍入而非逐位（MIN/MAX 与顺序无关故精确），这是真实 collective 的固有差异、已如实记录；standing 约束「装 MPI 需用户 OK」——本次未安装任何工具包。
+
+### 5.120 VOF 逐格表面张力：每格按压力经真正的 PVT WK 定价（D10 余项）
+
+**这一格从哪来。** §5.94 的 Weinaug-Katz 组分表面张力只停在 `chflow-pvt` 报表层；3D VOF 的 CSF 力 `surfaceTensionForce` 收一个标量 `sigmaOverRho`，全界面一个常数 sigma。本格让 sigma 按格变化：case 声明一个逐格绝对压力场，每格经**真正的** `cf::pvt::weinaugKatzSurfaceTension` 算 sigma，喂进逐格 CSF。
+
+**机理。** `VoF.h` 的 `surfaceTensionForce` 增一个收 `Field<scalar> sigmaOverRhoCell` 的重载，逐格 `f[u] = g[u]·(−sigma_cell[u]/rho·kappa[u])`；标量版本保留、逐位不变。`vofApp` 的 `SurfaceTension` 增 `sigmaFromP{}` 块：压力场支持 `type linear`（p_cell = p0 + gradient·(x_cell − x_ref)，解析可独立重推），组分册 + parachor（`parachors fromTable` 用内置 WK 表，调用真实 `cf::pvt` 库——`chflow-vof` 链接 `cf_pvt`），每格 `tpFlash`-一致地取 Vml/Vmg 与 x/y 算 WK sigma。刻意**不移植** PR/WK 公式到 VOF 层，保持单一真相源。`sigmaFromP` 缺席走原标量路径、逐位不变。
+
+**判据。** `tests/cases/vofSigmaField/case.dict`（16×16×1，256 格）+ `check_vof_sigma_field.py`：256 格 sigma 落在 0.000628..0.002844 N/m、逐格等于独立重推的 WK(p_cell)；CSF 力逐格最差 2.72e-13；标量孪生输出逐位相同；8 条拒收（负压力/缺组分/缺 parachor/未知压力场型等）。CTest `verify.vofSigmaField`，9/9 VOF 回归通过。**边界**：压力场是解析声明（非从流场解出的真热力学压力）；单相 sigma=0；只接 CSF 不动 PLIC 曲率。**状态（2026-11-19 回填）**：已提交 b677821，全量回归 **176/176（911.08 s）通过**。
+
+### 5.121 每站真闪蒸 + WK 表面张力进 Beggs-Brill 稳态 march（D10/D7 余项）
+
+**这一格从哪来。** §5.110 把组分 rho/mu 接进 1D march，但用的是 case 压力网格上**预计算**的表（单相区、每站真闪蒸回调留白）；WK sigma 也只在报表层。本格把两者升级为逐站实时回调。
+
+**机理。** `PvtFluid` 增可选 `liveFlash` 状态（Mixture + T + parachor + 已算好的 flash 控制）；`evaluateAt(p, rho, mu, sigma)` 在 liveFlash 开启时每站调 `pvt::tpFlash`，把摩尔分数 β 加权成质量分数（`w_L=(1−β)M_L/(…)` 等），均相无滑移密度 `rho=1/(w_L/rho_L+w_V/rho_V)`、分相 LBC 黏度质量加权、WK sigma；单相时两相等价、逐位退化为单一 PR 根。`liveFlash` 缺席时逐位回原查表路径。`marchBeggsBrillPipe` 增默认 `nullptr` 的可选 `sigmaOfP` 回调，逐站取 `in.sigma = sigmaOfP ? sigmaOfP(p) : fluid.surfaceTension`（缺省逐位不变，`BlackOilFluid::surfaceTension` 默认仍 0.03）。case loader 的 `compositional{}` 增 `liveFlash`/`sigmaFromP` opt-in。
+
+**判据。** `tests/cases/steadyPvtFlash/case.dict` + `check_steady_pvt_flash.py`（纯 stdlib 独立实现 PR flash / Rachford-Rice / LBC / WK / Churchill）：24 站 rho/mu/sigma 独立重推 <1e-8、march 重放、逐站 sigma 随压力变化、粗/细网格（75/600 段）收敛到同一物理量（W=4355060.6）、零声明孪生逐位、5 条拒收。CTest `verify.steadyPvtFlash`。**边界**：均相无滑移（无相滑移/持液率反馈）；只进稳态 1D march 不进瞬态两流体；组分/parachor/温度为声明输入。**状态（2026-11-19 回填）**：已提交 b677821，全量回归 **176/176（911.08 s）通过**。
+
+### 5.122 跨域矩阵求解：分布式 CSR 的 CG（A11 第二格）
+
+**这一格从哪来。** §5.119 的 MPI app 只验了 stencil 与归约，不含线性系统；早前工作树里的 `mpiApp.cpp` 是编译不过的半成品（调用不存在的 `domainGradDivide` 等），已废弃。本格做真正的分布式线性求解。
+
+**机理。** `chflow-mpi-linear-solver`（`src/3d/apps/mpiLinearSolverApp.cpp`）一 rank 一域：各 rank 建同一全局网格与确定性分解，组装同一个**图-Laplacian CSR**（对角 = 邻接面数 + shift 保证 SPD，内部面给 owner/neighbour ±1 耦合），各自只拥有 `dec.cells(rank)` 那些行。对角预条件 CG 逐步跑，唯一变化是 matvec = `mpi::exchange` 做 halo 交换 + 本地 CSR product，点积/范数 = `MPI_Allreduce`。rank 0 用 `cf::solveCG` 在同一个全局 CSR 上跑串行参照，再 gather 分布式解逐点比。右端 `b = A·x_exact`（x_exact 是 case 声明的多项式场），解析解独立可得。
+
+**判据。** `tests/check_mpi_linear_solver.py` 用绝对路径 mpiexec 跑 np=1/2/4：分布式解 vs 串行 solveCG maxDiff **2.66e-15**、vs 解析解 2.66e-15、分布式 matvec vs 串行 CSR product **matvecDev=0（逐位）**、收敛 27 迭代、收敛 rank 数 = np、残差相对 ≤ tol×10、坏 app 变体负测试通过；checker 从 case 的 `exactCoeffs` 和 dump 的 cell 中心独立重推解析场，不信任 app 自报。CTest `verify.mpiLinearSolver`。**边界**：单机 CSR 的分布式版（非 PETSc 那种通用分布式矩阵）；图-Laplacian SPD 测试系统（一般非对称系统需 BiCGStab 版）；不含重载平衡。**状态（2026-11-19 回填）**：已提交 b677821，np=1/2/4 实测全绿，全量回归 **176/176（911.08 s）通过**。
+
+### 5.123 Eigen 稀疏求解后端（D13 第一格）
+
+**这一格从哪来。** 自研 CSR + CG/BiCGStab 够用，但缺一个工业级稀疏后端做交叉验证与大规模加速。Eigen 是 header-only，vendored 到 `third_party/eigen`（3.4.0），无需系统包。
+
+**机理。** `Matrix.h` 增 `enum class LinearBackend { Native, Eigen, PETSc }` 与 `solveWithBackend(...)`；Native 委托原 `solveBiCGStab`（逐位不变）；Eigen 分支把 CSR 转 `Eigen::SparseMatrix<RowMajor>`、用 `BiCGSTAB<IncompleteLUT>` 求解，再把解写回并测同一 CSR 的 inf-norm 残差。`CHFLOW_WITH_EIGEN` option 默认 OFF（必须在 `add_subdirectory(src/common)` 之前定义，`cf_common` 才看得见 include dir——配置顺序踩坑），OFF 时该分支不编译、所有既有 checker 逐位不变。
+
+**判据。** `chflow-solver-backend` 对三对角 Poisson 系统（x_exact=1、b=A·x）分别跑 Native 与 Eigen：Native 120 迭代 / err 2.14e-08 / residual 7.35e-12；Eigen ILU 预条件 **1 步收敛 / err 0**；crossBackendMaxDiff 2.14e-08。`check_solver_backend.py` 两构建形态都跑通。CTest `verify.solverBackend`。**边界**：两后端是不同迭代算法，只要求解向量一致到容差、不要求逐位相同；ILU 对奇异/近奇异矩阵的稳健性未测。**状态（2026-11-19 回填）**：已提交 b677821，全量回归 **176/176（911.08 s）通过**。
+
+### 5.124 PETSc 稀疏求解后端（D13 第二格，可选）
+
+**这一格从哪来。** 同 §5.123，补工业级分布式求解后端。PETSc 是编译库，本机环境（Homebrew 自带 sandbox-exec 与执行沙箱嵌套冲突、pip 编译 petsc4py 超时）装不上。
+
+**机理。** `solveWithBackend(..., LinearBackend::PETSc)` 分支：`MatCreateSeqAIJ` + 逐 triplet `MatSetValues` 装配同一 CSR，`KSPGMRES` + `PCILU` 求解，`KSPGetConvergedReason`/迭代数填 `SolverReport`，测同一 CSR 的 inf-norm 残差。`CHFLOW_WITH_PETSC` option 用 `find_package(PETSc QUIET)`，找到才编译（`cf_common` 加 include/link），找不到 WARNING + 自动 OFF（**实测该降级行为**，本机即如此），与 HDF5/Kokkos 同惯例。`chflow-solver-backend` 在 PetscInitialize/Finalize 之间跑并打印结果，checker 在有库机器上会额外校验 PETSc 收敛/与 native 交叉差 <1e-6。
+
+**判据/状态（2026-11-19）**：PETSc 分支代码完整，本机无库故**未编译验证**（`verify.solverBackend` 在 native-only 构建下 PASS，明确打印 "petsc backend not compiled in"）。有 PETSc 库的机器上 `cmake -DCHFLOW_WITH_PETSC=ON` 即启用并跑交叉检查。按项目"降级决策如实记录"惯例，不声称本机验证过 PETSc 求解。代码已提交 b677821，全量回归 **176/176（911.08 s）通过**（native-only 形态）；**待有库机器编译验证 PETSc 分支**。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

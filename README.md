@@ -58,13 +58,18 @@
 - **群平衡两点 QMOM**：`qmom{ beta; m0..m3; dt; steps; }` 让 `chflow-3d-qmom` 追踪 M₀..M₃ 经两点高斯求积闭合，配常数核 Smoluchowski 聚并（闭式矩轨迹）；checker 逐步重放矩欧拉、验求积恒等式 Σwᵢvᵢᵏ=Mₖ 与 M₁ 守恒（§5.107 / D8 增量 6；CTest `verify.qmomCoagulation`；边界：常数核、空间均匀、无破碎/成核、显式欧拉）
 - **共轭传热有双区（CHT）**：`cht{ solid{} fluid{} }` 各带自己的 block mesh，界面 Dirichlet–Neumann 割线迭代到热流连续；`chflow-3d-cht` 对一维串联热阻闭式（q=160 W/m²、Tᵢ=460 K）、双层线性剖面与界面通量连续（§5.108 / D8 增量 7；CTest `verify.chtTwoLayer`；边界：稳态纯导热、流体区无对流、平界面双 mesh、常数 k）
 - **网格能动（ALE/GCL）**：`polyMesh::movePoints` 替换顶点并重算几何，`chflow-3d-ale` 验几何守恒律 `dV/dt=ΣU_m·Sf`——刚体平移到机器精度（1.5e−17）、均匀膨胀误差一阶收敛（比值 1.98/1.99）（§5.109 / D8 增量 8，D8 至此 CLOSED；CTest `verify.aleMovingMesh`；边界：只做几何+GCL 核，未把相对通量接进 Solver）
-- **组分物性进 1D 求解器**：`fluid{ pvt; compositional{...} }` opt-in 从组分经 PR76+LBC 预计算 rho/mu 表进 1D march（march 与 Newton 零改动，零声明逐位不变），checker 独立重推 PR 密度/LBC 黏度并重放 march（§5.110 / CTest `verify.steadyPvtCompositional`；边界：表预计算、单相区、WK 接两相 march 与 VOF 逐格 sigma 另格）
+- **组分物性进 1D 求解器**：`fluid{ pvt; compositional{...} }` opt-in 从组分经 PR76+LBC 预计算 rho/mu 表进 1D march（march 与 Newton 零改动，零声明逐位不变），checker 独立重推 PR 密度/LBC 黏度并重放 march（§5.110 / CTest `verify.steadyPvtCompositional`；边界：表预计算、单相区；WK 接两相 march 与 VOF 逐格 sigma 已在 §5.120/§5.121 补齐）
 - **内置 parachor 表（opt-in）**：`surfaceTension{ parachors fromTable; }` 查 Weinaug–Katz (1943) 发表值（12 组分、含完整出处），查不到大声报错；显式声明路径逐位不变、kij 有意不内置（§5.111 / CTest `verify.pvtBuiltinTables`）
 - **OpenFOAM 网格导入**：`chflow-openfoam-mesh` 读 ASCII polyMesh 五文件，严格校验（patch 覆盖/索引越界/binary 拒绝），2×1×1 盒散度定理闭式（§5.112 / CTest `verify.openfoamMesh`）
 - **并行后端抽象（M6 第一格）**：`cf::backend::parallelFor` CPU 串行默认逐位不变，可选 OpenMP/Kokkos（CMake 双 OFF、缺 SDK 降级 CPU）；checker 用 Fraction 精确闭式要求 active/serial/analytic 三份逐位相等（§5.114 / CTest `verify.backendCpu`；边界：未接入既有 domain kernel，GPU 化 scatter 核需放宽容差）
 - **黑油分离器级联**：`separateBlackOil` 逐级再闪蒸（泡点逐级下降、只解放剩余溶解气、逐级质量闭式 1e−11），checker 独立重述 Standing/Vazquez-Beggs/DAK 逐级核对（§5.115 / CTest `verify.pvtSeparator`）
 - **多入口使用形态**：C++ 原生库 / Python API / CLI 命令行 / Tauri 桌面GUI（GUI 最小闭环已落地：`gui/` 离线 Tauri 2 + WKWebView，case 编辑→跑稳态管网→SVG 实时曲线，命令层 9 + 前端 10 个无头测试，§5.116 / CTest `gui.unit`/`gui.build`/`gui.frontend`）
 - **标准IO兼容**：Gmsh msh、VTK/VTU 已落地；**OpenFOAM ASCII polyMesh 导入已落地**（`OpenFoamMesh::fromDirectory` 解析 points/faces/owner/neighbour/boundary 五文件零重排直连 polyMesh，散度定理独立重推体积/面积，§5.112 / CTest `verify.openfoamMesh`）；HDF5 为可选后端（`CF_HAVE_HDF5`，需系统 libhdf5，无库时调用大声报错、VTU 仍是默认，§5.113）
+- **瞬态标定有了两流体伴随**：密封 dynamic-slip 静止柱上 `vM≡0` 使每步成为两个显式可微映射（有理滑移更新 + Godunov 二次持液输运），逐步反向穿过 Godunov 活动分支 Riemann 雅可比与滑移映射，对界面阻力 C 给 O(1) 梯度；checker 把梯度钉在闭合道路/Godunov 雅可比/tangent/中心 FD/真实 C++ 内核五条通道（adjoint/tangent 5.7e-16、adjoint/FD 1.7e-09），17 拒收、checkpointing 精确（§5.118 / CTest `verify.twoFluidAdjoint`；**2026-11-19 已提交 b677821，全量回归 176/176（911.08 s）通过**；边界：仅界面阻力 C、仅 `vM=0` dynamic-slip 密封柱，湍流/含闪蒸两流体动量斜率另推）
+- **分布式线性求解（真 MPI）**：`mpiTransport.h` 用 MPI_Sendrecv 按分解收发计划填 halo、MPI_Allreduce 归约（`cf3d`/`cf_common` 库仍 MPI-free，§5.119）；`chflow-mpi-linear-solver` 一 rank 一域、分布式 CSR 对角预条件 CG（matvec = halo + 本地 CSR 乘、dot = Allreduce），解对串行 `solveCG` 与解析解 maxDiff 2.7e-15、matvec 逐位一致，np=1/2/4 实跑全绿（§5.122 / CTest `verify.mpiLinearSolver`；**2026-11-19 已提交 b677821，全量回归 176/176（911.08 s）通过**）
+- **VOF 逐格表面张力**：case 声明压力场与组分，VOF app 调真正的 `cf::pvt::weinaugKatzSurfaceTension` 逐格算 sigma 喂 CSF（`chflow-vof` 链接 `cf_pvt`，单一真相源）；checker 256 格逐格重推 WK、CSF 逐格 worst 2.72e-13、标量孪生逐位不变、8 拒收（§5.120 / CTest `verify.vofSigmaField`；**2026-11-19 已提交 b677821，全量回归 176/176（911.08 s）通过**）
+- **1D 每站真闪蒸 + 表面张力进 march**：`liveFlash` opt-in 让稳态 1D march 逐站调 PR 闪蒸 + LBC 黏度 + WK sigma，经可选 `sigmaOfP` 喂进 Beggs-Brill（缺省逐位回退常量黑油路径）；checker 24 站独立重推 rho/mu/sigma <1e-8 + 细网格收敛 + 零声明门 + 5 拒收（§5.121 / CTest `verify.steadyPvtFlash`；**2026-11-19 已提交 b677821，全量回归 176/176（911.08 s）通过**）
+- **可选稀疏求解后端**：`solveWithBackend(..., LinearBackend)` 在自研 CG/BiCGStab 之外提供 Eigen（vendored 3.4.0，ILU-BiCGSTAB，实测 1 步收敛、与 native 交叉差 2.1e-8）与 PETSc（GMRES+ILU，可选开关）后端；两者 CMake option 默认 OFF，缺省构建逐位不变、缺库降级 WARNING（§5.123/§5.124 / CTest `verify.solverBackend`；**2026-11-19 已提交 b677821，全量回归 176/176（911.08 s）通过；Eigen 实测通过，PETSc 本机无库未编译验证**）
 
 ## 📁 项目目录结构
 ```
@@ -152,7 +157,7 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 > 1e-6°；同一转盘带 65 格、形状误差 3.33% 对 3.85%）与截面几何曲率（带内截面点二次曲面，
 > κ 带均值 −5.1 对 −1/R = −5 而散度模板停在 −3.5，平面锋至舍入级；`kappaPlic` 可喂给 CSF）；
 > Euler-Euler 双流体、张量场、
-> MPI 域分解与 Eigen/PETSc 后端仍待实现。
+> MPI 域分解、跨域矩阵求解与 Eigen 后端已落地（§5.119/§5.122/§5.123；PETSc 后端代码已写、本机无库降级 §5.124）。
 
 #### 5. 绑定层 `src/bindings`
 基于 pybind11：
@@ -345,16 +350,20 @@ print(result.pressure_profile)
   internal/coupled/boundary/messages 与写出的 `domain` 场，并独立重算 Σ t·V、min/max
   与 halo 校验和。两点踩过的坑：质心有 1e-16 舍入噪声，同一层格的切点与对称块的轴向
   都会被噪声决定，故坐标带宽内视为相等、按格号定序并优先 x）
-  已落地，可压缩 Navier–Stokes（黏性应力与热通量）、高阶重构待做；本增量不含 MPI 传输后端
-  （本机无 mpirun/mpi.h，收发缓冲区已按 Isend/Recv 形状备好）与跨域矩阵求解，Eigen/PETSc 后端待做）
+  已落地，可压缩 Navier–Stokes（黏性应力与热通量）、高阶重构待做；
+  **真实 MPI 传输 + 跨域矩阵求解**——`mpiTransport.h` 用 MPI_Sendrecv 按分解收发计划填 halo、MPI_Allreduce 归约（`cf3d` 库仍 MPI-free，§5.119），
+  `chflow-mpi-linear-solver` 一 rank 一域、分布式 CSR 对角预条件 CG（matvec = halo + 本地 CSR 乘、dot = Allreduce），
+  分布式解对串行 `solveCG` 与解析解 maxDiff 2.7e-15、matvec 逐位一致，np=1/2/4 实跑全绿（§5.122）——已落地；
+  Eigen/PETSc 稀疏求解后端可选开关已落地（§5.123/§5.124）；跨域求解的 PETSc 大规模分布式对照待有库机器）
 - 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
   黑油物性相关式（Standing 泡点、Vazquez-Beggs Rs/Bo/co、Beggs-Robinson 与
   Lee 黏度、DAK Z）+ `chflow-pvt` 应用 + Python 绑定 + CLI 已落地，
   EOS 内部不变量与解析回归全绿；**组分黏度/密度已接进 1D 求解器**（§5.110）、
   **内置 WK parachor 表 opt-in**（§5.111）、**黑油分离器级联**（§5.115）；
-  表面张力接 1D 两相 march 与 3D VOF 逐格 sigma、每站真闪蒸回调、水合物相平衡/生成条件、
-  非等温闪蒸待做）
+  **WK 表面张力接 1D 两相 march + 每站真闪蒸回调**（§5.121，`liveFlash` opt-in 逐站 PR+LBC+WK 喂 Beggs-Brill）、
+  **3D VOF 逐格 sigma**（§5.120，app 调真正的 `cf::pvt` WK 函数逐格算，单一真相源）——均已落地；
+  水合物相平衡/生成条件、非等温闪蒸待做）
 - M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口 🚧
   （VOF 连续表面力 CSF 与 PISO 动量耦合（静止液滴 Laplace 压差算例）与两相
   耦合——解出通量输运 α、椭圆液滴振荡验密度匹配 Lamb 周期——已落地；
@@ -1482,7 +1491,7 @@ print(result.pressure_profile)
   `beta` × 静止支与耦合边两笔账照旧拒收（docs/architecture.md 5.62）。
   Euler-Euler 双流体在此）
 - M5：Tauri GUI 管网编辑器、实时曲线面板 🚧（最小闭环已落地：case 编辑→稳态管网求解→SVG 实时曲线，离线 Tauri 2 + WKWebView，命令层/前端无头测试全绿，§5.116；管网拖拽建模与瞬态曲线面板待做）
-- M6：Kokkos GPU 加速、更多工业模型扩充 🚧（并行后端抽象 `cf::backend::parallelFor` 已落地：CPU 串行默认逐位不变、可选 OpenMP/Kokkos 开关，§5.114；黑油分离器已落地 §5.115；Kokkos 实接入 domain kernel 与 GPU 验证需 SDK 机器，导热关联式/水合物相平衡待做）
+- M6：Kokkos GPU 加速、更多工业模型扩充 🚧（并行后端抽象 `cf::backend::parallelFor` 已落地：CPU 串行默认逐位不变、可选 OpenMP/Kokkos 开关，§5.114；黑油分离器已落地 §5.115；真实 MPI 传输 + 分布式 CSR 求解已落地、np=1/2/4 实跑全绿 §5.119/§5.122；Eigen 稀疏后端已落地并实测 §5.123、PETSc 后端可选开关已写但本机无库降级 §5.124；两流体伴随已实跑通过 §5.118；Kokkos 实接入 domain kernel 与 GPU 验证需 SDK 机器，导热关联式/水合物相平衡待做）
 
 已落地部分的实现细节与概念映射见 [docs/architecture.md](docs/architecture.md)。
 

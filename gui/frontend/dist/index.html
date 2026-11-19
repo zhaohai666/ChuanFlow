@@ -9,26 +9,44 @@
   <body>
     <header>
       <h1>ChuanFlow · 管网编辑器</h1>
-      <span class="subtitle">M5 · 1D 稳态管网 + 实时曲线面板</span>
+      <span class="subtitle">M5 · 拖拽管网建模 + 稳态 / 瞬态曲线面板</span>
     </header>
 
     <main>
       <section class="editor">
         <h2>算例编辑</h2>
         <label class="field">
-          <span>求解器可执行文件</span>
+          <span>稳态求解器可执行文件</span>
           <input id="exePath" type="text" spellcheck="false" />
         </label>
+        <label class="field">
+          <span>瞬态求解器可执行文件</span>
+          <input id="transientExePath" type="text" spellcheck="false" />
+        </label>
         <label class="field grow">
-          <span>case 字典（nodes / pipes / sources）</span>
+          <span>case 字典（nodes / pipes / sources / time）</span>
           <textarea id="caseText" spellcheck="false"></textarea>
         </label>
         <div class="actions">
-          <button id="runBtn" class="primary">应用并运行</button>
+          <button id="runBtn" class="primary">应用并运行（稳态）</button>
+          <button id="runTransientBtn">运行瞬态</button>
           <button id="validateBtn">仅校验</button>
           <button id="resetBtn">恢复示例</button>
         </div>
-        <pre id="status" class="status">就绪。编辑算例后点击“应用并运行”。</pre>
+        <pre id="status" class="status">就绪。可拖拽下方画布建模，或编辑 case 字典。</pre>
+      </section>
+
+      <section class="editor canvas-section">
+        <h2>拖拽管网建模</h2>
+        <p class="hint">点击画布空白处加节点；先点一个节点再点另一个连线成管；拖动节点移动；点选节点可设压力/加源；Delete 删除选中。</p>
+        <div class="canvas-toolbar">
+          <button id="addSourceBtn">给选中节点加源</button>
+          <button id="deleteBtn">删除选中</button>
+          <label>选中节点压力 <input id="nodePressure" type="text" placeholder="留空=自由节点" /></label>
+          <label>dt <input id="timeDt" type="text" value="0.01" /></label>
+          <label>endTime <input id="timeEnd" type="text" value="1" /></label>
+        </div>
+        <svg id="networkCanvas" class="network-canvas" viewBox="0 0 640 420" preserveAspectRatio="xMidYMid meet"></svg>
       </section>
 
       <section class="panels">
@@ -43,6 +61,21 @@
         <div class="panel convergence" id="convergence">
           <h2>求解状态</h2>
           <p>等待运行…</p>
+        </div>
+      </section>
+
+      <section class="panels transient-panel">
+        <div class="panel transient-plot">
+          <h2>瞬态时间序列 — <span id="seriesLabel">节点 / 变量</span></h2>
+          <label class="field">
+            <span>序列</span>
+            <select id="seriesSelect"></select>
+          </label>
+          <div id="transientChart" class="chart-box"></div>
+          <label class="field">
+            <span>时间滑条 <b id="timeReadout">—</b></span>
+            <input id="timeSlider" type="range" min="0" max="0" value="0" step="1" />
+          </label>
         </div>
       </section>
     </main>

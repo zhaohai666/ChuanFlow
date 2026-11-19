@@ -6,6 +6,7 @@ pub fn run() {
             commands::run_case,
             commands::run_case_text,
             commands::validate_case,
+            commands::run_transient_text,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run ChuanFlow GUI");

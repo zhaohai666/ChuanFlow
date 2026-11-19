@@ -106,3 +106,29 @@ button.primary { background: var(--accent); color: #06101f; border-color: var(--
 .chart-box { width: 100%; height: 100%; min-height: 160px; }
 .chart { width: 100%; height: 100%; display: block; }
 .empty { color: var(--muted); font-size: 12px; }
+
+/* D12 增量2：拖拽画布 + 瞬态面板 */
+.canvas-section { min-height: 300px; }
+.hint { color: var(--muted); font-size: 11px; margin: 0 0 8px; }
+.canvas-toolbar {
+  display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px;
+}
+.canvas-toolbar label {
+  display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--muted);
+}
+.canvas-toolbar input { width: 96px; padding: 4px 6px; }
+.network-canvas {
+  width: 100%; height: 240px; background: #0c1220;
+  border: 1px solid var(--line); border-radius: 6px; cursor: crosshair; flex: 1;
+}
+.network-canvas .node { cursor: grab; }
+.network-canvas .node.selected circle { stroke: var(--accent); stroke-width: 3; }
+.network-canvas .edge { stroke: var(--good); stroke-width: 2; }
+.network-canvas text { font: 11px "SFMono-Regular", Consolas, monospace; pointer-events: none; }
+.transient-plot { min-height: 220px; }
+.transient-plot select {
+  background: #0c1220; color: var(--text); border: 1px solid var(--line);
+  border-radius: 6px; padding: 6px 8px; font-size: 12px;
+}
+#timeSlider { padding: 0; }
+#timeReadout { color: var(--text); font-weight: 600; }

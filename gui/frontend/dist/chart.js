@@ -35,7 +35,9 @@ export function validateCaseText(text) {
     } else if (section === 'pipes') {
       result.pipes.push({ name, from: kv.from, to: kv.to });
     } else {
-      result.sources.push({ node: name, rate: Number(kv.rate || 0) });
+      // Real case style: `well1 { node A; rate ...; }`; simplified GUI style
+      // omits `node` and uses the entry name as the node.
+      result.sources.push({ node: kv.node || name, rate: Number(kv.rate || 0) });
     }
   }
 
@@ -105,4 +107,33 @@ export function toLinePoints(values, width, height, maxValue) {
       return `${x.toFixed(2)},${y.toFixed(2)}`;
     })
     .join(' ');
+}
+
+/**
+ * Map transient samples onto an SVG polyline using the real time `t` as the
+ * horizontal axis (samples may be non-uniformly spaced). `valueOf(sample)`
+ * selects the series (pressure / alpha / hydrate / flow for a given name).
+ * Returns `{ points, min, max, tMin, tMax }` so the caller can draw axes.
+ */
+export function toTimeSeriesPoints(samples, valueOf, width, height) {
+  const empty = { points: '', min: 0, max: 0, tMin: 0, tMax: 0 };
+  if (!Array.isArray(samples) || samples.length === 0) return empty;
+  const pairs = samples
+    .map((s) => ({ t: Number(s.t), v: Number(valueOf(s)) }))
+    .filter((p) => Number.isFinite(p.t) && Number.isFinite(p.v));
+  if (pairs.length === 0) return empty;
+  const tMin = Math.min(...pairs.map((p) => p.t));
+  const tMax = Math.max(...pairs.map((p) => p.t));
+  const min = Math.min(0, ...pairs.map((p) => p.v));
+  const max = Math.max(...pairs.map((p) => p.v));
+  const tSpan = tMax - tMin || 1;
+  const vSpan = max - min || 1;
+  const points = pairs
+    .map((p) => {
+      const x = ((p.t - tMin) / tSpan) * width;
+      const y = height - ((p.v - min) / vSpan) * height;
+      return `${x.toFixed(2)},${y.toFixed(2)}`;
+    })
+    .join(' ');
+  return { points, min, max, tMin, tMax };
 }

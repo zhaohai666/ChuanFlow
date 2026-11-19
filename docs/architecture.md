@@ -5030,6 +5030,16 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **判据与状态（2026-11-19）。** Rust 单测 **16/16**（原 9 + 新 7：`parse_transient_output` 全量/空、`run_transient_text` 假脚本/缺 time/**真引擎端到端**——GUI 序列化的 case 喂真实 `chflow-1d-transient` 产出可解析序列、serialize 往返两份含 time 与命名 source 的 case）；`node --test` **19/19**（原 10 + 新 9：布局钳制、命中测试、removeNode 级联、自环/重复管拒绝、networkToCaseText 可被 validate 接受、源/管/时间编辑、toTimeSeriesPoints 非等距/空/单点/非有限、序列化往返结构一致）。CTest `gui.unit`/`gui.build`/`gui.frontend`（#174/175/176）全绿。code commit 7356e14，全量回归 **176/176（774.80 s，rc=0）**。**边界**：`.app` 打包/签名（缺完整 Xcode 与 tauri CLI）与 npm 前端构建不做——与 §5.116 同；瞬态压力场是解析声明驱动的上游 case，非 GUI 内求解；序列选择限于已输出的节点/管道字段。
 
+### 5.126 并行后端接入纯映射 domain kernel（D13 增量 3）
+
+**这一格从哪来。** §5.114 的 `cf::backend::parallelFor` 只是抽象本身，checker 用合成 kernel（`square`/`divide`）验 active/serial/analytic 三份 checksum 逐位相等，但真实 domain kernel 仍全是手写 `for`。本格把 `parallelFor` 接进**纯映射**那一类真实 kernel——每格/每面只读输入、只写自有槽位、无跨格 `+=`/`-=`——让抽象在真实代码路径上生效；scatter/reduction 类刻意不接。
+
+**接了哪些（逐处）。** 五处、全部保持 lambda 体与原循环表达式逐字一致（含所有 `static_cast<std::size_t>` 与运算次序）：① `domainOperators.cpp::divideByVolume` 的 owned 循环（sum/volume -> grad）；② `gradScheme.cpp::gaussGrad` 两处 `gradT[c]=sum[c]/vol[c]`（pass 0 与 corrected 每 pass），face 段的 `sum[owner]+=/-=` 不接；③ `interpolate.cpp::makeInternalOwnerWeights` 逐面权重与 `fvc::interpolate` 逐面值，边界/内部各自写 `faceData[f]`，`fvc::div`/`divPhi` 的 `out[owner]+=/-=` 不接；④ `dpmApp.cpp::forceFromImpulse` 逐格 impulse/(rho·vol·window)->force；⑤ `vof.cpp` 两个 `surfaceTensionForce` 重载（标量 sigma 与 §5.120 逐格 sigma 版）逐格 CSF `f[u]=g[u]·(−sigma·kappa[u])`，曲率 `k[o]+=/k[n]-=` 不接。每个文件加 `#include "cf/parallel/Backend.h"`。
+
+**为什么不接 reduction。** `accumulateFaceSums`/`assembledDivPhi`/`fvc::div`/`divPhi`/曲率累加都含 `dst[cell] += flux`：并行化要么需要 atomic（结果依赖调度次序、破坏逐位一致），要么改变浮点累加顺序。这些维持串行，与 §5.114 能力边界一致。
+
+**判据与状态（2026-11-19）。** 默认 `cpu-serial` 分支与手写 `for` 同源同机器码，逐位不变：受影响 checker **9/9** 全绿——`verify.backendCpu`（active==serial==analytic 逐位，#172）、`verify.parallelDecomposition`/`Tet`（#38/39，验 `assembledGrad`/`divPhi`）、`verify.dpmChannel`/`dpmTwoWay`（#17/18）、`verify.vofTranslation`/`Rotation`/`Droplet`/`SigmaField`（#28-32）。code commit a6d8c27，全量回归 **176/176（525.72 s，rc=0）**。**边界**：OpenMP/Kokkos 构建下 `fvc::interpolate` 的调用方 `faceValueOf` 必须线程安全（BC 线性化是纯函数、满足）；Kokkos 分支的 lambda 需 device-callable 与按值捕获，本机无 SDK 未编译验证；本格不改任何 reduction 路径、不改数值结果。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

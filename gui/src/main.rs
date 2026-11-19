@@ -3,6 +3,7 @@ mod commands;
 pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
+            commands::default_engines,
             commands::run_case,
             commands::run_case_text,
             commands::validate_case,

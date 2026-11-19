@@ -6,6 +6,7 @@
 //! exact code path the GUI calls.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
@@ -640,6 +641,56 @@ pub fn parse_solver_output(out: &str) -> SolverSummary {
 // Commands
 // ---------------------------------------------------------------------------
 
+/// Resolve the default engine executables for this installation.
+///
+/// A packaged .app carries the solvers in `Contents/Resources/bin/`; the
+/// lookup walks up from the running binary (so it works wherever the .app
+/// lives, regardless of the Finder-launched CWD being `/`) and falls back to
+/// the developer tree relative to this source file. Pure path resolution - no
+/// processes are spawned - so it is unit-testable.
+pub fn resolve_default_engines() -> (String, String) {
+    let steady_name = "chflow-1d-steady";
+    let transient_name = "chflow-1d-transient";
+
+    // packaged layout: <...>/ChuanFlow GUI.app/Contents/MacOS/chflow-gui
+    //              -> <...>/ChuanFlow GUI.app/Contents/Resources/bin/<exe>
+    if let Ok(exe) = std::env::current_exe() {
+        for ancestor in exe.ancestors().skip(1) {
+            // the Contents directory: its parent is the .app bundle
+            if ancestor.file_name().map(|n| n == "Contents").unwrap_or(false) {
+                let bin = ancestor.join("Resources/bin");
+                let steady = bin.join(steady_name);
+                let transient = bin.join(transient_name);
+                if steady.exists() && transient.exists() {
+                    return (
+                        steady.to_string_lossy().into_owned(),
+                        transient.to_string_lossy().into_owned(),
+                    );
+                }
+                break;
+            }
+        }
+    }
+
+    // developer tree: gui/src/commands.rs -> <root>/build/src/1d/apps
+    let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("build/src/1d/apps");
+    (
+        dev.join(steady_name).to_string_lossy().into_owned(),
+        dev.join(transient_name).to_string_lossy().into_owned(),
+    )
+}
+
+/// Frontend hook: the default engine paths for this installation (packaged
+/// Resources/bin first, developer tree second).
+#[tauri::command]
+pub fn default_engines() -> Vec<String> {
+    let (steady, transient) = resolve_default_engines();
+    vec![steady, transient]
+}
+
 /// Spawn an engine executable with a case file and parse its stdout.
 #[tauri::command]
 pub fn run_case(case_path: String, exe_path: String) -> Result<SolverSummary, String> {
@@ -747,6 +798,21 @@ mod tests {
 [chflow] pipe P2 Q -1e-6 v -0.003 Re 50 f 0.5 dp 5000
 [chflow] steady solved: iterations=7 residual=1e-9 (converged)
 ";
+
+    #[test]
+    fn resolve_default_engines_returns_existing_paths() {
+        let (steady, transient) = resolve_default_engines();
+        // At least one of the two layouts must resolve: the packaged
+        // Resources/bin (only inside a bundle) or the developer tree
+        // (always present after a CMake build in CI/dev).
+        let dev_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("build");
+        if dev_root.exists() {
+            assert!(steady.ends_with("chflow-1d-steady"));
+            assert!(transient.ends_with("chflow-1d-transient"));
+            assert!(Path::new(&steady).exists(), "dev fallback {steady} must exist");
+            assert!(Path::new(&transient).exists(), "dev fallback {transient} must exist");
+        }
+    }
 
     #[test]
     fn parse_case_text_valid() {

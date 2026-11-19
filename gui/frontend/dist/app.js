@@ -397,6 +397,21 @@ async function validateOnly() {
 caseText.value = DEFAULT_CASE;
 exePath.value = DEFAULT_EXE;
 transientExePath.value = DEFAULT_TRANSIENT_EXE;
+// Packaged .app: ask the Rust side for the installation-specific engine
+// paths (Contents/Resources/bin, resolved from the running binary). Falls
+// back to the developer-tree defaults when the IPC is unavailable (plain
+// browser) or the packaged solvers are missing.
+(async () => {
+  try {
+    const paths = await invoke('default_engines');
+    if (Array.isArray(paths) && paths.length === 2 && paths[0] && paths[1]) {
+      exePath.value = paths[0];
+      transientExePath.value = paths[1];
+    }
+  } catch (_) {
+    /* keep developer defaults */
+  }
+})();
 document.getElementById('runBtn').addEventListener('click', run);
 document.getElementById('runTransientBtn').addEventListener('click', runTransient);
 document.getElementById('validateBtn').addEventListener('click', validateOnly);

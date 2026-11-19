@@ -90,10 +90,14 @@ usage: check_two_fluid.py <exe> <case.dict> <mode>
             clamp semantics, upwind gas-mass continuity on
             G(a) = -us a^2 + (us - vm) a + vm, the implicit hydrate
             recursion with the stoichiometric gas sink, and the implicit
-            temperature solve whose enthalpy conductances are the per-face
+            temperature solve in the conservative receive-capacity form
+            (5.132 default) whose enthalpy conductances are the per-face
             phase volume fluxes (rhoL cL vsl_face + rhoG cG vsg_face), each
-            phase upwinded on its own flux direction. Global identities
-            from emitted fields only: the hydrate-able composition
+            phase upwinded on its own flux direction: the receiver takes +k
+            on its diagonal and -k on the donor (or the boundary
+            temperature in its rhs), the donor's drain assembles nothing.
+            Global identities from emitted fields only: the hydrate-able
+            composition
             w + h = waterFraction everywhere (the 1:1 conversion), the
             phase split vsl + vsg = vM, the gas inventory
             sum mg = m0 + net in - gasContent sum a h dx, the Churchill
@@ -1349,13 +1353,17 @@ elif mode == "hydrateflow":
                         continue
                     up = j - 1 if q_f > 0 else j
                     dn = j if q_f > 0 else j - 1
-                    if 0 <= up < N:
-                        mat[up][up] += k_f
+                    # conservative receive-capacity form (5.132 default):
+                    # the receiver takes +k on its diagonal and -k on the
+                    # donor (or the boundary temperature in its rhs); the
+                    # donor's drain assembles nothing (its capacity loss IS
+                    # the outflux), so diag - |off| = cap/dt + kw exactly
                     if 0 <= dn < N:
                         if 0 <= up < N:
                             mat[dn][up] -= k_f
                         else:
                             rhs[dn] += k_f * (T_IN if j == 0 else T_OUT)
+                        mat[dn][dn] += k_f
             temp = solve_dense(mat, rhs)
             steps_done += 1
         t = fr["t"]
@@ -1421,17 +1429,24 @@ elif mode == "hydrateflow":
     qwall_want = sum(KW * DX * (T_WALL - c["T"])
                      for c in frames[-1]["cells"])
     check("wall heat sum", frames[-1].get("qwall", 0.0), qwall_want, 1e-9)
-    # steady energy balance: inflow enthalpy + wall + latent release equals
-    # the outflow enthalpy carried by the outlet-face phase fluxes; the
-    # latent source is the volumetric formation rate (vsl_out * h_out per
-    # unit area) times the pipe area times the latent heat
-    kl_out = AREA * RHO_L * CL * c_out["vsl"]
-    kg_out = AREA * rho_g_out * CG * c_out["vsg"]
-    h_out = (kl_out + kg_out) * c_out["T"]
+    # steady energy balance in the conservative receive-capacity discrete
+    # form (5.132 default): at the steady state each cell's enthalpy gain
+    # across its receiving face, k_i (T_i - T_up), sums to the wall
+    # rejection plus the latent release (the hydrate-advective formation
+    # rate vsl_out * h_out); the face conductances are reconstructed from
+    # the emitted fields (face j upwinds cell j-1)
+    k_faces = [AREA * (RHO_L * CL * VSL + RHO_G * CG * VSG)]
+    for c in frames[-1]["cells"][:-1]:
+        rho_up = c["p"] / (GAS_R * c["T"])
+        k_faces.append(AREA * (RHO_L * CL * c["vsl"] + rho_up * CG * c["vsg"]))
+    gain = 0.0
+    t_up = T_IN
+    for i, c in enumerate(frames[-1]["cells"]):
+        gain += k_faces[i] * (c["T"] - t_up)
+        t_up = c["T"]
     latent = LATENT * AREA * c_out["vsl"] * c_out["h"]
-    check("steady energy balance (inlet + wall + latent = outflow)",
-          h_out, frames[-1].get("qinlet", 0.0) + frames[-1].get("qwall", 0.0)
-          + latent, 1e-9)
+    check("steady energy balance (receive-capacity discrete form)",
+          gain, frames[-1].get("qwall", 0.0) + latent, 1e-9)
     # physics shape: water depletes and hydrate accumulates along x
     ws = [c["water"] for c in frames[-1]["cells"]]
     hs = [c.get("h", 0.0) for c in frames[-1]["cells"]]
@@ -1509,9 +1524,13 @@ elif mode == "junction":
         return out
 
     def thermal(T, area, dx, u, t_in):
-        # implicit upwind enthalpy advection: the donor cell drains at its
-        # own (new) temperature, the receiver gains the donor's (new)
-        # temperature, face 0 is fed by the ghost reservoir
+        # implicit upwind enthalpy advection, conservative receive-capacity
+        # form (5.132): every cell takes +kf on its diagonal as the receiver
+        # of its inflow face (the arrived capacity joins before it exchanges
+        # heat), the donor drain assembles nothing (its capacity loss IS the
+        # outflux), face 0 is fed by the ghost reservoir. For this uniform
+        # rightward flow the assembled matrix coincides with the historical
+        # donor-drain form term by term.
         n = len(T)
         cap = area * dx * (ALPHA * RHO_L * CL
                            + (1.0 - ALPHA) * RHO_G * CG)
@@ -1758,9 +1777,13 @@ elif mode == "networkspan":
         return out
 
     def thermal(T, areaa, dx, u, t_in):
-        # implicit upwind enthalpy advection: the donor cell drains at its
-        # own (new) temperature, the receiver gains the donor's (new)
-        # temperature, face 0 is fed by the ghost reservoir
+        # implicit upwind enthalpy advection, conservative receive-capacity
+        # form (5.132): every cell takes +kf on its diagonal as the receiver
+        # of its inflow face (the arrived capacity joins before it exchanges
+        # heat), the donor drain assembles nothing (its capacity loss IS the
+        # outflux), face 0 is fed by the ghost reservoir. For this uniform
+        # rightward flow the assembled matrix coincides with the historical
+        # donor-drain form term by term.
         n = len(T)
         cap = areaa * dx * (ALPHA * RHO_L * CL
                             + (1.0 - ALPHA) * RHO_G * CG)

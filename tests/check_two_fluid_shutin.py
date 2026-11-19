@@ -6,10 +6,12 @@ algebraic wallis drift is an absolute axial velocity, so at vM = 0 it kept
 hauling liquid toward the closed inlet (EOS pressure unbounded) while the
 thermal step - whose receive capacity flux exceeds its drain capacity flux at
 the accumulating end - lost the max principle and ran the inlet cell to 383 K
-against a 277 K wall. The opt-in `closure gravitySlip yes` (1) projects the
-drift by the local inclination (zero on horizontal) and (2) assembles the
-thermal step in the conservative receive-capacity form, restoring the max
-principle exactly (diag - |off| = cap/dt + kw).
+against a 277 K wall. Fixed in two moves: the thermal step now ALWAYS
+assembles the conservative receive-capacity form (5.132 default, max
+principle exact, diag - |off| = cap/dt + kw), and the opt-in
+`closure gravitySlip yes` projects the drift by the local inclination (zero
+on horizontal) so a shut-in line cannot even start the spurious axial
+countercurrent that used to feed the pressure runaway.
 
 Judgements:
   fixed run (gravitySlip yes):
@@ -22,11 +24,16 @@ Judgements:
     4. the inlet-cell pressure decreases monotonically after shut-in
        (relaxing toward the static 8 MPa outlet state);
     5. alpha stays in [0, 1] every frame (parsed, not just trusted).
-  witness run (same dictionary without the key):
-    6. reproduces the bug: some frame temperature exceeds the same bound
-       (so the two paths really differ and the key is doing real work);
-    7. the post-shutdown inlet cell shows the spurious countercurrent
-       (vsl < 0 with vsg > 0 at the closed rate boundary).
+  witness run (same dictionary without the key - unprojected drift):
+    6. reproduces the transport bug: the post-shutdown inlet cell shows the
+       spurious countercurrent (vsl < 0 with vsg > 0 at the closed rate
+       boundary) and the liquid inventory keeps drifting (the fixed run
+       freezes it exactly) - the two paths really differ and the key does
+       real work;
+    7. the witness temperature still stays inside the physical bound - the
+       thermal half of the fix is now the DEFAULT assembly, so the runaway
+       is confined to the transport/EOS layer (documents the 5.132
+       migration: the historical witness at 383 K can no longer occur).
   refusal:
     8. gravitySlip beside closure model full is a loud cfFatal (nonzero
        exit): those closures already drive slip from buoyancy.
@@ -137,22 +144,30 @@ check("inlet pressure actually relaxes (drops)",
       post_p0[-1] < pre_shut_p0[0] - 1.0,
       f"{pre_shut_p0[0]:.4g} -> {post_p0[-1]:.4g}")
 
-# ---- the witness run (historical scheme, no gravitySlip) -----------------
+# ---- the witness run (unprojected drift, no gravitySlip) ------------------
+# since 5.132 the thermal assembly is conservative by default, so the
+# witness no longer shows the 383 K temperature overrun; the unprojected
+# wallis drift alone still drives the spurious countercurrent and the
+# EOS pressure runaway.
 TMP.mkdir(parents=True, exist_ok=True)
 witness = TMP / "twoFluidShutIn_witness.dict"
 witness.write_text(CASE.read_text().replace(" gravitySlip yes;", ""))
 rc2, text2 = run_case(witness)
-check("witness run (historical scheme) exits zero", rc2 == 0, f"rc={rc2}")
+check("witness run (unprojected drift) exits zero", rc2 == 0, f"rc={rc2}")
 frames2 = parse_frames(text2)
 check("witness frames parsed", len(frames2) >= 3, f"{len(frames2)} frames")
 over = max(c["T"] for ft, fr in frames2 for c in fr.values())
-check("witness reproduces the bug (temperature above the bound)", over > T_HI,
-      f"witness max T {over:.4f} > {T_HI}")
-w_inlet = [fr[0] for ft, fr in frames2]
+check("witness temperature stays bounded (thermal fix is now the default)",
+      over <= T_HI, f"witness max T {over:.4f} vs bound {T_HI}")
 buggy = any(c["vsl"] < -1e-4 and c["vsg"] > 1e-4 for ft, c in
             [(ft, fr[0]) for ft, fr in frames2 if ft > 60.0])
 check("witness shows the spurious post-shutdown countercurrent at the inlet",
       buggy)
+inv2 = [(ft, sum(c["alpha"] for c in fr.values())) for ft, fr in frames2]
+inv2_post = [v for ft, v in inv2 if ft > 60.0]
+check("witness liquid inventory keeps drifting (not frozen)",
+      max(inv2_post) - min(inv2_post) > 1e-9,
+      f"spread {max(inv2_post) - min(inv2_post):.3g}")
 
 # ---- refusal -------------------------------------------------------------
 ref = TMP / "twoFluidShutIn_refusal.dict"

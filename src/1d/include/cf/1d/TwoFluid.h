@@ -186,10 +186,12 @@ struct TwoFluidClosure
                                // project the wallis/zuber drift by the local
                                // inclination (us * sinT, zero on horizontal)
                                // so a shut-in line does not drive a spurious
-                               // axial countercurrent, and solve the thermal
-                               // step in the conservative receive-capacity
-                               // form (max principle exact). Default false
-                               // keeps the historical scheme bit-for-bit.
+                               // axial countercurrent. The thermal step
+                               // itself ALWAYS assembles the conservative
+                               // receive-capacity form (max principle exact,
+                               // 5.132) regardless of this flag. Default
+                               // false keeps the historical drift scheme
+                               // bit-for-bit.
 };
 
 /// One piecewise-constant inlet-rate point: from t on the phaseRates

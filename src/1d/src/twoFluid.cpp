@@ -1679,20 +1679,18 @@ void TwoFluidPipe::thermalStep(double dt)
         return 0.0;
     };
     // one face-phase contribution: implicit upwinding on the phase's own
-    // flux direction. Historical (default) form: the upstream cell drains at
-    // its own temperature (+k diagonal), the downstream side receives the
-    // upwind temperature (-k in its row) - conservative, but when a cell's
-    // in/out capacity fluxes differ persistently (countercurrent slip at
-    // shut-in) the row-sum margin closes and the max principle is lost:
-    // temperatures can overshoot any physical bound.
-    // closure gravitySlip (shut-in-safe variant) assembles the conservative
-    // receive-capacity form instead: the receiver's diagonal also takes +k
-    // (the arrived mass joins the cell's capacity before it exchanges heat),
-    // the drain takes nothing (its capacity loss IS the outflux), so
-    // diag - |off| = cap/dt + kw exactly and the max principle holds:
-    // every temperature stays within [min(T_old, T_wall), max(T_old,
-    // T_wall, T_boundary)].
-    const bool conservativeT = cfg_.closure.gravitySlip;
+    // flux direction, assembled in the conservative receive-capacity form:
+    // the receiver's diagonal takes +k (the arrived mass joins the cell's
+    // capacity before it exchanges heat), the donor takes nothing (its
+    // capacity loss IS the outflux - it cancels against the capacity update
+    // C_new = C_old + dt(in - out)), so diag - |off| = cap/dt + kw exactly
+    // and the max principle holds unconditionally: every temperature stays
+    // within [min(T_old, T_wall), max(T_old, T_wall, T_boundary)] - also
+    // under persistent countercurrent slip at shut-in, where the historical
+    // donor-drain form closed the row-sum margin and let temperatures
+    // overshoot any physical bound (5.131). A boundary receive also adds +k
+    // to the diagonal; a boundary drain (backflow out through an open
+    // boundary) still assembles nothing.
     auto faceTerm = [&](int j, double q, double k)
     {
         if (q == 0) return;
@@ -1700,24 +1698,15 @@ void TwoFluidPipe::thermalStep(double dt)
         const int dn = q > 0 ? j : j - 1;
         const bool upIn = up >= 0 && up < n_;
         const bool dnIn = dn >= 0 && dn < n_;
-        if (!conservativeT && upIn) mat[up][up] += k;
         if (dnIn)
         {
-            if (upIn)
-            {
-                mat[dn][up] -= k;
-                if (conservativeT) mat[dn][dn] += k;
-            }
+            if (upIn) mat[dn][up] -= k;
             else
-            {
                 // boundary receive: arrived capacity joins the cell
                 rhs[dn] += k * (j == 0 ? cfg_.inlet.temperature
                                        : cfg_.outlet.temperature);
-                if (conservativeT) mat[dn][dn] += k;
-            }
+            mat[dn][dn] += k;
         }
-        // boundary drain (backflow out through an open boundary): the
-        // capacity loss IS the outflux - nothing to assemble
     };
 
     inletHeatRate_ = 0;

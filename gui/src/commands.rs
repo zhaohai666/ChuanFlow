@@ -6,8 +6,17 @@
 //! exact code path the GUI calls.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
+
+/// Monotonic id for temp files. Rust tests run in parallel threads within one
+/// process, so `std::process::id()` alone would collide and clobber another
+/// test's case script; this keeps every concurrent call's path unique.
+static NEXT_TMP_ID: AtomicU64 = AtomicU64::new(0);
+fn unique_tmp_id() -> u64 {
+    NEXT_TMP_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 // ---------------------------------------------------------------------------
 // Case model + parser
@@ -657,7 +666,8 @@ pub fn run_case(case_path: String, exe_path: String) -> Result<SolverSummary, St
 pub fn run_case_text(case_text: String, exe_path: String) -> Result<SolverSummary, String> {
     let _ = parse_case_text(&case_text)?;
 
-    let path = std::env::temp_dir().join(format!("chflow_gui_case_{}.dict", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "chflow_gui_case_{}_{}.dict", std::process::id(), unique_tmp_id()));
     std::fs::write(&path, &case_text)
         .map_err(|e| format!("failed to write temporary case file: {e}"))?;
     let result = run_case(path.to_string_lossy().into_owned(), exe_path);
@@ -679,7 +689,8 @@ pub fn run_transient_text(case_text: String, exe_path: String) -> Result<Transie
     if case.time.is_none() {
         return Err("transient case needs a time{} block (dt, endTime)".to_string());
     }
-    let path = std::env::temp_dir().join(format!("chflow_gui_transient_{}.dict", std::process::id()));
+    let path = std::env::temp_dir().join(format!(
+        "chflow_gui_transient_{}_{}.dict", std::process::id(), unique_tmp_id()));
     std::fs::write(&path, &case_text)
         .map_err(|e| format!("failed to write temporary case file: {e}"))?;
     let output = std::process::Command::new(&exe_path)
@@ -810,7 +821,8 @@ random banner text
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
-        let script = std::env::temp_dir().join(format!("chflow_gui_fake_{}.sh", std::process::id()));
+        let script = std::env::temp_dir().join(format!(
+            "chflow_gui_fake_{}_{}.sh", std::process::id(), unique_tmp_id()));
         fs::write(
             &script,
             "#!/bin/sh\necho '[chflow] node A p 30000'\n\
@@ -902,7 +914,8 @@ random banner text
         use std::fs;
         use std::os::unix::fs::PermissionsExt;
 
-        let script = std::env::temp_dir().join(format!("chflow_gui_fake_transient_{}.sh", std::process::id()));
+        let script = std::env::temp_dir().join(format!(
+            "chflow_gui_fake_transient_{}_{}.sh", std::process::id(), unique_tmp_id()));
         fs::write(&script, format!("#!/bin/sh\ncat <<'EOF'\n{}\nEOF\n", SAMPLE_TRANSIENT_OUT)).unwrap();
         let mut perms = fs::metadata(&script).unwrap().permissions();
         perms.set_mode(0o755);

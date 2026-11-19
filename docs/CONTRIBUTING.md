@@ -137,9 +137,16 @@ python3 tests/check_two_fluid_shutin.py \
     "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
     "$PWD/tests/cases/twoFluidShutInGravitySlip/case.dict" /tmp
 
-# GUI macOS .app 打包（5.132，D12 收尾）：release 构建 + 手工组装 bundle +
-# 求解器进 Resources/bin + ad-hoc 签名 + 包内 solver 冒烟
+# GUI macOS .app 打包（5.132/5.133）：release 构建 + 手工组装 bundle + 三求解器
+# 与耦合模板算例进 Resources + ad-hoc 签名 + 包内双冒烟
 gui/package_app.sh && open "gui/dist/ChuanFlow GUI.app"
+
+# 专业 CAE 工作台（5.133）：四栏布局、SI↔油田单位、1D↔3D 耦合视图、可停止作业。
+# 前端纯函数（单位换算往返 / 项目树 / 耦合与稳态瞬态输出解析 / .vtu 场解析 /
+# 色图 / 日志分级 / 字典几何提取）与 Rust 命令层（作业注册表 / 文件 IO /
+# fluid 解析）都有无头测试：
+cd gui && cargo test && cd ..
+node --test gui/tests/frontend.test.mjs
 
 # 三维区域分解首增量：同一个块按 1/2/3/5/7/8/16 域各切一次、逐域跑显式算子，
 # 每次域数写一份**全局单元序**的 vtu。check_parallel.py 从 vtu 的几何自己重跑

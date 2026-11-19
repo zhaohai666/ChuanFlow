@@ -1,84 +1,232 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ChuanFlow 管网编辑器</title>
+    <title>ChuanFlow · 油气多相耦合仿真工作台</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <header>
-      <h1>ChuanFlow · 管网编辑器</h1>
-      <span class="subtitle">M5 · 拖拽管网建模 + 稳态 / 瞬态曲线面板</span>
-    </header>
+    <!-- ======== 全局菜单栏 ======== -->
+    <nav class="menubar">
+      <span class="brand">ChuanFlow</span>
+      <span class="brand-sub">1D 管网 + 流动保障 + 3D CFD 一体化工作台</span>
 
-    <main>
-      <section class="editor">
-        <h2>算例编辑</h2>
-        <label class="field">
-          <span>稳态求解器可执行文件</span>
-          <input id="exePath" type="text" spellcheck="false" />
-        </label>
-        <label class="field">
-          <span>瞬态求解器可执行文件</span>
-          <input id="transientExePath" type="text" spellcheck="false" />
-        </label>
-        <label class="field grow">
-          <span>case 字典（nodes / pipes / sources / time）</span>
-          <textarea id="caseText" spellcheck="false"></textarea>
-        </label>
-        <div class="actions">
-          <button id="runBtn" class="primary">应用并运行（稳态）</button>
-          <button id="runTransientBtn">运行瞬态</button>
-          <button id="validateBtn">仅校验</button>
-          <button id="resetBtn">恢复示例</button>
+      <div class="menu">
+        <button class="menu-title">文件</button>
+        <div class="menu-items">
+          <button id="menuNewProject">新建工程</button>
+          <button id="menuOpenProject">打开工程…</button>
+          <button id="menuSaveProject">保存工程</button>
+          <hr />
+          <button id="menuExportDict">导出 case 字典（切到字典页）</button>
         </div>
-        <pre id="status" class="status">就绪。可拖拽下方画布建模，或编辑 case 字典。</pre>
-      </section>
+      </div>
+      <div class="menu">
+        <button class="menu-title">仿真</button>
+        <div class="menu-items">
+          <button id="menuRunSteady">运行稳态（管网收敛）</button>
+          <button id="menuRunTransient">运行瞬态（时序）</button>
+          <button id="menuRunCoupled">运行 1D↔3D 耦合</button>
+          <hr />
+          <button id="menuStop">停止当前作业</button>
+        </div>
+      </div>
+      <div class="menu">
+        <button class="menu-title">视图</button>
+        <div class="menu-items">
+          <button id="menuUnitsSI">单位：SI（m / Pa / m³/s / K）</button>
+          <button id="menuUnitsOil">单位：油田（ft / psi / bbl/d / °F）</button>
+          <hr />
+          <button id="menuThemeDark">主题：深色</button>
+          <button id="menuThemeLight">主题：浅色</button>
+          <hr />
+          <button id="menuToggleLeft">折叠/展开 项目树</button>
+          <button id="menuToggleRight">折叠/展开 属性面板</button>
+        </div>
+      </div>
+      <div class="menubar-right">
+        <span id="unitChip" class="chip">单位 SI</span>
+        <span id="jobChip" class="chip idle">空闲</span>
+      </div>
+    </nav>
 
-      <section class="editor canvas-section">
-        <h2>拖拽管网建模</h2>
-        <p class="hint">点击画布空白处加节点；先点一个节点再点另一个连线成管；拖动节点移动；点选节点可设压力/加源；Delete 删除选中。</p>
-        <div class="canvas-toolbar">
-          <button id="addSourceBtn">给选中节点加源</button>
-          <button id="deleteBtn">删除选中</button>
-          <label>选中节点压力 <input id="nodePressure" type="text" placeholder="留空=自由节点" /></label>
-          <label>dt <input id="timeDt" type="text" value="0.01" /></label>
-          <label>endTime <input id="timeEnd" type="text" value="1" /></label>
-        </div>
-        <svg id="networkCanvas" class="network-canvas" viewBox="0 0 640 420" preserveAspectRatio="xMidYMid meet"></svg>
-      </section>
+    <!-- ======== 快捷工具栏 ======== -->
+    <div class="toolbar">
+      <button id="tbNew" title="新建工程">新建</button>
+      <button id="tbSave" title="保存工程">保存</button>
+      <button id="tbRunSteady" class="primary" title="运行稳态求解">▶ 稳态</button>
+      <button id="tbRunTransient" title="运行瞬态求解">▶ 瞬态</button>
+      <button id="tbRunCoupled" title="运行 1D↔3D 耦合求解">▶ 耦合</button>
+      <button id="tbStop" disabled title="停止当前作业">■ 停止</button>
+      <span class="sep"></span>
+      <button id="tbUnits" title="SI ↔ 油田单位">单位：SI</button>
+      <button id="tbTheme" title="深色 ↔ 浅色">主题：深</button>
+      <label class="proj-path">工程文件
+        <input id="projPath" type="text" spellcheck="false"
+               placeholder="/tmp/chflow_project.json" />
+      </label>
+    </div>
 
-      <section class="panels">
-        <div class="panel">
-          <h2>节点压力 (Pa)</h2>
-          <div id="nodeChart" class="chart-box"></div>
+    <!-- ======== 四栏工作区 ======== -->
+    <div class="workspace">
+      <!-- 左：项目树 -->
+      <aside class="dock dock-left" id="dockLeft">
+        <div class="dock-head">
+          <span>项目树</span>
+          <button id="collapseLeft" class="mini" title="折叠">«</button>
         </div>
-        <div class="panel">
-          <h2>管道流量 Q (m³/s)</h2>
-          <div id="pipeChart" class="chart-box"></div>
-        </div>
-        <div class="panel convergence" id="convergence">
-          <h2>求解状态</h2>
-          <p>等待运行…</p>
-        </div>
-      </section>
+        <div id="projectTree" class="tree"></div>
+      </aside>
+      <button id="expandLeft" class="strip hidden-strip" title="展开项目树">»</button>
 
-      <section class="panels transient-panel">
-        <div class="panel transient-plot">
-          <h2>瞬态时间序列 — <span id="seriesLabel">节点 / 变量</span></h2>
-          <label class="field">
-            <span>序列</span>
-            <select id="seriesSelect"></select>
-          </label>
-          <div id="transientChart" class="chart-box"></div>
-          <label class="field">
-            <span>时间滑条 <b id="timeReadout">—</b></span>
-            <input id="timeSlider" type="range" min="0" max="0" value="0" step="1" />
-          </label>
+      <!-- 中：主视口（多标签） -->
+      <div class="center">
+        <div class="tabbar" id="mainTabs">
+          <button data-tab="canvas" class="tab active">管网拓扑</button>
+          <button data-tab="field" class="tab">3D 场视图</button>
+          <button data-tab="coupled" class="tab">耦合视图</button>
+          <button data-tab="dict" class="tab">case 字典</button>
         </div>
-      </section>
-    </main>
+
+        <div class="viewport">
+          <!-- 1D 管网流程图模式 -->
+          <section id="tab-canvas" class="tab-page active">
+            <div class="canvas-toolbar">
+              <span class="hint">点空白加节点 · 点节点再点节点连线 · 拖动移动 · Delete 删除</span>
+              <button id="addSourceBtn">给选中节点加源</button>
+              <button id="deleteBtn">删除选中</button>
+              <label>线云图
+                <select id="colorMode">
+                  <option value="none">无（单相绿）</option>
+                  <option value="dp">压降 dp 彩图</option>
+                  <option value="q">流量 |Q| 彩图</option>
+                </select>
+              </label>
+            </div>
+            <svg id="networkCanvas" class="network-canvas" viewBox="0 0 900 560"
+                 preserveAspectRatio="xMidYMid meet"></svg>
+          </section>
+
+          <!-- 3D 场视图 -->
+          <section id="tab-field" class="tab-page">
+            <div class="canvas-toolbar">
+              <label class="grow">VTU 场文件
+                <input id="vtuPath" type="text" spellcheck="false"
+                       placeholder="/tmp/chflow_gui_coupled_block.vtu" />
+              </label>
+              <label>渲染场
+                <select id="fieldMode">
+                  <option value="p">压力 p</option>
+                  <option value="u">流速 |U|</option>
+                </select>
+              </label>
+              <button id="loadVtuBtn">载入并渲染</button>
+            </div>
+            <canvas id="fieldCanvas" class="field-canvas"></canvas>
+            <div class="field-legend">
+              <span id="legendLo">—</span>
+              <div id="legendBar" class="legend-bar"></div>
+              <span id="legendHi">—</span>
+            </div>
+            <p class="hint" id="fieldInfo">3D FVM 块网格场渲染（cf::fvm::VtkWriter 输出）。</p>
+          </section>
+
+          <!-- 耦合视图 -->
+          <section id="tab-coupled" class="tab-page">
+            <div class="canvas-toolbar">
+              <label class="grow">耦合算例
+                <input id="coupledCasePath" type="text" spellcheck="false"
+                       placeholder="chflow-coupled-1d3d 算例字典" />
+              </label>
+              <button id="runCoupledBtn" class="primary">▶ 运行耦合</button>
+              <button id="viewFieldBtn">查看 3D 场</button>
+            </div>
+            <div class="coupled-grid">
+              <div class="coupled-col">
+                <h3>1D 侧 · 节点压力</h3>
+                <table id="coupledNodes" class="data-table"><tbody></tbody></table>
+                <h3>1D 侧 · 管段流量</h3>
+                <table id="coupledPipes" class="data-table"><tbody></tbody></table>
+              </div>
+              <div class="coupled-col">
+                <h3>3D 侧 · 耦合块</h3>
+                <div id="coupledBlock" class="empty">运行后显示块的网格/迭代/残差。</div>
+                <h3>交界面交换收敛</h3>
+                <div id="coupledChart" class="chart-box small"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- case 字典 -->
+          <section id="tab-dict" class="tab-page">
+            <div class="dict-grid">
+              <div class="dict-col">
+                <label class="field"><span>case 字典（nodes / pipes / sources / fluid / time）</span>
+                  <textarea id="caseText" spellcheck="false"></textarea>
+                </label>
+              </div>
+              <div class="dict-col">
+                <label class="field"><span>稳态求解器</span>
+                  <input id="exePath" type="text" spellcheck="false" /></label>
+                <label class="field"><span>瞬态求解器</span>
+                  <input id="transientExePath" type="text" spellcheck="false" /></label>
+                <label class="field"><span>耦合求解器</span>
+                  <input id="coupledExePath" type="text" spellcheck="false" /></label>
+                <div class="actions">
+                  <button id="applyDictBtn" class="primary">应用字典到模型</button>
+                  <button id="runDictBtn">运行字典</button>
+                  <button id="validateBtn">仅校验</button>
+                  <button id="resetBtn">恢复示例</button>
+                </div>
+                <pre id="status" class="status">字典编辑：应用后模型/画布/项目树同步刷新。</pre>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <!-- 右：属性面板 -->
+      <aside class="dock dock-right" id="dockRight">
+        <div class="dock-head">
+          <span>属性</span>
+          <button id="collapseRight" class="mini" title="折叠">»</button>
+        </div>
+        <div id="propPanel" class="props"></div>
+      </aside>
+      <button id="expandRight" class="strip strip-right hidden-strip" title="展开属性面板">«</button>
+
+      <!-- 底部：日志 / 曲线 / 收敛 -->
+      <div class="bottom">
+        <div class="tabbar small" id="bottomTabs">
+          <button data-btab="log" class="tab active">求解日志</button>
+          <button data-btab="curves" class="tab">监测曲线</button>
+          <button data-btab="conv" class="tab">收敛监控</button>
+        </div>
+        <div class="bottom-body">
+          <div id="btab-log" class="btab-page active">
+            <div id="logPanel" class="log-panel"></div>
+          </div>
+          <div id="btab-curves" class="btab-page">
+            <div class="curves-grid">
+              <div><h3>节点压力</h3><div id="nodeChart" class="chart-box"></div></div>
+              <div><h3>管道流量 Q</h3><div id="pipeChart" class="chart-box"></div></div>
+              <div>
+                <h3>瞬态时序
+                  <select id="seriesSelect"></select>
+                  <input id="timeSlider" type="range" min="0" max="0" value="0" step="1" />
+                  <b id="timeReadout">—</b>
+                </h3>
+                <div id="transientChart" class="chart-box"></div>
+              </div>
+            </div>
+          </div>
+          <div id="btab-conv" class="btab-page">
+            <div id="convergence" class="conv-panel"><p>等待运行…</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
 
     <script type="module" src="./app.js"></script>
   </body>

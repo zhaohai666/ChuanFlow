@@ -5131,6 +5131,26 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **GUI .app 打包（D12 边界收尾）。** Tauri 2 将 frontendDist 资产编译期嵌入二进制，打包 = release 构建 + 手工组装 `ChuanFlow GUI.app`（Info.plist + icns + ad-hoc codesign，`gui/package_app.sh` 固化全流程）+ **求解器随包**：`chflow-1d-steady`/`chflow-1d-transient` 进 `Contents/Resources/bin/`，Rust 侧新增 `default_engines` 命令从运行中二进制向上探到 `Contents/Resources/bin`（Finder 启动 CWD=/ 不影响），打包臂命中即用包内求解器、否则回落开发树路径；前端启动时调用该命令覆盖开发默认路径。启动验证：open 启动渲染完整，路径输入框自动填包内路径，包内 solver 独立冒烟通过。边界：单架构（x86_64）出包，通用二进制（lipo 合成）与 DMG 未做；离线无 Apple Developer ID，ad-hoc 签名即本机运行语义。
 
+### 5.133 专业 CAE 工作台（M7）：四栏布局 + 单位系统 + 1D↔3D 耦合视图 + 可停止作业
+
+> **状态（2026-11-19）**：方案 A 第一增量——把 M5/M6 的「编辑器 + 曲线面板」升级为对标 Pipesim/OLGA/ANSYS Workbench 融合形态的专业工作台，全部接真实内核。Rust 21/21 + node 35/35 + CTest gui.* 3/3。
+
+**四栏布局（`gui/frontend/dist`，纯 HTML/CSS/JS，无 npm 依赖）。** 顶部菜单栏（文件/仿真/视图，条目全部接真实动作：工程新建/打开/保存、三类求解运行、停止、单位 SI↔油田、深/浅主题、左右栏折叠）+ 快捷工具栏 + 左侧**项目树**（流体物性 / 1D 生产管网（节点·管段·源·瞬态控制）/ 耦合接口 / 监测变量 / 仿真结果，实时从编辑器模型生成）+ 中央**多标签视口**（管网拓扑 SVG 画布 / 3D 场视图 / 耦合视图 / case 字典）+ 右侧**属性面板**（选中即编辑：节点定压、**管段几何 length/diameter/roughness/elevation**（M5 只能改节点压力，管段几何首次可编辑）、源注入率、流体 ρ/μ、瞬态控制）+ 底部面板（求解日志按红/黄/绿分级 / 监测曲线 / 收敛监控）。
+
+**单位系统（油气行业刚需）。** `units.js` 纯函数：SI ↔ 油田英制（m↔ft、Pa↔psi、m³/s↔bbl/d、K↔°F、Pa·s↔cP、kg/m³↔lb/ft³），一键切换，全部输入框/画布标注/曲线/表格自动换算，`parseInput` 换回 SI 后才写模型——**case 字典恒为 SI**，单位只是显示层（与商业软件同语义）。换算往返有逐位断言测试。
+
+**3D 场视图（真数据，非占位）。** 耦合算例运行时 GUI 把算例的 `output { vtk }` 重定向到固定路径，运行完成后 `read_text_file` 取回 ASCII `.vtu`（`cf::fvm::VtkWriter` 输出），`workspace.js::parseVtu` 解析 points/connectivity/U/p，Canvas 2D 逐单元渲染 p（或 |U|）彩虹色图 + 网格线 + 色标条——3D FVM 块的场后处理直接来自内核输出。
+
+**1D↔3D 耦合视图。** 一键运行 `chflow-coupled-1d3d`（模板算例随包/开发树自动解析）：1D 侧节点压力与管段流量表、3D 侧耦合块摘要（交换流量 q、块压降 dp、阻力 R、外层迭代、残差）、交界面 rate-for-drop 交换的 dp–迭代收敛曲线（同色橙高亮耦合边）。
+
+**作业注册表（Rust，可真实停止）。** `start_case`/`poll_job`/`stop_job` 三命令 + `JobRegistry`（Tauri State）：`Child` 进程 + 双读线程流水（512 KB 容量上限、行边界截尾）+ 等待线程发布退出码；前端 300 ms 轮询，累计输出后一次性解析（稳态/瞬态/耦合各有 JS 解析器，与 Rust 侧解析器同语义）；**停止按钮真正 kill 子进程**——长瞬态首次可中断。稳态/瞬态/耦合求解结果都从作业自己的 stdout 解析，无二次运行。
+
+**工程文件。** `write_text_file`/`read_text_file` 命令承载 JSON 工程（模型 + 单位 + 主题），打开/保存真实落盘；字典应用时 `extractCaseDetails` 从 case 文本**忠实重建**管段几何/流体/时间（M5 会静默回落默认几何）；模型手动编辑后 raw dict 失效、运行改从模型序列化——两条编辑路径的权属清晰。
+
+**打包。** `package_app.sh` 随包三求解器（steady/transient/coupled-1d3d）进 `Contents/Resources/bin` + 耦合模板算例进 `Resources/cases`；`default_engines` 返回四路径（两求解器 + 耦合求解器 + 模板算例），打包臂/开发树臂双臂解析，双冒烟断言。
+
+**边界。** 3D 视图是 x–y 投影的块网格场渲染（z 向 1 格的 duct 型块；任意 3D 旋转/剖切/矢量图待后续增量）；项目树「组件库」只含 steadyNetwork 内核真实支持的元素类型（节点/管段/源），井筒/分离器/压缩机等设备图标在对应内核进 GUI 前不出现假图标；段塞动画、批量参数扫描、算例模板库未做。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

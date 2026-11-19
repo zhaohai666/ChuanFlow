@@ -9,6 +9,9 @@
 #
 # Usage:  gui/package_app.sh            (expects ../build to hold the engines)
 # Output: gui/dist/ChuanFlow GUI.app    (ad-hoc signed, x86_64)
+# Bundle: steady + transient + coupled-1d3d engines in Resources/bin, the
+#         coupling template case in Resources/cases (default_engines finds
+#         all four relative to the running binary).
 set -eu
 
 cd "$(dirname "$0")"
@@ -19,12 +22,15 @@ cargo build --release
 
 APP="dist/ChuanFlow GUI.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" "$APP/Contents/Resources/cases"
 
 cp target/release/chflow-gui "$APP/Contents/MacOS/chflow-gui"
 cp "$ROOT"/build/src/1d/apps/chflow-1d-steady \
    "$ROOT"/build/src/1d/apps/chflow-1d-transient \
+   "$ROOT"/build/src/coupling/apps/chflow-coupled-1d3d \
    "$APP/Contents/Resources/bin/"
+cp "$ROOT"/tests/cases/coupled1d3d/case.dict \
+   "$APP/Contents/Resources/cases/coupled1d3d.dict"
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -73,3 +79,6 @@ echo "== packaged: $APP =="
 "$APP/Contents/Resources/bin/chflow-1d-steady" \
     "$ROOT"/tests/cases/steadyAllBelowThreshold/case.dict >/dev/null && \
     echo "== bundled solver smoke run: ok =="
+"$APP/Contents/Resources/bin/chflow-coupled-1d3d" \
+    "$APP/Contents/Resources/cases/coupled1d3d.dict" >/dev/null && \
+    echo "== bundled coupled solver smoke run: ok =="

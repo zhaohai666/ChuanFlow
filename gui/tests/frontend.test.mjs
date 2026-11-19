@@ -17,9 +17,32 @@ import {
   addSource,
   removeSource,
   setTime,
+  setFluid,
+  setPipeFields,
+  updateSourceRate,
   hitTestNode,
   networkToCaseText,
 } from '../frontend/dist/editor.js';
+import {
+  UNIT_SYSTEMS,
+  toDisplay,
+  fromDisplay,
+  unitLabel,
+  fmtDisplay,
+  parseInput,
+} from '../frontend/dist/units.js';
+import {
+  buildProjectTree,
+  parseCoupledOutput,
+  parseVtu,
+  cellCentroid,
+  fieldRange,
+  rainbowColor,
+  classifyLogLine,
+  parseSteadyOutput,
+  parseTransientOutput,
+  extractCaseDetails,
+} from '../frontend/dist/workspace.js';
 
 const SAMPLE = `// 三节点串联管网
 solver { type steadyNetwork; }
@@ -213,4 +236,247 @@ test('editor: 序列化往返（networkToCaseText -> validate 结构一致）', 
   assert.deepEqual(r.nodes.map((n) => n.name), m.nodes.map((n) => n.name));
   assert.deepEqual(r.pipes.map((p) => [p.from, p.to]), m.pipes.map((p) => [p.from, p.to]));
   assert.equal(r.nodes[0].pressure, 5e5);
+});
+
+
+// ---------------------------------------------------------------------------
+// M7：单位系统（显示层换算，字典恒 SI）
+// ---------------------------------------------------------------------------
+
+test('units: 长度/压强/流量 SI↔油田往返逐位回到 SI', () => {
+  for (const family of ['length', 'pressure', 'rate', 'viscosity', 'density']) {
+    const si = 123456.789;
+    const oil = toDisplay(si, family, UNIT_SYSTEMS.OILFIELD);
+    const back = fromDisplay(oil, family, UNIT_SYSTEMS.OILFIELD);
+    assert.ok(Math.abs(back - si) <= 1e-9 * Math.abs(si), family + ' 往返失败');
+  }
+});
+
+test('units: 温度 K↔°F 锚点换算', () => {
+  assert.ok(Math.abs(toDisplay(273.15, 'temperature', UNIT_SYSTEMS.OILFIELD) - 32) < 1e-9);
+  assert.ok(Math.abs(toDisplay(373.15, 'temperature', UNIT_SYSTEMS.OILFIELD) - 212) < 1e-9);
+  assert.ok(Math.abs(fromDisplay(212, 'temperature', UNIT_SYSTEMS.OILFIELD) - 373.15) < 1e-9);
+});
+
+test('units: 已知换算系数', () => {
+  assert.ok(Math.abs(toDisplay(1, 'length', UNIT_SYSTEMS.OILFIELD) - 3.28083989501312) < 1e-12);
+  assert.ok(Math.abs(toDisplay(6894.757293168361, 'pressure', UNIT_SYSTEMS.OILFIELD) - 1) < 1e-12);
+  assert.ok(Math.abs(toDisplay(1, 'viscosity', UNIT_SYSTEMS.OILFIELD) - 1000) < 1e-12);
+  assert.equal(unitLabel('rate', UNIT_SYSTEMS.OILFIELD), 'bbl/d');
+  assert.equal(unitLabel('pressure', UNIT_SYSTEMS.SI), 'Pa');
+});
+
+test('units: fmtDisplay 与 parseInput 互逆', () => {
+  const text = fmtDisplay(2000, 'pressure', UNIT_SYSTEMS.OILFIELD, 6);
+  assert.ok(text.endsWith(' psi'), text);
+  const value = parseInput(text.split(' ')[0], 'pressure', UNIT_SYSTEMS.OILFIELD);
+  assert.ok(Math.abs(value - 2000) < 0.01);
+  assert.ok(Number.isNaN(parseInput('abc', 'pressure', UNIT_SYSTEMS.SI)));
+});
+
+// ---------------------------------------------------------------------------
+// M7：编辑器新函数（管段几何 / 源流量 / 流体）
+// ---------------------------------------------------------------------------
+
+test('editor: setPipeFields / updateSourceRate / setFluid 反映到序列化', () => {
+  let m = buildModel();
+  const pid = m.pipes[0].id;
+  m = setPipeFields(m, pid, { length: 2400, diameter: 0.073, elevation: -12.5 });
+  m = updateSourceRate(m, m.sources[0].name, 3.5e-4);
+  m = setFluid(m, { rho: 930, mu: 0.042 });
+  const text = networkToCaseText(m);
+  assert.ok(text.includes('length 2400'), text);
+  assert.ok(text.includes('diameter 0.073'));
+  assert.ok(text.includes('elevation -12.5'));
+  assert.ok(text.includes('rate 0.00035'));
+  assert.ok(text.includes('fluid { rho 930; mu 0.042; }'), '流体块必须来自模型');
+  const r = validateCaseText(text);
+  assert.equal(r.valid, true, r.errors.join('; '));
+});
+
+test('editor: setFluid 缺省模型也能回落到 network.cpp 默认值', () => {
+  const m = { ...emptyModel(), fluid: undefined };
+  const m2 = setFluid(m, { mu: 0.3 });
+  assert.deepEqual(m2.fluid, { rho: 850, mu: 0.3 });
+});
+
+// ---------------------------------------------------------------------------
+// M7：项目树
+// ---------------------------------------------------------------------------
+
+test('workspace: buildProjectTree 分层覆盖流体/1D/监测/结果', () => {
+  const m = buildModel();
+  const tree = buildProjectTree(m, { hasSteady: true });
+  const top = tree.map((n) => n.id);
+  assert.deepEqual(top, ['fluid', 'net1d', 'monitor', 'results']);
+  const net = tree.find((n) => n.id === 'net1d');
+  assert.equal(net.children.length, 4);
+  const nodesGroup = net.children.find((c) => c.id === 'group.nodes');
+  assert.equal(nodesGroup.children.length, m.nodes.length);
+  const results = tree.find((n) => n.id === 'results');
+  const steady = results.children.find((c) => c.id === 'res.steady');
+  assert.equal(steady.ok, true);
+  const transient = results.children.find((c) => c.id === 'res.transient');
+  assert.equal(transient.ok, false);
+});
+
+test('workspace: buildProjectTree 有耦合边时出现耦合接口组', () => {
+  const m = buildModel();
+  const tree = buildProjectTree(m, { coupledEdge: 'P1' });
+  assert.ok(tree.some((n) => n.id === 'coupled'));
+  const none = buildProjectTree(m);
+  assert.ok(!none.some((n) => n.id === 'coupled'));
+});
+
+// ---------------------------------------------------------------------------
+// M7：耦合求解输出解析
+// ---------------------------------------------------------------------------
+
+const COUPLED_SAMPLE = `[chflow] node final p 1000669.324963046
+[chflow] node final p 1000048.8923985178
+[chflow] node final p 1000000
+[chflow] pipe final A Q 0.00023999999999990885 v 0.030557749073632297 Re 24.446199258905839 dp 48.892398517811671
+[chflow] pipe final X Q 0.00015777038680818138 v 0.50219873868084841 Re 80.351798188935746 dp 620.43256452819332
+[chflow] coupled solved: edge X q 0.00015777038680818138 dp 620.4459384124541 R 3932503.2858195421 iterations 4 residual 2.1555277313915015e-05
+[chflow] coupled seed 1: iterations 6 (converged)
+[chflow] interface seed 1 iter 1 q 0.0002 dp 800 R 2e7
+[chflow] interface seed 1 iter 2 q 0.00016 dp 640 R 4e6
+`;
+
+test('workspace: parseCoupledOutput 提取节点/管段/耦合边/交界面迭代', () => {
+  const c = parseCoupledOutput(COUPLED_SAMPLE);
+  assert.equal(c.nodes.length, 3);
+  assert.equal(c.nodes[0].p, 1000669.324963046);
+  assert.equal(c.pipes.length, 2);
+  assert.equal(c.pipes[0].name, 'A');
+  assert.equal(c.pipes[0].dp, 48.892398517811671);
+  assert.equal(c.solved.edge, 'X');
+  assert.equal(c.solved.iterations, 4);
+  assert.equal(c.seeds[0].converged, true);
+  assert.equal(c.interfaces.length, 2);
+  assert.equal(c.interfaces[1].dp, 640);
+  assert.equal(c.interfaces[1].resistance, 4e6);
+});
+
+// ---------------------------------------------------------------------------
+// M7：稳态/瞬态 stdout 解析（JS 侧，作业式运行）
+// ---------------------------------------------------------------------------
+
+test('workspace: parseSteadyOutput 提取收敛与场', () => {
+  const out = [
+    '[chflow] node A p 30000',
+    '[chflow] node B p 20000',
+    '[chflow] pipe P1 Q 1e-6 v 0.003 Re 50 f 0.5 dp 5000',
+    '[chflow] steady solved: iterations=7 residual=1e-9 (converged)',
+  ].join('\n');
+  const s = parseSteadyOutput(out);
+  assert.equal(s.nodes.length, 2);
+  assert.equal(s.pipes[0].dp, 5000);
+  assert.equal(s.iterations, 7);
+  assert.equal(s.converged, true);
+  const bad = parseSteadyOutput('nothing useful');
+  assert.equal(bad.nodes.length, 0);
+  assert.equal(bad.converged, false);
+});
+
+test('workspace: parseTransientOutput 时间帧与序列', () => {
+  const out = [
+    '[chflow] transient: dt=0.01 endTime=0.3',
+    '[chflow] t 0',
+    '[chflow] node A p 200000 alpha 0.5 hydrate 0',
+    '[chflow] pipe P Q 0',
+    '[chflow] t 0.01',
+    '[chflow] node A p 199000 alpha 0.49 hydrate 0.01',
+    '[chflow] pipe P Q 1e-6',
+    '[chflow] transient solved: steps=30',
+  ].join('\n');
+  const t = parseTransientOutput(out);
+  assert.equal(t.dt, 0.01);
+  assert.equal(t.steps, 30);
+  assert.equal(t.samples.length, 2);
+  assert.deepEqual(t.nodeNames, ['A']);
+  assert.equal(t.samples[1].alpha.A, 0.49);
+  assert.equal(t.samples[1].flow.P, 1e-6);
+});
+
+// ---------------------------------------------------------------------------
+// M7：ASCII VTU 解析 + 色图
+// ---------------------------------------------------------------------------
+
+const VTU_SAMPLE = `<VTKFile type="UnstructuredGrid" version="0.1">
+<Piece NumberOfPoints="4" NumberOfCells="1">
+<Points>
+<DataArray type="Float64" NumberOfComponents="3" format="ascii">
+0 0 0  1 0 0  1 1 0  0 1 0
+</DataArray>
+</Points>
+<Cells>
+<DataArray type="Int64" Name="connectivity" format="ascii">
+0 1 2 3
+</DataArray>
+<DataArray type="Int64" Name="offsets" format="ascii">
+4
+</DataArray>
+</Cells>
+<CellData>
+<DataArray type="Float64" Name="U" NumberOfComponents="3" format="ascii">
+0.5 0 0
+</DataArray>
+<DataArray type="Float64" Name="p" format="ascii">
+101325
+</DataArray>
+</CellData>
+</Piece>
+</VTKFile>`;
+
+test('workspace: parseVtu 读取 ASCII 场并算质心', () => {
+  const v = parseVtu(VTU_SAMPLE);
+  assert.ok(v, '必须解析成功');
+  assert.equal(v.points.length, 4);
+  assert.equal(v.cells.length, 1);
+  assert.deepEqual(v.cells[0], [0, 1, 2, 3]);
+  assert.equal(v.cellP[0], 101325);
+  const c = cellCentroid(v.points, v.cells[0]);
+  assert.equal(c.x, 0.5);
+  assert.equal(c.y, 0.5);
+  assert.equal(parseVtu('not a vtu'), null);
+});
+
+test('workspace: fieldRange / rainbowColor 端点与钳制', () => {
+  assert.deepEqual(fieldRange([3, 1, 2]), [1, 3]);
+  assert.deepEqual(fieldRange([]), [0, 1]);
+  assert.equal(rainbowColor(3, 0, 3), rainbowColor(9, 0, 3), '超界值钳制到同一端色');
+  assert.ok(rainbowColor(0, 0, 3).startsWith('rgb('));
+});
+
+// ---------------------------------------------------------------------------
+// M7：日志分级
+// ---------------------------------------------------------------------------
+
+test('workspace: classifyLogLine 红黄绿分级', () => {
+  assert.equal(classifyLogLine('cfFatal: bad input'), 'error');
+  assert.equal(classifyLogLine('WARNING: something odd'), 'warn');
+  assert.equal(classifyLogLine('steady solved: iterations=7 (converged)'), 'ok');
+  assert.equal(classifyLogLine('[chflow] t 0.5 vm 1.2'), 'info');
+});
+
+// ---------------------------------------------------------------------------
+// M7：字典几何提取（dict -> 模型忠实重建）
+// ---------------------------------------------------------------------------
+
+test('workspace: extractCaseDetails 提取流体/时间/管段几何', () => {
+  const d = extractCaseDetails(SAMPLE);
+  assert.deepEqual(d.fluid, { rho: 850, mu: 0.1 });
+  assert.equal(d.time, null);
+  assert.equal(d.pipes.P1.length, 20);
+  assert.equal(d.pipes.P1.diameter, 0.02);
+  assert.equal(d.pipes.P2.length, 20);
+});
+
+test('workspace: extractCaseDetails 时间块与单行管段', () => {
+  const text = 'fluid { rho 930; mu 0.042; }\npipes { P { from A; to B; length 42; diameter 0.073; } }\ntime { dt 0.02; endTime 3; reportEvery 5; }';
+  const d = extractCaseDetails(text);
+  assert.deepEqual(d.fluid, { rho: 930, mu: 0.042 });
+  assert.deepEqual(d.time, { dt: 0.02, endTime: 3, reportEvery: 5 });
+  assert.equal(d.pipes.P.length, 42);
 });

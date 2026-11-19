@@ -1,4 +1,6 @@
 build/
+build-kokkos/
+build-petsc/
 build-python/
 cmake-build-*/
 *.o

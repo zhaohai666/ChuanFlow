@@ -1,0 +1,7 @@
+// Sparse linear solver backend verification (README M6 / A11).
+// The app assembles the tridiagonal Poisson system A x = b with the exact
+// solution x[i] = 1, then solves it with every compiled-in backend from a
+// zero start. n is the system size; tol / maxIter drive both solvers.
+n        200;
+tol      1e-11;
+maxIter  2000;

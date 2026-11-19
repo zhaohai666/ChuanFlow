@@ -21,6 +21,10 @@
 #include "cf/fvm/VtkWriter.h"
 #include "cf/multiphase/Plic.h"
 #include "cf/multiphase/VoF.h"
+#include "cf/pvt/ComponentData.h"
+#include "cf/pvt/Components.h"
+#include "cf/pvt/PvtCase.h"
+#include "cf/pvt/SurfaceTension.h"
 
 using namespace cf;
 
@@ -81,6 +85,87 @@ bool loadVelocity(const Dictionary& caseDict, VelocityField& v)
     return true;
 }
 
+/// An analytic absolute thermodynamic pressure on cell centres, used only as
+/// the input to the per-cell Weinaug-Katz sigma. It is deliberately unrelated
+/// to the solved (kinematic, density-scaled) momentum pressure `p`.
+///     p_cell = p0 + gradient . (x_cell - reference)
+struct LinearPressureField
+{
+    scalar p0 = 0;
+    Vector gradient = Vector::zero();
+    Vector reference = Vector::zero();
+
+    Vector centreAt(const Vector& x) const { return x - reference; }
+    scalar at(const Vector& x) const { return p0 + dot(gradient, centreAt(x)); }
+};
+
+/// The opt-in per-cell sigma source. Every field is read from the case; nothing
+/// is inferred, so a checker can re-derive sigma from (T, p_cell, z, P) alone.
+struct SigmaFromP
+{
+    scalar T = 0;
+    pvt::Mixture mixture;            // feed, normalised once at load time
+    std::vector<scalar> parachorsSi; // SI parachors in feed order
+    LinearPressureField pressure;
+};
+
+bool loadSigmaFromP(const Dictionary& sd, SigmaFromP& s)
+{
+    if (!sd.has("sigmaFromP")) return false;
+    const Dictionary& bd = sd.getDict("sigmaFromP");
+    s.T = bd.getScalar("temperature");
+    if (!(s.T > 0.0)) cfFatal("vof: sigmaFromP temperature must be positive");
+
+    const Dictionary& comp = bd.getDict("composition");
+    if (comp.keys().empty()) cfFatal("vof: sigmaFromP composition is empty");
+    for (const std::string& name : comp.keys())
+    {
+        const Dictionary::Node& node = comp.find(name);
+        if (node.kind != Dictionary::Kind::scalar)
+            cfFatal("vof: sigmaFromP composition entry '" + name + "' must be a number");
+        if (!(node.scalar >= 0.0))
+            cfFatal("vof: sigmaFromP composition entry '" + name + "' must not be negative");
+    }
+    // The canonical loader owns the component registry and normalisation, so
+    // VOF cannot drift from what pvtApp reads for the same composition block.
+    s.mixture = pvt::loadComposition(comp);
+
+    const Dictionary::Node& pn = bd.find("parachors");
+    if (pn.kind == Dictionary::Kind::word && pn.word == "fromTable")
+    {
+        // Use the verified built-in table rather than transcribing parachors.
+        s.parachorsSi = pvt::parachorsFromTableSi(s.mixture.components());
+    }
+    else if (pn.kind == Dictionary::Kind::list)
+    {
+        s.parachorsSi = bd.getScalarList("parachors");
+        if (s.parachorsSi.size() != s.mixture.size())
+            cfFatal("vof: sigmaFromP parachors need one SI value per component");
+        for (const scalar p : s.parachorsSi)
+            if (!(p > 0.0)) cfFatal("vof: sigmaFromP parachors must be positive");
+    }
+    else
+    {
+        cfFatal("vof: sigmaFromP parachors must be fromTable or an SI list");
+    }
+
+    const Dictionary& pd = bd.getDict("pressureField");
+    if (pd.getWord("type") != "linear")
+        cfFatal("vof: sigmaFromP pressureField type must be linear");
+    s.pressure.p0 = pd.getScalar("p0");
+    if (!(s.pressure.p0 > 0.0)) cfFatal("vof: sigmaFromP pressureField p0 must be positive");
+    const auto g = pd.getScalarList("gradient");
+    if (g.size() != 3) cfFatal("vof: sigmaFromP pressureField gradient needs 3 numbers");
+    s.pressure.gradient = Vector{g[0], g[1], g[2]};
+    if (pd.has("reference"))
+    {
+        const auto r = pd.getScalarList("reference");
+        if (r.size() != 3) cfFatal("vof: sigmaFromP pressureField reference needs 3 numbers");
+        s.pressure.reference = Vector{r[0], r[1], r[2]};
+    }
+    return true;
+}
+
 /// The surface force the interface implies. The incompressible momentum
 /// equation this app drives is in acceleration form, so the case gives the
 /// surface tension (N/m) and the density it is scaled by, and `nu` is the
@@ -92,11 +177,13 @@ struct SurfaceTension
     bool enabled = false;
     bool advect = false;   // two-way: alpha is carried by the solved flux
     bool plicKappa = false; // the force reads the reconstruction's curvature
-    scalar sigma = 0;      // N/m
+    scalar sigma = 0;      // N/m, used only when sigmaFromP is absent
     scalar rho = 1;        // kg/m3
     scalar nu = 0;         // m2/s
     int correctors = 2;
     scalar continuityTol = 1e-10;
+    bool perCellSigma = false;
+    SigmaFromP sigmaModel;
 };
 
 SurfaceTension loadSurfaceTension(const Dictionary& caseDict)
@@ -107,13 +194,14 @@ SurfaceTension loadSurfaceTension(const Dictionary& caseDict)
     st.enabled = true;
     st.advect = sd.getWordOr("advect", "false") == "true";
     st.plicKappa = sd.getWordOr("kappaPlic", "false") == "true";
-    st.sigma = sd.getScalar("sigma");
+    st.perCellSigma = loadSigmaFromP(sd, st.sigmaModel);
+    if (!st.perCellSigma) st.sigma = sd.getScalar("sigma");
     st.rho = sd.getScalarOr("rho", 1.0);
     st.nu = sd.getScalar("nu");
     st.correctors = std::max(1, static_cast<int>(sd.getScalarOr("correctors", 2.0)));
     st.continuityTol = sd.getScalarOr("continuityTol", 1e-10);
-    if (!(st.sigma > 0) || !(st.rho > 0) || !(st.nu > 0))
-        cfFatal("vof: surfaceTension needs positive sigma, rho and nu");
+    if ((!st.perCellSigma && !(st.sigma > 0)) || !(st.rho > 0) || !(st.nu > 0))
+        cfFatal("vof: surfaceTension needs positive sigma (or sigmaFromP), rho and nu");
     return st;
 }
 
@@ -628,6 +716,52 @@ int main(int argc, char** argv)
             surfaceScalarField phi(mesh, "phi", 0.0);
             loadMomentumPatches(caseDict, mesh, U, p);
 
+            // Per-cell sigma. Undeclared (the legacy path): one constant field,
+            // which is exactly the value the original scalar kernel used.
+            // sigmaFromP: each cell's thermodynamic pressure is evaluated from
+            // the analytic field on its own centre, then flashed with WK.
+            const label nC = mesh.nCells();
+            scalar sigmaReport = st.sigma;
+            Field<scalar> sigmaCell(static_cast<std::size_t>(nC), st.sigma);
+            Field<scalar> sigmaOverRhoCell(static_cast<std::size_t>(nC), st.sigma / st.rho);
+            Field<scalar> pThermo(static_cast<std::size_t>(nC), 0.0);
+            if (st.perCellSigma)
+            {
+                const Field<Vector>& cc = mesh.cellCentres();
+                for (label c = 0; c < nC; ++c)
+                {
+                    const std::size_t u = static_cast<std::size_t>(c);
+                    const scalar pc = st.sigmaModel.pressure.at(cc[u]);
+                    if (!(pc > 0.0))
+                        cfFatal("vof: sigmaFromP pressureField gives a non-positive pressure");
+                    pThermo[u] = pc;
+                    sigmaCell[u] = pvt::weinaugKatzSurfaceTension(
+                        st.sigmaModel.mixture, st.sigmaModel.T, pc,
+                        st.sigmaModel.parachorsSi);
+                    sigmaOverRhoCell[u] = sigmaCell[u] / st.rho;
+                }
+                scalar sMin = sigmaCell[0], sMax = sigmaCell[0], sSum = 0;
+                scalar pMin = pThermo[0], pMax = pThermo[0];
+                for (const scalar s : sigmaCell)
+                {
+                    sMin = std::min(sMin, s);
+                    sMax = std::max(sMax, s);
+                    sSum += s;
+                }
+                for (const scalar pc : pThermo)
+                {
+                    pMin = std::min(pMin, pc);
+                    pMax = std::max(pMax, pc);
+                }
+                // the single `sigma/rho` report keeps its legacy meaning on the
+                // scalar path; here it is the mean kinematic value of the field
+                sigmaReport = sSum / static_cast<scalar>(nC);
+                log::info("vof sigmaFromP: T ", num(st.sigmaModel.T), " components ",
+                          st.sigmaModel.mixture.size(),
+                          " p [", num(pMin), ", ", num(pMax), "] Pa sigma [",
+                          num(sMin), ", ", num(sMax), "] N/m");
+            }
+
             // The interface drives the momentum. One-way (`advect false`) it is
             // frozen and only reads out the pressure-velocity response to the
             // force it implies; two-way the flux the coupling solves carries
@@ -643,8 +777,9 @@ int main(int argc, char** argv)
             Field<Vector> normal = vof::interfaceNormal(alpha, schemes.grad, threshold);
             Field<scalar> kappa = vof::interfaceCurvature(mesh, normal);
             if (st.plicKappa) kappa = kappaPlicNow;
-            Field<Vector> force =
-                vof::surfaceTensionForce(st.sigma / st.rho, alpha, kappa, schemes.grad);
+            Field<Vector> force = st.perCellSigma
+                ? vof::surfaceTensionForce(sigmaOverRhoCell, alpha, kappa, schemes.grad)
+                : vof::surfaceTensionForce(st.sigma / st.rho, alpha, kappa, schemes.grad);
             scalar fMax = 0;
             for (const Vector& f : force) fMax = std::max(fMax, mag(f));
             // the band mean of the curvature the force actually reads, which is
@@ -658,7 +793,7 @@ int main(int argc, char** argv)
                     ++kCells;
                 }
             if (kCells) kBand /= static_cast<scalar>(kCells);
-            log::info("vof csf: sigma/rho ", num(st.sigma / st.rho), " nu ", num(st.nu),
+            log::info("vof csf: sigma/rho ", num(sigmaReport / st.rho), " nu ", num(st.nu),
                       " advect ", st.advect ? "true" : "false",
                       " kappa ", num(kBand), " max |f| ", num(fMax));
 
@@ -686,8 +821,11 @@ int main(int argc, char** argv)
                         rebuildPlic();
                         kappa = kappaPlicNow;
                     }
-                    force = vof::surfaceTensionForce(st.sigma / st.rho, alpha,
-                                                     kappa, schemes.grad);
+                    force = st.perCellSigma
+                        ? vof::surfaceTensionForce(sigmaOverRhoCell, alpha, kappa,
+                                                   schemes.grad)
+                        : vof::surfaceTensionForce(st.sigma / st.rho, alpha, kappa,
+                                                   schemes.grad);
                 }
                 if (step % reportEvery != 0 && step != nSteps) continue;
                 const scalar mass = vof::phaseVolume(mesh, alpha.internalField());
@@ -723,12 +861,23 @@ int main(int argc, char** argv)
             if (ok && !vtk.empty())
             {
                 VtkWriter w(mesh);
+                Field<Vector> gradAlpha;
                 w.addCellScalar("alpha", alpha.internalField());
                 w.addCellVector("nHat", normal);
                 w.addCellScalar("kappa", kappa);
                 w.addCellVector("U", U.internalField());
                 w.addCellScalar("p", p.internalField());
                 w.addCellVector("csf", force);
+                if (st.perCellSigma)
+                {
+                    // Extra fields exist only for a sigmaFromP case, so a case
+                    // that declares nothing new keeps a bit-identical .vtu.
+                    gradAlpha = fvc::grad(alpha, schemes.grad);
+                    w.addCellScalar("sigma", sigmaCell);
+                    w.addCellScalar("sigmaOverRho", sigmaOverRhoCell);
+                    w.addCellScalar("pThermo", pThermo);
+                    w.addCellVector("gradAlpha", gradAlpha);
+                }
                 if (plic.enabled)
                 {
                     w.addCellVector("nHatPlic", plicNow.normal);

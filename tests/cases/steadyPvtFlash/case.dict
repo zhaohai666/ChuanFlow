@@ -1,0 +1,41 @@
+// D10/D7 (5.121): per-station true-flash PVT march in 1D.
+// A methane/n-butane feed is flashed at every march station with tpFlash;
+// rho/mu come from the phase states and per-station WK surface tension is
+// computed and consumed by the march. The pressure grid is the declared
+// envelope; no rho/mu table is read on this path.
+fluid
+{
+    pvt
+    {
+        pressure ( 2.0e6 4.0e6 6.0e6 8.0e6 1.0e7 1.2e7 1.4e7 );
+
+        compositional
+        {
+            composition { methane 0.5; nButane 0.5; }
+            temperature 320.0;
+            liveFlash true;
+            sigmaFromP true;
+            parachors fromTable;
+        }
+    }
+}
+
+nodes
+{
+    W  {}
+    T  { pressure 4.0e6; }
+}
+
+pipes
+{
+    Line
+    {
+        from W; to T;
+        length 1000; diameter 0.03; roughness 1.0e-5;
+        elevation 0;
+    }
+}
+
+sources { feed { node W; rate 0.002; } }
+
+solve { maxIter 100; tol 1e-11; }

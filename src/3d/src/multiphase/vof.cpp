@@ -122,4 +122,28 @@ Field<Vector> surfaceTensionForce(scalar sigmaOverRho,
     return f;
 }
 
+Field<Vector> surfaceTensionForce(const Field<scalar>& sigmaOverRhoCell,
+                                  const volScalarField& alpha,
+                                  const Field<scalar>& kappa,
+                                  const std::string& gradScheme)
+{
+    const polyMesh& mesh = alpha.mesh();
+    if (static_cast<label>(kappa.size()) != mesh.nCells())
+        cfFatal("vof: the curvature field must hold one value per cell");
+    if (static_cast<label>(sigmaOverRhoCell.size()) != mesh.nCells())
+        cfFatal("vof: the per-cell sigma/rho field must hold one value per cell");
+
+    // Exactly the same gradient the scalar overload reads; the only change is
+    // which sigma multiplies each cell's kappa.
+    const Field<Vector> g = fvc::grad(alpha, gradScheme);
+    const label nC = mesh.nCells();
+    Field<Vector> f(static_cast<std::size_t>(nC), Vector::zero());
+    for (label c = 0; c < nC; ++c)
+    {
+        const std::size_t u = static_cast<std::size_t>(c);
+        f[u] = g[u] * (-sigmaOverRhoCell[u] * kappa[u]);
+    }
+    return f;
+}
+
 } // namespace cf::vof

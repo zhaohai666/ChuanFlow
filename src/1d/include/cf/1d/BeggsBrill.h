@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+
 #include "cf/pvt/BlackOil.h"
 #include "cf/common/Rheology.h"
 
@@ -141,6 +143,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        double roughness, double sinTheta,
                                        int segments = 24,
                                        const Rheology& liquidRheology = {},
-                                       int forcedRegime = -1);
+                                       int forcedRegime = -1,
+                                       const std::function<double(double)>* sigmaOfP = nullptr);
 
 } // namespace cf

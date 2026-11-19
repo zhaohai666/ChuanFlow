@@ -1,0 +1,101 @@
+// 3D VOF per-cell Weinaug-Katz surface tension (D13/D10, section 5.120).
+//
+// A droplet held still while the pressure-velocity coupling answers the surface
+// force its interface implies -- the vofDroplet case -- with one change: sigma
+// is not a case constant any more. Every cell is flashed at its own absolute
+// thermodynamic pressure p_cell = p0 + g.(x_cell - reference), and the WK
+// parachor sigma from that flash is what the CSF force reads in that cell.
+//
+// The pressure here is an analytic driver for the equation of state, NOT the
+// solved kinematic momentum pressure (which stays anchored at 0 on `left`).
+// With T = 300 K, feed C1/C2/C3 = 0.4/0.3/0.3 and p from 3.5 to 6.0 MPa the
+// whole domain is two-phase and sigma falls from ~2.95e-3 to ~5.82e-4 N/m, so
+// the interface cells at different x really do read different sigma.
+//
+// Verified by tests/check_vof_sigma_field.py:
+//   - the written `sigma` field equals WK(p_cell) computed independently in
+//     Python from a verbatim PR-flash transcription, cell by cell;
+//   - sigma varies across the interface band;
+//   - csf[u] = gradAlpha[u] * (-sigmaOverRho[u] * kappa[u]);
+//   - removing `sigmaFromP` and declaring a scalar sigma takes the untouched
+//     legacy path (no new VTU fields, same report structure);
+//   - malformed composition / parachors / temperature / pressure are rejected.
+block
+{
+    min   (0 0 0);
+    max   (1 1 0.1);
+    cells (16 16 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+alpha
+{
+    circle { center (0.5 0.5 0); radius 0.2; smooth 2.0; }
+}
+
+surfaceTension
+{
+    rho   1;
+    nu    0.01;
+    correctors    2;
+    continuityTol 1e-12;
+
+    sigmaFromP
+    {
+        temperature 300.0;
+
+        composition
+        {
+            methane 0.40;
+            ethane  0.30;
+            propane 0.30;
+        }
+
+        parachors fromTable;
+
+        pressureField
+        {
+            type linear;
+            p0       3.5e6;
+            gradient (2.5e6 0 0);
+            reference (0 0 0);
+        }
+    }
+}
+
+patches
+{
+    left   { U (0 0 0); p 0;                 alphaType fixedValue; alpha 0; }
+    right  { U (0 0 0); pType zeroGradient;  alphaType fixedValue; alpha 0; }
+    bottom { U (0 0 0); pType zeroGradient;  alphaType fixedValue; alpha 0; }
+    top    { U (0 0 0); pType zeroGradient;  alphaType fixedValue; alpha 0; }
+}
+
+time
+{
+    dt                 0.002;
+    endTime            0.004;
+    reportEvery        1;
+    interfaceThreshold 0.1;
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+solverTol 1e-12;
+
+output
+{
+    vtk out_vof_sigma_field.vtu;
+}

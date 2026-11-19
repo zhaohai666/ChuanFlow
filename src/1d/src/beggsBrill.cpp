@@ -174,7 +174,8 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        double roughness, double sinTheta,
                                        int segments,
                                        const Rheology& liquidRheology,
-                                       int forcedRegime)
+                                       int forcedRegime,
+                                       const std::function<double(double)>* sigmaOfP)
 {
     BeggsBrillMarchOut out;
     const double pFloor = std::max(0.02 * pInPa, 1000.0);
@@ -209,7 +210,11 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
         in.rhoG = st.rhoGas;
         in.muL = muL;
         in.muG = st.muGas;
-        in.sigma = fluid.surfaceTension;
+        // D10/D7: a caller may hand the march a per-pressure surface-tension
+        // provider (e.g. live-flash Weinaug-Katz). Absent, this is exactly
+        // the original constant-sigma black-oil path, bit for bit.
+        in.sigma = (sigmaOfP && *sigmaOfP) ? (*sigmaOfP)(p)
+                                           : fluid.surfaceTension;
         in.vsl = vsl;
         in.vsg = vsg;
         in.pPa = p;

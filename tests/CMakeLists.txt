@@ -245,6 +245,18 @@ add_test(
         $<TARGET_FILE:chflow-vof>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofDropletPlic/case.dict)
 
+# README M6 / A11 (5.120): per-cell Weinaug-Katz surface tension. The case
+# declares a pressure field; the app computes WK sigma at each cell from the
+# real cf_pvt library and feeds a per-cell sigma field to the CSF force. The
+# checker independently recomputes sigma(p_cell), checks the cell-wise force,
+# the scalar twin (zero declaration) and the refusal gates.
+add_test(
+    NAME verify.vofSigmaField
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_vof_sigma_field.py
+        $<TARGET_FILE:chflow-vof>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofSigmaField/case.dict)
+
 # the two-way loop: the solved flux carries alpha and the force is rebuilt from
 # the shape it leaves, so an ellipse oscillates about the circle; the crossing
 # clock decides the density-matched Lamb period against the free-drop one
@@ -1856,6 +1868,56 @@ add_test(
         $<TARGET_FILE:chflow-1d-transient>)
 set_tests_properties(verify.transientAdjoint PROPERTIES
     ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python")
+
+# D9 increment 4 (5.118): discrete stepwise adjoint of the two-fluid sealed
+# dynamic-slip settling march (coupled alpha + slip) with checkpointing. The
+# checker ties the interfacial-drag gradient to the active-branch Godunov
+# Riemann Jacobian, a forward tangent-linear sensitivity, central finite
+# differences and the real C++ two-fluid kernel, and proves checkpointed sweeps
+# reproduce store-all.
+add_test(
+    NAME verify.twoFluidAdjoint
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_adjoint.py
+        $<TARGET_FILE:chflow-1d-twofluid>)
+set_tests_properties(verify.twoFluidAdjoint PROPERTIES
+    ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python")
+
+# README M6 / A11: selectable sparse linear solver backends. The native
+# BiCGStab path is always verified against the analytic solution; when
+# CHFLOW_WITH_EIGEN=ON the checker additionally cross-checks Eigen's ILU-
+# preconditioned BiCGSTAB against the native result.
+add_test(
+    NAME verify.solverBackend
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_solver_backend.py
+        $<TARGET_FILE:chflow-solver-backend>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/solverBackend/case.dict)
+
+# README D10/D7 (5.121): per-station live PR flash + Weinaug-Katz sigma fed
+# into the steady 1D march. Checker re-derives rho/mu/sigma independently and
+# checks the zero-declaration gate against the precomputed-table path.
+add_test(
+    NAME verify.steadyPvtFlash
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_pvt_flash.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyPvtFlash/case.dict)
+
+# README M3 / A11 (5.122): real MPI distributed linear solve, one domain per
+# rank. The checker runs ranks 1/2/4 and requires the distributed CSR CG
+# solution to match both the analytic solution and the serial solveCG on the
+# same global CSR. Registered only when an MPI compiler/launcher was found.
+find_package(MPI QUIET COMPONENTS CXX)
+if(MPI_CXX_FOUND AND TARGET chflow-mpi-linear-solver)
+    add_test(
+        NAME verify.mpiLinearSolver
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_mpi_linear_solver.py
+            ${MPIEXEC_EXECUTABLE}
+            $<TARGET_FILE:chflow-mpi-linear-solver>
+            ${CMAKE_CURRENT_SOURCE_DIR}/cases/mpiLinearSolver/case.dict)
+endif()
 
 if(CHFLOW_PYTHON_BINDINGS)
     add_test(

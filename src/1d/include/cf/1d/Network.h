@@ -1,5 +1,7 @@
 #pragma once
 
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -19,6 +21,23 @@ struct FluidProperties
     double mu = 1e-3;   // Pa.s
 };
 
+/// One station of a live-flash PVT march (D10/D7, §5.121): the state a true
+/// tpFlash + LBC + Weinaug-Katz evaluation produced at the local pressure.
+/// Empty on every table/constant/black-oil path, so no existing readout
+/// changes. Populated only on the opt-in per-station flash march.
+struct PvtFlashStation
+{
+    double p = 0;      // Pa, station pressure
+    double rho = 0;    // kg/m3, homogeneous flash-mixture density
+    double mu = 0;     // Pa s, mass-fraction-weighted phase LBC viscosity
+    double sigma = 0;  // N/m, per-station Weinaug-Katz surface tension
+};
+
+/// Opaque live-flash state (composition, T, parachors, sigma switch). Defined
+/// in network.cpp so this header does not need the pvt flash headers; held by
+/// shared_ptr so PvtFluid keeps value semantics.
+struct LiveFlashState;
+
 /// Tabulated single-phase fluid: rho(p) and mu(p) on a strictly ascending
 /// pressure grid, piecewise-linear between nodes and clamped outside the
 /// table ends. The steady pipe law marches the local mechanical-energy
@@ -33,6 +52,19 @@ struct PvtFluid
 
     double density(double p) const;
     double viscosity(double p) const;
+    /// D10/D7: per-station Weinaug-Katz sigma. Returns 0 on the table path
+    /// and whenever the case did not opt into sigmaFromP, so an existing
+    /// case cannot observe this method.
+    double surfaceTension(double p) const;
+    /// Evaluate rho/mu/sigma at p from ONE flash when liveFlash is set (the
+    /// march calls this once per station); otherwise table lookup + sigma 0.
+    void evaluateAt(double p, double& rhoOut, double& muOut,
+                    double& sigmaOut) const;
+
+    /// Null (the default) => original piecewise-linear table path, every
+    /// existing number bit-for-bit unchanged. Non-null => each call flashes
+    /// the held composition at the local pressure.
+    std::shared_ptr<LiveFlashState> liveFlash;
 };
 
 struct NetworkPipe
@@ -287,6 +319,12 @@ public:
     // each pipe
     bool hasPvtFluid = false;
     PvtFluid pvtFluid;
+    // D10/D7: an optional per-station surface-tension provider published by
+    // the loader when a live-flash case declares sigmaFromP. The PVT march
+    // consumes its own PvtFluid::surfaceTension directly; this hook is the
+    // same WK callback exposed to the (separate) Beggs-Brill two-phase march
+    // via solvePipeFlowTwoPhase. Empty on every existing case.
+    std::function<double(double)> sigmaOfP;
 
     label addNode(const std::string& name);
     label nodeIndex(const std::string& name) const; // cfFatal if missing
@@ -436,6 +474,11 @@ struct PipeFlowResult
     bool valveChoked = false;        // sonic at the port: downstream is unheard
     bool choked = false;    // two-phase: the march hit the pressure floor at
                             // the imposed end pressures
+    // D10/D7: station-by-station live-flash state, populated only when the
+    // pipe ran with a true-flash PvtFluid. sigmaOutlet is the WK surface
+    // tension at the outlet station (0 on every other path).
+    std::vector<PvtFlashStation> pvtFlashStations;
+    double sigmaOutlet = 0;
 };
 
 struct SteadyNetworkResult
@@ -498,7 +541,8 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
 /// pipe chokes (the march hits the pressure floor before reaching pLow).
 bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
                            const pvt::BlackOilFluid& fluid, double pFrom,
-                           double pTo, PipeFlowResult& out);
+                           double pTo, PipeFlowResult& out,
+                           const std::function<double(double)>* sigmaOfP = nullptr);
 
 /// Case dictionary grammar (see tests/cases/steadyNetwork/case.dict):
 ///   fluid { rho 850; mu 0.1; }
@@ -517,6 +561,12 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
 /// Tabulated-property variant: fluid { pvt { pressure ( 1e5 1e6 4e6 );
 ///   rho ( 5 25 100 ); mu ( 1e-5 1.15e-5 1.5e-5 ); } } — piecewise-linear
 /// rho(p)/mu(p), clamped at the table ends.
+/// Live-flash variant (D10/D7): fluid { pvt { pressure(...);
+///   compositional { composition {...}; temperature 320;
+///                   liveFlash true; sigmaFromP true;
+///                   parachors fromTable; } } } — rho/mu/sigma are re-flashed
+/// at every march station. liveFlash / sigmaFromP absent or false keeps the
+/// 5.110 precomputed-table path and every existing number bit-identical.
 /// Gas-lift valve (5.89, D1 increment 3), on a fluid { pvt } network only:
 ///   pipes { VLV { from ANN; to T; length 0; diameter 0.0047625;
 ///                 liftDomePressure 7.0e6;     // Pa abs; the switch, 0 = no valve

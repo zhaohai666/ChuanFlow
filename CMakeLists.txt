@@ -21,6 +21,38 @@ endif()
 
 enable_testing()
 
+# Eigen sparse linear solver backend (README M6 / A11). Eigen is header-only
+# and vendored under third_party/eigen (3.4.0), so no system package is needed.
+# Declared before src/common so cf_common sees the option and include dir.
+# Default OFF: the default build keeps the project's own CG/BiCGStab and every
+# checker stays bit-identical. Turn ON to dispatch solveWithBackend(...,Eigen)
+# to Eigen's ILU-preconditioned BiCGSTAB.
+option(CHFLOW_WITH_EIGEN "Use the vendored Eigen sparse solver backend" OFF)
+if(CHFLOW_WITH_EIGEN)
+    set(CF_EIGEN_DIR "${PROJECT_SOURCE_DIR}/third_party/eigen")
+    if(NOT EXISTS "${CF_EIGEN_DIR}/Eigen/Dense")
+        message(WARNING "CHFLOW_WITH_EIGEN=ON but third_party/eigen is missing; "
+                        "keeping the native solver backend")
+        set(CHFLOW_WITH_EIGEN OFF)
+    endif()
+endif()
+
+# PETSc sparse linear solver backend (README M6 / A11). PETSc is a compiled
+# library; discovered via find_package and only enabled when found. A missing
+# library downgrades to the native solver with a warning (same QUIET philosophy
+# as HDF5 / Kokkos). This keeps the default build free of heavy MPI deps.
+option(CHFLOW_WITH_PETSC "Use the PETSc sparse solver backend when available" OFF)
+if(CHFLOW_WITH_PETSC)
+    find_package(PETSc QUIET)
+    if(PETSc_FOUND)
+        message(STATUS "PETSc found: ${PETSc_VERSION}")
+    else()
+        message(WARNING "CHFLOW_WITH_PETSC=ON but no PETSc library found; "
+                        "keeping the native solver backend")
+        set(CHFLOW_WITH_PETSC OFF)
+    endif()
+endif()
+
 add_subdirectory(src/common)
 add_subdirectory(src/pvt)
 # Optional parallel backends (README M6). Both default OFF: the default build

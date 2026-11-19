@@ -53,7 +53,8 @@ int main(int argc, char** argv)
         if (caseDict.has("fluid"))
         {
             const Dictionary& fd = caseDict.getDict("fluid");
-            if (fd.has("pvt") && fd.getDict("pvt").has("compositional"))
+            if (fd.has("pvt") && fd.getDict("pvt").has("compositional")
+                && !net.pvtFluid.liveFlash)
             {
                 for (std::size_t i = 0; i < net.pvtFluid.pressure.size(); ++i)
                 {
@@ -74,6 +75,15 @@ int main(int argc, char** argv)
         }
         for (const PipeFlowResult& f : res.pipeFlows)
         {
+            // D10/D7: per-station true-flash readout. Emitted only for a
+            // live-flash pipe, so every existing case prints byte-identically.
+            for (std::size_t i = 0; i < f.pvtFlashStations.size(); ++i)
+            {
+                const PvtFlashStation& s = f.pvtFlashStations[i];
+                log::info("flashStation ", f.name, " i ", i,
+                          " p ", num17(s.p), " rho ", num17(s.rho),
+                          " mu ", num17(s.mu), " sigma ", num17(s.sigma));
+            }
             std::string line = "pipe " + f.name + " Q " + num(f.flowRate)
                              + " v " + num(f.velocity);
             if (f.regime >= 0)
@@ -163,6 +173,8 @@ int main(int argc, char** argv)
                       + num(f.frictionFactor);
             }
             line += " dp " + num(f.dpTotal);
+            if (!f.pvtFlashStations.empty())
+                line += " sigmaOutlet " + num17(f.sigmaOutlet);
             if (f.dpValve != 0) line += " dpValve " + num(f.dpValve);
             if (f.dpPump != 0) line += " dpPump " + num(f.dpPump);
             if (f.transition.band >= 0)

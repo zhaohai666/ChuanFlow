@@ -96,4 +96,14 @@ Field<Vector> surfaceTensionForce(scalar sigmaOverRho,
                                   const Field<scalar>& kappa,
                                   const std::string& gradScheme);
 
+/// Cell-wise twin of the kernel above. `sigmaOverRhoCell[u]` is the kinematic
+/// surface tension of cell u, so the force reads
+///     f[u] = g[u] * (-sigmaOverRhoCell[u] * kappa[u])
+/// with the very same gradient as the scalar overload. The scalar overload is
+/// kept unchanged and is what a case that declares no per-cell sigma uses.
+Field<Vector> surfaceTensionForce(const Field<scalar>& sigmaOverRhoCell,
+                                  const volScalarField& alpha,
+                                  const Field<scalar>& kappa,
+                                  const std::string& gradScheme);
+
 } // namespace cf::vof

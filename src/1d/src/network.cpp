@@ -14,9 +14,11 @@
 #include "cf/1d/SolverGates.h"
 
 #include "cf/pvt/Components.h"
+#include "cf/pvt/ComponentData.h"
 #include "cf/pvt/Flash.h"
 #include "cf/pvt/PengRobinson.h"
 #include "cf/pvt/PvtCase.h"
+#include "cf/pvt/SurfaceTension.h"
 #include "cf/pvt/Viscosity.h"
 
 #include "DenseSolve.h"
@@ -1532,7 +1534,8 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
             {
                 solvePipeFlowTwoPhase(pipe, net.blackOil,
                                       pAll[static_cast<std::size_t>(pipe.from)],
-                                      pAll[static_cast<std::size_t>(pipe.to)], fr);
+                                      pAll[static_cast<std::size_t>(pipe.to)], fr,
+                                      net.sigmaOfP ? &net.sigmaOfP : nullptr);
             }
             else if (net.hasPvtFluid)
             {
@@ -1643,7 +1646,8 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
             solvePipeFlowTwoPhase(pipe, net.blackOil,
                                   res.nodePressure[static_cast<std::size_t>(pipe.from)],
                                   res.nodePressure[static_cast<std::size_t>(pipe.to)],
-                                  res.pipeFlows[k]);
+                                  res.pipeFlows[k],
+                                  net.sigmaOfP ? &net.sigmaOfP : nullptr);
         }
         else if (net.hasPvtFluid)
         {
@@ -1677,7 +1681,8 @@ namespace
 double twoPhaseRateForDrop(const NetworkPipe& pipe,
                            const pvt::BlackOilFluid& fluid, double pUp,
                            double pLow, double sinFlow, bool& choked,
-                           const Rheology& liquidRheology)
+                           const Rheology& liquidRheology,
+                           const std::function<double(double)>* sigmaOfP = nullptr)
 {
     choked = false;
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
@@ -1686,7 +1691,7 @@ double twoPhaseRateForDrop(const NetworkPipe& pipe,
     {
         const BeggsBrillMarchOut m = marchBeggsBrillPipe(
             fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness,
-            sinFlow, 24, liquidRheology, pipe.flowPattern);
+            sinFlow, 24, liquidRheology, pipe.flowPattern, sigmaOfP);
         // choked marches return the floor shortfall: continuous with the
         // unchoked branch (there pOutlet -> pFloor) and correctly scaled
         // for the secant, unlike a fixed sentinel
@@ -1756,7 +1761,8 @@ double twoPhaseRateForDrop(const NetworkPipe& pipe,
 
 bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
                            const pvt::BlackOilFluid& fluid, double pFrom,
-                           double pTo, PipeFlowResult& out)
+                           double pTo, PipeFlowResult& out,
+                           const std::function<double(double)>* sigmaOfP)
 {
     if (pipeIsAnnulus(pipe))
         cfFatal("twoPhase: pipe '" + pipe.name + "' declares an annulus: the "
@@ -1792,11 +1798,11 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     const Rheology liquidRheology{
         pipe.flowIndex, pipe.consistency, pipe.yieldStress};
     const double q = twoPhaseRateForDrop(pipe, fluid, pUp, pLow, sinFlow,
-                                         choked, liquidRheology);
+                                         choked, liquidRheology, sigmaOfP);
 
     const BeggsBrillMarchOut m = marchBeggsBrillPipe(
         fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness, sinFlow,
-        24, liquidRheology, pipe.flowPattern);
+        24, liquidRheology, pipe.flowPattern, sigmaOfP);
     out.flowRate = forward ? q : -q;
     out.velocity = m.vmOutlet * (forward ? 1.0 : -1.0);
     out.holdup = m.holdupOutlet;
@@ -1826,7 +1832,7 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
         bool ch2 = false;
         const double qDeep = twoPhaseRateForDrop(
             pipe, fluid, pUp, std::max(pLow - h, 1.0), sinFlow, ch2,
-            liquidRheology);
+            liquidRheology, sigmaOfP);
         c = (qDeep - q) / h;
     }
     if (!(c > 0.0))
@@ -1837,7 +1843,7 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
         const BeggsBrillMarchOut dead =
             marchBeggsBrillPipe(fluid, 0.0, pUp, pipe.length, pipe.diameter,
                                 pipe.roughness, sinFlow, 24,
-                                liquidRheology, pipe.flowPattern);
+                                liquidRheology, pipe.flowPattern, sigmaOfP);
         const double deficit = pLow - dead.pOutlet; // missing pressure
         if (deficit > 0.0)
         {
@@ -1845,7 +1851,7 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
             const double probeLow = std::max(dead.pOutlet - 0.01 * pUp, 1.0);
             const double qProbe = twoPhaseRateForDrop(
                 pipe, fluid, pUp, probeLow, sinFlow, ch2,
-                liquidRheology);
+                liquidRheology, sigmaOfP);
             c = qProbe / std::max(pLow - probeLow, 1.0);
         }
         if (!(c > 0.0)) c = 1e-6; // keep the network Jacobian nonsingular
@@ -1854,9 +1860,122 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     return true;
 }
 
-double PvtFluid::density(double p) const { return pvtLookup(pressure, rho, p); }
+// D10/D7 (§5.121): the opaque live-flash state owned by a PvtFluid. Kept out
+// of the public header so adding the opt-in cannot perturb any include order;
+// held by shared_ptr so the network stays copyable.
+struct LiveFlashState
+{
+    pvt::Mixture mix;                  // feed, value semantics
+    double T = 0;                      // K
+    std::vector<double> parachors;     // SI [N^0.25 m^2.75/mol], feed order
+    bool sigmaFromP = false;           // per-station Weinaug-Katz sigma
+};
 
-double PvtFluid::viscosity(double p) const { return pvtLookup(pressure, mu, p); }
+namespace
+{
+constexpr double kPrZc = 0.3074; // PR76 universal critical compressibility
+
+/// Lohrenz-Bray-Clark viscosity of one flash phase from the PR molar volume
+/// the flash already computed: no second EOS solve, so the checker can
+/// re-derive every number from the reported phase state alone.
+double lbcOfPhase(const pvt::Mixture& mix, double T, double molarVolume)
+{
+    const std::vector<pvt::Component>& comps = mix.components();
+    std::vector<double> MWs(comps.size()), Tcs(comps.size()),
+        Pcs(comps.size()), Vcs(comps.size());
+    for (std::size_t i = 0; i < comps.size(); ++i)
+    {
+        MWs[i] = comps[i].molarMass * 1.0e3; // kg/mol -> g/mol
+        Tcs[i] = comps[i].Tc;
+        Pcs[i] = comps[i].Pc;
+        Vcs[i] = kPrZc * pvt::kGasConstant * comps[i].Tc / comps[i].Pc;
+    }
+    return pvt::lbcViscosity(T, molarVolume, mix.fractions(), MWs, Tcs,
+                             Pcs, Vcs);
+}
+} // namespace
+
+void PvtFluid::evaluateAt(double p, double& rhoOut, double& muOut,
+                          double& sigmaOut) const
+{
+    sigmaOut = 0.0;
+    if (!liveFlash)
+    {
+        rhoOut = pvtLookup(pressure, rho, p);
+        muOut = pvtLookup(pressure, mu, p);
+        return;
+    }
+
+    const LiveFlashState& lf = *liveFlash;
+    const pvt::FlashResult r = pvt::tpFlash(lf.mix, lf.T, p);
+    if (!(r.liquidMassDensity > 0.0) || !(r.vapourMassDensity > 0.0))
+        cfFatal("pvtLiveFlash: non-positive flash phase density at p="
+                + std::to_string(p));
+
+    // Mass fractions carried by the bulk: beta is a MOLE vapour fraction,
+    // so weight each phase by (moles x molar mass). In a single-phase flash
+    // the two phase densities are equal, which collapses this to rho = the
+    // single PR root independently of beta.
+    const double beta = r.vaporFraction;
+    const double mL = (1.0 - beta) * r.liquidMolarMass;
+    const double mV = beta * r.vapourMolarMass;
+    const double mtot = mL + mV;
+    if (!(mtot > 0.0))
+        cfFatal("pvtLiveFlash: zero phase mass at p=" + std::to_string(p));
+    const double wL = mL / mtot;
+    const double wV = mV / mtot;
+
+    // Homogeneous (no-slip) mixture density: specific volume is mass-
+    // fraction weighted. The march's mass rate is fixed by the upstream
+    // value of exactly this quantity.
+    rhoOut = 1.0 / (wL / r.liquidMassDensity + wV / r.vapourMassDensity);
+
+    // Phase LBC viscosities on the flash's own PR molar volumes, combined
+    // with the same mass fractions. Single phase: both phases are the feed
+    // and both viscosities are identical.
+    pvt::Mixture liq = lf.mix;
+    liq.setFractions(r.liquidComposition);
+    pvt::Mixture vap = lf.mix;
+    vap.setFractions(r.vapourComposition);
+    const double muL = lbcOfPhase(liq, lf.T, r.liquid.molarVolume);
+    const double muV = lbcOfPhase(vap, lf.T, r.vapour.molarVolume);
+    muOut = wL * muL + wV * muV;
+    if (!(rhoOut > 0.0) || !(muOut > 0.0))
+        cfFatal("pvtLiveFlash: non-positive rho/mu at p=" + std::to_string(p));
+
+    // The convenience WK overload would flash again; build it from the phase
+    // state already in hand (exactly the same expression as surfaceTension.cpp).
+    if (lf.sigmaFromP && lf.parachors.size() == lf.mix.size()
+        && !r.singlePhase)
+    {
+        const double Vml = r.liquidMolarMass / r.liquidMassDensity;
+        const double Vmg = r.vapourMolarMass / r.vapourMassDensity;
+        sigmaOut = pvt::weinaugKatzSurfaceTension(
+            lf.parachors, Vml, Vmg, r.liquidComposition,
+            r.vapourComposition);
+    }
+}
+
+double PvtFluid::density(double p) const
+{
+    double rho = 0, mu = 0, sigma = 0;
+    evaluateAt(p, rho, mu, sigma);
+    return rho;
+}
+
+double PvtFluid::viscosity(double p) const
+{
+    double rho = 0, mu = 0, sigma = 0;
+    evaluateAt(p, rho, mu, sigma);
+    return mu;
+}
+
+double PvtFluid::surfaceTension(double p) const
+{
+    double rho = 0, mu = 0, sigma = 0;
+    evaluateAt(p, rho, mu, sigma);
+    return sigma;
+}
 
 namespace
 {
@@ -1877,10 +1996,12 @@ struct PvtMarchOut
     double velocity = 0; // outlet velocity, flow direction
     double reynolds = 0; // outlet conditions, as in the BB march
     double friction = 0;
+    double sigmaOutlet = 0; // D10/D7: WK sigma at the last station (0 otherwise)
 };
 
 PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
-                         double qIn, double pUp, double sinFlow, int nSeg)
+                         double qIn, double pUp, double sinFlow, int nSeg,
+                         std::vector<PvtFlashStation>* stations = nullptr)
 {
     if (pipeIsAnnulus(pipe))
         cfFatal("pvtMarch: pipe '" + pipe.name + "' declares an annulus: the "
@@ -1897,7 +2018,11 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
     double p = pUp;
     for (int i = 0; i < nSeg; ++i)
     {
-        const double rho = fluid.density(p);
+        // D10/D7: one flash per station when liveFlash is set. On the table
+        // path evaluateAt returns exactly pvtLookup(pressure,rho/mu,p), so
+        // this is bit-for-bit the original march.
+        double rho = 0, mu0 = 0, sigma = 0;
+        fluid.evaluateAt(p, rho, mu0, sigma);
         const double v = massRate / (rho * area);
         // 5.76 (A5 increment 2): the PVT table supplies the pressure-
         // dependent Newtonian baseline; a declared rheology reprices it on
@@ -1905,12 +2030,15 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         // bit for bit (the whole PVT suite is that witness).
         const double mu = wallRateApparentViscosityPaS(
             Rheology{pipe.flowIndex, pipe.consistency, pipe.yieldStress},
-            8.0 * std::abs(v) / pipe.diameter, fluid.viscosity(p));
+            8.0 * std::abs(v) / pipe.diameter, mu0);
         const double re = rho * v * pipe.diameter / mu;
         const double f = churchillFriction(re, pipe.roughness / pipe.diameter);
         m.velocity = v;
         m.reynolds = re;
         m.friction = f;
+        m.sigmaOutlet = sigma;
+        if (stations && fluid.liveFlash)
+            stations->push_back(PvtFlashStation{p, rho, mu, sigma});
         const double dp = rho * kGravity * dz
             + (f * ds / pipe.diameter + pipe.valveK / nSeg) * rho * v * v / 2.0
             - rho * kGravity * headPerM * ds;
@@ -2105,7 +2233,12 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
     bool choked = false;
     const double q = pvtRateForDrop(pipe, fluid, pUp, pLow, sinFlow, choked);
 
-    const PvtMarchOut m = marchPvtPipe(pipe, fluid, q, pUp, sinFlow, 24);
+    // D10/D7: the accepted march is replayed once with station capture so a
+    // checker can read the per-station rho/mu/sigma the march actually used.
+    const PvtMarchOut m = marchPvtPipe(
+        pipe, fluid, q, pUp, sinFlow, 24,
+        fluid.liveFlash ? &out.pvtFlashStations : nullptr);
+    out.sigmaOutlet = m.sigmaOutlet;
     out.flowRate = (forward ? 1.0 : -1.0) * q;
     out.velocity = (forward ? 1.0 : -1.0) * m.velocity;
     out.reynolds = m.reynolds;
@@ -2208,24 +2341,87 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                 else if (phase == "vapour" || phase == "vapor") pref = pvt::RootPreference::Vapor;
                 else if (phase != "stable")
                     cfFatal("steadyNetwork: unknown compositional phase '" + phase + "'");
+
+                // D10/D7 (§5.121): opt-in per-station true flash. Default off,
+                // in which case the 5.110 precomputed-root table below (and
+                // every existing number) is byte-for-byte untouched.
+                const bool liveFlash = comp.has("liveFlash")
+                                    && comp.getBool("liveFlash");
+                const bool sigmaFromP = comp.has("sigmaFromP")
+                                     && comp.getBool("sigmaFromP");
+                std::vector<double> parachors;
+                if (sigmaFromP)
+                {
+                    if (!comp.has("parachors"))
+                        cfFatal("steadyNetwork: compositional sigmaFromP needs parachors");
+                    const Dictionary::Node& pn = comp.find("parachors");
+                    if (pn.kind == Dictionary::Kind::word
+                        && comp.getWord("parachors") == "fromTable")
+                        parachors = pvt::parachorsFromTableSi(mix.components());
+                    else if (pn.kind == Dictionary::Kind::list)
+                        parachors = comp.getScalarList("parachors");
+                    else
+                        cfFatal("steadyNetwork: compositional parachors must be"
+                                " a list or 'fromTable'");
+                    if (parachors.size() != mix.size())
+                        cfFatal("steadyNetwork: compositional parachors must give"
+                                " one value per component");
+                }
+
                 const std::size_t nc = net.pvtFluid.pressure.size();
                 if (nc < 2)
                     cfFatal("steadyNetwork: compositional needs a pressure grid");
-                net.pvtFluid.rho.resize(nc);
-                net.pvtFluid.mu.resize(nc);
-                for (std::size_t i = 0; i < nc; ++i)
+                if (liveFlash)
                 {
-                    const double p = net.pvtFluid.pressure[i];
-                    if (!(p > 0.0))
-                        cfFatal("steadyNetwork: compositional pressures must be positive");
-                    if (i > 0 && !(p > net.pvtFluid.pressure[i - 1]))
-                        cfFatal("steadyNetwork: compositional pressures must ascend");
-                    const pvt::EosState st = pvt::pengRobinsonState(mix, T, p, pref);
-                    net.pvtFluid.rho[i] = st.massDensity;
-                    net.pvtFluid.mu[i] = pvt::lbcViscosity(mix, T, p, pref);
-                    if (!(net.pvtFluid.rho[i] > 0.0) || !(net.pvtFluid.mu[i] > 0.0))
-                        cfFatal("steadyNetwork: compositional generated non-positive"
-                                " rho/mu at pressure " + std::to_string(p));
+                    // No rho/mu table is filled: evaluateAt() flashes the feed
+                    // at each station pressure instead. The grid is still
+                    // validated and kept as the case's declared envelope.
+                    for (std::size_t i = 0; i < nc; ++i)
+                    {
+                        const double p = net.pvtFluid.pressure[i];
+                        if (!(p > 0.0))
+                            cfFatal("steadyNetwork: compositional pressures must be positive");
+                        if (i > 0 && !(p > net.pvtFluid.pressure[i - 1]))
+                            cfFatal("steadyNetwork: compositional pressures must ascend");
+                    }
+                    std::shared_ptr<LiveFlashState> st =
+                        std::make_shared<LiveFlashState>();
+                    st->mix = mix;
+                    st->T = T;
+                    st->parachors = parachors;
+                    st->sigmaFromP = sigmaFromP;
+                    net.pvtFluid.liveFlash = st;
+                    if (sigmaFromP)
+                    {
+                        // Publish the same WK sigma as a per-pressure callback
+                        // for the Beggs-Brill two-phase march (see Network.h).
+                        std::shared_ptr<LiveFlashState> captured = st;
+                        net.sigmaOfP = [captured](double p)
+                        {
+                            return pvt::weinaugKatzSurfaceTension(
+                                captured->mix, captured->T, p,
+                                captured->parachors);
+                        };
+                    }
+                }
+                else
+                {
+                    net.pvtFluid.rho.resize(nc);
+                    net.pvtFluid.mu.resize(nc);
+                    for (std::size_t i = 0; i < nc; ++i)
+                    {
+                        const double p = net.pvtFluid.pressure[i];
+                        if (!(p > 0.0))
+                            cfFatal("steadyNetwork: compositional pressures must be positive");
+                        if (i > 0 && !(p > net.pvtFluid.pressure[i - 1]))
+                            cfFatal("steadyNetwork: compositional pressures must ascend");
+                        const pvt::EosState st = pvt::pengRobinsonState(mix, T, p, pref);
+                        net.pvtFluid.rho[i] = st.massDensity;
+                        net.pvtFluid.mu[i] = pvt::lbcViscosity(mix, T, p, pref);
+                        if (!(net.pvtFluid.rho[i] > 0.0) || !(net.pvtFluid.mu[i] > 0.0))
+                            cfFatal("steadyNetwork: compositional generated non-positive"
+                                    " rho/mu at pressure " + std::to_string(p));
+                    }
                 }
             }
             else
@@ -2234,6 +2430,9 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                 net.pvtFluid.mu = pd.getScalarList("mu");
             }
             const std::size_t n = net.pvtFluid.pressure.size();
+            // D10/D7: a live-flash fluid has no rho/mu table to validate.
+            if (!net.pvtFluid.liveFlash)
+            {
             if (n < 2 || net.pvtFluid.rho.size() != n
                 || net.pvtFluid.mu.size() != n)
                 cfFatal("steadyNetwork: fluid pvt needs pressure/rho/mu"
@@ -2249,6 +2448,7 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                                > net.pvtFluid.pressure[i - 1]))
                     cfFatal("steadyNetwork: fluid pvt pressures must"
                             " strictly ascend");
+            }
             }
         }
         else

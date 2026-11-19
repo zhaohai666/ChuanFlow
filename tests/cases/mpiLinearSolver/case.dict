@@ -1,0 +1,48 @@
+// A11 / §5.122: distributed sparse linear solve over a real MPI transport.
+// An 8 x 8 x 4 hex box (256 cells). Each rank builds the same global
+// graph-Laplacian CSR (diagonal = face count + shift, off-diagonal -1 per
+// internal face), owns the rows dec.cells(rank), and solves with a
+// diagonal-preconditioned CG whose matvec is MPI_Sendrecv halo + local CSR
+// product and whose dot products / residual norms are MPI_Allreduce.
+//
+// Right-hand side b = A*xExact with a known polynomial, so the analytic
+// solution is available to the checker independently of the app's own numbers.
+// rank 0 also runs the serial solveCG on the same global CSR as the reference.
+block
+{
+    min   (0 0 0);
+    max   (1 1 0.5);
+    cells (8 8 4);
+}
+
+mpi
+{
+    ranks (1 2 4);
+}
+
+linearSolver
+{
+    // convergence: global residual inf-norm / global b inf-norm < tol
+    tol   1e-12;
+    maxIter 500;
+    // shift > 0 makes the graph Laplacian strictly SPD, so CG is well posed
+    shift 1.0;
+    // xExact = c0 + c1 x + c2 y + c3 z + c4 x^2 + c5 y^2 + c6 z^2
+    //          + c7 xy + c8 yz + c9 zx
+    exactCoeffs (1 2 3 -1 0.5 0 0 0 0 0);
+}
+
+verify
+{
+    // distributed vs serial solveCG, and both vs the analytic solution
+    maxDiffTol      1e-6;
+    analyticDiffTol 1e-6;
+    // distributed matvec (halo exchange + local CSR) vs serial CSR product
+    matvecDevTol    1e-12;
+}
+
+output
+{
+    // rank 0 writes cell-by-cell: cell xDist xSerial xExact cx cy cz
+    dump solution.dat;
+}

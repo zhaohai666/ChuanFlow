@@ -71,4 +71,29 @@ SolverReport solveCG(const SparseMatrix& A, const Field<double>& b,
 SolverReport solveBiCGStab(const SparseMatrix& A, const Field<double>& b,
                            Field<double>& x, double tol, int maxIter);
 
+/// Selectable sparse linear solver backend (README M6 / A11). `Native` is the
+/// project's own CG/BiCGStab above and is the default everywhere, so every
+/// existing checker stays bit-identical. `Eigen` dispatches to Eigen's
+/// incomplete-LU-preconditioned BiCGSTAB when the library is compiled in
+/// (CHFLOW_WITH_EIGEN); requesting an unavailable backend fails loudly rather
+/// than silently changing the numerical result.
+enum class LinearBackend { Native, Eigen, PETSc };
+
+/// Solve A x = b with an explicitly chosen backend. Both backends solve the
+/// same assembled CSR system; they agree to the solver tolerance (they are
+/// different iterative algorithms, so bit-identity is not claimed across
+/// backends -- only within a backend and against the native path when Eigen
+/// is not compiled in).
+SolverReport solveWithBackend(const SparseMatrix& A, const Field<double>& b,
+                              Field<double>& x, double tol, int maxIter,
+                              LinearBackend backend);
+
+/// Name of the compiled-in Eigen backend, or "none" when CHFLOW_WITH_EIGEN
+/// was off. Useful for a checker to witness which path actually ran.
+const char* eigenBackendName();
+
+/// Name of the compiled-in PETSc backend, or "none" when CHFLOW_WITH_PETSc
+/// was off / no PETSc library was found at configure time.
+const char* petscBackendName();
+
 } // namespace cf

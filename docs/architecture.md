@@ -5050,6 +5050,24 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **判据与状态（2026-11-19）。** `tests/check_pvt_thermal_hydrate.py` 用 Python math 独立重推两闭式（常数从 case 读、不信 app 自报）：k=mu·cp/Pr 匹配 1e-6、5 个温度点 p_eq 逐点匹配 1e-6、锚点 p(Tref)=pRef 到 1e-9、p 随 T 单调、6 条拒收（负 mu/零 cp/负 Pr/负 Tref/负 pRef/零 dH）、零声明孪生 flash 行逐位相同且无新 token。CTest `verify.pvtThermalHydrate`（注册 #174，总数 176 → 177）。code commit 177d3d0，全量回归 **177/177（497.13 s，rc=0）**。**边界**：Clausius–Clapeyron 恒 dH、理想气体近似，非真实水合物相图（多相/结构转变/盐度效应未含）；导热闭包是声明输入纯函数，尚未自动接入 3D `EnergyProps`（调用方需显式声明 k 或另行接线）；拒收仅覆盖符号/零值，极端温度外推的行为由输入方负责。
 
+### 5.128 非等温闪蒸：PR departure 焓 + 声明式 cp(T) + PH-flash（D13 增量 5）
+
+> **状态（2026-11-19）**：已提交 29c68ee，CTest `verify.pvtNonIsothermal`（#175，总数 177 → 178），全量回归 **178/178（1058.98 s，rc=0）**。
+
+**可行性评估先行。** 非等温闪蒸需要焓模型：PR departure 焓只需已声明的 PR 参数（Tc/Pc/ω/kij/R）即可解析推出 da/dT，**无需新数据**；理想气体 cp(T) 全仓无任何系数（Component 无 cp 字段、无 Shomate/NASA 表），按项目"声明输入不内置数据"政策把线性 cp 系数（A_i + B_i·T，各组分一对）与 referenceT 作为 case 声明引入。两项均可行，故实现。
+
+**焓模型（`src/pvt/include/cf/pvt/Enthalpy.h`，`enthalpy.cpp`）。** 四件套纯函数：
+- `prDepartureEnthalpy(T, p, feed, kij, eos)`：H^R = R·T·(Z−1) + (T·daMix/dT − aMix)/(2√2·bMix) · ln[(Z+(1+√2)B)/(Z+(1−√2)B)]。关键解析式 daI/dT = −Ω_a·(R·Tc)²/Pc · κ·f/√(T·Tc)（f = 1+κ(1−√(T/Tc))，由 α_i=[1+κ(1−√(T/Tc))]² 严格求导），daMix/dT 按 vdW 规则 ΣΣ z_i z_j (1−kij)·(daI_i√(aI_j/aI_i)+daI_j√(aI_i/aI_j))/2 合成。根取 `CubicSolver::largestRealRoot`（气相）——与 departure 公式的相态约定一致。
+- `idealGasEnthalpy(T, A, B, Tref)`：线性 cp 对 referenceT 积分 h^ig = A·(T−Tref) + ½·B·(T²−Tref²)。
+- `mixtureEnthalpy(T, p, feed, …)`：调**现有** `pvt::tpFlash`（不改动一行）得 β/x/y，气液相各算 h^ig+H^R 按 β 加权。
+- `phFlash(feed, p, hTarget, …, Tmin, Tmax)`：等压目标焓反求 T——有界区间内割线迭代，每步 mixtureEnthalpy；区间非法或耗尽迭代返回未收敛，由调用方决断。
+
+**接线与零声明逐位不变。** `pvtApp.cpp` 增 gated 报表 `nonIsothermal{ cpA (…); cpB (…); referenceT; pressure; enthalpyT (…); hTarget; Tmin; Tmax; }`：存在才打印 `pvt enthalpyAt T … p … h …` 表与 `pvt phFlash T … p … h … residual … converged … iterations … beta …` 行，phFlash 未收敛或区间非法 `cfFatal`（拒收路径非零退出）；块缺席时 flash 报表逐字节不变（checker 孪生臂验证）。
+
+**判据（`tests/check_pvt_non_isothermal.py`）。** checker 复用独立 Python PR 实现（cubic_real_roots/pr_state/tp_flash，与 check_steady_pvt_flash.py 同源）：自行推导 daI/dT、daMix/dT、H^R 与混合焓，对 app 输出的每个 `enthalpyAt` 点独立重推（常数从 case 读、不信 app 自报）匹配 1e-6；phFlash 臂用 case 声明 hTarget=242384.567025（对应探测 320 K 的焓）验证解回 T=320.000000、且独立 H(T*)=hTarget <1e-6；H 随 T 单调；5 条拒收（Tmin≥Tmax、hTarget 超出区间等，经 cfFatal 非零退出）；零声明孪生 flash 行逐位相同且无新 token。
+
+**边界。** cp(T) 是线性声明近似（真实工质需分段多项式或 NASA 系数，可后续以同样"声明输入"方式扩展）；焓基准是 referenceT 理想气体零点，混合不同 referenceT 的 case 无意义；departure 焓取最大实根（气相）用于液相 departure 时仍在两相稳定性范围内成立（PR 焓 departure 公式对任一实根均成立，根的选择由 tpFlash 相态决定）；Kokkos GPU 与 PETSc 分支仍待有库机器（D13 整体边界）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

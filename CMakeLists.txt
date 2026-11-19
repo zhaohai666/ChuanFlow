@@ -43,7 +43,25 @@ endif()
 # as HDF5 / Kokkos). This keeps the default build free of heavy MPI deps.
 option(CHFLOW_WITH_PETSC "Use the PETSc sparse solver backend when available" OFF)
 if(CHFLOW_WITH_PETSC)
-    find_package(PETSc QUIET)
+    # PETSc's `make install` places PETScConfig.cmake under
+    # <prefix>/lib/petsc/cmake, which CMake's default config-mode search does
+    # not visit; pass the install prefix as PETSC_DIR and use it as a HINT.
+    # Without PETSC_DIR the search is unchanged (system prefixes only).
+    find_package(PETSc CONFIG QUIET
+        HINTS ${PETSC_DIR}/lib/petsc/cmake ${PETSC_DIR})
+    if(NOT PETSc_FOUND AND PETSC_DIR)
+        # PETSc 3.23+ installs petscvariables/pkg-config rather than a CMake
+        # package config; discover a prefix directly when the user provides
+        # PETSC_DIR (include/petsc.h + lib/libpetsc.*).
+        if(EXISTS "${PETSC_DIR}/include/petsc.h")
+            set(PETSc_FOUND ON)
+            set(PETSc_INCLUDE_DIRS "${PETSC_DIR}/include")
+            # libpetsc.a references BLAS/LAPACK (configure used the Accelerate
+            # framework on this host); static linking must supply them.
+            set(PETSc_LIBRARIES "${PETSC_DIR}/lib/libpetsc.a;-framework Accelerate")
+            set(PETSc_VERSION "manual-prefix")
+        endif()
+    endif()
     if(PETSc_FOUND)
         message(STATUS "PETSc found: ${PETSc_VERSION}")
     else()

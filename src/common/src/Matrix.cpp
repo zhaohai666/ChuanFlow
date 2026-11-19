@@ -411,7 +411,17 @@ SolverReport solveWithBackend(const SparseMatrix& A, const Field<double>& b,
         const label n = A.size();
         const PetscInt pn = static_cast<PetscInt>(n);
         Mat M;
-        PetscErrorCode ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, pn, pn, 0, nullptr, &M);
+        // Exact per-row preallocation from the CSR rowStart census; passing
+        // 0/nullptr makes every real-library insertion raise "new nonzero
+        // caused a malloc" (the stub-free path needs the true row counts).
+        std::vector<PetscInt> dnnz(static_cast<std::size_t>(n), 0);
+        for (label r = 0; r < n; ++r)
+        {
+            dnnz[static_cast<std::size_t>(r)] = static_cast<PetscInt>(
+                A.rowStart()[static_cast<std::size_t>(r + 1)]
+                - A.rowStart()[static_cast<std::size_t>(r)]);
+        }
+        PetscErrorCode ierr = MatCreateSeqAIJ(PETSC_COMM_SELF, pn, pn, 0, dnnz.data(), &M);
         CHKERRABORT(PETSC_COMM_SELF, ierr);
         // Row nnz counts, then the CSR values/colindices.
         // Assemble through explicit (row, col, value) triplets, which is
@@ -422,9 +432,12 @@ SolverReport solveWithBackend(const SparseMatrix& A, const Field<double>& b,
             const label b1 = A.rowStart()[static_cast<std::size_t>(r + 1)];
             for (label k = b0; k < b1; ++k)
             {
+                // PetscInt may be 32-bit while cf::label is 64-bit: convert
+                // explicitly so the triplet assembly is width-agnostic.
+                const PetscInt prow = static_cast<PetscInt>(r);
                 const PetscInt col = static_cast<PetscInt>(A.cols()[static_cast<std::size_t>(k)]);
                 const PetscScalar val = A.vals()[static_cast<std::size_t>(k)];
-                ierr = MatSetValues(M, 1, &r, 1, &col, &val, ADD_VALUES);
+                ierr = MatSetValues(M, 1, &prow, 1, &col, &val, ADD_VALUES);
                 CHKERRABORT(PETSC_COMM_SELF, ierr);
             }
         }
@@ -436,8 +449,10 @@ SolverReport solveWithBackend(const SparseMatrix& A, const Field<double>& b,
         const std::vector<double> bb = bVec(b);
         for (label i = 0; i < n; ++i)
         {
+            // Width-agnostic index conversion (PetscInt may be 32-bit).
+            const PetscInt pi = static_cast<PetscInt>(i);
             const PetscScalar v = bb[static_cast<std::size_t>(i)];
-            ierr = VecSetValues(rhs, 1, &i, &v, INSERT_VALUES); CHKERRABORT(PETSC_COMM_SELF, ierr);
+            ierr = VecSetValues(rhs, 1, &pi, &v, INSERT_VALUES); CHKERRABORT(PETSC_COMM_SELF, ierr);
             ierr = VecSetValue(sol, static_cast<PetscInt>(i),
                                (i < static_cast<label>(x.size())) ? x[static_cast<std::size_t>(i)] : 0.0,
                                INSERT_VALUES);

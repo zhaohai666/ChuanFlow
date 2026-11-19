@@ -5,8 +5,9 @@
 // against both the serial reference (cf::backend::serialFor) and the analytic
 // closed form. With the default CPU build the two loops are the same machine
 // code; with OpenMP the body is still per-index independent, so the trailing
-// serial reduction is bitwise identical. The Kokkos branch is interface-only
-// here (no SDK/CUDA on this host).
+// serial reduction is bitwise identical. The Kokkos branch is compiled and
+// run-verified against a real Kokkos (Serial host execution space);
+// CUDA/HIP GPU execution still requires GPU hardware absent on this host.
 //
 // usage: chflow-3d-backend <case.dict>
 #include <algorithm>
@@ -22,6 +23,21 @@
 #include "cf/common/Labels.h"
 #include "cf/common/Log.h"
 #include "cf/parallel/Backend.h"
+
+#if defined(CF_WITH_KOKKOS)
+#include <Kokkos_Core.hpp>
+// Kokkos requires explicit runtime setup; the guard finalizes on every exit
+// path so the checksum comparison below runs in a live default execution
+// space (Serial on this host -- no CUDA/AMD GPU hardware is available).
+namespace
+{
+struct KokkosRuntimeGuard
+{
+    ~KokkosRuntimeGuard() { Kokkos::finalize(); }
+};
+} // namespace
+#endif
+
 
 using namespace cf;
 
@@ -73,6 +89,10 @@ Checksum analytic(label n, const std::string& mode)
 
 int main(int argc, char** argv)
 {
+#if defined(CF_WITH_KOKKOS)
+    Kokkos::initialize(argc, argv);
+    KokkosRuntimeGuard kokkosGuard;
+#endif
     if (argc < 2)
     {
         std::cerr << "usage: chflow-3d-backend <case.dict>\n";

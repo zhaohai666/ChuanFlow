@@ -47,11 +47,13 @@ void parallelFor(Idx n, F&& f)
 
 #if defined(CF_WITH_KOKKOS)
     // Kokkos SDK is required: configure with
-    //   cmake -DCFLOW_WITH_KOKKOS=ON -DKokkos_DIR=<kokkos-install>/lib/cmake/Kokkos
-    // and call Kokkos::initialize(argc, argv) / Kokkos::finalize() in main().
-    // The callable must be device-callable (KOKKOS_FUNCTION) and capture by
-    // value; host-only lambdas will not compile here. This branch is not
-    // built in this environment (no SDK, no CUDA) but is the full interface.
+    //   cmake -DCHFLOW_WITH_KOKKOS=ON -DKokkos_DIR=<kokkos-install>/lib/cmake/Kokkos
+    // and call Kokkos::initialize(argc, argv) / Kokkos::finalize() in main()
+    // (backendApp.cpp guards this). The callable must be device-callable
+    // (KOKKOS_FUNCTION) and capture by value; host-only lambdas will not
+    // compile on CUDA/HIP. Compiled and run-verified against real Kokkos with
+    // the Serial host execution space; CUDA/HIP GPU execution still requires
+    // GPU hardware.
     Kokkos::parallel_for("cf::backend::parallelFor", static_cast<std::size_t>(n),
                          KOKKOS_LAMBDA(const std::size_t i)
                          {

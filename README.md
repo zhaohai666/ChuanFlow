@@ -124,7 +124,7 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 > kij 按组分名声明、缺省 0 时 ×1.0 逐位回到经典 PR）与水组分（IAPWS/NIST Tc=647.096 K、
 > Pc=22.064 MPa、ω=0.3443，CO₂/H₂S 已在册），checker 用独立 Python PR 由报表组成与声明 kij
 > 重推每相 Z/密度/逸度到 ~1e-12、kij=0 孪生逐位相符且声明 kij 可观测（§5.95 / D7 增量 3，
-> **D7 至此 CLOSED**）；黑油分离器与内置 parachor 表已落地（§5.115 / §5.111），导热关联式、水合物相平衡与生成条件仍待实现；kij 有意保持声明式——不存在与混合规则/温度无关的单一发表 kij 表，编造「标准表」会违反可核实来源要求。
+> **D7 至此 CLOSED**）；黑油分离器与内置 parachor 表已落地（§5.115 / §5.111），导热关联式（k=μcp/Pr）与水合物相平衡（Clausius–Clapeyron）也已落地（§5.127）；kij 有意保持声明式——不存在与混合规则/温度无关的单一发表 kij 表，编造「标准表」会违反可核实来源要求。
 
 #### 3. 一维求解层 `src/1d`
 独立子系统，分为稳态求解器与瞬态求解器：
@@ -355,7 +355,7 @@ print(result.pressure_profile)
   `chflow-mpi-linear-solver` 一 rank 一域、分布式 CSR 对角预条件 CG（matvec = halo + 本地 CSR 乘、dot = Allreduce），
   分布式解对串行 `solveCG` 与解析解 maxDiff 2.7e-15、matvec 逐位一致，np=1/2/4 实跑全绿（§5.122）——已落地；
   Eigen/PETSc 稀疏求解后端可选开关已落地（§5.123/§5.124）；跨域求解的 PETSc 大规模分布式对照待有库机器）
-- 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）🚧
+- 统一物性层 `src/pvt`（上面两个里程碑共用的底座，见分层说明第 2 层）✅
   （Peng-Robinson 状态方程 + 多组分等温 TP 闪蒸 + 混合物泡点 + PVT 双线性表 +
   黑油物性相关式（Standing 泡点、Vazquez-Beggs Rs/Bo/co、Beggs-Robinson 与
   Lee 黏度、DAK Z）+ `chflow-pvt` 应用 + Python 绑定 + CLI 已落地，
@@ -363,7 +363,8 @@ print(result.pressure_profile)
   **内置 WK parachor 表 opt-in**（§5.111）、**黑油分离器级联**（§5.115）；
   **WK 表面张力接 1D 两相 march + 每站真闪蒸回调**（§5.121，`liveFlash` opt-in 逐站 PR+LBC+WK 喂 Beggs-Brill）、
   **3D VOF 逐格 sigma**（§5.120，app 调真正的 `cf::pvt` WK 函数逐格算，单一真相源）——均已落地；
-  水合物相平衡/生成条件、非等温闪蒸待做）
+  水合物相平衡（Clausius–Clapeyron）与 Prandtl 导热（k=μcp/Pr）已落地（§5.127）、
+  非等温闪蒸（PR departure 焓 + 声明式 cp(T) + PH-flash）已落地（§5.128）——本层待做项已清零）
 - M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口 🚧
   （VOF 连续表面力 CSF 与 PISO 动量耦合（静止液滴 Laplace 压差算例）与两相
   耦合——解出通量输运 α、椭圆液滴振荡验密度匹配 Lamb 周期——已落地；

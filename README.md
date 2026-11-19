@@ -226,7 +226,7 @@ print(result.pressure_profile)
   fluid{pvt{pressure;rho;mu}} 分段线性 ρ(p)/μ(p) 接入稳态管网，24 段局部
   能量平衡 march（质量流量守恒、气体沿程膨胀）+ 单调律 Illinois 割线，
   平表严格退化常物性、等温气柱静水闭式 exp(−gH/c) 回归）
-- M2：一维瞬态多相求解，实现段塞基础模型、水合物计算，对标OLGA简单工况 🚧
+- M2：一维瞬态多相求解，实现段塞基础模型、水合物计算，对标OLGA简单工况 ✅
   （集总瞬态水力 + 段塞持液率输运 + 水合物等温动力学，以及**分布式两流体
   内核**——逐管段 α 输运的 Godunov 漂移流模型（Wallis/Zuber 闭合）+ 混合
   动量，激波位置/稳态持液率/重力分异/层流启动 5 个解析回归——已落地；
@@ -312,7 +312,7 @@ print(result.pressure_profile)
   v_m > s 排除）；校验器逐步复现 Newton + 滑移 + Godunov 水相（1e-9），
   BVP 闭合恒等式 = 入口锚起的损失行进恰好落在出口锚（dp = Σ损失 =
   Δp驱动，实测每元损失恰 1e4 Pa）——已落地
-- M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 🚧
+- M3：三维FVM基础求解器，单相对流扩散、k-ε，网格读写、MPI并行 ✅
   （多面体网格 + fvc/fvm 离散 + 对流扩散 + 不可压 SIMPLE（全压力回路 +
   Rhie-Chow 一致动量插值，Poiseuille 算例 1411 → 47 外迭代）+ 瞬态 PISO +
   blockMesh/Gmsh msh 读入 + vtu IO + k-ε / k-ω SST 湍流模型层与 Spalding 壁面
@@ -365,7 +365,7 @@ print(result.pressure_profile)
   **3D VOF 逐格 sigma**（§5.120，app 调真正的 `cf::pvt` WK 函数逐格算，单一真相源）——均已落地；
   水合物相平衡（Clausius–Clapeyron）与 Prandtl 导热（k=μcp/Pr）已落地（§5.127）、
   非等温闪蒸（PR departure 焓 + 声明式 cp(T) + PH-flash）已落地（§5.128）——本层待做项已清零）
-- M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口 🚧
+- M4：三维多相流模型，打通 1D ↔ 3D 耦合边界接口 ✅
   （VOF 连续表面力 CSF 与 PISO 动量耦合（静止液滴 Laplace 压差算例）与两相
   耦合——解出通量输运 α、椭圆液滴振荡验密度匹配 Lamb 周期——已落地；
   **几何界面重构 PLIC**（α 带逐单元平面、牛顿解偏移保证截体积、切面面积与质心，

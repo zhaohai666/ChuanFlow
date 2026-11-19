@@ -9,8 +9,10 @@
 #include "cf/common/Log.h"
 #include "cf/pvt/ComponentData.h"
 #include "cf/pvt/PvtCase.h"
+#include "cf/pvt/HydrateEquilibrium.h"
 #include "cf/pvt/PvtTable.h"
 #include "cf/pvt/SurfaceTension.h"
+#include "cf/pvt/ThermalConductivity.h"
 #include "cf/pvt/Viscosity.h"
 
 using namespace cf;
@@ -144,6 +146,33 @@ int main(int argc, char** argv)
             const double pb = bubblePressure(c.feed, c.temperature);
             log::info("pvt bubble T ", num(c.temperature), " p ", num(pb));
             reportOne(c, pb, wantVisc, paraPtr);
+        }
+
+        // D13 increment 4: Prandtl thermal-conductivity closure. Gated on a
+        // `thermalConductivity{}` block; absent means this report is untouched.
+        if (caseDict.has("thermalConductivity"))
+        {
+            const Dictionary& tc = caseDict.getDict("thermalConductivity");
+            const scalar mu = tc.getScalar("mu");
+            const scalar cp = tc.getScalar("cp");
+            const scalar Pr = tc.getScalar("Pr");
+            log::info("pvt thermalConductivity k ",
+                      num(thermalConductivityFromPr(mu, cp, Pr)));
+        }
+
+        // D13 increment 4: hydrate Clausius–Clapeyron dissociation line about
+        // a declared reference point; gated, all constants declared in-case.
+        if (caseDict.has("hydrateEquilibrium"))
+        {
+            const Dictionary& he = caseDict.getDict("hydrateEquilibrium");
+            const scalar Tref = he.getScalar("Tref");
+            const scalar pRef = he.getScalar("pRef");
+            const scalar dH = he.getScalar("dH");
+            for (const scalar T : he.getScalarList("temperatures"))
+            {
+                log::info("pvt hydrateEquilibrium T ", num(T), " p ",
+                          num(hydrateEquilibriumPressure(T, Tref, pRef, dH)));
+            }
         }
 
         // A coarse table shows interpolation and EOS agree; the regression

@@ -2011,6 +2011,16 @@ add_test(
         $<TARGET_FILE:chflow-separator>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtSeparator/case.dict)
 
+# D13 increment 4: Prandtl thermal conductivity + hydrate Clausius–Clapeyron
+# (declared-input pvt closures; checker restates both closed forms in Python,
+# six loud rejections, and a zero-declaration byte-identical twin).
+add_test(
+    NAME verify.pvtThermalHydrate
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_thermal_hydrate.py
+        $<TARGET_FILE:chflow-pvt>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtThermalHydrate/case.dict)
+
 # README M5: Tauri GUI (command-layer Rust unit tests, offline build, and the
 # DOM-free frontend pure-function tests). Only registered when cargo / node
 # exist, so a bare environment keeps every CTest green.

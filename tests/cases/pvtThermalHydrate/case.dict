@@ -1,0 +1,29 @@
+// D13 increment 4: two declared-input pvt closures gated on their own blocks.
+// thermalConductivity: k = mu*cp/Pr. hydrateEquilibrium: Clausius–Clapeyron
+// ln(p/pRef) = -(dH/R)(1/T - 1/Tref). All constants are declared here; the
+// checker restates both closed forms with plain Python math independently.
+temperature 300.0;
+pressures (2.0e6 5.0e6);
+
+composition
+{
+    methane 0.7;
+    ethane  0.3;
+}
+
+solve { tol 1.0e-12; maxIter 300; }
+
+thermalConductivity
+{
+    mu  0.00089;   // Pa.s, water ~25 C
+    cp  4180.0;    // J/(kg.K)
+    Pr  6.14;
+}
+
+hydrateEquilibrium
+{
+    Tref 285.25;        // methane hydrate anchor ~ 3.0 MPa at 285.25 K
+    pRef 3.0e6;         // Pa
+    dH   5.1868e4;      // J/mol, methane hydrate dissociation enthalpy
+    temperatures (275.0 280.0 285.25 290.0 295.0);
+}

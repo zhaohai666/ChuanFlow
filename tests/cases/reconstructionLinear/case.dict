@@ -1,0 +1,33 @@
+// Increment A: linear field, MUSCL face values must be exact to round-off.
+// T = x + 2y + 3z.  The gradient is constant, so both one-sided slopes agree
+// and every limiter returns the exact slope; every internal face value is
+// exactly the analytic value at the face centre.
+block
+{
+    min   (0 0 0);
+    max   (1 0.2 0.2);
+    cells (8 2 2);
+
+    xmin  { name xmin; type wall; }
+    xmax  { name xmax; type wall; }
+    ymin  { name ymin; type wall; }
+    ymax  { name ymax; type wall; }
+    zmin  { name zmin; type wall; }
+    zmax  { name zmax; type wall; }
+}
+
+// uniform velocity drives the upwind choice
+velocity (1 0 0);
+
+field
+{
+    profile  linear;
+    gradient (1 2 3);
+    offset   0;
+}
+
+schemes
+{
+    reconstruction muscl;
+    limiter       minmod;
+}

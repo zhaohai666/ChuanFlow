@@ -31,6 +31,12 @@ target_link_libraries(chflow-vof PRIVATE cf3d cf_pvt)
 add_executable(chflow-3d-compressible compressibleApp.cpp)
 target_link_libraries(chflow-3d-compressible PRIVATE cf3d)
 
+# MUSCL limited reconstruction standalone verifier (5.130): replays the
+# reconstruction operator face by face on analytical profiles so the checker
+# can compare against closed forms and the limiter functions independently.
+add_executable(chflow-reconstruction reconstructionApp.cpp)
+target_link_libraries(chflow-reconstruction PRIVATE cf3d)
+
 add_executable(chflow-3d-parallel parallelApp.cpp)
 target_link_libraries(chflow-3d-parallel PRIVATE cf3d)
 

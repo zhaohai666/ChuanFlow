@@ -308,6 +308,45 @@ add_test(
         $<TARGET_FILE:chflow-3d-compressible>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/sodShockTube/case.dict)
 
+# Compressible Navier-Stokes (5.129): opt-in Newtonian viscous stress (Stokes)
+# and Fourier heat flux on the HLLC kernel. The checker holds mass/momentum
+# conservation exact, re-derives T=p/(rho R) and c=sqrt(gamma p/rho) from the
+# VTU fields, proves dissipation grows with mu and kappa, confirms the gated
+# Euler twin has no new fields, and checks four loud refusals. The standing
+# check_euler.py bit-mirror guards the zero-declaration path.
+add_test(
+    NAME verify.compressibleNs
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_compressible_ns.py
+        $<TARGET_FILE:chflow-3d-compressible>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/compressibleNsSod/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/sodShockTube/case.dict)
+
+# MUSCL limited reconstruction (5.130): the checker re-derives the analytical
+# profiles and the limiter functions independently (not copied from the C++),
+# checks every face value against the closed form, proves the linear field is
+# reproduced exactly and the sine case converges at second order, and uses an
+# unconstrained-extrapolation probe to show the step case stays TVD.
+add_test(
+    NAME verify.reconstructionLinear
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_reconstruction.py
+        $<TARGET_FILE:chflow-reconstruction>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/reconstructionLinear/case.dict)
+add_test(
+    NAME verify.reconstructionSine
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_reconstruction.py
+        $<TARGET_FILE:chflow-reconstruction>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/reconstructionSine/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/reconstructionSineFine/case.dict)
+add_test(
+    NAME verify.reconstructionStep
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_reconstruction.py
+        $<TARGET_FILE:chflow-reconstruction>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/reconstructionStep/case.dict)
+
 # 3D domain decomposition, first increment: the partition, the halo exchange and
 # the global reductions, verified with no MPI in sight. The checker re-derives
 # the coordinate-median ordering and every domain's halo/face classes from the

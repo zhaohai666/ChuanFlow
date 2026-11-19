@@ -1,0 +1,45 @@
+// Compressible Navier-Stokes first case: Sod shock tube with opt-in Newtonian
+// viscous stress (Stokes hypothesis) and Fourier heat flux on top of the
+// density-based HLLC Euler kernel. The viscous/heat terms are explicit source
+// contributions accumulated per cell; walls stay impermeable free-slip /
+// adiabatic (no viscous or heat exchange), so mass and total energy telescope
+// exactly and momentum still balances the wall-pressure impulse.
+//
+// eos{}, viscous{} and heatFlux{} are all opt-in: removing them makes stdout
+// and the rho/p/U VTU fields byte-identical to tests/cases/sodShockTube.
+// R = 287 J/kg/K is the declared specific gas constant (air); T = p/(rho R)
+// and c = sqrt(gamma p/rho) are reported in the VTU as T and c.
+
+fluid { gamma 1.4; }
+
+eos { R 287.0; }
+
+viscous { mu 1.0e-3; }
+
+heatFlux { kappa 2.5e-3; }
+
+block
+{
+    min (0 0 0);
+    max (1 0.01 0.01);
+    cells (100 1 1);
+}
+
+initial
+{
+    diaphragm 0.5;
+    left { rho 1; u 0; p 1; }
+    right { rho 0.125; u 0; p 0.1; }
+}
+
+time
+{
+    dt 0.0005;
+    endTime 0.1;
+    reportEvery 20;
+}
+
+output
+{
+    vtk nsFinal.vtu;
+}

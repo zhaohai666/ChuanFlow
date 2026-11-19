@@ -1,0 +1,33 @@
+// Increment B (coarse): smooth sine field convected along +x.
+// T = sin(2*pi*x/L), L = 1. MUSCL face values converge at second order;
+// upwind (reconstruction none) at first order. See the Fine twin for order.
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (24 1 1);
+
+    xmin  { name xmin; type wall; }
+    xmax  { name xmax; type wall; }
+    ymin  { name ymin; type wall; }
+    ymax  { name ymax; type wall; }
+    zmin  { name zmin; type symmetry; }
+    zmax  { name zmax; type symmetry; }
+}
+
+velocity (1 0 0);
+
+field
+{
+    profile   sine;
+    axis      x;
+    amplitude 1;
+    waves     1;
+    offset    0;
+}
+
+schemes
+{
+    reconstruction muscl;
+    limiter       minmod;
+}

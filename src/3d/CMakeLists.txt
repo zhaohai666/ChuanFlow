@@ -13,6 +13,7 @@ add_library(cf3d STATIC
     src/discrete/divScheme.cpp
     src/discrete/laplacianScheme.cpp
     src/discrete/gradScheme.cpp
+    src/discrete/reconstruction.cpp
     src/io/vtkWrite.cpp
     src/io/hdf5Write.cpp
     src/turbulence/wallFunction.cpp
@@ -20,6 +21,7 @@ add_library(cf3d STATIC
     src/turbulence/kEpsilon.cpp
     src/turbulence/kOmegaSST.cpp
     src/solvers/pressureCorrection.cpp
+    src/solvers/compressibleFlow.cpp
     src/solvers/simpleSolver.cpp
     src/solvers/generalizedNewtonian.cpp
     src/solvers/pisoSolver.cpp

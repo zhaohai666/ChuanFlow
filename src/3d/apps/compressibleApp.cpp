@@ -15,6 +15,7 @@
 
 #include "cf/common/Dictionary.h"
 #include "cf/common/Log.h"
+#include "cf/fvm/CompressibleFlow.h"
 #include "cf/fvm/MeshLoader.h"
 #include "cf/fvm/VtkWriter.h"
 
@@ -134,6 +135,17 @@ int main(int argc, char* argv[])
         const Dictionary& fluid = caseDict.getDict("fluid");
         const scalar gamma = fluid.getScalar("gamma");
 
+        // opt-in compressible NS transport: absent blocks leave the original
+        // inviscid Euler path byte-for-byte unchanged (check_euler.py is the
+        // standing bit-level guard). eos{} is likewise opt-in and only adds
+        // report lines / fields when a specific gas constant R is declared.
+        const compressible::TransportConfig transport =
+            compressible::TransportConfig::fromCase(caseDict);
+        const bool eosReport = caseDict.has("eos");
+        const compressible::IdealGasEos eos = eosReport
+            ? compressible::IdealGasEos::fromCase(caseDict)
+            : compressible::IdealGasEos{gamma, 0.0};
+
         const Dictionary& ini = caseDict.getDict("initial");
         const scalar xDiaphragm = ini.getScalar("diaphragm");
         const Dictionary& iniL = ini.getDict("left");
@@ -198,6 +210,9 @@ int main(int argc, char* argv[])
         log::info("euler start: cells ", n, " mass ", num(mass0), " mom ", num(mom0x),
                   " energy ", num(energy0), " dt ", num(dt), " endTime ", num(endTime),
                   " gamma ", num(gamma));
+        if (eosReport)
+            log::info("compressible eos: gamma ", num(eos.gamma), " R ", num(eos.R),
+                      " transport mu ", num(transport.mu), " kappa ", num(transport.kappa));
 
         std::vector<scalar> rho(n), p(n), c(n);
         std::vector<Vector> vel(n);
@@ -263,6 +278,45 @@ int main(int argc, char* argv[])
                 dmom[o] -= p[o] * sf[f];
                 impulseX += dt * (p[o] * sf[f]).x;
             }
+
+            // Opt-in Navier-Stokes transport. With both coefficients zero
+            // (the default) nothing below runs and the Euler path is exact.
+            if (transport.viscous() || transport.conducting())
+            {
+                // Newtonian viscous stress with Stokes' hypothesis, from the
+                // same per-component Gauss gradients GeneralizedNewtonian uses.
+                if (transport.viscous())
+                {
+                    Field<Vector> velField(static_cast<std::size_t>(n));
+                    for (label i = 0; i < n; ++i)
+                        velField[static_cast<std::size_t>(i)] = vel[i];
+                    Field<Vector> gradU[3];
+                    compressible::velocityGradients(mesh, velField, "corrected", gradU);
+                    const Field<Vector> divTau =
+                        compressible::viscousStressDivergence(mesh, gradU, transport.mu);
+                    for (label i = 0; i < n; ++i)
+                    {
+                        dmom[i] += divTau[i] * vol[i];
+                        // viscous work: u . div(tau), adds to total energy
+                        dE[i] += dot(vel[i], divTau[i]) * vol[i];
+                    }
+                }
+                // Fourier heat flux q = -k grad T; T from the declared EOS.
+                if (transport.conducting())
+                {
+                    if (!(eos.R > 0.0))
+                        cfFatal("compressible: heatFlux requires eos{ R ... }");
+                    Field<scalar> T(static_cast<std::size_t>(n));
+                    for (label i = 0; i < n; ++i)
+                        T[static_cast<std::size_t>(i)] = eos.temperature(p[i], rho[i]);
+                    const Field<Vector> gradT = compressible::cellGradient(mesh, T, "corrected");
+                    const Field<scalar> divQ =
+                        compressible::heatFluxDivergence(mesh, gradT, transport.kappa);
+                    for (label i = 0; i < n; ++i)
+                        dE[i] += divQ[i] * vol[i];
+                }
+            }
+
             for (label i = 0; i < n; ++i)
             {
                 // the totals are extensive: dU/dt = -div Phi, so dt * flux
@@ -301,7 +355,7 @@ int main(int argc, char* argv[])
 
         if (ok && !vtk.empty())
         {
-            Field<scalar> rhoF(n), pF(n);
+            Field<scalar> rhoF(n), pF(n), TF(n), cF(n);
             Field<Vector> uF(n);
             primitives();
             for (label i = 0; i < n; ++i)
@@ -314,6 +368,16 @@ int main(int argc, char* argv[])
             w.addCellScalar("rho", rhoF);
             w.addCellScalar("p", pF);
             w.addCellVector("U", uF);
+            if (eosReport)
+            {
+                for (label i = 0; i < n; ++i)
+                {
+                    TF[i] = eos.temperature(p[i], rho[i]);
+                    cF[i] = eos.soundSpeed(rho[i], p[i]);
+                }
+                w.addCellScalar("T", TF);
+                w.addCellScalar("c", cF);
+            }
             w.write(vtk);
         }
 

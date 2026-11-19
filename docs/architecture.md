@@ -5101,6 +5101,22 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界。** 只覆盖标量场对流的重构（速度重构与 Riemann 求解器耦合是后续格）；限制器是 r-form 一族（无 WENO/限制器的光滑开关）；`fvMatrix::registerCorrector` 的 deferred correction 接线（把 muscl 进真实 `fvm::div`）是下一格——本格先把算子本身在解析 profile 上钉死。
 
+### 5.131 twoFluid 停输缺陷修复：`closure gravitySlip`（重力投影漂移 + 守恒接收容量热装配）
+
+> **状态（2026-11-19）**：E2E 审计（对标 OLGA 的深水流动保障 showcase：地形段塞 + 水合物 + 停输/复产日程）发现的真缺陷。CTest `verify.twoFluidShutInGravitySlip`（#160 后新增），既有 twoFluid 家族 32 测试逐位不变。
+
+**缺陷本体（最小复现：水平单管 + 停输日程）。** wallis 代数闭包的漂移是**绝对轴向速度**（`slipVelocity 0.3 m/s`），`vM → 0` 时仍给非零滑移：Godunov 面通量 `F(a) = us·a(a−1)`、`G(a) = us·a(1−a)` 持续把液体搬向闭端、气体搬向开端——伪逆流（`vsl = −vsg ≈ ∓0.03 m/s` 且持续增大）、液体在闭端堆积（EOS 压强 11 → 14.9 MPa 无界抬升）。更糟的是热装配：单温度场的双相隐式上风格式里，接收容量通量（`kl = ρL cL |F|`，大）与排出容量通量（`kg = ρG cG |G|`，小） persistent 不平衡时，行和裕度 `diag − |off| = cap/dt + kw + kg − kl` 收缩，**最大值原理丢失**——闭端（277 K 壁温、278 K 全场初值）被解到 383 K，管中段 222 K，锯齿发散。零滑移对照（`slipVelocity 0`）完全正常，隔离了根因在闭包 + 热装配两层。
+
+**修复（opt-in `closure gravitySlip yes`，默认路径逐位不变）。**
+1. **漂移重力投影**：代数闭包（wallis/zuber）的漂移改为 `drift·sinT`（逐面取相邻两格 sinT 平均，边界面取邻格）——水平管停输漂移恰为零（无轴向浮力分量），倾斜/竖直管的气浮逆流保持物理。transportStep 的液/气 Godunov 系数、CFL 上界、`gasVelocity`（entrainment 动力学与 cell 速度报告）全部按同一投影走。动态/全动量闭包（model 2/3）本就由 `g·sinT` 驱动滑移，不需要也不接受该键（声明即大声拒收）。
+2. **守恒接收容量热装配**：`faceTerm` 改为——接收格对角 +k（到达的质量先并入格子容量再换热）、排出格对角不动（容量损失就是流出本身），于是 `diag − |off| = cap/dt + kw` 精确成立，**最大值原理恢复**：每帧每格温度严格落在 `[min(T_old, T_wall), max(T_old, T_wall, T_boundary)]` 内。该形式逐面守恒（流出格损失 = 到达格获得 = k·T_up^new）且无条件稳定。
+
+**判据（`tests/check_two_fluid_shutin.py`，14 条）。** 修复臂：逐帧全场温度在物理界内、停输后逐格速度**精确为零**、停输后液相库存 sum(α·dx) 冻结（spread = 0）、入口压强单调松弛、α∈[0,1]；**bug 见证臂**（同一字典去掉该键）：复现历史缺陷——最高温 383.7 K 超界 + 入口逆流（证明键在做真实工作，两条路径真实不同）；拒收：`gravitySlip` + model full cfFatal 非零退出。
+
+**E2E 深水 showcase 修复后（7 段起伏 + 水合物 + 停输/复产）。** 停输帧入口倒流从 ∓0.036 收敛到 ∓0.0013（低点液面微小重力回流，物理量级），温度有界（294–296 K），水合物在停输期**继续生长**（h 0.26 → 0.31：压强升高 → 平衡温度升高 → 过冷度增大——物理正确），复产爬回正常，全程 800 步收敛。修复前同场景 383 K 发散。
+
+**边界。** 默认路径保留历史（有界性有洞的）热装配——6 个复刻热递推的 checker（hydrateflow/thermal/formation/wax/deposition/deposit_feedback/adjoint）以 1e-9 逐格复刻当前离散，改默认形式需同步迁移全部复刻递推，是独立增量；`gravitySlip` 臂是推荐用于带停输/投产日程的流动保障场景的变体。倾斜管停输的水合物/蜡动力学在分离态（α→1/0 极端）下的适用性未单独验证。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

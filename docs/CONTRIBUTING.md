@@ -128,6 +128,14 @@ python3 tests/check_reconstruction.py \
     "$PWD/tests/cases/reconstructionSine/case.dict" \
     "$PWD/tests/cases/reconstructionSineFine/case.dict"
 
+# twoFluid 停输缺陷修复（5.131，closure gravitySlip）：水平单管 + 停输日程。
+# checker 跑两个臂——修复臂（gravitySlip yes）：逐帧温度物理界内、停输后速度
+# 精确零、液相库存冻结、入口压强单调松弛；见证臂（同字典去键）：复现历史
+# 缺陷（383 K 超界 + 伪逆流），证明键在做真实工作；另验一条拒收
+python3 tests/check_two_fluid_shutin.py \
+    "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
+    "$PWD/tests/cases/twoFluidShutInGravitySlip/case.dict" /tmp
+
 # 三维区域分解首增量：同一个块按 1/2/3/5/7/8/16 域各切一次、逐域跑显式算子，
 # 每次域数写一份**全局单元序**的 vtu。check_parallel.py 从 vtu 的几何自己重跑
 # 同一套坐标中位数分解，断言分区性与面数重装配、分解算子与串行逐位相等、

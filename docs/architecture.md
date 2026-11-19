@@ -5115,7 +5115,21 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **E2E 深水 showcase 修复后（7 段起伏 + 水合物 + 停输/复产）。** 停输帧入口倒流从 ∓0.036 收敛到 ∓0.0013（低点液面微小重力回流，物理量级），温度有界（294–296 K），水合物在停输期**继续生长**（h 0.26 → 0.31：压强升高 → 平衡温度升高 → 过冷度增大——物理正确），复产爬回正常，全程 800 步收敛。修复前同场景 383 K 发散。
 
-**边界。** 默认路径保留历史（有界性有洞的）热装配——6 个复刻热递推的 checker（hydrateflow/thermal/formation/wax/deposition/deposit_feedback/adjoint）以 1e-9 逐格复刻当前离散，改默认形式需同步迁移全部复刻递推，是独立增量；`gravitySlip` 臂是推荐用于带停输/投产日程的流动保障场景的变体。倾斜管停输的水合物/蜡动力学在分离态（α→1/0 极端）下的适用性未单独验证。
+**边界。** 倾斜管停输的水合物/蜡动力学在分离态（α→1/0 极端）下的适用性未单独验证。§5.131 落地时默认热装配仍保留历史（有界性有洞的）形式——该边界已由 §5.132 消除（守恒接收容量形式成为唯一装配路径）。
+
+### 5.132 默认热装配迁移：守恒接收容量形式成为唯一路径，`gravitySlip` 语义收窄为漂移投影
+
+> **状态（2026-11-19）**：§5.131 的独立增量收尾。thermalStep 的 `faceTerm` 去掉 `closure.gravitySlip` 门，守恒接收容量形式成为**默认且唯一**的装配路径；`closure gravitySlip` 键保留但语义收窄为**仅控制代数漂移的重力投影**。全量回归 183/183。
+
+**动机。** §5.131 把守恒接收容量热装配 gated 在 opt-in `closure gravitySlip yes` 后，默认路径仍是历史 donor-drain 形式：`diag − |off| = cap/dt + kw + kg − kl` 的行和裕度在持续逆流下收缩、最大值原理有洞。一个「推荐用于流动保障场景的变体键」承载正确性修复是错误的位置——热装配的有界性是离散格式的性质，应当无条件成立，不该由场景开关决定。
+
+**数学（迁移的实质）。** 隐式守恒更新 `C_new T_new = C_old T_old + dt(in·T_up − out·T_new + kw(Tw − T_new))` 配容量更新 `C_new = C_old + dt(in − out)`：`out·T_new` 出现在两侧精确抵消，行化简后对角只剩 `cap/dt + in + kw`（排出项消失）——`diag − |off| = cap/dt + kw` **恒等成立**，与流向、滑移、逆流与否无关。max 原理无条件：每帧每格温度严格落在 `[min(T_old, T_wall), max(T_old, T_wall, T_boundary)]`。历史形式的稳态极限是通量形式（变系数下稳态解略不同：差 `(k_{i+1} − k_i)·T_i` 项），仅当每格进出容量通量相等（不可压均匀流）时两种形式的矩阵逐项相同——junction 复刻臂（均匀右行流）因此矩阵恒同、数值不变；hydrateflow 臂（EOS 气密度 + F(a) 变液通量，k 逐面变化）的稳态与逐帧值都有微小改变。
+
+**`gravitySlip` 语义收窄。** 键保留（既有 case 不破坏），但只控制 transportStep 的代数漂移重力投影 `drift·sinT`；对热装配不再有任何作用。dynamic/full 闭包的 cfFatal 拒收不变。
+
+**checker 同步迁移（7 个盘点、3 处实改）。** 逐个盘点复刻热递推的 checker：**check_two_fluid.py** 三处实改——① hydrateflow 矩阵臂（faceTerm 复刻改守恒形式：接收格对角 +k、排出格不装、边界接收 rhs + k·T_ghost 且对角 +k）；② networkspan/junction 两个 `thermal()` 双对角复刻（均匀右行流下矩阵恒同，仅注释改述接收容量语义）；③ 稳态能量平衡恒等式按守恒离散重推——历史形式面通量精确 telescopes（`k_N·T_{N−1} − k_0·T_in = qwall + latent`），守恒形式不 telescopes（k 逐面变），改为**逐格接收面焓增求和** `Σ k_i(T_i − T_up) = qwall + latent`（面导纳由发射场重建：面 j 上风格 j−1 的 vsl/vsg/ρ）。**check_two_fluid_shutin.py** 见证臂语义更新：默认迁移后见证（去键）不再出现温度超界（383 K 已不可能），见证证据改为「伪逆流 + 液相库存漂移」两条（与修复臂速度精确零 + 库存精确冻结形成对照），并新增正向断言「见证温度也有界」记录语义迁移。其余 5 个（thermal/formation/wax/deposition/deposit_feedback/adjoint）的温度断言全部是稳态/零流臂（对装配形式不敏感），零改动。
+
+**GUI .app 打包（D12 边界收尾）。** Tauri 2 将 frontendDist 资产编译期嵌入二进制，打包 = release 构建 + 手工组装 `ChuanFlow GUI.app`（Info.plist + icns + ad-hoc codesign，`gui/package_app.sh` 固化全流程）+ **求解器随包**：`chflow-1d-steady`/`chflow-1d-transient` 进 `Contents/Resources/bin/`，Rust 侧新增 `default_engines` 命令从运行中二进制向上探到 `Contents/Resources/bin`（Finder 启动 CWD=/ 不影响），打包臂命中即用包内求解器、否则回落开发树路径；前端启动时调用该命令覆盖开发默认路径。启动验证：open 启动渲染完整，路径输入框自动填包内路径，包内 solver 独立冒烟通过。边界：单架构（x86_64）出包，通用二进制（lipo 合成）与 DMG 未做；离线无 Apple Developer ID，ad-hoc 签名即本机运行语义。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 

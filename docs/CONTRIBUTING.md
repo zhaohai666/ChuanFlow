@@ -128,13 +128,18 @@ python3 tests/check_reconstruction.py \
     "$PWD/tests/cases/reconstructionSine/case.dict" \
     "$PWD/tests/cases/reconstructionSineFine/case.dict"
 
-# twoFluid 停输缺陷修复（5.131，closure gravitySlip）：水平单管 + 停输日程。
+# twoFluid 停输缺陷修复（5.131/5.132）：水平单管 + 停输日程。
 # checker 跑两个臂——修复臂（gravitySlip yes）：逐帧温度物理界内、停输后速度
-# 精确零、液相库存冻结、入口压强单调松弛；见证臂（同字典去键）：复现历史
-# 缺陷（383 K 超界 + 伪逆流），证明键在做真实工作；另验一条拒收
+# 精确零、液相库存冻结、入口压强单调松弛；见证臂（同字典去键，5.132 默认
+# 守恒热装配后温度不再超界）：复现伪逆流 + 液相库存漂移（速度精确零与库存
+# 精确冻结对照），并断言见证温度也有界（热修复已成默认）；另验一条拒收
 python3 tests/check_two_fluid_shutin.py \
     "$PWD/build/src/1d/apps/chflow-1d-twofluid" \
     "$PWD/tests/cases/twoFluidShutInGravitySlip/case.dict" /tmp
+
+# GUI macOS .app 打包（5.132，D12 收尾）：release 构建 + 手工组装 bundle +
+# 求解器进 Resources/bin + ad-hoc 签名 + 包内 solver 冒烟
+gui/package_app.sh && open "gui/dist/ChuanFlow GUI.app"
 
 # 三维区域分解首增量：同一个块按 1/2/3/5/7/8/16 域各切一次、逐域跑显式算子，
 # 每次域数写一份**全局单元序**的 vtu。check_parallel.py 从 vtu 的几何自己重跑

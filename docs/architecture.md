@@ -5020,6 +5020,16 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **判据/状态（2026-11-19）**：PETSc 分支代码完整，本机无库故**未编译验证**（`verify.solverBackend` 在 native-only 构建下 PASS，明确打印 "petsc backend not compiled in"）。有 PETSc 库的机器上 `cmake -DCHFLOW_WITH_PETSC=ON` 即启用并跑交叉检查。按项目"降级决策如实记录"惯例，不声称本机验证过 PETSc 求解。代码已提交 b677821，全量回归 **176/176（911.08 s）通过**（native-only 形态）；**待有库机器编译验证 PETSc 分支**。
 
+### 5.125 GUI 拖拽管网建模 + 瞬态曲线面板（D12 增量 2）
+
+**这一格从哪来。** §5.116 的最小闭环只有 case 文本域 + 稳态柱状/折线，管网拓扑靠手敲字典、瞬态曲线面板留白。本格补齐两块用户可见能力：画布拖拽建模与瞬态多帧曲线。仍零 npm、零 Python，纯 Rust 命令层 + 静态 JS。
+
+**机理（Rust 命令层）。** `commands.rs` 的模型扩到可往返：`NodeDef` 增三个**可选**瞬态字段（`volume`/`bulk_modulus`/`liquid_fraction`，稳态 case 缺席即 None，保证稳态 parse→serialize 对称）；`PipeDef` 保留 `length/diameter/roughness/elevation`（默认 1000/0.05/0/0 与 `network.cpp` 一致）；`SourceDef` 拆 `name` 与 `node`，支持真实 case 的 `well1 { node W1; rate …; }`（旧 GUI 简写省略 `node` 时回退用条目名）；`NetworkCase` 增可选 `time{ dt/endTime/reportEvery }`。新增纯函数 `serialize_network_case` 是 `parse_case_text` 的逆——输出显式 `node=` 与完整管几何，GUI 拖出的 case 直接能被真实 C++ 引擎消费；`fmt_num` 对齐引擎 12 位有效数字风格保证往返逐值一致。新增 `TransientSeries`/`TransientSample` 与纯函数 `parse_transient_output`（按 `t`/`node … p … alpha … hydrate …`/`pipe … Q …`/`transient solved: steps=N` 分组，容错 `[chflow]` 前缀与未知行），命令 `run_transient_text` 校验 time{} 存在后写临时 dict、spawn `chflow-1d-transient`、解析时间序列、清理临时文件；新命令注册进 `main.rs::generate_handler!`。
+
+**机理（前端）。** 新 `editor.js` 纯函数：节点/管拖拽模型（`addNode/moveNode/removeNode/setNodePressure/addPipe/removePipe/addSource/removeSource/setTime`）、命中测试 `hitTestNode`（半径内最近节点）、`networkToCaseText`（与 Rust 序列化同构，输出可运行 case）——全部不可变更新、无 DOM，供画布与 `node --test` 共用。`chart.js` 增 `toTimeSeriesPoints`（按真实 `t` 作横轴，支持非等距帧，返回 min/max/tMin/tMax），并让 `validateCaseText` 兼容 source `node=` 键。`app.js` 接线 SVG 画布（点空白加节点、点两节点连线成管、拖动移动、选中设压力/加源、Delete 删除）、稳态运行保持原样、瞬态运行调 `run_transient_text` 填 `seriesSelect` 与 `timeSlider`，多帧曲线按序列（节点的 pressure/alpha/hydrate 或管道的 flow）绘制并随滑条显示当前帧。`index.html`/`style.css` 配套控件与暗色样式。
+
+**判据与状态（2026-11-19）。** Rust 单测 **16/16**（原 9 + 新 7：`parse_transient_output` 全量/空、`run_transient_text` 假脚本/缺 time/**真引擎端到端**——GUI 序列化的 case 喂真实 `chflow-1d-transient` 产出可解析序列、serialize 往返两份含 time 与命名 source 的 case）；`node --test` **19/19**（原 10 + 新 9：布局钳制、命中测试、removeNode 级联、自环/重复管拒绝、networkToCaseText 可被 validate 接受、源/管/时间编辑、toTimeSeriesPoints 非等距/空/单点/非有限、序列化往返结构一致）。CTest `gui.unit`/`gui.build`/`gui.frontend`（#174/175/176）全绿。code commit 7356e14，全量回归 **176/176（774.80 s，rc=0）**。**边界**：`.app` 打包/签名（缺完整 Xcode 与 tauri CLI）与 npm 前端构建不做——与 §5.116 同；瞬态压力场是解析声明驱动的上游 case，非 GUI 内求解；序列选择限于已输出的节点/管道字段。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

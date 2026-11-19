@@ -3,6 +3,7 @@
 
 #include "cf/common/Error.h"
 #include "cf/fvm/FvMatrix.h"
+#include "cf/parallel/Backend.h"
 
 namespace cf
 {
@@ -30,10 +31,11 @@ void gaussGrad(const polyMesh& mesh, const Field<scalar>& data,
             sum[static_cast<std::size_t>(mesh.neighbour()[u])] -= flux;
         }
     }
-    for (label c = 0; c < nC; ++c)
-    {
-        gradT[static_cast<std::size_t>(c)] = sum[static_cast<std::size_t>(c)] / vol[static_cast<std::size_t>(c)];
-    }
+    // Pure per-cell map (V*grad / volume). Disjoint writes only.
+    backend::parallelFor(nC, [&](label c) {
+        gradT[static_cast<std::size_t>(c)] =
+            sum[static_cast<std::size_t>(c)] / vol[static_cast<std::size_t>(c)];
+    });
 
     if (!corrected) return;
 
@@ -74,10 +76,10 @@ void gaussGrad(const polyMesh& mesh, const Field<scalar>& data,
                 sum[static_cast<std::size_t>(mesh.neighbour()[u])] -= flux;
             }
         }
-        for (label c = 0; c < nC; ++c)
-        {
-            gradT[static_cast<std::size_t>(c)] = sum[static_cast<std::size_t>(c)] / vol[static_cast<std::size_t>(c)];
-        }
+        backend::parallelFor(nC, [&](label c) {
+            gradT[static_cast<std::size_t>(c)] =
+                sum[static_cast<std::size_t>(c)] / vol[static_cast<std::size_t>(c)];
+        });
     }
 }
 

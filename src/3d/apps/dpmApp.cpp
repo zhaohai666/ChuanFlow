@@ -18,6 +18,7 @@
 #include "cf/fvm/FvMatrix.h"
 #include "cf/fvm/MeshLoader.h"
 #include "cf/fvm/SimpleSolver.h"
+#include "cf/parallel/Backend.h"
 #include "cf/fvm/VtkWriter.h"
 
 #include "caseInit.h"
@@ -65,12 +66,12 @@ cf::Field<cf::Vector> forceFromImpulse(const cf::polyMesh& mesh,
     cf::Field<cf::Vector> f(static_cast<std::size_t>(mesh.nCells()), cf::Vector::zero());
     if (!(result.sourceWindow > 0)) return f;
     const auto& vol = mesh.cellVolumes();
-    for (cf::label c = 0; c < mesh.nCells(); ++c)
-    {
+    // Pure per-cell map: impulse/volume -> force, disjoint writes.
+    cf::backend::parallelFor(mesh.nCells(), [&](cf::label c) {
         f[static_cast<std::size_t>(c)] =
             -1.0 * result.cellDragImpulse[static_cast<std::size_t>(c)]
             / (rhoF * vol[static_cast<std::size_t>(c)] * result.sourceWindow);
-    }
+    });
     return f;
 }
 

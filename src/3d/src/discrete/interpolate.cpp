@@ -3,6 +3,7 @@
 
 #include "cf/common/Error.h"
 #include "cf/fvm/FvMatrix.h"
+#include "cf/parallel/Backend.h"
 
 namespace cf
 {
@@ -27,10 +28,9 @@ scalar ownerWeight(const polyMesh& mesh, label face)
 Field<scalar> makeInternalOwnerWeights(const polyMesh& mesh)
 {
     Field<scalar> w(static_cast<std::size_t>(std::max<label>(1, mesh.nInternalFaces())), 0.5);
-    for (label f = 0; f < mesh.nInternalFaces(); ++f)
-    {
+    backend::parallelFor(mesh.nInternalFaces(), [&](label f) {
         w[static_cast<std::size_t>(f)] = ownerWeight(mesh, f);
-    }
+    });
     return w;
 }
 
@@ -69,8 +69,9 @@ void interpolate(const polyMesh& mesh, const Field<scalar>& cellData,
 {
     faceData.resize(static_cast<std::size_t>(mesh.nFaces()));
     const Field<scalar> ow = makeInternalOwnerWeights(mesh);
-    for (label f = 0; f < mesh.nFaces(); ++f)
-    {
+    // Pure per-face map: each face writes its own slot. On OpenMP/Kokkos the
+    // caller-supplied faceValueOf must be thread-safe (BC linearisation is).
+    backend::parallelFor(mesh.nFaces(), [&](label f) {
         const std::size_t u = static_cast<std::size_t>(f);
         if (f < mesh.nInternalFaces())
         {
@@ -82,7 +83,7 @@ void interpolate(const polyMesh& mesh, const Field<scalar>& cellData,
         {
             faceData[u] = faceValueOf(f);
         }
-    }
+    });
 }
 
 Field<scalar> interpolate(const volScalarField& T)

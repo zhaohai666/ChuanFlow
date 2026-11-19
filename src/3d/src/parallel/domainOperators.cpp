@@ -3,6 +3,7 @@
 #include <cstddef>
 
 #include "cf/common/Error.h"
+#include "cf/parallel/Backend.h"
 #include "cf/parallel/DomainDecomposition.h"
 
 namespace cf
@@ -97,10 +98,14 @@ void divideByVolume(const DomainSet& ds, const std::vector<Field<Vector>>& sum,
     for (label d = 0; d < ds.size(); ++d)
     {
         const DomainMesh& dm = ds[d];
-        for (std::size_t i = 0; i < static_cast<std::size_t>(dm.nOwned()); ++i)
-        {
-            grad[static_cast<std::size_t>(d)][i] = sum[static_cast<std::size_t>(d)][i] / dm.cellVolumes()[i];
-        }
+        // Pure per-owned-cell map: read sum[i] and volume[i], write grad[i].
+        // No cross-cell accumulation, so any backend writes disjoint slots and
+        // the default cpu-serial branch is the original loop verbatim.
+        backend::parallelFor(dm.nOwned(), [&](label i) {
+            const std::size_t u = static_cast<std::size_t>(i);
+            grad[static_cast<std::size_t>(d)][u] =
+                sum[static_cast<std::size_t>(d)][u] / dm.cellVolumes()[u];
+        });
     }
 }
 

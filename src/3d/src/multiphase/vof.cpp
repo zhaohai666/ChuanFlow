@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include "cf/common/Error.h"
+#include "cf/parallel/Backend.h"
 
 namespace cf::vof
 {
@@ -114,11 +115,11 @@ Field<Vector> surfaceTensionForce(scalar sigmaOverRho,
     const Field<Vector> g = fvc::grad(alpha, gradScheme);
     const label nC = mesh.nCells();
     Field<Vector> f(static_cast<std::size_t>(nC), Vector::zero());
-    for (label c = 0; c < nC; ++c)
-    {
+    // Pure per-cell CSF map, disjoint writes.
+    backend::parallelFor(nC, [&](label c) {
         const std::size_t u = static_cast<std::size_t>(c);
         f[u] = g[u] * (-sigmaOverRho * kappa[u]);
-    }
+    });
     return f;
 }
 
@@ -138,11 +139,10 @@ Field<Vector> surfaceTensionForce(const Field<scalar>& sigmaOverRhoCell,
     const Field<Vector> g = fvc::grad(alpha, gradScheme);
     const label nC = mesh.nCells();
     Field<Vector> f(static_cast<std::size_t>(nC), Vector::zero());
-    for (label c = 0; c < nC; ++c)
-    {
+    backend::parallelFor(nC, [&](label c) {
         const std::size_t u = static_cast<std::size_t>(c);
         f[u] = g[u] * (-sigmaOverRhoCell[u] * kappa[u]);
-    }
+    });
     return f;
 }
 

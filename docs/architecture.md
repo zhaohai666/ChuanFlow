@@ -5040,6 +5040,16 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **判据与状态（2026-11-19）。** 默认 `cpu-serial` 分支与手写 `for` 同源同机器码，逐位不变：受影响 checker **9/9** 全绿——`verify.backendCpu`（active==serial==analytic 逐位，#172）、`verify.parallelDecomposition`/`Tet`（#38/39，验 `assembledGrad`/`divPhi`）、`verify.dpmChannel`/`dpmTwoWay`（#17/18）、`verify.vofTranslation`/`Rotation`/`Droplet`/`SigmaField`（#28-32）。code commit a6d8c27，全量回归 **176/176（525.72 s，rc=0）**。**边界**：OpenMP/Kokkos 构建下 `fvc::interpolate` 的调用方 `faceValueOf` 必须线程安全（BC 线性化是纯函数、满足）；Kokkos 分支的 lambda 需 device-callable 与按值捕获，本机无 SDK 未编译验证；本格不改任何 reduction 路径、不改数值结果。
 
+### 5.127 声明输入闭包：Prandtl 导热与水合物 Clausius–Clapeyron（D13 增量 4）
+
+**这一格从哪来。** D13 余项里两物性缺口——导热关联式（k=μcp/Pr）与水合物相平衡（参考点+ΔH 声明）——此前只记在 `docs/gap_analysis.md`，pvt 层无对应纯函数。本格按项目一贯的"声明输入、纯函数、可独立重推、零内置数据"哲学补上两者，与 §5.x 的 van't Hoff 析蜡（WaxSolubility）同构。
+
+**机理。** `ThermalConductivity.h` 的 `thermalConductivityFromPr(mu,cp,Pr) = mu*cp/Pr`，SI 量纲 W/(m·K)（μ 动力黏度 Pa·s，cp J/(kg·K)，Pr 分子普朗特数），三参数全由 case 声明、正值校验、纯乘除。`HydrateEquilibrium.h` 给一对 Clausius–Clapeyron 恒焓闭式：`hydrateEquilibriumPressure(T,Tref,pRef,dH) = pRef·exp[−(dH/R)(1/T−1/Tref)]` 及逆 `hydrateEquilibriumTemperature(p,…) = 1/(1/Tref−(R/dH)ln(p/pRef))`，Tref/pRef/dH 全声明、零内置表；先在 log 域算完再 exp 以便 checker 逐位复现。两者都放 `cf::pvt`、`cf_pvt` 静态库加两源文件，与已有 `waxSaturationMoleFraction` 同风格。与 1D 动力学模型 `TwoFluidHydrate`（内嵌 curveA/curveB ln(p) 线）有意分离：本格是可被任意调用方使用的 pvt 层平衡函数。
+
+**接线与零声明逐位不变。** `pvtApp.cpp` 增两个 gated 报表：`thermalConductivity{ mu; cp; Pr; }` 存在才打印 `pvt thermalConductivity k …`；`hydrateEquilibrium{ Tref; pRef; dH; temperatures (…); }` 存在才逐点打印 `pvt hydrateEquilibrium T … p …`。两块缺席时 flash 报表逐字节不变（checker 的孪生臂验证）。**注意落点**：本格按用户指定把关联式做成 `src/pvt` 纯函数（gap 旧注"落点在 pvt 之外"指直接改 `EnergyProps`，本格不改求解器、只提供可核实闭包，调用方按需接入）。
+
+**判据与状态（2026-11-19）。** `tests/check_pvt_thermal_hydrate.py` 用 Python math 独立重推两闭式（常数从 case 读、不信 app 自报）：k=mu·cp/Pr 匹配 1e-6、5 个温度点 p_eq 逐点匹配 1e-6、锚点 p(Tref)=pRef 到 1e-9、p 随 T 单调、6 条拒收（负 mu/零 cp/负 Pr/负 Tref/负 pRef/零 dH）、零声明孪生 flash 行逐位相同且无新 token。CTest `verify.pvtThermalHydrate`（注册 #174，总数 176 → 177）。code commit 177d3d0，全量回归 **177/177（497.13 s，rc=0）**。**边界**：Clausius–Clapeyron 恒 dH、理想气体近似，非真实水合物相图（多相/结构转变/盐度效应未含）；导热闭包是声明输入纯函数，尚未自动接入 3D `EnergyProps`（调用方需显式声明 k 或另行接线）；拒收仅覆盖符号/零值，极端温度外推的行为由输入方负责。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

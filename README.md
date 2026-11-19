@@ -1491,7 +1491,7 @@ print(result.pressure_profile)
   `beta` × 静止支与耦合边两笔账照旧拒收（docs/architecture.md 5.62）。
   Euler-Euler 双流体在此）
 - M5：Tauri GUI 管网编辑器、实时曲线面板 ✅（离线 Tauri 2 + WKWebView，零 npm；§5.116 最小闭环：case 编辑→稳态管网求解→SVG 实时曲线；§5.125 增量2 补齐拖拽管网建模（SVG 画布加节点/连管/拖动/删除/设压力/加源，`editor.js` 纯函数 + `networkToCaseText` 输出真实可运行 case）与瞬态多帧曲线 + 时间滑条（`run_transient_text` 命令 + `parse_transient_output`）；Rust 16/16 + node 19/19 无头测试全绿，CTest `gui.unit`/`gui.build`/`gui.frontend`；code 7356e14，全量回归 176/176 / 774.80 s。边界：`.app` 打包/签名与 npm 构建不做）
-- M6：Kokkos GPU 加速、更多工业模型扩充 🚧（并行后端抽象 `cf::backend::parallelFor` 已落地：CPU 串行默认逐位不变、可选 OpenMP/Kokkos 开关，§5.114；§5.126 已把 `parallelFor` 接进五处纯映射 domain kernel（divideByVolume / gaussGrad / interpolate / forceFromImpulse / surfaceTensionForce），scatter/reduction 刻意不接，默认逐位不变、受影响 checker 9/9 绿，code a6d8c27 / 全量 176/176 525.72 s；黑油分离器 §5.115；真实 MPI 传输 + 分布式 CSR 求解 §5.119/§5.122；Eigen 后端实测 §5.123、PETSc 可选本机无库降级 §5.124；两流体伴随 §5.118；GPU 验证需 SDK 机器，导热关联式/水合物相平衡/非等温闪蒸待做）
+- M6：Kokkos GPU 加速、更多工业模型扩充 🚧（并行后端抽象 `cf::backend::parallelFor` 已落地：CPU 串行默认逐位不变、可选 OpenMP/Kokkos 开关，§5.114；§5.126 已把 `parallelFor` 接进五处纯映射 domain kernel（divideByVolume / gaussGrad / interpolate / forceFromImpulse / surfaceTensionForce），scatter/reduction 刻意不接，默认逐位不变、受影响 checker 9/9 绿，code a6d8c27 / 全量 176/176 525.72 s；黑油分离器 §5.115；真实 MPI 传输 + 分布式 CSR 求解 §5.119/§5.122；Eigen 后端实测 §5.123、PETSc 可选本机无库降级 §5.124；两流体伴随 §5.118；pvt 声明闭包 k=μcp/Pr 与水合物 Clausius–Clapeyron 已落地 §5.127（code 177d3d0 / 全量 177/177 497.13 s）；GPU 验证需 SDK 机器，非等温闪蒸待评估）
 
 已落地部分的实现细节与概念映射见 [docs/architecture.md](docs/architecture.md)。
 

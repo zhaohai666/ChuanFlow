@@ -182,6 +182,14 @@ struct TwoFluidClosure
     double interfacialDrag = 0;// dynamic/full: kg/m4, drag law
                                // sigma = C s |s| per unit volume;
                                // required > 0 for models 2 and 3
+    bool gravitySlip = false;  // shut-in-safe algebraic variant (opt-in):
+                               // project the wallis/zuber drift by the local
+                               // inclination (us * sinT, zero on horizontal)
+                               // so a shut-in line does not drive a spurious
+                               // axial countercurrent, and solve the thermal
+                               // step in the conservative receive-capacity
+                               // form (max principle exact). Default false
+                               // keeps the historical scheme bit-for-bit.
 };
 
 /// One piecewise-constant inlet-rate point: from t on the phaseRates
@@ -794,9 +802,21 @@ private:
     // builds face-local coefficients from the slip state)
     void fluxCoeffs(double& qa, double& qb, double& qc) const;
     void gasFluxCoeffs(double& qa, double& qb, double& qc) const;
-    double liquidFlux(double alpha, double s) const;
-    double gasVolumeFlux(double alpha, double s) const;
-    double gasVelocity(double alpha, double s) const;
+    // cell >= 0 lets an algebraic-closure caller ask for the
+    // gravity-projected drift (closure gravitySlip) at that section;
+    // the default -1 keeps the unprojected drift (bit-identical history)
+    double liquidFlux(double alpha, double s, int cell = -1) const;
+    double gasVolumeFlux(double alpha, double s, int cell = -1) const;
+    double gasVelocity(double alpha, double s, int cell = -1) const;
+    // the algebraic drift at a section: wallis us / zuber vD, projected by
+    // the local inclination when closure gravitySlip is on
+    double driftOf(int cell) const
+    {
+        const double base = cfg_.closure.model == 0
+                                ? cfg_.closure.slipVelocity
+                                : cfg_.closure.driftVelocity;
+        return cfg_.closure.gravitySlip ? base * sinT_[cell] : base;
+    }
     // closures with a transported slip state share the face-local flux
     // machinery (models 2 and 3 differ only in the slip ODE)
     bool slipClosure() const

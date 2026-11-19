@@ -437,21 +437,36 @@ void TwoFluidPipe::fluxCoeffs(double& qa, double& qb, double& qc) const
     }
 }
 
-double TwoFluidPipe::liquidFlux(double alpha, double s) const
+double TwoFluidPipe::liquidFlux(double alpha, double s, int cell) const
 {
     if (slipClosure()) // dynamic/full: vL = vM - alpha_g s
         return s * alpha * alpha + (vM_ - s) * alpha;
+    if (cell >= 0 && cfg_.closure.gravitySlip)
+    {
+        // gravity-projected drift at the section (shut-in-safe variant)
+        const double d = driftOf(cell);
+        if (cfg_.closure.model == 0)
+            return alpha * (d * alpha + vM_ - d);
+        return alpha * (cfg_.closure.c0 * vM_ + d)
+             + vM_ * (1.0 - cfg_.closure.c0) - d;
+    }
     double qa, qb, qc;
     fluxCoeffs(qa, qb, qc);
     return qc + alpha * (qb + qa * alpha);
 }
 
-double TwoFluidPipe::gasVelocity(double alpha, double s) const
+double TwoFluidPipe::gasVelocity(double alpha, double s, int cell) const
 {
     if (cfg_.closure.model == 0)
+    {
+        if (cell >= 0 && cfg_.closure.gravitySlip)
+            return vM_ + alpha * driftOf(cell);
         return vM_ + alpha * cfg_.closure.slipVelocity;
+    }
     if (slipClosure()) // dynamic/full: vG = vM + alpha s
         return vM_ + alpha * s;
+    if (cell >= 0 && cfg_.closure.gravitySlip)
+        return cfg_.closure.c0 * vM_ + driftOf(cell);
     return cfg_.closure.c0 * vM_ + cfg_.closure.driftVelocity;
 }
 
@@ -474,10 +489,19 @@ void TwoFluidPipe::gasFluxCoeffs(double& qa, double& qb, double& qc) const
     }
 }
 
-double TwoFluidPipe::gasVolumeFlux(double alpha, double s) const
+double TwoFluidPipe::gasVolumeFlux(double alpha, double s, int cell) const
 {
     if (slipClosure()) // dynamic/full: G = (1 - alpha)(vM + alpha s)
         return vM_ + (s - vM_) * alpha - s * alpha * alpha;
+    if (cell >= 0 && cfg_.closure.gravitySlip)
+    {
+        // gravity-projected drift at the section (shut-in-safe variant)
+        const double d = driftOf(cell);
+        if (cfg_.closure.model == 0)
+            return vM_ + (d - vM_) * alpha - d * alpha * alpha;
+        const double vg = cfg_.closure.c0 * vM_ + d;
+        return (1.0 - alpha) * vg;
+    }
     double qa, qb, qc;
     gasFluxCoeffs(qa, qb, qc);
     return qc + alpha * (qb + qa * alpha);
@@ -932,6 +956,56 @@ void TwoFluidPipe::transportStep(double dt)
                         : 0.5 * (slip_[j - 1] + slip_[j]));
     };
 
+    // closure gravitySlip (shut-in-safe algebraic variant): the drift is
+    // projected by the local inclination, so the wallis/zuber coefficients
+    // become face-local - the face takes the average sinT of its two
+    // sections, a boundary face the adjacent section. Without the key the
+    // shared unprojected coefficients above stay bit-for-bit.
+    auto faceDrift = [&](int j) -> double
+    {
+        const double sinFace =
+            j == 0 ? sinT_[0]
+                   : (j == n_ ? sinT_[n_ - 1]
+                              : 0.5 * (sinT_[j - 1] + sinT_[j]));
+        const double base = cfg_.closure.model == 0
+                                ? cfg_.closure.slipVelocity
+                                : cfg_.closure.driftVelocity;
+        return base * sinFace;
+    };
+    auto liquidCoeffsAt = [&](int j, double& fqa, double& fqb, double& fqc)
+    {
+        const double d = faceDrift(j);
+        if (cfg_.closure.model == 0) // wallis: vG = vM + alpha*d
+        {
+            fqa = d;
+            fqb = vM_ - d;
+            fqc = 0.0;
+        }
+        else // zuber: vG = C0 vM + d
+        {
+            fqa = 0.0;
+            fqb = cfg_.closure.c0 * vM_ + d;
+            fqc = vM_ * (1.0 - cfg_.closure.c0) - d;
+        }
+    };
+    auto gasCoeffsAt = [&](int j, double& gqa, double& gqb, double& gqc)
+    {
+        const double d = faceDrift(j);
+        if (cfg_.closure.model == 0) // wallis: vG = vM + alpha*d
+        {
+            gqa = -d;
+            gqb = d - vM_;
+            gqc = vM_;
+        }
+        else // zuber: vG = C0 vM + d (constant)
+        {
+            gqa = 0.0;
+            gqb = -(cfg_.closure.c0 * vM_ + d);
+            gqc = cfg_.closure.c0 * vM_ + d;
+        }
+    };
+    const bool faceLocal = !slipClosure() && cfg_.closure.gravitySlip;
+
     // CFL guard for the explicit Godunov transport (monotone under
     // dt * max|F'| / dx <= 1; F' is monotone so the extremes sit at 0 and 1;
     // the dynamic closure has a face-local flux, so take the max over faces)
@@ -943,6 +1017,16 @@ void TwoFluidPipe::transportStep(double dt)
             const double s = faceSlip(j);
             cmax = std::max(cmax, std::max(std::abs(vM_ - s),
                                            std::abs(vM_ + s)));
+        }
+    }
+    else if (faceLocal)
+    {
+        for (int j = 0; j <= n_; ++j)
+        {
+            double fqa, fqb, fqc;
+            liquidCoeffsAt(j, fqa, fqb, fqc);
+            cmax = std::max(cmax, std::max(std::abs(fqb),
+                                           std::abs(2.0 * fqa + fqb)));
         }
     }
     else
@@ -958,7 +1042,7 @@ void TwoFluidPipe::transportStep(double dt)
                             std::abs(gasVelocity(alpha_[i],
                                                  slipClosure()
                                                      ? slip_[i]
-                                                     : 0.0)));
+                                                     : 0.0, i)));
     const double dxMin = *std::min_element(dxs_.begin(), dxs_.end());
     if (dt * cmax / dxMin > 1.0 + 1e-12)
         cfFatal("twoFluid: CFL violated (dt * |dF/dalpha| / dx = "
@@ -986,6 +1070,13 @@ void TwoFluidPipe::transportStep(double dt)
                 flux[0] = godunovQuadratic(s, vM_ - s, 0.0, in.alpha,
                                            alpha_[0]);
             }
+            else if (faceLocal)
+            {
+                double fqa, fqb, fqc;
+                liquidCoeffsAt(0, fqa, fqb, fqc);
+                flux[0] = godunovQuadratic(fqa, fqb, fqc, in.alpha,
+                                           alpha_[0]);
+            }
             else
                 flux[0] = godunovQuadratic(qa, qb, qc, in.alpha, alpha_[0]);
         }
@@ -996,12 +1087,19 @@ void TwoFluidPipe::transportStep(double dt)
                 flux[n_] = out.vsl; // junction-imposed split (supplied
                                     // branch fed through its outlet)
             else
-                flux[n_] = liquidFlux(alpha_[n_ - 1], faceSlip(n_));
+                flux[n_] = liquidFlux(alpha_[n_ - 1], faceSlip(n_), n_ - 1);
         }
         else if (slipClosure())
         {
             const double s = faceSlip(j);
             flux[j] = godunovQuadratic(s, vM_ - s, 0.0, alpha_[j - 1],
+                                       alpha_[j]);
+        }
+        else if (faceLocal)
+        {
+            double fqa, fqb, fqc;
+            liquidCoeffsAt(j, fqa, fqb, fqc);
+            flux[j] = godunovQuadratic(fqa, fqb, fqc, alpha_[j - 1],
                                        alpha_[j]);
         }
         else
@@ -1106,6 +1204,13 @@ void TwoFluidPipe::transportStep(double dt)
                     gvol[0] = godunovQuadratic(-s, s - vM_, vM_, in.alpha,
                                                alpha_[0]);
                 }
+                else if (faceLocal)
+                {
+                    double gqa, gqb, gqc;
+                    gasCoeffsAt(0, gqa, gqb, gqc);
+                    gvol[0] = godunovQuadratic(gqa, gqb, gqc, in.alpha,
+                                               alpha_[0]);
+                }
                 else
                 {
                     double gqa, gqb, gqc;
@@ -1121,12 +1226,20 @@ void TwoFluidPipe::transportStep(double dt)
             if (out.type == TwoFluidBoundary::Type::phaseRates)
                 gvol[n_] = out.vsg; // junction-imposed split
             else if (out.type != TwoFluidBoundary::Type::sealed)
-                gvol[n_] = gasVolumeFlux(alpha_[n_ - 1], faceSlip(n_));
+                gvol[n_] = gasVolumeFlux(alpha_[n_ - 1], faceSlip(n_),
+                                         n_ - 1);
         }
         else if (slipClosure())
         {
             const double s = faceSlip(j);
             gvol[j] = godunovQuadratic(-s, s - vM_, vM_, alpha_[j - 1],
+                                       alpha_[j]);
+        }
+        else if (faceLocal)
+        {
+            double gqa, gqb, gqc;
+            gasCoeffsAt(j, gqa, gqb, gqc);
+            gvol[j] = godunovQuadratic(gqa, gqb, gqc, alpha_[j - 1],
                                        alpha_[j]);
         }
         else
@@ -1293,7 +1406,7 @@ void TwoFluidPipe::entrainmentStep(double dt)
         // just-transported state; implicit Euler on the linear relaxation
         // dd/dt = (E_eq(vG) - d) / relaxTime
         const double vG = gasVelocity(alpha_[i],
-                                      slipClosure() ? slip_[i] : 0.0);
+                                      slipClosure() ? slip_[i] : 0.0, i);
         const double eEq = std::min(
             std::max((vG - en.vCrit) / en.vRef, 0.0), 1.0);
         entrained_[i] += (eEq - entrained_[i]) * dt / (en.relaxTime + dt);
@@ -1565,24 +1678,46 @@ void TwoFluidPipe::thermalStep(double dt)
                 : cellGasDensity(j);
         return 0.0;
     };
-    // one face-phase contribution: the upstream side drains at its own
-    // temperature (diagonal), the downstream side receives the upwind
-    // temperature - an implicit coupling to the upstream cell, or the
-    // boundary temperature of the ghost reservoir
+    // one face-phase contribution: implicit upwinding on the phase's own
+    // flux direction. Historical (default) form: the upstream cell drains at
+    // its own temperature (+k diagonal), the downstream side receives the
+    // upwind temperature (-k in its row) - conservative, but when a cell's
+    // in/out capacity fluxes differ persistently (countercurrent slip at
+    // shut-in) the row-sum margin closes and the max principle is lost:
+    // temperatures can overshoot any physical bound.
+    // closure gravitySlip (shut-in-safe variant) assembles the conservative
+    // receive-capacity form instead: the receiver's diagonal also takes +k
+    // (the arrived mass joins the cell's capacity before it exchanges heat),
+    // the drain takes nothing (its capacity loss IS the outflux), so
+    // diag - |off| = cap/dt + kw exactly and the max principle holds:
+    // every temperature stays within [min(T_old, T_wall), max(T_old,
+    // T_wall, T_boundary)].
+    const bool conservativeT = cfg_.closure.gravitySlip;
     auto faceTerm = [&](int j, double q, double k)
     {
         if (q == 0) return;
         const int up = q > 0 ? j - 1 : j;
         const int dn = q > 0 ? j : j - 1;
-        if (up >= 0 && up < n_) mat[up][up] += k;
-        if (dn >= 0 && dn < n_)
+        const bool upIn = up >= 0 && up < n_;
+        const bool dnIn = dn >= 0 && dn < n_;
+        if (!conservativeT && upIn) mat[up][up] += k;
+        if (dnIn)
         {
-            if (up >= 0 && up < n_)
+            if (upIn)
+            {
                 mat[dn][up] -= k;
+                if (conservativeT) mat[dn][dn] += k;
+            }
             else
+            {
+                // boundary receive: arrived capacity joins the cell
                 rhs[dn] += k * (j == 0 ? cfg_.inlet.temperature
                                        : cfg_.outlet.temperature);
+                if (conservativeT) mat[dn][dn] += k;
+            }
         }
+        // boundary drain (backflow out through an open boundary): the
+        // capacity loss IS the outflux - nothing to assemble
     };
 
     inletHeatRate_ = 0;
@@ -1736,7 +1871,7 @@ std::vector<double> TwoFluidPipe::cellVsl() const
     // superficial liquid velocity = liquid volume flux per unit area
     std::vector<double> v(n_);
     for (int i = 0; i < n_; ++i)
-        v[i] = liquidFlux(alpha_[i], slip_[i]);
+        v[i] = liquidFlux(alpha_[i], slip_[i], i);
     return v;
 }
 
@@ -1744,7 +1879,7 @@ std::vector<double> TwoFluidPipe::cellVsg() const
 {
     std::vector<double> v(n_);
     for (int i = 0; i < n_; ++i)
-        v[i] = (1.0 - alpha_[i]) * gasVelocity(alpha_[i], slip_[i]);
+        v[i] = (1.0 - alpha_[i]) * gasVelocity(alpha_[i], slip_[i], i);
     return v;
 }
 
@@ -2036,6 +2171,19 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
     c.closure.c0 = cd.getScalarOr("C0", 1.0);
     c.closure.driftVelocity = cd.getScalarOr("driftVelocity", 0.0);
     c.closure.interfacialDrag = cd.getScalarOr("interfacialDrag", 0.0);
+    // shut-in-safe algebraic variant (opt-in): gravity-projected drift +
+    // conservative receive-capacity thermal assembly. Default false keeps
+    // the historical scheme bit-for-bit (all standing checkers).
+    c.closure.gravitySlip = cd.has("gravitySlip") && cd.getBool("gravitySlip");
+    // the projection is meaningful only where an inclination exists; on a
+    // horizontal algebraic-closure line it degenerates the drift to zero,
+    // which is exactly the shut-in-safe intent, so no refusal - but a
+    // gravitySlip declaration alongside a dynamic/full closure is a
+    // category error: those closures already drive slip from buoyancy
+    if (c.closure.gravitySlip && (c.closure.model == 2 || c.closure.model == 3))
+        cfFatal("twoFluid: closure gravitySlip belongs to the algebraic"
+                " closures (wallis/zuber); the dynamic/full closures"
+                " already drive the slip from buoyancy");
 
     if (!caseDict.has("initial"))
         cfFatal("twoFluid: case has no initial{} block");

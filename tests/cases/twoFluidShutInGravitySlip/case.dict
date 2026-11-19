@@ -1,0 +1,42 @@
+// E2E shut-in defect fix (twoFluid + wallis closure): the minimal horizontal
+// line whose total shut-in used to drive a spurious countercurrent. The
+// algebraic wallis drift (slipVelocity 0.3, an absolute axial velocity) kept
+// transporting liquid toward the closed inlet and gas toward the open outlet
+// at vM = 0, piling liquid at the closed end (EOS pressure 11 -> 14.9 MPa,
+// unbounded) while the single-temperature thermal solve - whose receive
+// capacity flux exceeds its drain capacity flux there - lost the maximum
+// principle and ran the inlet cell to 383 K against a 277 K wall.
+//
+// The fix is opt-in: closure gravitySlip yes
+//   1. projects the algebraic drift by the local inclination (us * sinT,
+//      zero on horizontal), so a shut-in line has no spurious axial slip;
+//   2. assembles the thermal step in the conservative receive-capacity form
+//      (the receiver's diagonal also takes +k, the drain takes nothing, so
+//      diag - |off| = cap/dt + kw exactly and the max principle holds).
+//
+// The checker runs THIS case (fixed) and the same dictionary without the key
+// (historical scheme, bug witness): the fixed run must hold every temperature
+// inside [min(T_init, T_wall), max(T_init, T_wall, T_boundary)] every frame,
+// hold the post-shutdown velocities at exactly zero on the horizontal line,
+// keep the liquid inventory frozen after the rates go to zero, relax the
+// inlet pressure monotonically toward the static state, and refuse the key
+// beside a dynamic/full closure; the witness run must reproduce the bug
+// (a temperature above the same bound), proving the two paths really differ.
+fluid { rhoL 1010; rhoG 85; muL 0.0008; muG 1.4e-5; cL 4180; cG 2400; gasR 470; }
+
+pipe { length 400; diameter 0.12; roughness 3e-5; angleDeg 0; sections 20; }
+
+closure { model wallis; slipVelocity 0.3; gravitySlip yes; }
+
+initial { alpha 0.15; water 0.3; temperature 278; }
+
+boundaries
+{
+    inlet { type phaseRates; vsl 0.25; vsg 2.5; waterFraction 0.35; temperature 278;
+            schedule { stop { t 60; vsl 0; vsg 0; } } }
+    outlet { type fixedPressure; p 8.0e6; temperature 277; }
+}
+
+thermal { wallHeatTransfer 25; wallModel constant; wallTemperature 277; }
+
+time { dt 0.25; endTime 120; reportEvery 40; }

@@ -1830,6 +1830,22 @@ foreach(tcase twoFluidThermalRelax twoFluidThermalExchanger
             ${mode})
 endforeach()
 
+# E2E shut-in defect fix (closure gravitySlip): the minimal horizontal
+# shut-in whose spurious algebraic-drift countercurrent used to pile liquid
+# at the closed end (unbounded EOS pressure) and break the thermal max
+# principle (383 K against a 277 K wall). The checker holds every fixed-run
+# temperature inside the physical bound, the post-shutdown velocities at
+# exactly zero, the liquid inventory frozen and the pressure relaxing; a
+# witness run without the key reproduces the bug, and the key beside a
+# dynamic/full closure is a loud refusal.
+add_test(
+    NAME verify.twoFluidShutInGravitySlip
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_shutin.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidShutInGravitySlip/case.dict
+        ${CMAKE_CURRENT_BINARY_DIR}/twoFluidShutIn_tmp)
+
 # D3 increment 1: a radial formation conduction grid coupled to the two-fluid
 # temperature equation. The checker asserts the steady series-resistance
 # exchanger recurrence, the exact logarithmic rock profile (linear in the

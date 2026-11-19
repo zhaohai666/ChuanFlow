@@ -8,6 +8,7 @@
 #include "cf/common/Dictionary.h"
 #include "cf/common/Log.h"
 #include "cf/pvt/ComponentData.h"
+#include "cf/pvt/Enthalpy.h"
 #include "cf/pvt/PvtCase.h"
 #include "cf/pvt/HydrateEquilibrium.h"
 #include "cf/pvt/PvtTable.h"
@@ -173,6 +174,36 @@ int main(int argc, char** argv)
                 log::info("pvt hydrateEquilibrium T ", num(T), " p ",
                           num(hydrateEquilibriumPressure(T, Tref, pRef, dH)));
             }
+        }
+
+        // D13 increment 5: non-isothermal (PH) flash. Gated on `nonIsothermal`;
+        // all heat-capacity coefficients are declared in-case (cp = a + b T),
+        // departure enthalpy uses only the declared PR constants via da/dT.
+        if (caseDict.has("nonIsothermal"))
+        {
+            const Dictionary& ni = caseDict.getDict("nonIsothermal");
+            EnthalpyModel em;
+            em.cpA = ni.getScalarList("cpA");
+            em.cpB = ni.getScalarList("cpB");
+            if (em.cpA.size() != c.feed.size() || em.cpB.size() != c.feed.size())
+                cfFatal("pvt: nonIsothermal cpA/cpB need one value per component");
+            em.referenceT = ni.getScalarOr("referenceT", em.referenceT);
+
+            const scalar pIso = ni.getScalar("pressure");
+            for (const scalar T : ni.getScalarList("enthalpyT"))
+            {
+                const FlashResult fl = tpFlash(c.feed, T, pIso);
+                log::info("pvt enthalpyAt T ", num(T), " p ", num(pIso),
+                          " h ", num(mixtureEnthalpy(c.feed, fl, T, pIso, em)));
+            }
+            const PhResult ph = phFlash(c.feed, pIso, ni.getScalar("hTarget"), em,
+                                        ni.getScalar("Tmin"), ni.getScalar("Tmax"));
+            if (!ph.converged) cfFatal("pvt: nonIsothermal phFlash failed: " + ph.message);
+            log::info("pvt phFlash T ", num(ph.T), " p ", num(pIso),
+                      " h ", num(ph.enthalpy), " residual ", num(ph.residual),
+                      " converged ", ph.converged ? 1 : 0,
+                      " iterations ", ph.iterations,
+                      " beta ", num(ph.flash.vaporFraction));
         }
 
         // A coarse table shows interpolation and EOS agree; the regression

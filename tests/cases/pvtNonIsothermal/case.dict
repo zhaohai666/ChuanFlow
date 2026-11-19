@@ -1,0 +1,29 @@
+// D13 increment 5: non-isothermal (PH) flash with declared-input enthalpy.
+//
+// cp_i(T) = cpA_i + cpB_i T  (J/mol/K, coefficients declared here, nothing
+// tabulated in the library). PR departure enthalpy uses only the declared EOS
+// constants via an analytic da/dT. `enthalpyT` samples H(T,p) for the checker
+// to restate independently; hTarget is the H at 320 K, so phFlash must solve
+// back to T = 320 K at p = 5 MPa.
+temperature 300.0;
+pressures (5.0e6);
+
+composition
+{
+    methane 0.7;
+    ethane  0.3;
+}
+
+solve { tol 1.0e-12; maxIter 300; }
+
+nonIsothermal
+{
+    cpA (20 40);       // J/(mol K)
+    cpB (30 50);       // J/(mol K^2)
+    referenceT 298.15; // K
+    pressure 5.0e6;    // Pa
+    enthalpyT (280 300 320 340 360);
+    hTarget 242384.567025;  // J/mol, == H(320 K, 5 MPa)
+    Tmin 250;
+    Tmax 450;
+}

@@ -12,6 +12,7 @@ add_library(cf_pvt STATIC
     src/waxSolubility.cpp
     src/thermalConductivity.cpp
     src/hydrateEquilibrium.cpp
+    src/enthalpy.cpp
 )
 
 target_include_directories(cf_pvt PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

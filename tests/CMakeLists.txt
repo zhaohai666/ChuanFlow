@@ -2021,6 +2021,16 @@ add_test(
         $<TARGET_FILE:chflow-pvt>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtThermalHydrate/case.dict)
 
+# D13 increment 5: non-isothermal (PH) flash with declared cp(T) + PR da/dT
+# departure enthalpy. Checker independently transcribes PR76 and re-derives
+# H(T) at each sample, verifies phFlash solves back, five rejections, twin.
+add_test(
+    NAME verify.pvtNonIsothermal
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_non_isothermal.py
+        $<TARGET_FILE:chflow-pvt>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtNonIsothermal/case.dict)
+
 # README M5: Tauri GUI (command-layer Rust unit tests, offline build, and the
 # DOM-free frontend pure-function tests). Only registered when cargo / node
 # exist, so a bare environment keeps every CTest green.

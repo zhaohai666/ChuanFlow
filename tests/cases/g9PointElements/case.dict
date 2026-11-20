@@ -1,0 +1,99 @@
+// G9 (5.140): three point elements with closed-form answers -- the jet pump,
+// the progressive cavity pump and the plunger gas lift. Every arm is priced
+// by algebra the checker re-runs in Python to 1e-9; nothing is iterated.
+//
+// Jet pump arms (constant-area mixing momentum theory, Thornhcser 1955):
+//   JP_IDEAL    f = 0: the perfect square gives r = (m-1) - m sqrt(dp/(rho vn^2))
+//               exactly; m = 4, the free-jet ceiling is r = 3.
+//   JP_FRICTION the same jet with a 0.2 m throat at f = 0.02: the friction
+//               line eats entrainment, r drops below JP_IDEAL's.
+//   JP_STALL    back pressure past the r = 0 shutoff: NO-SUCTION, the pump
+//               passes its motive stream alone and reports the overshoot.
+//   JP_FREEJET  pd == ps, f == 0: r hits the m - 1 ceiling exactly.
+//   JP_IMPOSED  mode B: the suction RATE is declared (r = 0.5) and the
+//               chamber pressure falls out of the same balance; the checker
+//               round-trips it back through mode A.
+jetPumps
+{
+    JP_IDEAL    { rho 850; nozzleArea 1.0e-4; throatArea 4.0e-4;
+                  throatLength 0; frictionFactor 0;
+                  motiveRate 2.0e-3; suctionPressure 2.0e6;
+                  dischargePressure 2.05e6; }
+    JP_FRICTION { rho 850; nozzleArea 1.0e-4; throatArea 4.0e-4;
+                  throatLength 0.2; frictionFactor 0.02;
+                  motiveRate 2.0e-3; suctionPressure 2.0e6;
+                  dischargePressure 2.05e6; }
+    JP_STALL    { rho 850; nozzleArea 1.0e-4; throatArea 4.0e-4;
+                  throatLength 0; frictionFactor 0;
+                  motiveRate 2.0e-3; suctionPressure 2.0e6;
+                  dischargePressure 2.07e6; }
+    JP_FREEJET  { rho 850; nozzleArea 1.0e-4; throatArea 4.0e-4;
+                  throatLength 0; frictionFactor 0;
+                  motiveRate 2.0e-3; suctionPressure 2.0e6;
+                  dischargePressure 2.0e6; }
+    JP_IMPOSED  { rho 850; nozzleArea 1.0e-4; throatArea 4.0e-4;
+                  throatLength 0.2; frictionFactor 0.02;
+                  motiveRate 2.0e-3; suctionRate 1.0e-3;
+                  dischargePressure 2.05e6; }
+}
+
+// PCP arms (kinematic displacement minus the declared laminar slip line):
+//   PCP_BASE   q_th = 2 x 1.2e-5 x 120/60 = 4.8e-4, slip 2e-12 x 8e6 = 1.6e-5
+//   PCP_NOSLIP the straight line at zero leak: ev = 1 exactly
+//   PCP_STALL  the slip line eats the whole displacement (and more): STALLED,
+//              net rate negative -- the column drives the machine backwards
+//   PCP_NOLOAD ports reversed (dp < 0): the cavities still sweep, no work
+//   PCP_PORT   the same card as PCP_BASE read from two port pressures
+pcpPumps
+{
+    PCP_BASE   { rho 900; cavitiesPerRev 2; cavityVolume 1.2e-5; rpm 120;
+                 slip 2.0e-12; pressureRise 8.0e6; }
+    PCP_NOSLIP { rho 900; cavitiesPerRev 2; cavityVolume 1.2e-5; rpm 120;
+                 slip 0; pressureRise 8.0e6; }
+    PCP_STALL  { rho 900; cavitiesPerRev 2; cavityVolume 1.2e-5; rpm 120;
+                 slip 1.0e-10; pressureRise 8.0e6; }
+    PCP_NOLOAD { rho 900; cavitiesPerRev 2; cavityVolume 1.2e-5; rpm 120;
+                 slip 2.0e-12; dischargePressure 3.0e6; intakePressure 5.0e6; }
+    PCP_PORT   { rho 900; cavitiesPerRev 2; cavityVolume 1.2e-5; rpm 120;
+                 slip 2.0e-12; dischargePressure 10.0e6; intakePressure 2.0e6; }
+}
+
+// Plunger gas lift arms (batch schedule x 5.89 valve x Boyle):
+//   PGL_OPEN     the accumulator empties inside the window: volref == V_g
+//                exactly, and the window probes walk the (t mod T) < w edge
+//   PGL_LIMITED  a 1 ms window demands 600 kg/s the port cannot pass:
+//                VALVE-LIMITED, delivered == mcap x w / rho_ref
+//   PGL_INSPREAD the dome puts Pc between Pvc and Pvo: priced shut, says so
+//   PGL_CLOSED   Pc at or below Pvc: CLOSED, zero delivered
+plungerGasLifts
+{
+    PGL_OPEN     { gasVolumePerCycle 0.5; referencePressure 1.0e5;
+                   gasDensityAtReference 1.2; cyclePeriod 600; openWindow 30;
+                   releaseDepth 1500; casingSurfacePressure 8.0e6;
+                   tubingSurfacePressure 4.0e6; liquidDensity 900;
+                   liftDomePressure 9.0e6; liftAreaRatio 0.10;
+                   liftSpringPressure 0; liftPortDiameter 0.01;
+                   liftDischargeCoeff 0.665; liftKappa 1.3;
+                   probeTimes ( 0 15 29.999 30 45 600 600.5 ); }
+    PGL_LIMITED  { gasVolumePerCycle 0.5; referencePressure 1.0e5;
+                   gasDensityAtReference 1.2; cyclePeriod 600; openWindow 0.001;
+                   releaseDepth 1500; casingSurfacePressure 8.0e6;
+                   tubingSurfacePressure 4.0e6; liquidDensity 900;
+                   liftDomePressure 9.0e6; liftAreaRatio 0.10;
+                   liftSpringPressure 0; liftPortDiameter 0.01;
+                   liftDischargeCoeff 0.665; liftKappa 1.3; }
+    PGL_INSPREAD { gasVolumePerCycle 0.5; referencePressure 1.0e5;
+                   gasDensityAtReference 1.2; cyclePeriod 600; openWindow 30;
+                   releaseDepth 1500; casingSurfacePressure 8.0e6;
+                   tubingSurfacePressure 4.0e6; liquidDensity 900;
+                   liftDomePressure 21.0e6; liftAreaRatio 0.10;
+                   liftSpringPressure 0; liftPortDiameter 0.01;
+                   liftDischargeCoeff 0.665; liftKappa 1.3; }
+    PGL_CLOSED   { gasVolumePerCycle 0.5; referencePressure 1.0e5;
+                   gasDensityAtReference 1.2; cyclePeriod 600; openWindow 30;
+                   releaseDepth 1500; casingSurfacePressure 8.0e6;
+                   tubingSurfacePressure 4.0e6; liquidDensity 900;
+                   liftDomePressure 22.0e6; liftAreaRatio 0.10;
+                   liftSpringPressure 0; liftPortDiameter 0.01;
+                   liftDischargeCoeff 0.665; liftKappa 1.3; }
+}

@@ -9,6 +9,8 @@
 
 #include "cf/1d/Network.h" // churchillFriction
 #include "cf/pvt/WaxSolubility.h" // van't Hoff wax saturation (5.96)
+#include "cf/pvt/Components.h" // G1: named components for the feed (5.143)
+#include "cf/pvt/Flash.h"      // G1: per-cell tpFlash diagnostics (5.143)
 #include "DenseSolve.h"
 
 namespace cf
@@ -398,10 +400,87 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         scale_.assign(n_, sc.initial);
     }
 
+    if (cfg_.sandOn)
+    {
+        if (!(cfg_.sand.terminalVelocity > 0))
+            cfFatal("twoFluid: sand needs a positive terminalVelocity");
+        if (!(cfg_.sand.criticalVelocity > 0))
+            cfFatal("twoFluid: sand needs a positive criticalVelocity");
+        if (cfg_.sand.erodeRate < 0)
+            cfFatal("twoFluid: negative sand erodeRate");
+        if (cfg_.sand.initial < 0 || cfg_.sand.initial > 1)
+            cfFatal("twoFluid: initial suspended sand fraction outside [0,1]");
+        if (cfg_.sand.bedInitial < 0 || cfg_.sand.bedInitial >= 1)
+            cfFatal("twoFluid: initial sand bed fraction outside [0,1)");
+        sandFrac_.assign(n_, cfg_.sand.initial);
+        bed_.assign(n_, cfg_.sand.bedInitial);
+    }
+
+    if (cfg_.compositionOn)
+    {
+        // G1: the loader validated the feed (names known, 2..8 components,
+        // z >= 0, sum within 1e-8 of 1, auto-normalised). The boundary
+        // inflow composition defaults to the declared feed; a declared
+        // zInlet is checked against the same rules.
+        const int nc = static_cast<int>(cfg_.compositionZ0.size());
+        if (nc < 2 || nc > 8)
+            cfFatal("twoFluid: composition needs 2..8 components");
+        for (const std::string& name : cfg_.compositionNames)
+            pvt::requireComponent(name); // unknown names are loud
+        auto prepare = [this, nc](TwoFluidBoundary& b, const char* who) {
+            if (b.zInlet.empty())
+            {
+                b.zInlet = cfg_.compositionZ0;
+                return;
+            }
+            if (static_cast<int>(b.zInlet.size()) != nc)
+                cfFatal(std::string("twoFluid: ") + who + " zInlet needs "
+                        + std::to_string(nc) + " fractions");
+            double sum = 0;
+            for (double z : b.zInlet)
+            {
+                if (!(z >= 0))
+                    cfFatal(std::string("twoFluid: ") + who
+                            + " zInlet has a negative fraction");
+                sum += z;
+            }
+            if (std::fabs(sum - 1.0) > 1e-8)
+                cfFatal(std::string("twoFluid: ") + who + " zInlet fractions"
+                        " must sum to 1 within 1e-8");
+            for (double& z : b.zInlet) z /= sum;
+        };
+        prepare(cfg_.inlet, "inlet");
+        prepare(cfg_.outlet, "outlet");
+        // flash pressure reference where the cell EOS pressure is not
+        // available (gasR off, or a liquid-full cell): outlet first (the
+        // gauge convention's base), then inlet
+        flashPRef_ = 0.0;
+        if (cfg_.outlet.type == TwoFluidBoundary::Type::fixedPressure
+            && cfg_.outlet.pressure > 0)
+            flashPRef_ = cfg_.outlet.pressure;
+        else if (cfg_.inlet.type == TwoFluidBoundary::Type::fixedPressure
+                 && cfg_.inlet.pressure > 0)
+            flashPRef_ = cfg_.inlet.pressure;
+        if (!eosOn() && flashPRef_ <= 0)
+            cfFatal("twoFluid: composition flash needs a pressure: enable"
+                    " the gas EOS (gasR) or declare a fixedPressure"
+                    " boundary");
+        compZ_.assign(nc - 1, std::vector<double>(n_, 0.0));
+        for (int k = 0; k < nc - 1; ++k)
+            std::fill(compZ_[k].begin(), compZ_[k].end(),
+                      cfg_.compositionZ0[k]);
+        compBeta_.assign(n_, 0.0);
+        compRhoL_.assign(n_, 0.0);
+        compRhoG_.assign(n_, 0.0);
+        compositionStep(0.0); // the t=0 frame already reports the flash
+    }
+
     // 5.98/5.99: start the effective diameter from the TOTAL declared
     // deposit. With feedback off dEff_ is never read by the wall law, so the
     // old expressions stay bit-for-bit; with feedback on the deposit steps
-    // refresh it every step via refreshDepositDiameter().
+    // refresh it every step via refreshDepositDiameter(). The sand bed must
+    // be sized BEFORE this call: a feedback bore starts from the initial
+    // bed, not from the raw diameter.
     dEff_.assign(n_, diameter_);
     refreshDepositDiameter();
 
@@ -415,6 +494,33 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         if (cfg_.entrainment.initial < 0 || cfg_.entrainment.initial > 1)
             cfFatal("twoFluid: initial entrained fraction outside [0,1]");
         entrained_.assign(n_, cfg_.entrainment.initial);
+    }
+
+    if (cfg_.emulsionOn)
+    {
+        // the law prices the Newtonian liquid share; a power-law liquid
+        // carries its own wall law and the declaration would be ignored
+        if (cfg_.fluid.flowIndex > 0)
+            cfFatal("twoFluid: emulsion{} declares a mixing viscosity for"
+                    " the Newtonian liquid share, but the fluid declares a"
+                    " power-law flowIndex: the two laws would fight over"
+                    " the same wall");
+        if (!(cfg_.emulsion.muWater > 0))
+            cfFatal("twoFluid: emulsion needs a positive muWater");
+    }
+
+    if (cfg_.inhibitorOn)
+    {
+        if (!cfg_.hydrateOn)
+            cfFatal("twoFluid: inhibitor{} depresses the hydrate"
+                    " equilibrium line but no hydrate{} is declared: the"
+                    " offset would act on nothing");
+        if (!(cfg_.inhibitor.kDepression > 0))
+            cfFatal("twoFluid: inhibitor needs a positive kDepression"
+                    " (K per unit mass fraction)");
+        if (cfg_.inhibitor.initial < 0 || cfg_.inhibitor.initial > 1)
+            cfFatal("twoFluid: initial inhibitor fraction outside [0,1]");
+        inhibitor_.assign(n_, cfg_.inhibitor.initial);
     }
 }
 
@@ -547,6 +653,22 @@ double TwoFluidPipe::ghostGasDensity(const TwoFluidBoundary& b) const
                         b.temperature > 0 ? b.temperature : cfg_.temperature0);
 }
 
+// Emulsion mixing viscosity (G8): the transported water cut prices the
+// Newtonian liquid share of the wall law. Both laws are exactly muL at
+// phi = 0, so a dry line - and the whole standing suite, which never
+// declares emulsion{} - reads the old number verbatim.
+double TwoFluidPipe::liquidViscosityAt(int i) const
+{
+    const TwoFluidFluid& f = cfg_.fluid;
+    if (!cfg_.emulsionOn) return f.muL;
+    const double phi = std::min(std::max(water_[i], 0.0), 1.0);
+    if (cfg_.emulsion.model == 1) // brinkman: mu_oil (1 + 2.5 phi)
+        return f.muL * (1.0 + 2.5 * phi);
+    // richardson: mu_oil^(1-phi) mu_water^phi (log-linear product rule)
+    return std::pow(f.muL, 1.0 - phi)
+         * std::pow(cfg_.emulsion.muWater, phi);
+}
+
 double TwoFluidPipe::cellFriction(int i, double vM) const
 {
     // homogeneous Churchill law on mixture properties; |dp| per cell
@@ -560,14 +682,17 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     // verbatim. With feedback on the deposit sets both the wall diameter and
     // the exposed roughness; the thin-layer approximation leaves area() and
     // the transport faces at the declared bore.
-    const bool fb = cfg_.waxOn && cfg_.wax.feedback;
+    const bool fb = (cfg_.waxOn && cfg_.wax.feedback)
+                 || (cfg_.sandOn && cfg_.sand.feedback);
     const double d = fb ? dEff_[i] : diameter_;
     const double rr = fb ? cfg_.wax.depositRoughness / d : relrough_[i];
     if (f.flowIndex <= 0 && !(f.yieldStress > 0))
     {
         // 5.75/5.77: the undeclared branch is the old law verbatim -- the
-        // whole standing two-fluid suite is its bit-for-bit witness.
-        const double mu = mixtureMu(f, a);
+        // whole standing two-fluid suite is its bit-for-bit witness. With
+        // emulsion{} the liquid share is the mixing law on the water cut
+        // (exactly muL at phi = 0 and when undeclared, so this stays it).
+        const double mu = a * liquidViscosityAt(i) + (1.0 - a) * f.muG;
         const double re = rho * v * d / mu;
         const double fr = churchillFriction(re, rr)
                         * (dxs_[i] / d) * 0.5 * rho * v * v;
@@ -599,8 +724,9 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     {
         // Newtonian liquid with a yield stress (Bingham-style): keep the
         // muL gamma share, add tau_0 below. flowIndex > 0 with tau_0 = 0
-        // keeps the 5.75 expression verbatim.
-        tau = a * f.muL * gamma + (1.0 - a) * f.muG * gamma;
+        // keeps the 5.75 expression verbatim. The muL share reads the
+        // emulsion law when declared (exactly muL otherwise).
+        tau = a * liquidViscosityAt(i) * gamma + (1.0 - a) * f.muG * gamma;
     }
     if (f.yieldStress > 0) tau += a * f.yieldStress;
     const double muEff = tau / gamma;
@@ -651,7 +777,8 @@ double TwoFluidPipe::yieldThresholdPa() const
 {
     if (!(cfg_.fluid.yieldStress > 0)) return 0.0;
     double sum = 0;
-    const bool fb = cfg_.waxOn && cfg_.wax.feedback;
+    const bool fb = (cfg_.waxOn && cfg_.wax.feedback)
+                 || (cfg_.sandOn && cfg_.sand.feedback);
     for (int i = 0; i < n_; ++i)
         sum += 4.0 * dxs_[i] / (fb ? dEff_[i] : diameter_) * alpha_[i]
              * cfg_.fluid.yieldStress;
@@ -1054,6 +1181,13 @@ void TwoFluidPipe::transportStep(double dt)
     std::vector<double> flux(n_ + 1), wflux(n_ + 1);
     std::vector<double> hflux(n_ + 1, 0.0);
     std::vector<double> wxf(n_ + 1, 0.0); // 5.97: deposited-wax content flux
+    std::vector<double> iflux(n_ + 1, 0.0); // inhibitor content flux
+    std::vector<double> sflux(n_ + 1, 0.0); // G10: suspended sand content flux
+    // G1: content flux alpha*z_k per transported component (empty when no
+    // composition{} feed was declared - every loop below then no-ops)
+    std::vector<std::vector<double>> zflux;
+    if (cfg_.compositionOn)
+        zflux.assign(compZ_.size(), std::vector<double>(n_ + 1, 0.0));
     std::vector<double> gvol(n_ + 1, 0.0), gmflux(n_ + 1, 0.0);
     std::vector<double> dflux(n_ + 1, 0.0); // entrained droplet content flux
 
@@ -1153,6 +1287,91 @@ void TwoFluidPipe::transportStep(double dt)
             else
             {
                 wxf[j] = (flux[j] >= 0 ? wax_[j - 1] : wax_[j]) * flux[j];
+            }
+        }
+
+        // the inhibitor fraction rides the liquid flux with the same
+        // upwind rule as the water cut (inflow composition carries
+        // inhibitorFraction); placed before the hydrate section, whose
+        // `continue` would otherwise skip it on a hydrate-free line
+        if (cfg_.inhibitorOn)
+        {
+            if (flux[j] == 0) iflux[j] = 0;
+            else if (j == 0)
+            {
+                if (in.type == TwoFluidBoundary::Type::phaseRates)
+                    iflux[0] = in.inhibitorFraction * flux[0];
+                else
+                    iflux[0] = (flux[0] >= 0 ? in.inhibitorFraction
+                                             : inhibitor_[0]) * flux[0];
+            }
+            else if (j == n_)
+            {
+                if (out.type == TwoFluidBoundary::Type::phaseRates)
+                    iflux[n_] = out.inhibitorFraction * flux[n_];
+                else
+                    iflux[n_] = inhibitor_[n_ - 1] * flux[n_];
+            }
+            else
+            {
+                iflux[j] = (flux[j] >= 0 ? inhibitor_[j - 1]
+                                         : inhibitor_[j]) * flux[j];
+            }
+        }
+
+        // G10: the suspended sand fraction rides the liquid flux with the
+        // same upwind rule as the water cut (inflow composition carries
+        // sandFraction); the bed is static and never enters the flux
+        if (cfg_.sandOn)
+        {
+            if (flux[j] == 0) sflux[j] = 0;
+            else if (j == 0)
+            {
+                if (in.type == TwoFluidBoundary::Type::phaseRates)
+                    sflux[0] = in.sandFraction * flux[0];
+                else
+                    sflux[0] = (flux[0] >= 0 ? in.sandFraction
+                                             : sandFrac_[0]) * flux[0];
+            }
+            else if (j == n_)
+            {
+                if (out.type == TwoFluidBoundary::Type::phaseRates)
+                    sflux[n_] = out.sandFraction * flux[n_];
+                else
+                    sflux[n_] = sandFrac_[n_ - 1] * flux[n_];
+            }
+            else
+            {
+                sflux[j] = (flux[j] >= 0 ? sandFrac_[j - 1]
+                                         : sandFrac_[j]) * flux[j];
+            }
+        }
+
+        // G1: every transported mole fraction rides the liquid flux with
+        // the same upwind rule as the sand content (the inflow composition
+        // carries zInlet); the closed last fraction needs no flux
+        for (size_t k = 0; k < zflux.size(); ++k)
+        {
+            if (flux[j] == 0) { zflux[k][j] = 0; continue; }
+            if (j == 0)
+            {
+                if (in.type == TwoFluidBoundary::Type::phaseRates)
+                    zflux[k][0] = in.zInlet[k] * flux[0];
+                else
+                    zflux[k][0] = (flux[0] >= 0 ? in.zInlet[k]
+                                                : compZ_[k][0]) * flux[0];
+            }
+            else if (j == n_)
+            {
+                if (out.type == TwoFluidBoundary::Type::phaseRates)
+                    zflux[k][n_] = out.zInlet[k] * flux[n_];
+                else
+                    zflux[k][n_] = compZ_[k][n_ - 1] * flux[n_];
+            }
+            else
+            {
+                zflux[k][j] = (flux[j] >= 0 ? compZ_[k][j - 1]
+                                            : compZ_[k][j]) * flux[j];
             }
         }
 
@@ -1339,6 +1558,11 @@ void TwoFluidPipe::transportStep(double dt)
         const double awOld = cfg_.waxOn ? alpha_[i] * wax_[i] : 0.0;
         const double aentOld
             = cfg_.entrainmentOn ? alpha_[i] * entrained_[i] : 0.0;
+        const double aiOld = cfg_.inhibitorOn
+                                 ? alpha_[i] * inhibitor_[i] : 0.0;
+        const double asOld = cfg_.sandOn ? alpha_[i] * sandFrac_[i] : 0.0;
+        const double aOld = alpha_[i]; // G1: pre-transport holdup for the
+                                       // composition contents
         double afNew = afOld + dt / dxs_[i] * (wflux[i] - wflux[i + 1]);
         const double aCap = std::max(aNew, 0.0);
         if (afNew < -kTol || afNew > aCap + kTol)
@@ -1375,6 +1599,35 @@ void TwoFluidPipe::transportStep(double dt)
                            + dt / dxs_[i] * (dflux[i] - dflux[i + 1]);
             aentNew = std::min(std::max(aentNew, 0.0), aCap);
             entrained_[i] = aCap > kTol ? aentNew / aCap : 0.0;
+        }
+        if (cfg_.inhibitorOn)
+        {
+            // the inhibitor content alpha*c rides the liquid with the same
+            // upwind rule and clamp semantics as the water cut
+            double aiNew = aiOld + dt / dxs_[i] * (iflux[i] - iflux[i + 1]);
+            aiNew = std::min(std::max(aiNew, 0.0), aCap);
+            inhibitor_[i] = aCap > kTol ? aiNew / aCap : 0.0;
+        }
+        if (cfg_.sandOn)
+        {
+            // the suspended sand content alpha*S rides the liquid with the
+            // same upwind rule and clamp semantics as the water cut
+            double asNew = asOld + dt / dxs_[i] * (sflux[i] - sflux[i + 1]);
+            asNew = std::min(std::max(asNew, 0.0), aCap);
+            sandFrac_[i] = aCap > kTol ? asNew / aCap : 0.0;
+        }
+        for (size_t k = 0; k < compZ_.size(); ++k)
+        {
+            // G1: the content alpha*z_k rides the liquid with the same
+            // upwind rule and clamp semantics as the sand fraction; the
+            // closed fraction 1 - sum stays in [0,1] because the upwind
+            // update is a convex combination of cell and inflow states
+            // (all of which carry normalised feeds)
+            const double azOld = aOld * compZ_[k][i];
+            double azNew = azOld + dt / dxs_[i] * (zflux[k][i]
+                                                   - zflux[k][i + 1]);
+            azNew = std::min(std::max(azNew, 0.0), aCap);
+            compZ_[k][i] = aCap > kTol ? azNew / aCap : 0.0;
         }
         if (eosOn())
         {
@@ -1427,7 +1680,11 @@ void TwoFluidPipe::hydrateStep(double dt)
         if (ag <= 1e-12)
             cfFatal("twoFluid: hydrate kinetics needs gas volume in every"
                     " cell - keep a gas-bearing holdup");
-        const double dT = equilibriumTemperature(p[i]) - sectionTemperature(i);
+        // with inhibitor{} the equilibrium line is depressed at the local
+        // transported fraction (Hammerschmidt linear term); without, the
+        // declared curve verbatim (exactly the old difference)
+        const double dT = equilibriumTemperatureInhibited(p[i], i)
+                        - sectionTemperature(i);
         const double hOld = hydrate_[i];
         // hydrate-able slurry material: free water plus existing hydrate
         // (oil is inert); the growth law converges to the full conversion
@@ -1463,6 +1720,107 @@ void TwoFluidPipe::hydrateStep(double dt)
         // thermal step consumes (positive = release)
         hydrateDelta_[i] = alpha_[i] * dh;
     }
+}
+
+// G10: sand / cuttings exchange between the suspended load (rides the
+// liquid, transported in transportStep) and the static bed. One-sided
+// switch on the mixture velocity: below the declared critical velocity the
+// suspended fraction settles across half the bore (rate vt/(D/2), implicit
+// Euler), above it the bed erodes at erodeRate (vM/uCrit - 1) (implicit
+// Euler). The cell's total sand volume alpha*S + B changes only by
+// transport; both sides are exactly reproducible closed forms.
+void TwoFluidPipe::sandStep(double dt)
+{
+    if (!cfg_.sandOn) return;
+    const TwoFluidSand& sd = cfg_.sand;
+    const double vM = vM_;
+    if (vM < sd.criticalVelocity)
+    {
+        const double k = sd.terminalVelocity / (0.5 * diameter_);
+        for (int i = 0; i < n_; ++i)
+        {
+            const double sNew = sandFrac_[i] / (1.0 + dt * k);
+            bed_[i] += alpha_[i] * (sandFrac_[i] - sNew);
+            sandFrac_[i] = sNew;
+        }
+    }
+    else if (sd.erodeRate > 0)
+    {
+        const double k = sd.erodeRate * (vM / sd.criticalVelocity - 1.0);
+        const double kEps = 1e-12;
+        for (int i = 0; i < n_; ++i)
+        {
+            const double bNew = bed_[i] / (1.0 + dt * k);
+            if (alpha_[i] > kEps)
+                sandFrac_[i] = std::min(
+                    sandFrac_[i] + (bed_[i] - bNew) / alpha_[i], 1.0);
+            bed_[i] = bNew;
+        }
+    }
+}
+
+void TwoFluidPipe::compositionStep(double)
+{
+    if (!cfg_.compositionOn) return;
+    // G1: per-cell PR flash of the transported feed at the cell's own
+    // (T, p) - the transient counterpart of the steady liveFlash (5.121).
+    // Pure diagnostic: the result lands in compBeta_/compRhoL_/compRhoG_
+    // for the report and the cellVaporFraction() accessor; the momentum,
+    // holdup and density fields never read it.
+    const std::vector<double> p = eosOn() ? cellPressure()
+                                          : std::vector<double>();
+    const int nc = static_cast<int>(cfg_.compositionZ0.size());
+    std::vector<double> z(nc, 0.0);
+    for (int i = 0; i < n_; ++i)
+    {
+        double s = 0.0;
+        for (int k = 0; k < nc - 1; ++k)
+        {
+            z[k] = compZ_[k][i];
+            s += z[k];
+        }
+        z[nc - 1] = std::max(0.0, 1.0 - s); // closed fraction
+        // flash pressure: the cell's EOS pressure where available, else
+        // the declared fixedPressure reference (5.143)
+        double pi = flashPRef_;
+        if (eosOn() && p[i] > 0) pi = p[i];
+        if (!(pi > 0))
+            cfFatal("twoFluid: composition flash: no pressure in cell "
+                    + std::to_string(i) + " (liquid-full cell with no"
+                    " fixedPressure reference) - reduce dt or declare a"
+                    " fixedPressure boundary");
+        pvt::Mixture feed;
+        for (int k = 0; k < nc; ++k)
+            feed.add(pvt::requireComponent(cfg_.compositionNames[k]), z[k]);
+        const pvt::FlashResult fr
+            = pvt::tpFlash(feed, sectionTemperature(i), pi);
+        // the steady liveFlash precedent (5.121) prices the returned
+        // state without rejecting an unconverged RR iterate; the result
+        // here is diagnostic-only, so do the same
+        if (!(fr.liquidMassDensity > 0.0) || !(fr.vapourMassDensity > 0.0))
+            cfFatal("twoFluid: composition flash: non-positive phase"
+                    " density in cell " + std::to_string(i));
+        compBeta_[i] = fr.vaporFraction;
+        compRhoL_[i] = fr.liquidMassDensity;
+        compRhoG_[i] = fr.vapourMassDensity;
+    }
+}
+
+std::vector<double> TwoFluidPipe::cellComposition(int k) const
+{
+    if (!cfg_.compositionOn) return {};
+    const int nc = static_cast<int>(cfg_.compositionZ0.size());
+    if (k < 0 || k >= nc)
+        cfFatal("twoFluid: cellComposition: component index out of range");
+    if (k < nc - 1) return compZ_[k];
+    std::vector<double> out(n_, 0.0); // the closed fraction
+    for (int i = 0; i < n_; ++i)
+    {
+        double s = 0.0;
+        for (int j = 0; j < nc - 1; ++j) s += compZ_[j][i];
+        out[i] = 1.0 - s;
+    }
+    return out;
 }
 
 void TwoFluidPipe::waxStep(double dt)
@@ -1506,12 +1864,15 @@ void TwoFluidPipe::waxStep(double dt)
 // behavior, bit for bit.
 void TwoFluidPipe::refreshDepositDiameter()
 {
-    if (!(cfg_.waxOn && cfg_.wax.feedback)) return;
+    const bool waxFb = cfg_.waxOn && cfg_.wax.feedback;
+    const bool sandFb = cfg_.sandOn && cfg_.sand.feedback;
+    if (!waxFb && !sandFb) return;
     for (int i = 0; i < n_; ++i)
     {
-        const double w = wax_[i]
+        const double w = (cfg_.waxOn ? wax_[i] : 0.0)
             + (cfg_.asphalteneOn ? asph_[i] : 0.0)
-            + (cfg_.scaleOn ? scale_[i] : 0.0);
+            + (cfg_.scaleOn ? scale_[i] : 0.0)
+            + (sandFb ? bed_[i] : 0.0);
         dEff_[i] = diameter_ * std::sqrt(std::max(1.0 - w, 1e-12));
     }
 }
@@ -1594,10 +1955,12 @@ void TwoFluidPipe::step(double dt)
     terrainSlugStep(dt);
     entrainmentStep(dt);
     hydrateStep(dt);
+    sandStep(dt);
     waxStep(dt);
     asphalteneStep(dt);
     scaleStep(dt);
     refreshDepositDiameter();
+    compositionStep(dt); // G1: per-cell PR flash diagnostics (reads only)
     thermalStep(dt);
     vMOld_ = vM_;
     t_ += dt;
@@ -1992,6 +2355,7 @@ void TwoFluidPipe::terrainSlugStep(double dt)
 {
     const double us = cfg_.terrain.slugVelocity;
     if (!cfg_.terrainOn || us <= 0 || n_ < 3) return;
+    const double rhoL = cfg_.fluid.rhoL;
 
     std::vector<TwoFluidTerrainDip> dips = terrainDips();
     if (terrainSlugs_.size() != dips.size())
@@ -2021,30 +2385,106 @@ void TwoFluidPipe::terrainSlugStep(double dt)
                 s.volume = excess;
                 s.front = d.position;
                 s.capturedFrom = invBefore;
+                s.velocity = us;
+                if (cfg_.terrain.dynamicUs)
+                    s.capPressure = cellPressure()[d.dipFace];
             }
         }
         else
         {
-            // kinematic travel at the declared slug velocity
-            s.front += us * dt;
+            double u = us;
+            if (cfg_.terrain.dynamicUs)
+            {
+                // G2 gas-cap feedback: the cap pressure behind the lump
+                // relaxes (implicit Euler) towards the EOS pressure of the
+                // cell at the slug rear, and the travel velocity is the
+                // energy-balance ejection value against the front's EOS
+                // pressure plus the hydrostatic head still to be lifted
+                // over the terrain ahead.
+                std::vector<double> z(n_ + 1, 0.0);
+                for (int i = 0; i < n_; ++i)
+                    z[i + 1] = z[i] + dxs_[i] * sinT_[i];
+                auto zAt = [&](double arcPos)
+                {
+                    double acc = 0;
+                    for (int i = 0; i < n_; ++i)
+                    {
+                        acc += dxs_[i];
+                        if (arcPos <= acc)
+                        {
+                            const double f = (arcPos - (acc - dxs_[i]))
+                                           / dxs_[i];
+                            return z[i] + f * (z[i + 1] - z[i]);
+                        }
+                    }
+                    return z[n_];
+                };
+                const std::vector<double> pCell = cellPressure();
+                double rear = s.front - s.volume;
+                if (rear < 0) rear = 0;
+                int ri = 0;
+                {
+                    double acc = 0;
+                    for (int i = 0; i < n_; ++i)
+                    {
+                        acc += dxs_[i];
+                        if (rear < acc) { ri = i; break; }
+                        ri = i;
+                    }
+                }
+                int fi = n_ - 1;
+                {
+                    double acc = 0;
+                    for (int i = 0; i < n_; ++i)
+                    {
+                        acc += dxs_[i];
+                        if (s.front < acc) { fi = i; break; }
+                        fi = i;
+                    }
+                }
+                const double pRear = pCell[ri];
+                const double pFront = pCell[fi]
+                    + rhoL * kGravity
+                    * std::max(0.0, zAt(s.front) - z[d.dipFace]);
+                const double tau = cfg_.terrain.gasCapTime;
+                s.capPressure = (s.capPressure / dt + pRear / tau)
+                              / (1.0 / dt + 1.0 / tau);
+                u = std::sqrt(2.0 * std::max(s.capPressure - pFront, 0.0)
+                              / rhoL);
+                if (cfg_.terrain.maxSlugVelocity > 0)
+                    u = std::min(u, cfg_.terrain.maxSlugVelocity);
+                s.velocity = u;
+            }
+            // kinematic travel at the (declared or gas-driven) velocity
+            s.front += u * dt;
             if (s.front >= totalArc)
             {
                 // discharge into the downstream reach's available holdup
                 // capacity (1 - alpha) dx: alpha_i += V (1 - alpha_i) / avail,
-                // which keeps alpha in [0, 1] and adds exactly V to sum(alpha dx)
+                // which keeps alpha in [0, 1] and adds exactly V to
+                // sum(alpha dx). V is capped at avail: an EOS-crushed
+                // downstream gas pocket can offer less capacity than the
+                // lump, and the remainder then holds at the outlet (the
+                // lump stays active, conserving its volume) until the
+                // transport frees space. With V <= avail (the incompressible
+                // witness of increment 2) this is the old discharge verbatim.
                 const int start = d.dipFace;
                 double avail = 0;
                 for (int i = start; i < n_; ++i)
                     avail += (1.0 - alpha_[i]) * dxs_[i];
                 if (avail > 1e-14)
                 {
-                    const double V = s.volume;
+                    const double V = std::min(s.volume, avail);
                     for (int i = start; i < n_; ++i)
                         alpha_[i] += V * (1.0 - alpha_[i]) / avail;
-                    s.active = false;
-                    s.volume = 0;
+                    s.volume -= V;
+                    if (s.volume <= 1e-14)
+                    {
+                        s.active = false;
+                        s.volume = 0;
+                        ++terrainDeposits_;
+                    }
                     s.front = totalArc;
-                    ++terrainDeposits_;
                 }
                 else
                 {
@@ -2105,6 +2545,9 @@ TwoFluidBoundary loadTwoFluidBoundary(const Dictionary& d)
     b.hydrateFraction = d.getScalarOr("hydrateFraction", 0.0);
     b.waxDepositFraction = d.getScalarOr("waxDepositFraction", 0.0);
     b.entrainedFraction = d.getScalarOr("entrainedFraction", 0.0);
+    b.inhibitorFraction = d.getScalarOr("inhibitorFraction", 0.0);
+    b.sandFraction = d.getScalarOr("sandFraction", 0.0);
+    if (d.has("zInlet")) b.zInlet = d.getScalarList("zInlet"); // G1
     b.temperature = d.getScalarOr("temperature", 0.0);
     return b;
 }
@@ -2307,6 +2750,77 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.entrainment.initial = ed.getScalarOr("initial", 0.0);
     }
 
+    if (caseDict.has("emulsion"))
+    {
+        c.emulsionOn = true;
+        const Dictionary& ed = caseDict.getDict("emulsion");
+        const std::string m = ed.getWord("model");
+        if (m == "brinkman") c.emulsion.model = 1;
+        else if (m == "richardson") c.emulsion.model = 2;
+        else cfFatal("twoFluid: unknown emulsion model '" + m + "'");
+        c.emulsion.muWater = ed.getScalar("muWater");
+    }
+
+    if (caseDict.has("inhibitor"))
+    {
+        c.inhibitorOn = true;
+        const Dictionary& id = caseDict.getDict("inhibitor");
+        c.inhibitor.kDepression = id.getScalar("kDepression");
+        c.inhibitor.initial = id.getScalarOr("initial", 0.0);
+    }
+
+    if (caseDict.has("sand"))
+    {
+        c.sandOn = true;
+        const Dictionary& sd = caseDict.getDict("sand");
+        c.sand.terminalVelocity = sd.getScalar("terminalVelocity");
+        c.sand.criticalVelocity = sd.getScalar("criticalVelocity");
+        c.sand.erodeRate = sd.getScalarOr("erodeRate", 0.0);
+        c.sand.initial = sd.getScalarOr("initial", 0.0);
+        c.sand.bedInitial = sd.getScalarOr("bedInitial", 0.0);
+        if (sd.has("feedback"))
+        {
+            const std::string w = sd.getWord("feedback");
+            if (w == "true") c.sand.feedback = true;
+            else if (w == "false") c.sand.feedback = false;
+            else cfFatal("twoFluid: sand feedback must be true or false");
+        }
+    }
+
+    if (caseDict.has("composition"))
+    {
+        // G1: named feed components, each with its mole fraction. Loud on
+        // unknown names (requireComponent), count outside 2..8, negative
+        // fractions and sums further than 1e-8 from 1; within that
+        // tolerance the feed is auto-normalised to exactly 1 (documented
+        // in TwoFluid.h).
+        c.compositionOn = true;
+        const Dictionary& cd = caseDict.getDict("composition");
+        double sum = 0;
+        for (const std::string& key : cd.keys())
+        {
+            const Dictionary::Node& node = cd.find(key);
+            if (node.kind != Dictionary::Kind::scalar)
+                cfFatal("twoFluid: composition entry '" + key + "' must be"
+                        " a mole fraction number");
+            pvt::requireComponent(key); // unknown names are loud
+            if (!(node.scalar >= 0))
+                cfFatal("twoFluid: composition entry '" + key + "' has a"
+                        " negative mole fraction");
+            c.compositionNames.push_back(key);
+            c.compositionZ0.push_back(node.scalar);
+            sum += node.scalar;
+        }
+        if (c.compositionNames.size() < 2)
+            cfFatal("twoFluid: composition needs at least 2 components");
+        if (c.compositionNames.size() > 8)
+            cfFatal("twoFluid: composition supports at most 8 components");
+        if (std::fabs(sum - 1.0) > 1e-8)
+            cfFatal("twoFluid: composition mole fractions must sum to 1"
+                    " within 1e-8");
+        for (double& z : c.compositionZ0) z /= sum;
+    }
+
     if (caseDict.has("slug"))
     {
         c.slugOn = true;
@@ -2329,6 +2843,29 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.terrain.slugVelocity = td.getScalarOr("slugVelocity", 0.0);
         if (c.terrain.slugVelocity < 0)
             cfFatal("twoFluid: negative terrain slugVelocity");
+        if (td.has("dynamicUs"))
+        {
+            const std::string w = td.getWord("dynamicUs");
+            if (w == "true") c.terrain.dynamicUs = true;
+            else if (w == "false") c.terrain.dynamicUs = false;
+            else cfFatal("twoFluid: terrain dynamicUs must be true or false");
+        }
+        c.terrain.gasCapTime = td.getScalarOr("gasCapTime", 0.0);
+        c.terrain.maxSlugVelocity = td.getScalarOr("maxSlugVelocity", 0.0);
+        if (c.terrain.dynamicUs)
+        {
+            if (c.terrain.slugVelocity <= 0)
+                cfFatal("twoFluid: terrain dynamicUs needs a positive"
+                        " slugVelocity gate (the cycle switch)");
+            if (!(c.terrain.gasCapTime > 0))
+                cfFatal("twoFluid: terrain dynamicUs needs a positive"
+                        " gasCapTime");
+            if (c.terrain.maxSlugVelocity < 0)
+                cfFatal("twoFluid: negative terrain maxSlugVelocity");
+            if (!(c.fluid.gasR > 0))
+                cfFatal("twoFluid: terrain dynamicUs reads the gas-cap EOS"
+                        " pressure but no gasR is declared");
+        }
     }
 }
 
@@ -2590,6 +3127,12 @@ TwoFluidNetwork::TwoFluidNetwork(const TwoFluidNetworkCase& c)
         jn.entrJ = cfg_.perPipe.entrainmentOn
                        ? cfg_.perPipe.entrainment.initial
                        : 0.0;
+        jn.inhibJ = cfg_.perPipe.inhibitorOn
+                        ? cfg_.perPipe.inhibitor.initial
+                        : 0.0;
+        jn.sandJ = cfg_.perPipe.sandOn ? cfg_.perPipe.sand.initial : 0.0;
+        jn.zJ = cfg_.perPipe.compositionOn ? cfg_.perPipe.compositionZ0
+                                           : std::vector<double>(); // G1
         jn.tJ = cfg_.perPipe.temperature0;
         jn.rhoJ = cfg_.perPipe.fluid.rhoG;
         bool pressureRef = false;
@@ -2654,6 +3197,12 @@ TwoFluidNetwork::TwoFluidNetwork(const TwoFluidNetworkCase& c)
             = pc.waxOn ? pc.wax.initial : 0.0;
         junctionGhost.entrainedFraction
             = pc.entrainmentOn ? pc.entrainment.initial : 0.0;
+        junctionGhost.inhibitorFraction
+            = pc.inhibitorOn ? pc.inhibitor.initial : 0.0;
+        junctionGhost.sandFraction
+            = pc.sandOn ? pc.sand.initial : 0.0;
+        junctionGhost.zInlet = pc.compositionOn ? pc.compositionZ0
+                                                : std::vector<double>();
         junctionGhost.temperature = pc.temperature0;
         bool jIn = false, jOut = false;
         for (const Junction& jn : junctions_)
@@ -2914,8 +3463,12 @@ void TwoFluidNetwork::solveNetwork(double dt)
     for (int j = 0; j < nj; ++j)
     {
         Junction& jn = junctions_[j];
-        double qL = 0, qG = 0, wNum = 0, hNum = 0, waxNum = 0, enNum = 0, eNum = 0,
-               eDen = 0, gNum = 0;
+        double qL = 0, qG = 0, wNum = 0, hNum = 0, waxNum = 0, enNum = 0,
+               iNum = 0, sNum = 0, eNum = 0, eDen = 0, gNum = 0;
+        // G1: per-component liquid-flow-weighted mixing (empty when no
+        // composition{} feed was declared)
+        const int nz = static_cast<int>(cfg_.perPipe.compositionZ0.size());
+        std::vector<double> zNum(nz, 0.0);
         for (const EndRef& e : jn.ends)
         {
             const double s = e.atOutlet ? 1.0 : -1.0;
@@ -2936,6 +3489,10 @@ void TwoFluidNetwork::solveNetwork(double dt)
             hNum += aL * p.endHydrate(atInlet);
             waxNum += aL * p.endWax(atInlet);
             enNum += aL * p.endEntrained(atInlet);
+            iNum += aL * p.endInhibitor(atInlet);
+            sNum += aL * p.endSand(atInlet);
+            for (int k = 0; k < nz; ++k)
+                zNum[k] += aL * p.endComposition(k, atInlet);
             eNum += (aL * f.rhoL * f.cL + aG * rhoG * f.cG)
                   * p.endTemperature(atInlet);
             eDen += aL * f.rhoL * f.cL + aG * rhoG * f.cG;
@@ -2951,6 +3508,10 @@ void TwoFluidNetwork::solveNetwork(double dt)
                 jn.hydrateJ = hNum / qL;
                 jn.waxJ = waxNum / qL;
                 jn.entrJ = enNum / qL;
+                jn.inhibJ = iNum / qL;
+                jn.sandJ = sNum / qL;
+                if (nz > 0)
+                    for (int k = 0; k < nz; ++k) jn.zJ[k] = zNum[k] / qL;
             }
             if (eDen > 0) jn.tJ = eNum / eDen;
             if (qG > 0) jn.rhoJ = gNum / qG;
@@ -2975,6 +3536,9 @@ void TwoFluidNetwork::solveNetwork(double dt)
             b.hydrateFraction = jn.hydrateJ;
             b.waxDepositFraction = jn.waxJ;
             b.entrainedFraction = jn.entrJ;
+            b.inhibitorFraction = jn.inhibJ;
+            b.sandFraction = jn.sandJ;
+            if (nz > 0) b.zInlet = jn.zJ; // G1
             b.temperature = jn.tJ;
             b.rhoGInjected = jn.rhoJ;
             if (s * uOf(e.pipe, x) > 0)

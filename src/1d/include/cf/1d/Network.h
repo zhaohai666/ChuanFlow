@@ -49,6 +49,11 @@ struct PvtFluid
     std::vector<double> pressure; // Pa, strictly ascending
     std::vector<double> rho;      // kg/m3 at those pressures
     std::vector<double> mu;       // Pa.s at those pressures
+    // 5.144 (G6): the stream's inlet temperature (K) for the PASSIVE
+    // thermal march. 0 = undeclared: the table path never reads it and
+    // every existing number is bit for bit; a pipe with thermal physics
+    // on a pvt fluid without this declaration is refused.
+    double temperature = 0;
 
     double density(double p) const;
     double viscosity(double p) const;
@@ -157,6 +162,60 @@ struct NetworkPipe
     // defines its blend weight has no published meaning. -1 (absent) asks the
     // map, which is exactly the 5.85 path, bit for bit.
     int flowPattern = -1;
+
+    // 5.143 (G4): WHICH published holdup law prices a two-phase pipe. 0 =
+    // beggsBrill (the shipped law, bit for bit), 1 = hagedornBrown (Whitson
+    // et al. 2017 restatement), 2 = dunsRos (API Bulletin 34 region
+    // skeleton - see the provenance caveat in beggsBrill.cpp). The law
+    // replaces ONLY the holdup block of the gradient; the flow-pattern map
+    // stays evaluated and reported, and flowPattern (which selects one of
+    // Beggs-Brill's own regime laws) is refused alongside a non-zero value.
+    int correlation = 0;
+
+    // 5.144 (G6): the PASSIVE steady temperature march. None of these
+    // numbers feeds the pressure solution - they price the outlet
+    // temperature along the march the hydraulics already ran - so a
+    // declaration here cannot move a hydraulic answer. jouleThomson is
+    // K/Pa applied to the march's own dp (signed; positive = cooling on
+    // expansion, the usual gas behaviour); wallHeatTransfer is the overall
+    // coefficient per unit length (W/(m K), film + wall + cement folded
+    // into one number, as in the transient thermal block), or one value
+    // per march segment through wallHeatTransferSegments (exactly 24
+    // entries); the wall is constant (wallTemperature) or geothermal from
+    // the inlet datum (surfaceTemperature + geothermalGradient * depth
+    // below the inlet); heatCapacity is the stream's c_p (J/(kg K)),
+    // needed by the wall term through m c_p dT/ds = U (T_wall - T). All
+    // zero is the undeclared isothermal march, bit for bit.
+    double jouleThomson = 0;
+    double wallHeatTransfer = 0;
+    std::vector<double> wallHeatTransferSegments;
+    int wallModel = 0;              // 0 constant, 1 geothermal
+    double wallTemperature = 0;     // K
+    double surfaceTemperature = 0;  // K (geothermal at the inlet datum)
+    double geothermalGradient = 0;  // K/m
+    double heatCapacity = 0;        // J/(kg K)
+
+    /// 5.144 (G6): does this pipe carry any PRICED thermal physics? A
+    /// Joule-Thomson coefficient or a positive wall coefficient anywhere.
+    /// Declared-but-inert keys are refused by the parser; this is what the
+    /// marches and addPipe scope checks act on.
+    bool thermalOn() const
+    {
+        if (jouleThomson != 0.0 || wallHeatTransfer > 0.0) return true;
+        for (double u : wallHeatTransferSegments)
+            if (u > 0.0) return true;
+        return false;
+    }
+
+    /// 5.144 (G6): does the pipe declare wall exchange (as opposed to a
+    /// pure Joule-Thomson readout)? The relaxation term needs c_p and a
+    /// wall temperature.
+    bool wallExchangeOn() const
+    {
+        if (wallHeatTransfer > 0.0 || !wallHeatTransferSegments.empty())
+            return true;
+        return false;
+    }
 
     // Gas-lift valve (5.89, D1 increment 3): this pipe IS an injection-pressure-
     // operated valve between the injection (annulus) node and the production
@@ -455,6 +514,10 @@ struct PipeFlowResult
     double nfrOutlet = 0;
     double patternL1 = 0, patternL2 = 0, patternL3 = 0, patternL4 = 0;
     double massRate = 0;    // two-phase: kg/s, invariant along the pipe
+    // 5.144 (G6): outlet temperature (K) of a marched pipe (black-oil or
+    // pvt-table) whose thermal physics was declared; 0 on every undeclared
+    // or constant-property path, where the march is isothermal.
+    double temperature = 0;
     // 5.89 (D1 increment 3): the gas-lift valve's own statement, on a valve
     // pipe only (disposition -1 everywhere else). `flowRate` is the volume rate
     // at the UPSTREAM (injection-side) density the nozzle was priced on, and

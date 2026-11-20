@@ -173,6 +173,11 @@ int main(int argc, char** argv)
                       + num(f.frictionFactor);
             }
             line += " dp " + num(f.dpTotal);
+            // 5.144 (G6): the passive thermal march's outlet temperature;
+            // absent (0) on every isothermal path, so no existing line
+            // gains a token.
+            if (f.temperature > 0)
+                line += " T " + num(f.temperature);
             if (!f.pvtFlashStations.empty())
                 line += " sigmaOutlet " + num17(f.sigmaOutlet);
             if (f.dpValve != 0) line += " dpValve " + num(f.dpValve);

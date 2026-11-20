@@ -1108,6 +1108,48 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
                 + " on a single-phase network: the flow-pattern map is a "
                   "Beggs-Brill two-phase dispatch surface, a single-phase pipe "
                   "has no pattern to force");
+    // 5.143 (G4): the alternative holdup laws replace the holdup block of
+    // the Beggs-Brill gradient, so they price a marched black-oil two-phase
+    // pipe and nothing else; and flowPattern selects WHICH Beggs-Brill
+    // regime law prices the holdup, so with an alternative law there is no
+    // Beggs-Brill regime law to select. addPipe owns both scope rules.
+    if (p.correlation != 0 && !hasBlackOil)
+        cfFatal("network: pipe '" + p.name + "' declares correlation "
+                + std::string(p.correlation == 1 ? "hagedornBrown" : "dunsRos")
+                + " on a single-phase network: the alternative holdup laws "
+                  "(5.143) replace the liquid holdup of the two-phase march; "
+                  "this pipe has no two-phase holdup to reprice");
+    if (p.correlation != 0 && p.flowPattern >= 0)
+        cfFatal("network: pipe '" + p.name + "' declares both flowPattern "
+                "and correlation: flowPattern selects which Beggs-Brill "
+                "regime law prices the holdup (5.88), and with an "
+                "alternative holdup law (5.143) there is no Beggs-Brill "
+                "regime law to select - honour one dispatch, not both");
+    // 5.144 (G6): the steady thermal march is a MARCHED-pipe declaration -
+    // black-oil or pvt-table. A constant-property single-phase pipe is
+    // priced by an algebraic law with no march to carry a temperature, and
+    // the wall term needs the stream's c_p and a wall to relax toward.
+    if (p.thermalOn() && !hasBlackOil && !hasPvtFluid)
+        cfFatal("network: pipe '" + p.name + "' declares thermal physics on "
+                "a constant-property network: the steady temperature march "
+                "(5.144) rides a marched pipe (blackoil or pvt fluid); this "
+                "pipe's algebraic law has no march to carry a temperature");
+    if (p.thermalOn() && hasPvtFluid && !hasBlackOil
+        && !(pvtFluid.temperature > 0.0))
+        cfFatal("network: pipe '" + p.name + "' declares thermal physics but "
+                "the pvt fluid has no temperature: the march starts from the "
+                "fluid's declared inlet temperature (5.144)");
+    if (p.wallExchangeOn() && !(p.heatCapacity > 0.0))
+        cfFatal("network: pipe '" + p.name + "' declares wall exchange "
+                "without a positive heatCapacity: the stream relaxes toward "
+                "the wall through m c_p dT/ds = U (T_wall - T)");
+    if (p.wallExchangeOn() && p.wallModel == 0 && !(p.wallTemperature > 0.0))
+        cfFatal("network: pipe '" + p.name + "' wall exchange with the "
+                "constant wall model needs a positive wallTemperature");
+    if (p.wallExchangeOn() && p.wallModel == 1
+        && !(p.geothermalGradient > 0.0))
+        cfFatal("network: pipe '" + p.name + "' wall exchange with the "
+                "geothermal wall model needs a positive geothermalGradient");
     if (pipeIsAnnulus(p))
     {
         // 5.73's declaration scope: the annulus is a single-phase
@@ -1226,12 +1268,14 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
             || p.pumpGasFraction > 0 || p.coupledResistance > 0
             || p.annulusInner > 0 || p.ductHeight > 0 || p.eccentricity > 0
             || p.flowIndex > 0 || p.consistency > 0 || p.yieldStress > 0
-            || p.flowPattern >= 0 || p.rodPlungerDiameter > 0)
+            || p.flowPattern >= 0 || p.rodPlungerDiameter > 0
+            || p.correlation != 0 || p.thermalOn())
             cfFatal("network: pipe '" + p.name
                     + "' is a gas-lift valve that also declares a wall law, a "
-                      "bore shape, a pump, a coupled edge or a flow-pattern "
-                      "override: the valve's rate comes from its bellows and "
-                      "its port and nothing else prices it");
+                      "bore shape, a pump, a coupled edge, a flow-pattern "
+                      "override, a holdup law or thermal physics: the valve's "
+                      "rate comes from its bellows and its port and nothing "
+                      "else prices it");
         if (!(p.liftAreaRatio > 0) || !(p.liftAreaRatio < 1))
             cfFatal("network: pipe '" + p.name
                     + "' has a lift-valve area ratio outside (0,1): R = Ap/Ab "
@@ -1282,13 +1326,13 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
             || p.coupledResistance > 0 || p.annulusInner > 0
             || p.ductHeight > 0 || p.eccentricity > 0 || p.flowIndex > 0
             || p.consistency > 0 || p.yieldStress > 0 || p.flowPattern >= 0
-            || p.liftDomePressure > 0)
+            || p.liftDomePressure > 0 || p.correlation != 0 || p.thermalOn())
             cfFatal("network: pipe '" + p.name
                     + "' is a rod pump that also declares a wall law, a bore "
-                      "shape, a head-curve pump, a lift valve, a coupled edge "
-                      "or a flow-pattern override: the plunger's rate comes "
-                      "from its stroke and its string and nothing else prices "
-                      "it");
+                      "shape, a head-curve pump, a lift valve, a coupled edge, "
+                      "a flow-pattern override, a holdup law or thermal "
+                      "physics: the plunger's rate comes from its stroke and "
+                      "its string and nothing else prices it");
         if (!(p.rodStrokeLength > 0))
             cfFatal("network: pipe '" + p.name
                     + "' is a rod pump without a stroke: rodStrokeLength is the "
@@ -1691,7 +1735,8 @@ double twoPhaseRateForDrop(const NetworkPipe& pipe,
     {
         const BeggsBrillMarchOut m = marchBeggsBrillPipe(
             fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness,
-            sinFlow, 24, liquidRheology, pipe.flowPattern, sigmaOfP);
+            sinFlow, 24, liquidRheology, pipe.flowPattern, sigmaOfP,
+            pipe.correlation);
         // choked marches return the floor shortfall: continuous with the
         // unchoked branch (there pOutlet -> pFloor) and correctly scaled
         // for the secant, unlike a fixed sentinel
@@ -1800,9 +1845,32 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     const double q = twoPhaseRateForDrop(pipe, fluid, pUp, pLow, sinFlow,
                                          choked, liquidRheology, sigmaOfP);
 
+    // 5.144 (G6): the PASSIVE thermal march rides the pressure profile the
+    // hydraulics above already produced. Nothing declared -> null pointer ->
+    // the isothermal march, bit for bit. The rate solve (g above) is NOT
+    // handed the thermal: T never feeds dp, so threading it through the
+    // secant would be pure overhead with no number to show for it.
+    SteadyThermal th;
+    const SteadyThermal* pth = nullptr;
+    if (pipe.thermalOn())
+    {
+        th.temperatureIn = fluid.temperature;
+        th.jouleThomson = pipe.jouleThomson;
+        th.wallHeatTransfer = pipe.wallHeatTransfer;
+        th.segmentU = pipe.wallHeatTransferSegments.empty()
+                          ? nullptr
+                          : &pipe.wallHeatTransferSegments;
+        th.wallModel = pipe.wallModel;
+        th.wallTemperature = pipe.wallTemperature;
+        th.surfaceTemperature = pipe.surfaceTemperature;
+        th.geothermalGradient = pipe.geothermalGradient;
+        th.heatCapacity = pipe.heatCapacity;
+        pth = &th;
+    }
     const BeggsBrillMarchOut m = marchBeggsBrillPipe(
         fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness, sinFlow,
-        24, liquidRheology, pipe.flowPattern, sigmaOfP);
+        24, liquidRheology, pipe.flowPattern, sigmaOfP, pipe.correlation,
+        pth);
     out.flowRate = forward ? q : -q;
     out.velocity = m.vmOutlet * (forward ? 1.0 : -1.0);
     out.holdup = m.holdupOutlet;
@@ -1816,6 +1884,7 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     out.patternL3 = m.l3Outlet;
     out.patternL4 = m.l4Outlet;
     out.massRate = m.massRate;
+    out.temperature = m.temperature; // 5.144 (G6): 0 unless thermal declared
     out.frictionFactor = m.fTpOutlet;
     out.choked = choked || !m.ok;
     out.dpFriction = dp; // gravity is inside the BB gradient
@@ -1843,7 +1912,8 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
         const BeggsBrillMarchOut dead =
             marchBeggsBrillPipe(fluid, 0.0, pUp, pipe.length, pipe.diameter,
                                 pipe.roughness, sinFlow, 24,
-                                liquidRheology, pipe.flowPattern, sigmaOfP);
+                                liquidRheology, pipe.flowPattern, sigmaOfP,
+                                pipe.correlation);
         const double deficit = pLow - dead.pOutlet; // missing pressure
         if (deficit > 0.0)
         {
@@ -1997,11 +2067,15 @@ struct PvtMarchOut
     double reynolds = 0; // outlet conditions, as in the BB march
     double friction = 0;
     double sigmaOutlet = 0; // D10/D7: WK sigma at the last station (0 otherwise)
+    // 5.144 (G6): outlet temperature of the PASSIVE thermal march; 0 when
+    // no SteadyThermal was handed, the isothermal march, bit for bit.
+    double temperature = 0;
 };
 
 PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
                          double qIn, double pUp, double sinFlow, int nSeg,
-                         std::vector<PvtFlashStation>* stations = nullptr)
+                         std::vector<PvtFlashStation>* stations = nullptr,
+                         const SteadyThermal* thermal = nullptr)
 {
     if (pipeIsAnnulus(pipe))
         cfFatal("pvtMarch: pipe '" + pipe.name + "' declares an annulus: the "
@@ -2014,8 +2088,13 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
     const double dz = sinFlow * ds;
     const double headPerM = pumpHeadOf(pipe, qIn) / pipe.length;
     const double pFloor = std::max(0.02 * pUp, 1000.0);
+    if (thermal && thermal->segmentU
+        && static_cast<int>(thermal->segmentU->size()) != nSeg)
+        cfFatal("pvtMarch: SteadyThermal segmentU needs exactly one entry "
+                "per march segment");
     PvtMarchOut m;
     double p = pUp;
+    double t = thermal ? thermal->temperatureIn : 0.0;
     for (int i = 0; i < nSeg; ++i)
     {
         // D10/D7: one flash per station when liveFlash is set. On the table
@@ -2042,15 +2121,25 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         const double dp = rho * kGravity * dz
             + (f * ds / pipe.diameter + pipe.valveK / nSeg) * rho * v * v / 2.0
             - rho * kGravity * headPerM * ds;
+        const double pOld = p;
         p -= dp;
-        if (!(p > pFloor))
+        const bool hitFloor = !(p > pFloor);
+        if (hitFloor) p = pFloor;
+        // 5.144 (G6): the passive thermal step, shared with the black-oil
+        // march so the two paths price the same law.
+        if (thermal)
+            t = steadyThermalAdvance(*thermal, t, pOld, p, i, ds, sinFlow,
+                                     massRate);
+        if (hitFloor)
         {
             m.pOutlet = pFloor;
+            m.temperature = t;
             return m; // ok stays false: the fill cannot carry this rate
         }
     }
     m.ok = true;
     m.pOutlet = p;
+    m.temperature = t;
     return m;
 }
 
@@ -2233,12 +2322,34 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
     bool choked = false;
     const double q = pvtRateForDrop(pipe, fluid, pUp, pLow, sinFlow, choked);
 
+    // 5.144 (G6): the PASSIVE thermal march, same story as the black-oil
+    // path - the rate solve above never saw a temperature and the accepted
+    // march prices T on the pressure profile it already computed. Nothing
+    // declared -> null -> the isothermal march, bit for bit.
+    SteadyThermal th;
+    const SteadyThermal* pth = nullptr;
+    if (pipe.thermalOn())
+    {
+        th.temperatureIn = fluid.temperature;
+        th.jouleThomson = pipe.jouleThomson;
+        th.wallHeatTransfer = pipe.wallHeatTransfer;
+        th.segmentU = pipe.wallHeatTransferSegments.empty()
+                          ? nullptr
+                          : &pipe.wallHeatTransferSegments;
+        th.wallModel = pipe.wallModel;
+        th.wallTemperature = pipe.wallTemperature;
+        th.surfaceTemperature = pipe.surfaceTemperature;
+        th.geothermalGradient = pipe.geothermalGradient;
+        th.heatCapacity = pipe.heatCapacity;
+        pth = &th;
+    }
     // D10/D7: the accepted march is replayed once with station capture so a
     // checker can read the per-station rho/mu/sigma the march actually used.
     const PvtMarchOut m = marchPvtPipe(
         pipe, fluid, q, pUp, sinFlow, 24,
-        fluid.liveFlash ? &out.pvtFlashStations : nullptr);
+        fluid.liveFlash ? &out.pvtFlashStations : nullptr, pth);
     out.sigmaOutlet = m.sigmaOutlet;
+    out.temperature = m.temperature;
     out.flowRate = (forward ? 1.0 : -1.0) * q;
     out.velocity = (forward ? 1.0 : -1.0) * m.velocity;
     out.reynolds = m.reynolds;
@@ -2313,6 +2424,14 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             const Dictionary& pd = fd.getDict("pvt");
             net.hasPvtFluid = true;
             net.pvtFluid.pressure = pd.getScalarList("pressure");
+            // 5.144 (G6): the stream's inlet temperature for the PASSIVE
+            // thermal march. Absent, the table path never reads it and
+            // every existing pvt number is bit for bit; a pipe with
+            // thermal physics on a pvt fluid without it is refused in
+            // addPipe.
+            net.pvtFluid.temperature = pd.getScalarOr("temperature", 0.0);
+            if (net.pvtFluid.temperature < 0.0)
+                cfFatal("steadyNetwork: fluid pvt temperature is kelvin");
             if (pd.has("compositional"))
             {
                 // 5.110 (compositional properties into 1D, increment A):
@@ -2335,6 +2454,13 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                 const double T = comp.getScalar("temperature");
                 if (!(T > 0.0))
                     cfFatal("steadyNetwork: compositional temperature must be positive");
+                // 5.144 (G6): the flash temperature and the thermal march's
+                // inlet temperature are the same physical number; two
+                // declarations that disagree would price two streams.
+                if (pd.has("temperature") && T != net.pvtFluid.temperature)
+                    cfFatal("steadyNetwork: fluid pvt declares two different "
+                            "temperatures: the compositional flash temperature "
+                            "and the thermal inlet temperature are one number");
                 const std::string phase = comp.getWordOr("phase", "stable");
                 pvt::RootPreference pref = pvt::RootPreference::LowestGibbs;
                 if (phase == "liquid") pref = pvt::RootPreference::Liquid;
@@ -2581,6 +2707,136 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                     + "' declares a fractional flowPattern: it is a regime "
                       "index (0 segregated, 2 intermittent, 3 distributed), "
                       "not a fraction");
+        }
+        // 5.143 (G4): WHICH published holdup law prices this two-phase
+        // pipe. A WORD, not an index: a number here would silently alias
+        // the flowPattern regime indices. addPipe owns the scope checks
+        // (single-phase network, the flowPattern clash).
+        p.correlation = 0;
+        if (pd.has("correlation"))
+        {
+            const std::string cw = pd.getWord("correlation");
+            if (cw == "beggsBrill") p.correlation = 0;
+            else if (cw == "hagedornBrown") p.correlation = 1;
+            else if (cw == "dunsRos") p.correlation = 2;
+            else
+                cfFatal("steadyNetwork: pipe '" + name + "' unknown "
+                        "correlation '" + cw + "': the published holdup laws "
+                        "are beggsBrill, hagedornBrown and dunsRos");
+        }
+        // 5.144 (G6): the passive steady temperature march. Every key is
+        // optional; all absent is the isothermal march, bit for bit. The
+        // scope rules (marched fluid, c_p, wall model, pvt inlet T) live
+        // in addPipe; here the grammar and the SHAPE of the declaration
+        // are checked, because only the parser can see which keys were
+        // actually written.
+        const bool thermalDeclared =
+            pd.has("jouleThomson") || pd.has("wallHeatTransfer")
+            || pd.has("wallHeatTransferSegments") || pd.has("wallModel")
+            || pd.has("wallTemperature") || pd.has("surfaceTemperature")
+            || pd.has("geothermalGradient") || pd.has("heatCapacity");
+        p.jouleThomson = pd.getScalarOr("jouleThomson", 0.0);
+        p.wallHeatTransfer = pd.getScalarOr("wallHeatTransfer", 0.0);
+        p.wallHeatTransferSegments =
+            pd.has("wallHeatTransferSegments")
+                ? pd.getScalarList("wallHeatTransferSegments")
+                : std::vector<double>{};
+        p.wallModel = 0;
+        if (pd.has("wallModel"))
+        {
+            const std::string wm = pd.getWord("wallModel");
+            if (wm == "constant") p.wallModel = 0;
+            else if (wm == "geothermal") p.wallModel = 1;
+            else
+                cfFatal("steadyNetwork: pipe '" + name + "' unknown wallModel '"
+                        + wm + "': the steady thermal wall is constant or "
+                          "geothermal");
+        }
+        p.wallTemperature = pd.getScalarOr("wallTemperature", 0.0);
+        p.surfaceTemperature = pd.getScalarOr("surfaceTemperature", 0.0);
+        p.geothermalGradient = pd.getScalarOr("geothermalGradient", 0.0);
+        p.heatCapacity = pd.getScalarOr("heatCapacity", 0.0);
+        if (thermalDeclared)
+        {
+            if (!net.hasBlackOil && !net.hasPvtFluid)
+                cfFatal("steadyNetwork: pipe '" + name + "' declares thermal "
+                        "keys on a network without a marched fluid: the "
+                        "steady temperature march (5.144) rides a blackoil "
+                        "or pvt march and a constant-property pipe has "
+                        "nothing to carry it");
+            if (p.wallHeatTransfer < 0.0)
+                cfFatal("steadyNetwork: pipe '" + name + "' negative "
+                        "wallHeatTransfer: the overall coefficient per unit "
+                        "length folds resistances into one positive number");
+            for (double u : p.wallHeatTransferSegments)
+                if (u < 0.0)
+                    cfFatal("steadyNetwork: pipe '" + name + "' negative "
+                            "wallHeatTransferSegments entry: a per-segment "
+                            "coefficient is a positive number or zero "
+                            "(insulated)");
+            if (!p.thermalOn())
+                cfFatal("steadyNetwork: pipe '" + name + "' declares thermal "
+                        "keys but no heat: a thermal march needs a nonzero "
+                        "jouleThomson or a positive wallHeatTransfer / "
+                        "wallHeatTransferSegments entry");
+            if (!p.wallHeatTransferSegments.empty())
+            {
+                if (p.wallHeatTransfer > 0.0)
+                    cfFatal("steadyNetwork: pipe '" + name + "' declares both "
+                            "a single wallHeatTransfer and a "
+                            "wallHeatTransferSegments list: price the wall "
+                            "one way or per march segment, not both");
+                if (static_cast<int>(p.wallHeatTransferSegments.size()) != 24)
+                    cfFatal("steadyNetwork: pipe '" + name + "' "
+                            "wallHeatTransferSegments needs exactly 24 "
+                            "entries, one per march segment (got "
+                            + std::to_string(
+                                  p.wallHeatTransferSegments.size()) + ")");
+            }
+            if (p.wallHeatTransferSegments.empty() && p.wallHeatTransfer <= 0.0)
+            {
+                // pure Joule-Thomson readout: no wall to relax toward, so
+                // every wall key would be read by nothing
+                if (pd.has("wallModel") || pd.has("wallTemperature")
+                    || pd.has("surfaceTemperature")
+                    || pd.has("geothermalGradient") || pd.has("heatCapacity"))
+                    cfFatal("steadyNetwork: pipe '" + name + "' declares wall "
+                            "keys without any wall exchange: a pure "
+                            "Joule-Thomson march reads none of them");
+            }
+            else
+            {
+                if (p.wallModel == 0)
+                {
+                    if (!pd.has("wallTemperature"))
+                        cfFatal("steadyNetwork: pipe '" + name + "' wall "
+                                "exchange with the constant wall model needs "
+                                "wallTemperature");
+                    if (pd.has("surfaceTemperature")
+                        || pd.has("geothermalGradient"))
+                        cfFatal("steadyNetwork: pipe '" + name + "' declares "
+                                "geothermal keys with wallModel constant: the "
+                                "wall is at one temperature, the profile is "
+                                "read by nothing");
+                }
+                else
+                {
+                    if (!pd.has("surfaceTemperature"))
+                        cfFatal("steadyNetwork: pipe '" + name + "' geothermal "
+                                "wall model needs surfaceTemperature: the "
+                                "profile is anchored at the inlet datum");
+                    if (pd.has("wallTemperature"))
+                        cfFatal("steadyNetwork: pipe '" + name + "' declares "
+                                "wallTemperature with wallModel geothermal: "
+                                "the wall temperature comes from the profile");
+                }
+            }
+            if (p.wallTemperature < 0.0 || p.surfaceTemperature < 0.0
+                || p.geothermalGradient < 0.0 || p.heatCapacity < 0.0)
+                cfFatal("steadyNetwork: pipe '" + name + "' negative thermal "
+                        "state: temperatures are kelvin, the gradient is "
+                        "kelvin per metre and c_p is joules per kilogram "
+                        "kelvin");
         }
         p.ductHeight = pd.getScalarOr("ductHeight", 0.0);
         if (p.ductHeight < 0)

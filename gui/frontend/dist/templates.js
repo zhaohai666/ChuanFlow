@@ -17,14 +17,23 @@ export const TEMPLATE_IDS = [
   'transientBlowdown',
   'twoFluidTerrainSlug',
   'coupled1d3d',
+  'nodalVogel',
+  'pvtFlash',
 ];
 
 /** Which tab a template opens into and how it feeds the workspace. */
 export function templateTarget(id) {
   if (id === 'twoFluidTerrainSlug') return { tab: 'slug', kind: 'slug' };
   if (id === 'coupled1d3d') return { tab: 'coupled', kind: 'coupled' };
+  if (id === 'nodalVogel') return { tab: 'nodal', kind: 'nodal' };
+  if (id === 'pvtFlash') return { tab: 'pvt', kind: 'pvt' };
   if (id === 'transientBlowdown') return { tab: 'canvas', kind: 'dict' };
   return { tab: 'canvas', kind: 'dict' };
+}
+
+/** Steady dictionary templates can be batch-run against the current model. */
+export function isSteadyComparable(id) {
+  return /^steady/.test(id);
 }
 
 /**

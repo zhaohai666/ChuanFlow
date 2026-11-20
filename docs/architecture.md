@@ -5237,6 +5237,187 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界。** 面通量用单元中心速度乘面投影面积（不是面插值通量），真实面通量需内核输出面场；面平均按靠近目标平面一层面加权，多层厚网格的 `frac` 分辨率为一层单元；report 历史按 VTU 载入事件记录，不是求解器迭代历史（后者属 U8 完整形态，仍需内核 report 数据）。
 
+### 5.140 G9 三个新点元：喷射泵 · 螺杆泵（PCP）· 柱塞气举（PGL）
+
+> **状态（2026-11-20）**：benchmark_alignment G9 落地。三个物理内核全部进新文件（`JetPump.h/.cpp`、`ProgressiveCavityPump.h/.cpp`、`PlungerGasLift.h/.cpp`），由新 app `chflow-1d-point-elements` 读 case-dict 三块（`jetPumps{}` / `pcpPumps{}` / `plungerGasLifts{}`）逐元闭式求解并打印可解析行；`verify.g9PointElements` 147 判据 0 失败。
+
+**喷射泵——等截面混合动量理论（Thornhcser 1955；Karassik《Pump Handbook》3rd ed. ch.41、Guo–Lyons–Ghalambor 2007 喷射泵章同源）。** 三条陈述全是代数：连续 `q_d = q_n + q_s`；喷嘴把压差换成速度 `v_n = q_n/A_n`、供给压 `p_supply = p_s + ρv_n²/2`（伯努利反读）；喉道控制体动量平衡给出**完全平方** `p_d − p_s = ρv_n²(m−1−r)²/(m²(m−1)) − f(L_t/D_t)·ρv_3²/2`，其中 `m = A_t/A_n`、`r = q_s/q_n`、`v_3 = v_n(1+r)/m`——平方不是查表：把 `m²(m−1)` 乘进 `1/m + r²/(m(m−1)) − (1+r)²/m²` 逐项化简即 `(m−1−r)²`。f=0 时恰是 Thornhcser 理想解，两个极限 `r=0`（零吸入憋压）与 `r=m−1`（自由射流零升压）就是几何的工作包线。给定 `q_n`、几何与两端口压强，`r` 是该二次式落在 `[0, m−1]` 上的唯一根（匹配函数在该区间严格递减）；背压越过 `r=0` 截断值即 NO-SUCTION，夹到 0 并把超出量打印成 `resid`，不是沉默。反解模式（声明吸入率）用同一条式子解 `p_s`（对 dp 线性），checker 把它回灌正解模式做 round-trip。头比 `N = (p_d−p_s)/(p_supply−p_d)`、效率 `E = rN = P_u/P_m` 全部由本元自己的压强重算。
+
+**PCP——运动学位移减声明滑移线。** `q_th = cavitiesPerRev × cavityVolume × rpm/60`：行星运动每转把每个密封腔推进一个腔体积，这是 Moineau 运动学计数（Takacs《Progressive Cavity Pumps》；API PCP 选型文献的 `Q = Q_th − λΔp` 同形）；滑移是**线**：腔间环形间隙层流泄漏按 Poiseuille 构造性正比于压差，`q = q_th − slip·dp`，`slip` 是声明不是拟合。`dp ≤ 0` 夹 0（NO-LOAD，跟 §5.90 有杆泵的载荷规则走：腔照样扫，但不做功、不回流）；滑移线吃光位移即 STALLED，净率打印为负（液柱反驱机器，PCP 无阀，不夹零）。水力功率 `q·dp`，体积效率 `q/q_th`；轴功率（定子摩擦/驱动损失）无声明，故不发明。
+
+**PGL——批式气举的周期释放，站在 §5.89 两只腿上。** 声明量是**批**不是率：每周期 `T` 释出参考压 `p_ref` 下的体积 `V_g`，柱塞把阀打开窗口 `w ≤ T`，释放率日程 `q(t) = V_g/w`（参考基准，窗口内）否则 0——一个周期积分恰等于 `V_g`，均值 `V_g/T`。开不开由 §5.89 波纹管力平衡在井底读：两侧表面压各按液柱静水 `ρ_l g z` 落到深度（`Pc(z)`、`Pt(z)`），带内无历史可继承、定价为关并如实报 IN-SPREAD（§5.89 约定）。过多少由 §5.89 等熵喷嘴封顶：`m_del = min(m_req, m_cap)`，窗口塞不下整批即 VALVE-LIMITED、打印缺口；井下体积按玻意耳 `V(z) = V_ref·p_ref/Pc(z)`（等温理想气体，与喷嘴同温假设）。周期性与 §5.92 地形振荡器同族（捕获—释放—周期），但这里捕获量是声明的储气批，不是解出来的。
+
+**回归（`tests/check_g9_point_elements.py`，147 判据）。** 喷射泵：每臂从声明几何/压强独立重解二次根对 `r/qs/qd/psupply/N/eff/pu/pm` 到 1e-9，动量平衡从**打印的率**重算（PUMPING/FREE-JET 残差 ≤1e-9·dp；NO-SUCTION 改验 `resid ≡ ρv_n²g(0)/m² − dp` 的超出量）；摩擦臂 `fline = f·L_t/D_t` 用打印 `v_3` 重算；声明率臂 round-trip。PCP：`q ≡ cav·V·rpm/60 − slip·dp`、`power ≡ q·dp` 逐位重算，端口压臂复现压差臂。PGL：`q_w·w ≡ volref`、`q_avg·T ≡ volref`（OPEN 臂 `volref ≡ V_g` 恰等）、玻意耳率/体积、`Pvo/Pvc` 与等熵通量按 §5.89 公式在 `Pc(z)/Pt(z)` 重推；窗口探针 7 点含 `t=29.999/30/600/600.5` 逐点验 `(t mod T) < w`。10 条大声拒收：负喷嘴面积、喉道不大于喷嘴（动量式除 `m−1`）、`p_d < p_s`、声明吸入率越过 `(m−1)q_n` 天花板、rpm 0、负滑移、负腔体积、窗口大于周期、负批体积、负释放深度。
+
+**接线与边界。** 三元**暂不进** `network.cpp`：喷射泵物理上是三口件（动力液/吸入/排出），两节点管模型装不下它；另一 agent 正在改 `twoFluid.cpp`/`tests/CMakeLists.txt`（§5.138 批次），network 接线留待冲突窗口过去后按 §5.89/§5.90 的管块开关模式补（PCP 与 PGL 是天然两端口，可各加一组 `pcp*`/`pgl*` 键）。`chflow-1d-steady/transient/twofluid/nodal` 四个求解器不认本 case 的新块（块名互斥），既有数字一位不动。喷射泵假设单相不可压、喷嘴无损失、扩压理想（`p_d` 即报价压强）；PCP 无轴功率、无启停瞬态；PGL 柱塞本体运动（速度/液膜/缓冲）不在——窗口是声明的，两相管柱对塞的响应、气体非等温、瞬态管网消费 `q(t)` 都属后续增量。
+
+### 5.141 twoFluid 乳化黏度（G8）+ 热力学抑制剂温降（G5）
+
+> **状态（2026-11-20）**：benchmark_alignment G8/G5 落地。两个声明式块 `emulsion{}` 与 `inhibitor{}` 进两流体核，`verify.twoFluidEmulsionInhibitor` 全绿；未声明时所有既有路径逐位不变（dry-twin 判据证明）。
+
+**G8——混合律只定价牛顿液相份额。** `emulsion{ model brinkman|richardson; muWater }`：φ 取逐元水切 `water_[i]`（已有随液输运机器），Brinkman `μe = μo(1+2.5φ)`、Richardson `μe = μo^(1−φ)·μw^φ`。混合黏度只替代摩擦定律里的液相黏度份额（`liquidViscosityAt(i)`，cellFriction 两分支同点生效）；`flowIndex > 0` 时 loud 拒绝——幂律基液与乳化混合律的叠加没有发表式，不发明。app 声明行打印 model/muWater/muOil，cell 行加 `muEff` 列。
+
+**G5——Hammerschmidt 线性温降 + 浓度随液输运。** `inhibitor{ kDepression; initial }`：平衡线判据改为 `equilibriumTemperatureInhibited(p,i) = T_eq(p) − kDepression·c_i`，c 以 `alpha*content` 随液相通量一阶迎风输运（与水合物/蜡同模板），边界组成 `inhibitorFraction` 在 phaseRates 入口强制、fixedPressure 仅回流注入，网络 junction 按液相体积流量加权混合。需 `hydrate{}`（无动力学可抑制即拒绝），k>0、initial∈[0,1]。温降是 Hammerschmidt 线性形式（kDepression 为声明常数，来源口径在头文件注释声明），不做浓度-活度非线性。
+
+**回归。** brinkman 全元 μe=μo(1+2.5φ) 到 1e-15、dp 用 Churchill 独立重推到 1e-9；richardson 1e-11；dry twin 逐位；密封抑制剂递推闭式复算 1e-9；k=30 全抑制 h≡0；c=0 与无块孪生；纯壁松弛闭式；4 项大声拒收。
+
+### 5.142 twoFluid 砂/岩屑输运（G10）+ 地形段塞气帽动态 us（G2）
+
+> **状态（2026-11-20）**：benchmark_alignment G10/G2 落地。`sand{}` 与 `terrain{ dynamicUs }` 进两流体核，`verify.twoFluidSandTransport`、`verify.twoFluidTerrainDynamicUs` 全绿；未声明路径逐位不变。
+
+**G10——悬浮分数输运 + 沉降/冲蚀床交换。** `sand{ terminalVelocity; criticalVelocity; erodeRate; initial; bedInitial; feedback }`：悬浮分数 S 随液相迎风输运（同 §5.141 模板，边界 `sandFraction`）；每步单侧切换——`vM < uCrit` 隐式沉降 `S/(1+dt·vt/(D/2))`、移除量进**不输运**的静态床 `B += α(S−S_new)`；`vM ≥ uCrit` 床衰减回悬浮 `B/(1+dt·erodeRate·(vM/uCrit−1))`。`feedback true` 时床并入总沉积走薄层律 `dEff = D·sqrt(1−沉积−床)`（与蜡/沥青/垢的 §5.98/5.99 反馈共用刷新门，`refreshDepositDiameter` 的蜡项加 `cfg_.waxOn` 守卫、床在构造函数量完 `dEff_` 之前就位）。床是纯固相薄层：不改过流面积的动量/输运面（声明的口径）。
+
+**G2——气帽反馈的段塞行进速度。** `terrain{ dynamicUs true; gasCapTime; maxSlugVelocity }`（需 `slugVelocity > 0` 与 `gasR > 0`）：捕获瞬间气帽压力取低点头面 EOS 压力；行进中 `u_s = sqrt(2·max(p_cap − p_front, 0)/ρ_L)`，`p_front` = 前缘单元 EOS 压力 + `ρ_L·g·max(0, z(front)−z(dip))`（待举静头，z 沿折线积分），`p_cap` 每步隐式欧拉松弛向尾部单元（`rear = front − volume`）压力（时间常数 `gasCapTime`），`maxSlugVelocity` 可选钳制。`dynamicUs false` 逐位保持常量运动学 `front += slugVelocity·dt`。slug 行追加 `us`/`pcap` 两列。
+
+**地形排放封顶（G2 伴生修复）。** 排放按下游可用容量封顶：`V' = min(volume, avail)`，EOS 把下游气窝压到容量不足时余量滞留出口成活动 lump（守恒不丢液、不越 [0,1] 持液率界），下一轮输运腾出空间再排。不可压增量 2 的 case 恒有 `V ≤ avail`，该改动对其逐位无感（`verify.twoFluidTerrainSlug` 复跑绿）。
+
+**回归。** 砂：沉降支复算「迎风输运→隐式沉降交换」逐步递推（入口补砂下 cell 0 弛豫到沉降/补砂稳态 0.15 而非纯衰减）、床增量=移除量 1e-12、薄层 dEff 1e-9；冲蚀孪生 `B_n = B_0(1+dt·erodeRate·(vM/uCrit−1))^(−n)` 复算；dry twin 逐位；4 项拒收。G2：us 代数式从**打印的** p 剖面/pcap/front 每帧重推到 1e-6、钳制不越界、速度随高程变化、平均推进率 ≠ 常量律、`dynamicUs false` twin 逐位精确运动学且 deposits 计满捕获/排放循环、4 项拒收。
+
+### 5.143 G4 关联式族：hagedornBrown / dunsRos 只替换持液率定律
+
+> **状态（2026-11-20）**：benchmark_alignment G4 落地。管块新词 `correlation beggsBrill|hagedornBrown|dunsRos;` 进 `NetworkPipe`，`BeggsBrillIn.correlation` 在梯度内分派持液率；`verify.steadyCorrelations` 全绿；未声明路径逐位不变（显式 `correlation beggsBrill;` 孪生与标准多相算例 stdout 逐字节一致）。
+
+**HLB——Whitson 重述的 Hagedorn-Brown 持液率。** `correlation hagedornBrown` 用 Whitson/Brulé/Stephenson《Revisiting Hagedorn-Brown Correlation for Vertical Two-Phase Flow》（JPT 2017，SPE 169350，附录 E）的 SI 形式：四个无量纲组 Nlv/Ngv（都以 ρL 计权）、Nd、Nμ，Nμ 的 Nμc 三次多项式拟合、ψ 对 Ngv·Nμ^0.38/Nd^2.14 的有理分式拟合（<0.01 取 1，>0.088 截断——读图误差是论文自己的，头文件明示），x3 三段 y3（低渐近/中间有理式/0.98 平台），最后 `HL = max(ψ·y3, λ)` 钳到 1。对照论文 worked example 转录。
+
+**DR——API 34 区骨架（出处告警）。** `correlation dunsRos` 是 Duns & Ros（API DL Bulletin 34 Vol I §C）区域骨架的**转录**：场单位换算是精确因子（cp、lb/ft³、dyn/cm、ft/s、ft），`RL1 = 1+0.3(Vsl+Vsg)`、`L1 = 13.2(1−λ)`、`L2 = L1+0.42·NLV^0.25·NL^0.10·ND^0.25`、带内线性混合到无滑移。**没有**对 Bulletin 的算例重新验证过——checker 复算的是同一条式子，它证明代码等于转录，不证明转录等于 API；头文件与本报告都大声声明这一点，DR 数字按工程估计使用。
+
+**只替换持液率块。** 两条定律替换 `beggsBrillDpDs` 的水平持液率 + 倾角修正块，其余一切不动：流型图照常评估并上报（regime/L1..L4/transitionWeight 与 §5.85 同源），摩擦倍率 S(y=λ/HL²)、提升项（ρS 随 HL 走）、Ek 加速项与 24 段 march 读的还是同一批数。变的是 HL，进而变 ρS、y 与 dp——物理确实动了（锚点算例 P3：BB 0.5018 → HLB 0.3869（落到无滑移下限）→ DR 0.9353，dp 83.7→88.7→74.4 kPa）。倾角修正是 BB 自己的定律，替换后不再适用；黏度读 PVT 值——§5.76 的流变学仍只定价摩擦项。
+
+**语法与拒收。** 词形式（数字会静默别名 regime 索引，拒收）；未知词大声拒收。作用域：`correlation != 0` 需黑油两相 march（单相/常数属性拒收）；与 `flowPattern` 同管冲突拒收（flowPattern 选的是 BB 自己的区律，替换后无律可选）；气举阀/有杆泵管拒收（列入既有开关冲突清单）；transient 行与 nodal 井块各有一条大声拒收（它们没有 BB 持液率块可替换）。
+
+**回归（`tests/check_steady_correlations.py`）。** 显式默认孪生逐字节；水平锚点上 HLB/DR 各臂由 Python 独立重推 24 段 march（PVT、图、定律、摩擦全链），出口 HL/λ 到 1e-8、dp 到 1e-5、落压到 1e-6，L1..L4 仍是公布边界、oRegime 仍是图的裁决（无 FORCED 足迹）；HLB 无滑移下限成立；与 BB 孪生比 HL/dp 确实移动；5 条拒收（未知词、单相、flowPattern 冲突、transient、nodal）+ 单相上 `correlation beggsBrill;` 是无操作孪生。
+
+**边界。** HLB 是垂直流的发表重述，本增量把它按原样用于任意倾角（提升项仍按几何 sinθ 计价）；DR 只含区 1/区 2 骨架与无滑移上限，区 3 湍流持液率与区 4 雾状流不在；σ=0 的暴露与 BB 的 Nlv 相同，未新增防护。
+
+### 5.144 G6 稳态热 march：被动温度读数（Joule-Thomson + 壁面换热）
+
+> **状态（2026-11-20）**：benchmark_alignment G6 落地。管块八个可选热键 + `SteadyThermal` 进两条 march（黑油 BB 与 pvt 表），出口温度以 ` T <K>` 记号上报；`verify.steady_thermal` 全绿；未声明路径逐位不变，声明路径只追加一个记号（逐字节证明）。
+
+**被动性是全案的要点。** 压力解从不读 T：JT 与壁面项在 march 已经产出的压力剖面上计价出口温度，因此任何热声明都不能移动一个节点压、率、持液率或 dp 数。率求解（`twoPhaseRateForDrop`/`pvtRateForDrop`）不接热指针——接了也只有开销没有读数。checker 的判据就是这个：剥掉 ` T` 记号后的 stdout 与未声明运行逐字节相等。
+
+**定律。** 每段先 `T += jouleThomson·(p_new − p_old)`（K/Pa，带符号；正系数在膨胀降压时降温，气井常规；全管求和精确望远镜为 jt·dp）；再在该段 U>0 时按 `T ← T_wall + (T−T_wall)·exp(−U·ds/(ṁ·c_p))` 松弛——`ṁ c_p dT/ds = U(T_wall−T)` 的精确解。U 取整管 `wallHeatTransfer`（W/(m·K) 每米，膜/壁/水泥折成一个数，与瞬态热块同口径）或 `wallHeatTransferSegments` 逐段表（恰 24 项，march 段数）；`wallModel constant` 用 `wallTemperature`，`geothermal` 用 `surfaceTemperature + geothermalGradient·depth`，depth 从**进口基准面向下**计（march 没有自己的地表基准，剖面锚在 march 起点；水平管处处等于 surfaceTemperature）。死线（ṁ=0）没有对流律可解，壁面项跳过。两条 march 共用同一个 `steadyThermalAdvance`，不会漂移。
+
+**语法与作用域。** 八个键全可选；`wallModel` 是词。热键需要被 march 的流体：常数属性单相网络大声拒收（代数律没有 march 可带温度）；pvt 表流体新增可选 `temperature`（开尔文）作进口温度，热管配无温度的 pvt 流体拒收；compositional 的闪蒸温度与它同时声明且不等时拒收（一个物理数不许两说）。惰性形状拒收：列表尺寸≠24、壁面交换缺 `heatCapacity`、纯 JT 声明却带壁键、负 U/负温度/负梯度/负 c_p、`wallHeatTransfer` 与逐段表同时声明、wallModel 与所读键不匹配。气举阀/有杆泵管、transient 行、nodal 井块各有一条拒收。
+
+**回归（`tests/check_steady_thermal.py`）。** 标准算例无 T 记号；JT 孪生逐字节 + 记号值 = 340 + 4e-7·(p_out−p_in) 到 1e-9；黑油恒壁锚点（380 K 壁、U=2、c_p=2000）由 Python 重推 BB march 剖面逐段松弛复算 T 到 1e-8 且出口升温；pvt 表地热锚点（平坦表使插值精确）在 Churchill 表剖面上复算 T 到 1e-8、水平锚定 surfaceTemperature；9 条拒收含 transient/nodal 两行。
+
+**边界。** T 是读数：ρ/μ 不按 T 重定价（那属于瞬态双流体的完整能量方程，§5.141/§5.142 批次与 `twoFluid.cpp` 的嵌套 `thermal{}` 各自成体系）；c_p 是声明常数，不随组成/压力走；`chflow-1d-twofluid` 自有解析器不识别这些管键（其拒收属 twoFluid.cpp 批次，本增量不触碰该文件）。
+
+
+### 5.145 节点分析交互图（U2）：IPR–VLP 双曲线 + 内核逐 J 采样工作点
+
+> **状态（2026-11-20）**：对标清单 U2 落地。Rust 30/30 + node 53/53；真实 `chflow-1d-nodal` 对 nodalVogel 的线性 IPR 变体实跑采样 VLP（低 J 端点贴静液柱、高 J 端点贴 IPR 交点，单调合理）。
+
+**内核输出即真值。** `chflow-1d-nodal` 打印 `nodal: ipr <form> p_res <p> qmax <q>` / `column p <p>` / `well q <q> pwf <p>` / `well holdup/regime` / `nodal solved: iterations flows (converged)`，Rust `parse_nodal_output` 逐行解析为 `NodalSummary`（纯函数，fake 输出直测），`run_nodal_text` 写临时字典跑真引擎，`run_nodal_texts` 复用 §5.137 的 scoped worker pool 批量形态（行序对齐、坏行自携带错误）。
+
+**VLP 序列的来源（诚实边界）。** 内核只打印交点、不打印曲线序列，GUI 也绝不重算井筒水力——采样靠引擎本身：把字典 `ipr{}` 整块换成 `form linear` 且 `productivityIndex` 取几何网格（`vlpSampleJs` 围绕声明 IPR 的等效 J=qAof/pRes 跨 5 个数量级，`iprLinearVariant` 花括号扫描逐字节替换其余不动），每个变体的工作点 (q, p_wf) 天然落在同一井口压力下的 VLP 曲线上；批量跑完按 q 排序串成 VLP 折线。IPR 曲线则由 `parseNodalIpr` + `iprCurvePoints` 按字典声明的闭式（linear/Vogel/Jones，与内核 Nodal.h 同款三式）绘制——仅画图，不做任何求解。
+
+**GUI。** 多标签视口新增「节点分析」tab：算例路径（空则回落 `nodalVogel` 模板）+ 采样数 5–25 + ▶ 按钮；SVG 双曲线（IPR 青、VLP 橙点线、静液柱虚线、工作点红十字 + q 标注，单位随系统切换）、工作点读数（q/p_wf/持液率/流型/迭代/flows/收敛）与 J-q-p_wf 采样表。`default_engines` 扩为 7 元组（追加 nodal、pvt 求解器路径，packaged/dev 两布局同步），模板库追加 `nodalVogel`/`pvtFlash` 两项（9 模板，均 CTest 回归算例）。
+
+**边界。** VLP 采样假设井筒/井口/流体字典不变，只换 IPR——同一井口压力下成立；井筒不自喷（flows=false）的采样点被丢弃，曲线点数随之减少；Jones 指数 n 非 0.5 时闭式反演按 p 采样再算 q，无额外数值求根。
+
+### 5.146 段塞动画多量叠加与流动保障色带（U3）：按内核 cell 行实际字段生成序列
+
+> **状态（2026-11-20）**：对标清单 U3 落地。node 55/55；`twoFluidTerrainSlug` 实跑输出核对（cell 行 alpha water vsl vsg s，压力在 node 行——解析与叠画均按真实形态处理）。
+
+**解析内核输出。** `parseTwoFluidFrames` 本就逐键保留 cell 行的全部数值字段（§5.138 惯例），新增收集 `node <i> p <p>` 节点压力剖面到 `frame.nodeP`；`slugSeriesKeys(frames)` 扫描全部帧得到该算例实际可用的叠加量集合（thermal 算例多出 T、EOS 算例多出 p/h/wax/inh/muEff/sand/bed——键集合随内核声明自动变化，GUI 不猜）。
+
+**多序列同图。** 段塞 tab 运行后生成勾选行（p/T/alpha/water/vsl/vsg/muEff/wax/h/inh/sand/bed 中帧内存在者，默认 p·T·alpha）：每条选中量按当帧 min/max 归一后以固定色序叠画在持液率柱图上，右侧图例标注真实量程；`p` 在 cell 行无 p 时自动改用 nodeP 剖面（节点位置 x=i·bw）。`alpha`/`water` 仍同时以柱高呈现，勾选线形便于与其余量对读。
+
+**色带。** `slugBands(frame)` 把内核声明的逐 cell 标志位压成连续区段：s>0 段塞、h>0 水合物、wax>0 蜡、sand>0 砂、inh>0 抑制剂（`SLUG_BAND_DEFS`），仅在帧内存在该键时出带，画在柱图下方独立条带行、左侧标类别名；帧间随滑块/播放即时重算，段塞捕集-行进-卸载的弛豫振荡在色带上直接可见。
+
+**边界。** 叠加线为当帧归一（跨帧比较看数值图例而非线高）；色带阈值取内核标志位的非零性（s 为 slip 标记 >0 即段塞，与 §5.138 红框判据一致），不引入 GUI 侧经验判据。
+
+### 5.147 变量选择树（U5）：节点/管段/瞬态帧分层勾选，序列按内核声明量生成
+
+> **状态（2026-11-20）**：对标清单 U5 落地。node 57/57。
+
+**从固定集到声明树。** 监测曲线原先是一个写死的 `seriesSelect` 下拉（p/alpha/hydrate/Q 全组合，未声明量也列出）。现在 `buildMonitorTree(transient)` 以首帧样本的键集合为准分三层生成勾选树：节点层只列该节点内核实际输出的量（无水合物模型时 hydrate 项整体消失，§5.136 的 alpha 缺省规则同样生效）、管段层列 flow 键存在的 Q、瞬态帧层给出压力包络 min/max、全节点平均持液率与帧游标。`monitorSeriesValues` / `monitorEnvBand` 为纯取值函数（fake samples 直测）。
+
+**叠画渲染。** `renderMonitorChart` 把勾选集合逐序列按各自量程归一后叠画在同一张时序 SVG（固定色序 + 图例标注真实量程与单位族），包络以半透明带先画、线后画；帧游标为当前帧竖虚线 + 首序列圆点，随时间滑块联动。`syncMonitors` 在每次瞬态运行后按新声明集裁剪失效勾选、空集时回落首个可用序列，跨模型切换不残留幽灵曲线。
+
+**边界。** 归一化只用于同图对读形态，图例给出真实值域，绝对量仍以读数为准；包络/平均是逐帧对声明键集合的 min/max/均值，不做任何插值或外推。
+
+### 5.148 模板并排对比（U13）：模板运行结果与当前模型叠画 + Δ 表
+
+> **状态（2026-11-20）**：对标清单 U13 落地。node 59/59。
+
+**运行并对比动作。** 模板库每个 steady 字典模板（`isSteadyComparable` 按 id 前缀判定，瞬态/段塞/节点/PVT 模板不出该按钮）在载入按钮旁增「对比」小按钮：读模板原文 + 当前编辑器模型 `networkToCaseText` 序列化，两行文本一次交给 §5.135 的 `run_case_texts` 并行引擎（同一 steady 求解器，两行即两进程），不改动当前模型、不产生作业冲突（有求解作业时拒绝）。
+
+**对比呈现。** `compareSteadyRuns(template, current)` 纯函数按实体名取并集对齐两侧 `SolverSummary`（模板值 a、当前值 b、Δ=a−b；仅一侧存在的实体另一侧记 NaN 显示为 —，不伪造差值），结果渲染在监测曲线页底部：节点压力双柱叠画 SVG（模板 accent 色 / 当前模型 pipe 色）+ 节点 p / 管段 Q 两张 Δ 表，数值随单位制换算显示。
+
+**边界。** 对比的是"两个字典各跑一次稳态"——模板与拖拽模型实体名不同名时按并集列示，Δ 只对同名项有意义；partial-fidelity 模板（黑油/PVT 字典）当前模型序列化本就不可完全复刻，其对比结果差异含建模保真差，UI 的 ◇ 标记继续提示。
+
+### 5.149 G1 瞬态组分输运 + 逐元 PR 闪蒸诊断
+
+> **状态（2026-11-20）**：benchmark_alignment G1 落地。`composition{}` 进两流体核（serial 与 network perPipe 共用 `loadTwoFluidCommon`），每步逐 cell 调 pvt 层 `tpFlash`；`verify.twoFluidComposition` 全绿；未声明路径逐位不变（dry twin 逐字节证明）。
+
+**输运——与 §5.142 砂分数完全同构。** 每 cell 存 N−1 个独立摩尔分数（末个由 1−Σ 闭合），`alpha·z_k` 含量随液相通量一阶迎风输运、钳位 `[0, alpha]`、干 cell 记 0（`transportStep` 的 `zflux` 面通量块与更新块逐行照抄 `sflux`）。边界组成：phaseRates 入口强制 `zInlet`；fixedPressure 面正流注入边界值、回流取 cell 值（砂同规则）；network junction 按液相体积流量加权混合（`zJ`，同 `sandJ`），供给支边界吃混合值。初始全管均一 = 声明的进料 z0。文法 `composition { methane 0.5; propane 0.3; nHexane 0.2; }`：组分名查 `cf::pvt::requireComponent`（未知名大声拒收），2≤N≤8、z≥0、和离 1 超 1e-8 拒收（容差内自动归一化，文档明示）；`zInlet (…)` 同规则校验，缺省 = 进料 z0。
+
+**逐元闪蒸——诊断量，不改场。** `compositionStep(dt)` 排在 `scaleStep` 之后、`thermalStep` 之前（与 hydrateStep 同位）：每 cell 用局部 `(T_i, p_i, z_i)` 构造 `pvt::Mixture` 调 `tpFlash`（§5.121 稳态 liveFlash 的同一台机器，pvt 层零改动），结果存 `compBeta_/compRhoL_/compRhoG_`——只进报告与 `cellVaporFraction()` 等 accessor，动量/持液率/密度场从不读它。这是 benchmark「逐元相量更新」的最小可验证切片：组成随时间演化（锋面对流、逐 cell 按自身状态闪蒸），而既有回归逐位不动。闪蒸压力：EOS 开时取 cell 压力 `p_i = rhoG_i·gasR·T_i`；不可用时（gasR=0，或液满 cell）退到声明的 fixedPressure 边界压力（先出口后入口，`flashPRef_`）；两者皆无在构造时大声拒收。温度 `sectionTemperature(i)`（thermal 关时为声明的初始温度）。RR 不收敛不致命——照 §5.121 liveFlash 先例（它也不检查 converged），只有非正相密度才拒收。
+
+**报告。** 声明行 `twoFluid composition: N components <名> <z0> …`；每 cell 行追加 ` comp <beta> z0 <…> … zN-1 <…>`（serial 与 network pcell 同式）。未声明时这些记号一个不出——dry twin 判据即「湿输出删去 comp/z 记号与声明行后与干运行逐字节相等」。
+
+**回归（`tests/check_two_fluid_composition.py`）。** case 是压力驱动水平管（入口 12 MPa / 出口 2 MPa，wallis slip 0 → 持液率均匀驻定、液通量 = alpha·vm 从每帧报告的 vm 复算），初始气存量定价在出口压力：入口稠密 ghost 注入 `p_in/(gasR·T)` 的气，压缩锋面与组成锋面以同一速度 vM 同行——锋后 (12 MPa, 重质 zInlet 0.1/0.3/0.6) 全液、锋前 (2 MPa, 轻质 z0 0.5/0.3/0.2) 两相。判据：① N−1 个输运分数 + 闭合分数的迎风递推逐 cell 逐帧复算到 1e-9（同 §5.142 砂递归写法）；② Wilson K（K_i = pc_i/p·exp(5.373(1+ω_i)(1−Tc_i/T))，Tc/pc/ω 在 Python 侧硬编码同一组分表）单相钳制：f(0)=Σz(K−1)<0 → beta 必须 ==0，f(1)=Σz(K−1)/K>0 → beta 必须 ==1，逐 cell 逐帧执行（全液见证 1856 个）；③ 高压全液入口段与低压闪蒸段两种情形都在 case 中出现且同帧共存；④ 沿程 p 剖面单调不升、beta 对 p 单调不增（相邻 cell 对 1e-12）；⑤ dry twin 逐字节；⑥ 7 项大声拒收（负 z、和≠1、单组分、9 组分、未知名、zInlet 尺寸错、无闪蒸压力）。
+
+**边界。** 闪蒸是纯诊断：气相生成不增加持液率、液相密度不被 PR 改写——瞬态「生成气回填场」的耦合留作后续增量。组成只随液相走（气相携带的组成差异需要逐相两套 z + 相间传质，超出本切片）。Wilson 钳制是单向蕴含：Wilson 说两相而 PR 判单相不违规（PR 泡点更保守，case 里锋面附近实际发生）。
+
+
+### 5.150 工况管理器（U1）：多工况挂模型树、批量运行、对比表与叠画曲线
+
+> **状态（2026-11-20）**：对标清单 U1 落地。node 62/62。
+
+**工况 = 命名参数 patch。** 每个工况存 `{name, engine, overrides[]}`：瞬态引擎的 overrides 复用 §5.137 的 `TRANSIENT_WHAT_IF_PARAMS` 词表（阀门时序/源调度/time 块边界），新增 `applyScenarioOverrides(text, overrides)` 把整张 patch 逐条套用到原始字典——每次编辑重扫上次结果，多键组合与内核读字典的语义一致，失败时报「第 N 项」定位；稳态引擎的 overrides 用模型参数（源流量/管径/管长，设备类参数明确拒绝并提示切瞬态），深拷贝模型后套用再 `networkToCaseText` 序列化，当前编辑器模型不被污染。
+
+**模型树挂载。** `buildProjectTree` 在监测变量与仿真结果之间插入「工况」组（仅当存在工况），叶 `kind:'scenario'`；点树即跳转工况管理页并选中，列表/编辑区与树双向同步。
+
+**批量运行与对比。** 「▶ 批量运行全部工况」按引擎分两路：稳态走 §5.135 `run_case_texts`、瞬态走 §5.137 `run_transient_texts` 并行引擎（一次调用、行序对齐），`scenarioRowsTransient` / `scenarioRowsSteady` 纯函数把批量行归一为对比表（收敛/帧数或迭代/末帧 t/末 p/末 Q/峰值 p 或残差与 maxΔp，失败行保留错误不伪造零值）。叠画：有瞬态结果时按下拉选择的声明量（p:节点 / Q:管段，复用 U5 的 `monitorSeriesValues`）逐工况归一叠画时序折线 + 图例真实量程；纯稳态时退化为末管 Q 柱状对比。
+
+**边界。** 瞬态工况要求「case 字典」页已载入原始字典（what-if 的真值来源，编辑器模型无法忠实重建罐体积/体积模量，§5.137 的边界同样适用）；混合引擎的工况各自成批、同页对比，表内按引擎标注可比性。
+
+
+### 5.151 PVT 流体配置向导（U4）：组分声明 → 闪蒸预览 → ρ/μ/σ 物性曲线
+
+> **状态（2026-11-20）**：对标清单 U4 落地。node 65/65。
+
+**取数走真引擎。** 新增 Rust 命令 `run_pvt_text(case_text, exe_path)`：把向导序列化的 flash 字典写入临时 `chflow_gui_pvt_*.dict`、调 `chflow-pvt` 并原样返回 stdout——GUI 不重算任何物性，解析全在 JS 侧。`resolve_default_engines` 扩为 7 元组（第 7 位 pvt 引擎，dev 分支指向 `build/src/pvt/apps/chflow-pvt`），前端启动时一并填充。
+
+**向导流程。** 「PVT 流体」页三段：组分表（内置 `PVT_COMPONENTS` 烃链 methane..nDecane + CO2/N2/H2S 下拉，摩尔分数 z 可编辑、和不必为 1——内核自己校验并归一化）、条件网格（温度列表 × 压力列表 + 泡点/黏度/表面张力三个开关，逐一对应内核的 `solve{bubblePoint}` / `viscosity{model lbc}` / `surfaceTension{model weinaugKatz; parachors fromTable}` 门控块，未勾选的块一个字节不写）、结果区（闪蒸表 + 物性曲线族）。`pvtFlashCaseText(spec)` 纯函数完成序列化，`parsePvtOutput(out)` 解析 `pvt flash/liquid/vapour/x|y/viscosity/surfaceTension/bubble` 全部数值行为 `{flashes[], bubble, tables}`——其中 `pvt surfaceTension parachors fromTable (Weinaug-Katz 1943)` 是声明行不是数值行，正则按「后接数值」精确区分；单相闪蒸的 `rhoV` 为 NaN，表格显示「—」而不伪造。
+
+**逐 T 串行 + 曲线成族。** 温度网格逐 T 串行调用（每次一个完整 p 网格报告），`pvtCurvesByT` 把合并结果按 T 分组成 (ρ_L, ρ_V, μ_L, μ_V, σ) vs p 折线族，同图多 T 曲线共用量程；黏度/σ 图仅在勾选对应开关时出现。模板库新增 `pvtFlash` 模板，`parsePvtCaseDict` 把模板字典回填成向导规格（组分/温度/压力/开关），实现「载入模板 → 直接预览 → 改参数再跑」。
+
+**边界。** 单组分或全液/全气单相闪蒸时 WK σ=0（内核无液-气界面可算），曲线如实画 0 而非缺省；parachors 用内核 `fromTable` 内置表，向导不提供逐组分手输。`thermalConductivity/hydrateEquilibrium/nonIsothermal` 等其余 pvt 块本向导不暴露。
+
+
+### 5.152 3D 场派生量：涡量/Q 判据与等值面壳层（U6）
+
+> **状态（2026-11-20）**：对标清单 U6 落地。node 69/69。
+
+**后处理层定位。** 任务原设想内核 `fvc::curl` 已有，实测内核无此函数；对标 CFD-Post 的派生量本就属于后处理层，故全部落在 GUI 侧、内核零改动（src/3d 也未动）：只读内核 VTU 自带的 points/cells/faces 几何，不重算任何输运物理。
+
+**Green-Gauss 速度梯度。** `faceAdjacency` 按「顶点集排序键」配对共享面，给出每面邻接单元（-1 = 边界）；`greenGaussVelocityGradient` 逐 cell 做 `G[i][j] = (1/V) Σ_f A_f ⊗ U_f`，面值为两侧 cell 均值（边界面取自身），面积向量用质心测试强制朝外——writer 的环序无所谓。线性场在对称模板上精确（3×3 网格中心单元实测 ω_z=2、Q=1 到 1e-9，纯应变场 ω=0、Q=−1）。`vorticityAndQ` 由此给每 cell 的 |ω|（1/s）与 Q=(|Ω|²−|S|²)/2（1/s²，涡核识别）。
+
+**等值面壳层。** `isoSurfacePatches` 取当前渲染标量：每个两侧值跨越阈值的内面变成一片四边形壳，沿两 cell 中心连线按线性穿越分数 f=(t−a)/(b−a) 偏移 (f−0.5)·(C_b−C_a)，返回片环 + f + 邻接对（供剖切过滤）。场视图叠加半透明白色壳层，剖切掉的 cell 其壳片一并消失。
+
+**UI 接线。** 渲染场下拉加「涡量 |ω|」「Q 判据」（梯度按 VTU 缓存，切换零重算）；工具栏加「等值面壳层」开关 + 水平滑条（阈值为当前场量程的分数，图例单位随场切 1/s、1/s²）。VTU 无 faces 数组时涡量/Q 大声回退 |U| 并在信息行说明，不做静默近似。
+
+
+### 5.153 CFD-Post 式场导出（U9）：全 cell CSV 与剖面 CSV
+
+> **状态（2026-11-20）**：对标清单 U9 落地。node 71/71。
+
+**两个纯函数。** `fieldsToCsv` 把已解析 VTU 的每 cell 一行输出（`cell,cx,cy,cz,p,Ux,Uy,Uz,magU`，质心由内核顶点自算）；`planeProfileCsv` 输出被平面 `normal @ frac` 切割的 cell 行——平面定位逐字复用 §5.139 `evaluateReports` 的规则（面心投影量程取 [lo,hi]、frac=0/1 落在真实边界层面、容差 `cbrt(V)·0.3`），剖面与报告积分选的是同一个面，两边永远不会「看到的剖面不一致」。无 faces 数组时返回 null，UI 报错不产空文件。
+
+**接线。** 场视图第二工具栏行：导出路径输入（默认 `/tmp/chflow_gui_field_export.csv`）、「导出全部单元 CSV」、「剖面法向 x/y/z/自定义 + 位置滑条」、「导出剖面 CSV」；写盘走既有 `write_text_file` 命令，状态行回报单元数与路径。自定义法向直接吃剖切控件的 `clipNormal`——所见剖面和所导剖面同源。
+
+
+### 5.154 标定工作台（U11）：GUI 不实现，走 CLI + Python 脚本
+
+> **状态（2026-11-20）**：对标清单 U11 按文档路径关闭，GUI 暂不提供。
+
+**决定。** 标定/历史拟合闭环已由 D9 系列的 CLI + Python 脚本覆盖：§5.100（参数向量 → 管网可写字段 → 结构化观测 → 自写 Nelder-Mead 的绑定读回闭环）、§5.104（稳态解析梯度：隐函数定理复用 conductance 雅可比，一个梯度一次前向求解）、§5.117（瞬态离散伴随 + checkpointing）、§5.118（两流体伴随）。GUI 侧的 U10 参数扫描页（§5.135）已提供「目标量 × 取值列表 → 并行批量运行 → 结果表」的单向扫描，等价于标定工作台的采样器；反问题求解（梯度、伴随、优化器选型）留在脚本层，因其迭代策略需要人在环中判断，做成 GUI 表单反而封死探索空间。
+
+**边界。** 若后续要在 GUI 落地标定，入口应是 U10 扫描结果表 → 残差列 → 脚本回显，而不是新造求解器；本条目仅记录「GUI 暂不提供」的决定与依据，防止对标清单把 U11 误记为缺口。
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |
@@ -5773,3 +5954,4 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
   （`cfl` 缺席）500 步闭式复现且与自适应末态不同、四个 regime 全访问、
   `cfl 0` / `dtMin 0` / `dtMax < dtMin` 三条拒收；
 - 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`
+

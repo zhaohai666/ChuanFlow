@@ -26,6 +26,8 @@ import {
   adaptiveVectorIndices,
   applyWhatIfOverrides,
   TRANSIENT_WHAT_IF_PARAMS,
+  iprLinearVariant,
+  applyScenarioOverrides,
 } from '../frontend/dist/editor.js';
 import {
   UNIT_SYSTEMS,
@@ -51,11 +53,32 @@ import {
   parseTransientOutput,
   parseTwoFluidFrames,
   extractCaseDetails,
+  parseNodalIpr,
+  iprCurvePoints,
+  vlpSampleJs,
+  slugSeriesKeys,
+  slugBands,
+  buildMonitorTree,
+  monitorSeriesValues,
+  monitorEnvBand,
+  compareSteadyRuns,
+  scenarioRowsTransient,
+  scenarioRowsSteady,
+  pvtFlashCaseText,
+  parsePvtOutput,
+  pvtCurvesByT,
+  parsePvtCaseDict,
+  vorticityAndQ,
+  isoSurfacePatches,
+  faceAdjacency,
+  fieldsToCsv,
+  planeProfileCsv,
 } from '../frontend/dist/workspace.js';
 import {
   TEMPLATE_IDS,
   templateTarget,
   isPartialFidelity,
+  isSteadyComparable,
 } from '../frontend/dist/templates.js';
 
 const SAMPLE = `// 三节点串联管网
@@ -568,9 +591,11 @@ test('workspace: parseTwoFluidFrames 帧与逐格键值', () => {
 // ---------------------------------------------------------------------------
 
 test('templates: 模板目标页与保真度标注', () => {
-  assert.equal(TEMPLATE_IDS.length, 7);
+  assert.equal(TEMPLATE_IDS.length, 9);
   assert.deepEqual(templateTarget('twoFluidTerrainSlug'), { tab: 'slug', kind: 'slug' });
   assert.deepEqual(templateTarget('coupled1d3d'), { tab: 'coupled', kind: 'coupled' });
+  assert.deepEqual(templateTarget('nodalVogel'), { tab: 'nodal', kind: 'nodal' });
+  assert.deepEqual(templateTarget('pvtFlash'), { tab: 'pvt', kind: 'pvt' });
   assert.deepEqual(templateTarget('steadyEquipmentPump'), { tab: 'canvas', kind: 'dict' });
   assert.equal(isPartialFidelity('steadyNetworkMultiphase'), true);
   assert.equal(isPartialFidelity('steadyEquipmentValve'), false);
@@ -842,4 +867,458 @@ test('report definitions：两单元体积加权 ≠ 算术平均', () => {
   ]);
   assert.ok(Math.abs(vInt.value - 1100) < 1e-12);
   assert.ok(Math.abs(vAvg.value - 550) < 1e-12);
+});
+
+// ---------------------------------------------------------------------------
+// U2：节点分析（IPR 声明解析 + 闭式曲线 + VLP 采样字典）
+// ---------------------------------------------------------------------------
+
+const NODAL_DICT = `fluid { blackoil }
+ipr
+{
+    form              vogel;
+    reservoirPressure 2.2e7;  // Pa
+    maxRate           0.006;  // sm3/s
+}
+well { length 2400; diameter 0.062; }
+wellheadPressure 2.5e6;
+`;
+
+test('parseNodalIpr: vogel 声明与等效 J', () => {
+  const spec = parseNodalIpr(NODAL_DICT);
+  assert.equal(spec.form, 'vogel');
+  assert.equal(spec.pRes, 2.2e7);
+  assert.equal(spec.qmax, 0.006);
+  assert.equal(spec.qAof, 0.006);
+  assert.ok(Math.abs(spec.jRef - 0.006 / 2.2e7) < 1e-16);
+  assert.throws(() => parseNodalIpr('well { length 1; }'), /ipr/);
+});
+
+test('parseNodalIpr: linear 与 jones', () => {
+  const lin = parseNodalIpr('ipr { form linear; reservoirPressure 2e7; productivityIndex 1e-10; }');
+  assert.equal(lin.qAof, 2e7 * 1e-10);
+  const jon = parseNodalIpr('ipr { form jones; reservoirPressure 2e7; deliverability 1e-12; exponent 0.5; }');
+  assert.ok(Math.abs(jon.qAof - 1e-12 * 2e7) < 1e-12);
+});
+
+test('iprCurvePoints: 三种闭式形态的端点与单调性', () => {
+  const lin = iprCurvePoints({ form: 'linear', pRes: 2e7, J: 1e-10, qAof: 2e-3 }, 10);
+  assert.equal(lin.length, 11);
+  assert.equal(lin[0].p, 2e7);
+  assert.ok(Math.abs(lin.at(-1).p) < 1e-6);
+  const vog = iprCurvePoints({ form: 'vogel', pRes: 2.2e7, qmax: 0.006, qAof: 0.006 }, 10);
+  assert.ok(Math.abs(vog[0].q) < 1e-12); // p=pRes -> q=0
+  assert.ok(Math.abs(vog.at(-1).q - 0.006) < 1e-12); // p=0 -> qmax
+  for (let i = 1; i < vog.length; i += 1) {
+    assert.ok(vog[i].q > vog[i - 1].q && vog[i].p < vog[i - 1].p, 'q 升 p 降');
+  }
+  const jon = iprCurvePoints({ form: 'jones', pRes: 2e7, C: 1e-10, n: 0.5, qAof: 2e-3 }, 10);
+  assert.ok(Math.abs(jon[0].q) < 1e-12 && Math.abs(jon.at(-1).q - 2e-3) < 1e-9);
+});
+
+test('vlpSampleJs + iprLinearVariant: 采样网格与字典替换', () => {
+  const spec = parseNodalIpr(NODAL_DICT);
+  const js = vlpSampleJs(spec, 7);
+  assert.equal(js.length, 7);
+  assert.ok(js[0] < js.at(-1) && js.every(Number.isFinite));
+  const variant = iprLinearVariant(NODAL_DICT, spec.pRes, 1.23e-10);
+  assert.match(variant, /form\s+linear;/);
+  assert.match(variant, /productivityIndex 1\.23e-10;/);
+  assert.doesNotMatch(variant, /vogel|maxRate/);
+  assert.ok(variant.includes('wellheadPressure 2.5e6;'), '其余字节不动');
+  assert.ok(variant.includes('well { length 2400; diameter 0.062; }'));
+  const round = parseNodalIpr(variant);
+  assert.equal(round.form, 'linear');
+  assert.equal(round.J, 1.23e-10);
+  assert.throws(() => iprLinearVariant('no ipr here', 1, 1), /ipr/);
+});
+
+// ---------------------------------------------------------------------------
+// U3：段塞多量叠加（可用键 + 流型/流动保障色带）
+// ---------------------------------------------------------------------------
+
+test('slugSeriesKeys: 收集内核 cell 行的全部数值键', () => {
+  const out = `t 1.0 vm 0.5 dp 100
+cell 0 alpha 0.6 water 0.2 p 5e5 T 320 s 0.1
+cell 1 alpha 0.4 water 0.1 p 4.9e5 T 321 s 0
+t 2.0 vm 0.6 dp 120
+cell 0 alpha 0.7 water 0.3 p 5.1e5 muEff 0.02 wax 0.01
+`;
+  const frames = parseTwoFluidFrames(out);
+  assert.equal(frames.length, 2);
+  const keys = slugSeriesKeys(frames);
+  for (const k of ['alpha', 'water', 'p', 'T', 's', 'muEff', 'wax']) {
+    assert.ok(keys.includes(k), `${k} 应可用`);
+  }
+  assert.ok(!keys.includes('index'));
+});
+
+test('slugBands: 连续段合并 + 仅输出帧内存在的键', () => {
+  const frame = {
+    cells: [
+      { index: 0, s: 0.2, h: 0 },
+      { index: 1, s: 0.3, h: 0 },
+      { index: 2, s: 0, h: 0 },
+      { index: 3, s: 0.1, h: 0.5 },
+      { index: 4, s: 0, h: 0.4 },
+    ],
+  };
+  const bands = slugBands(frame);
+  assert.equal(bands.length, 2); // s 与 h（wax/sand/inh 帧内不存在）
+  const s = bands.find((b) => b.key === 's');
+  assert.deepEqual(s.runs, [{ from: 0, to: 1 }, { from: 3, to: 3 }]);
+  const h = bands.find((b) => b.key === 'h');
+  assert.deepEqual(h.runs, [{ from: 3, to: 4 }]);
+  assert.equal(s.label, '段塞');
+});
+
+// ---------------------------------------------------------------------------
+// U5：变量选择树（按声明量分层的勾选序列）
+// ---------------------------------------------------------------------------
+
+const MON_T = {
+  nodeNames: ['A', 'B'],
+  pipeNames: ['P1'],
+  samples: [
+    { t: 0, pressure: { A: 1e6, B: 2e6 }, alpha: { A: 0.4, B: 0.6 }, hydrate: {}, flow: { P1: 0.01 } },
+    { t: 1, pressure: { A: 1.2e6, B: 1.8e6 }, alpha: { A: 0.5, B: 0.7 }, hydrate: {}, flow: { P1: 0.02 } },
+  ],
+};
+
+test('buildMonitorTree: 只生成声明量，分节点/管段/瞬态帧三层', () => {
+  const groups = buildMonitorTree(MON_T);
+  assert.deepEqual(groups.map((g) => g.id), ['nodes', 'pipes', 'frames']);
+  const nodes = groups[0];
+  assert.equal(nodes.items.length, 2);
+  assert.deepEqual(nodes.items[0].series, ['p:A', 'alpha:A']); // hydrate 未声明 -> 不出现
+  assert.deepEqual(groups[1].items[0].series, ['Q:P1']);
+  const frames = groups[2];
+  const fSeries = frames.items.flatMap((it) => it.series);
+  assert.ok(fSeries.includes('env:p') && fSeries.includes('avg:alpha') && fSeries.includes('marker'));
+});
+
+test('monitorSeriesValues / monitorEnvBand: 逐帧取值与包络', () => {
+  assert.deepEqual(monitorSeriesValues(MON_T.samples, 'p:A'), [1e6, 1.2e6]);
+  assert.deepEqual(monitorSeriesValues(MON_T.samples, 'Q:P1'), [0.01, 0.02]);
+  assert.deepEqual(monitorSeriesValues(MON_T.samples, 'hydrate:A'), [undefined, undefined]);
+  assert.deepEqual(monitorSeriesValues(MON_T.samples, 'bogus:X'), null);
+  assert.deepEqual(monitorSeriesValues(MON_T.samples, 'avg:alpha'), [0.5, 0.6]);
+  const band = monitorEnvBand(MON_T.samples, 'p');
+  assert.deepEqual(band, [{ lo: 1e6, hi: 2e6 }, { lo: 1.2e6, hi: 1.8e6 }]);
+});
+
+// ---------------------------------------------------------------------------
+// U13：模板并排对比（按名称对齐 + Δ）
+// ---------------------------------------------------------------------------
+
+test('compareSteadyRuns: 名称并集对齐、缺失侧为 NaN', () => {
+  const a = {
+    nodes: [{ name: 'A', pressure: 1e6 }, { name: 'B', pressure: 2e6 }],
+    pipes: [{ name: 'P1', q: 0.01 }],
+  };
+  const b = {
+    nodes: [{ name: 'A', pressure: 1.1e6 }, { name: 'C', pressure: 3e6 }],
+    pipes: [{ name: 'P1', q: 0.02 }],
+  };
+  const r = compareSteadyRuns(a, b);
+  assert.equal(r.nodes.length, 3);
+  const ra = r.nodes.find((x) => x.name === 'A');
+  assert.equal(ra.a, 1e6);
+  assert.equal(ra.b, 1.1e6);
+  assert.ok(Math.abs(ra.d + 1e5) < 1e-3);
+  const rc = r.nodes.find((x) => x.name === 'C');
+  assert.ok(Number.isNaN(rc.a) && rc.b === 3e6 && Number.isNaN(rc.d));
+  assert.equal(r.pipes[0].name, 'P1');
+  assert.deepEqual(compareSteadyRuns(null, null), { nodes: [], pipes: [] });
+});
+
+test('isSteadyComparable: 仅 steady 字典模板可并排运行', () => {
+  assert.ok(isSteadyComparable('steadyFlowSimple'));
+  assert.ok(isSteadyComparable('steadyNetworkMultiphase'));
+  assert.ok(!isSteadyComparable('transientBlowdown'));
+  assert.ok(!isSteadyComparable('twoFluidTerrainSlug'));
+  assert.ok(!isSteadyComparable('nodalVogel'));
+});
+
+// ---------------------------------------------------------------------------
+// U1：工况管理器（多参数 patch 组合 + 批量行归一 + 模型树挂载）
+// ---------------------------------------------------------------------------
+
+const SCEN_DICT = `time { dt 1; endTime 10; reportEvery 1; }
+pipes {
+  P1 { from A; to B; valveClose { start 2; end 4; closedK 1e8; } }
+}
+sources {
+  S1 { schedule { openRate 0.5; close { start 1; end 2; }; open { start 3; end 4; }; } }
+}
+`;
+
+test('applyScenarioOverrides: 多项逐条组合、错误带序号', () => {
+  const out = applyScenarioOverrides(SCEN_DICT, [
+    { param: 'closedK', target: 'P1', value: 2e8 },
+    { param: 'scheduleOpenRate', target: 'S1', value: 0.25 },
+    { param: 'endTime', target: '', value: 20 },
+  ]);
+  assert.match(out, /closedK 200000000/);
+  assert.match(out, /openRate 0\.25/);
+  assert.match(out, /endTime 20/);
+  assert.doesNotMatch(out, /closedK 1e8/);
+  assert.throws(
+    () => applyScenarioOverrides(SCEN_DICT, [
+      { param: 'closedK', target: 'P1', value: 1 },
+      { param: 'bogusParam', target: '', value: 1 },
+    ]),
+    /第 2 项/,
+  );
+});
+
+test('scenarioRowsTransient / scenarioRowsSteady: 批量行归一', () => {
+  const t = scenarioRowsTransient([
+    {
+      ok: true,
+      series: {
+        steps: 3, node_names: ['A'], pipe_names: ['P1'],
+        samples: [
+          { t: 0, pressure: { A: 1e6 }, flow: { P1: 0.1 } },
+          { t: 1, pressure: { A: 2e6 }, flow: { P1: 0.2 } },
+          { t: 2, pressure: { A: 1.5e6 }, flow: { P1: 0.3 } },
+        ],
+      },
+    },
+    { ok: false, error: 'boom' },
+  ]);
+  assert.equal(t[0].steps, 3);
+  assert.equal(t[0].tEnd, 2);
+  assert.equal(t[0].pEnd, 1.5e6);
+  assert.equal(t[0].qEnd, 0.3);
+  assert.equal(t[0].pPeak, 2e6);
+  assert.ok(t[0].series);
+  assert.equal(t[1].ok, false);
+  assert.match(t[1].error, /boom/);
+
+  const s = scenarioRowsSteady([
+    {
+      ok: true,
+      summary: {
+        converged: true, iterations: 4, residual: 1e-8,
+        pipes: [{ name: 'P1', q: 0.5, dp: -100 }],
+      },
+    },
+    { ok: false, error: 'bad' },
+  ]);
+  assert.ok(s[0].converged);
+  assert.equal(s[0].iterations, 4);
+  assert.equal(s[0].qEnd, 0.5);
+  assert.equal(s[0].maxDp, 100);
+  assert.equal(s[1].ok, false);
+});
+
+test('buildProjectTree: 工况组挂模型树', () => {
+  const tree = buildProjectTree(emptyModel(), {
+    scenarios: [{ id: 'x1', name: '高产量', engine: 'transient', nOverrides: 2 }],
+  });
+  const g = tree.find((n) => n.id === 'group.scenarios');
+  assert.ok(g);
+  assert.equal(g.children.length, 1);
+  assert.equal(g.children[0].id, 'scen:x1');
+  assert.equal(g.children[0].kind, 'scenario');
+  assert.match(g.children[0].label, /高产量 · 瞬态 · 2 项/);
+  const none = buildProjectTree(emptyModel(), {});
+  assert.ok(!none.find((n) => n.id === 'group.scenarios'));
+});
+
+// ---------------------------------------------------------------------------
+// U4：PVT 流体配置向导（字典序列化 + chflow-pvt 报告解析，样本为真机输出）
+// ---------------------------------------------------------------------------
+
+const PVT_OUT = `[chflow] pvt: 4 components, feed methane=0.340000 ethane=0.180000 propane=0.260000 nPentane=0.220000  molarMass 0.03820544
+[chflow] pvt flash T 320 p 1000000 beta 0.859839411564 single 0 iterations 10 converged 1 residual 3.93018950717e-14
+[chflow] pvt liquid rho 588.35051233 M 0.0637106684302
+[chflow] pvt vapour rho 13.968565418 M 0.0340478871164
+[chflow] pvt x methane 0.0217948200917
+[chflow] pvt y methane 0.391869947643
+[chflow] pvt viscosity liquid 1.23456789 vapour 9.87e-6
+[chflow] pvt surfaceTension parachors fromTable (Weinaug-Katz 1943)
+[chflow] pvt surfaceTension 0.00456789012
+[chflow] pvt flash T 320 p 12000000 beta 0 single 1 iterations 36 converged 1 residual 4.84945417156e-13
+[chflow] pvt liquid rho 436.364143698 M 0.03820544
+[chflow] pvt bubble T 320 p 8250000
+[chflow] pvt table liquidDensity T 310 p 2000000 value 563.753863338
+`;
+
+test('pvtFlashCaseText: 向导规格 -> flash 字典', () => {
+  const text = pvtFlashCaseText({
+    temperature: 320,
+    pressures: [1e6, 4e6],
+    components: [{ name: 'methane', z: 0.34 }, { name: '', z: 0 }, { name: 'nPentane', z: 0.66 }],
+    bubble: true, viscosity: true, surfaceTension: false,
+  });
+  assert.match(text, /temperature 320;/);
+  assert.match(text, /pressures \(1000000 4000000\);/);
+  assert.match(text, /methane 0\.34;/);
+  assert.match(text, /nPentane 0\.66;/);
+  assert.ok(!/^\s+;/m.test(text), '空组分不写入');
+  assert.match(text, /bubblePoint yes;/);
+  assert.match(text, /model lbc;/);
+  assert.ok(!text.includes('surfaceTension'));
+  assert.throws(() => pvtFlashCaseText({ temperature: 320, pressures: [], components: [{ name: 'a', z: 1 }] }), /压力网格/);
+  assert.throws(() => pvtFlashCaseText({ temperature: 320, pressures: [1], components: [] }), /组分/);
+});
+
+test('parsePvtOutput: 真机报告全量解析', () => {
+  const r = parsePvtOutput(PVT_OUT);
+  assert.equal(r.nComponents, 4);
+  assert.equal(r.components[0].name, 'methane');
+  assert.ok(Math.abs(r.molarMass - 0.03820544) < 1e-12);
+  assert.equal(r.flashes.length, 2);
+  const f0 = r.flashes[0];
+  assert.equal(f0.T, 320);
+  assert.equal(f0.p, 1e6);
+  assert.ok(Math.abs(f0.beta - 0.859839411564) < 1e-15);
+  assert.equal(f0.single, false);
+  assert.equal(f0.rhoL, 588.35051233);
+  assert.equal(f0.rhoV, 13.968565418);
+  assert.equal(f0.x.methane, 0.0217948200917);
+  assert.equal(f0.y.methane, 0.391869947643);
+  assert.equal(f0.muL, 1.23456789);
+  assert.equal(f0.muV, 9.87e-6);
+  assert.equal(f0.sigma, 0.00456789012); // 声明行不得被当成数值
+  const f1 = r.flashes[1];
+  assert.equal(f1.single, true);
+  assert.ok(!Number.isFinite(f1.rhoV));
+  assert.deepEqual(r.bubble, { T: 320, p: 8250000 });
+  assert.deepEqual(r.tables[0], { prop: 'liquidDensity', T: 310, p: 2e6, value: 563.753863338 });
+  assert.throws(() => parsePvtOutput('steady solved: converged'), /pvt flash/);
+});
+
+test('pvtCurvesByT + parsePvtCaseDict: 成族与模板回填', () => {
+  const r = parsePvtOutput(PVT_OUT);
+  const groups = pvtCurvesByT(r);
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].T, 320);
+  assert.deepEqual(groups[0].rows.map((x) => x.p), [1e6, 1.2e7]);
+  const spec = parsePvtCaseDict(
+    'temperature 320.0;\npressures (1.0e6 4.0e6 1.2e7);\n' +
+    'composition { methane 0.34; nPentane 0.66; }\n' +
+    'solve { bubblePoint yes; }\nviscosity { model lbc; }\n');
+  assert.equal(spec.temperature, 320);
+  assert.deepEqual(spec.pressures, [1e6, 4e6, 1.2e7]);
+  assert.deepEqual(spec.components, [{ name: 'methane', z: 0.34 }, { name: 'nPentane', z: 0.66 }]);
+  assert.ok(spec.bubble && spec.viscosity && !spec.surfaceTension);
+});
+
+// ---------------------------------------------------------------------------
+// U6（§5.152）：Green-Gauss 涡量/Q 判据 + 等值面片提取
+// ---------------------------------------------------------------------------
+
+/** nx x ny x nz unit-cube hex mesh in the same faces layout as VtkWriter. */
+function hexMesh(nx, ny, nz) {
+  const P = (i, j, k) => i + (nx + 1) * (j + (ny + 1) * k);
+  const points = [];
+  for (let k = 0; k <= nz; k += 1)
+    for (let j = 0; j <= ny; j += 1)
+      for (let i = 0; i <= nx; i += 1)
+        points.push({ x: i, y: j, z: k });
+  const cells = [];
+  const cellFaces = [];
+  for (let k = 0; k < nz; k += 1)
+    for (let j = 0; j < ny; j += 1)
+      for (let i = 0; i < nx; i += 1) {
+        const c = [P(i, j, k), P(i + 1, j, k), P(i + 1, j + 1, k), P(i, j + 1, k),
+          P(i, j, k + 1), P(i + 1, j, k + 1), P(i + 1, j + 1, k + 1), P(i, j + 1, k + 1)];
+        cells.push(c);
+        cellFaces.push([
+          [c[0], c[1], c[5], c[4]], [c[3], c[2], c[6], c[7]],
+          [c[0], c[1], c[2], c[3]], [c[4], c[5], c[6], c[7]],
+          [c[0], c[3], c[7], c[4]], [c[1], c[2], c[6], c[5]],
+        ]);
+      }
+  return { points, cells, cellFaces };
+}
+
+test('vorticityAndQ: 刚性旋转场的中心单元给出精确 ω_z=2、Q=1', () => {
+  const { points, cells, cellFaces } = hexMesh(3, 3, 1);
+  const cellU = cells.map((c) => {
+    const cy = points[c[0]].y + 0.5;
+    const cx = points[c[0]].x + 0.5;
+    return [-cy, cx, 0];
+  });
+  const r = vorticityAndQ(points, cells, cellFaces, cellU);
+  assert.ok(r);
+  const mid = 4; // k=0, j=1, i=1 -> all four side faces internal
+  assert.ok(Math.abs(r.omega[mid][2] - 2) < 1e-9, `wz=${r.omega[mid][2]}`);
+  assert.ok(Math.abs(r.omega[mid][0]) < 1e-9 && Math.abs(r.omega[mid][1]) < 1e-9);
+  assert.ok(Math.abs(r.mag[mid] - 2) < 1e-9);
+  assert.ok(Math.abs(r.q[mid] - 1) < 1e-9, `q=${r.q[mid]}`);
+  // 纯应变场 U=(x,-y,0)：无涡但 Q<0（应变率主导）
+  const strain = cells.map((c) => {
+    const cy = points[c[0]].y + 0.5;
+    const cx = points[c[0]].x + 0.5;
+    return [cx, -cy, 0];
+  });
+  const s = vorticityAndQ(points, cells, cellFaces, strain);
+  assert.ok(Math.abs(s.omega[mid][2]) < 1e-9);
+  assert.ok(Math.abs(s.mag[mid]) < 1e-9);
+  assert.ok(Math.abs(s.q[mid] + 1) < 1e-9, `q=${s.q[mid]}`);
+});
+
+test('faceAdjacency: 中心单元 4 个内面 + 2 个边界（顶底）', () => {
+  const { cells, cellFaces } = hexMesh(3, 3, 1);
+  const adj = faceAdjacency(cells, cellFaces);
+  assert.ok(adj);
+  const internal = adj.nbrs[4].filter((n) => n >= 0).length;
+  assert.equal(internal, 4);
+  assert.equal(adj.nbrs[0].filter((n) => n >= 0).length, 2); // corner cell
+});
+
+test('vorticityAndQ: 无 faces 数组返回 null（UI 回退 |U|）', () => {
+  const { points, cells } = hexMesh(2, 1, 1);
+  assert.equal(vorticityAndQ(points, cells, null, cells.map(() => [1, 0, 0])), null);
+});
+
+test('isoSurfacePatches: 跨越阈值的内面成壳、位置按线性穿越分数偏移', () => {
+  const { points, cells, cellFaces } = hexMesh(3, 3, 1);
+  const values = cells.map((c) => points[c[0]].x + 0.5); // p = 单元中心 x
+  const r = isoSurfacePatches(points, cells, cellFaces, values, 1.25);
+  assert.equal(r.patches.length, 3); // 三行 j 各一片，位于 i=0/i=1 之间
+  assert.deepEqual(r.f, [0.75, 0.75, 0.75]);
+  for (const ring of r.patches) {
+    const cx = ring.reduce((s, p) => s + p[0], 0) / ring.length;
+    assert.ok(Math.abs(cx - 1.25) < 1e-12, `centroid x=${cx}`);
+  }
+  // 阈值在全部值之外 -> 无片；恰等于某 cell 值 -> 不算跨越
+  assert.equal(isoSurfacePatches(points, cells, cellFaces, values, 0.25).patches.length, 0);
+  assert.equal(isoSurfacePatches(points, cells, cellFaces, values, 1.5).patches.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// U9（§5.153）：场 CSV 导出 + 剖面 CSV
+// ---------------------------------------------------------------------------
+
+test('fieldsToCsv: 每 cell 一行（质心 + p + U + |U|）', () => {
+  const { points, cells, cellFaces } = hexMesh(3, 3, 1);
+  const cellU = cells.map((c) => [1, 2, 2]);
+  const cellP = cells.map((c) => 100 + points[c[0]].x);
+  const lines = fieldsToCsv(points, cells, cellU, cellP).trim().split('\n');
+  assert.equal(lines[0], 'cell,cx,cy,cz,p,Ux,Uy,Uz,magU');
+  assert.equal(lines.length, 10); // 1 表头 + 9 单元
+  const first = lines[1].split(',').map(Number);
+  assert.deepEqual(first.slice(1, 4), [0.5, 0.5, 0.5]);
+  assert.equal(first[4], 100);
+  assert.equal(first[8], 3);
+});
+
+test('planeProfileCsv: 剖面取落在平面上的面所属单元；无 faces 返回 null', () => {
+  const { points, cells, cellFaces } = hexMesh(3, 3, 1);
+  const cellU = cells.map(() => [0, 0, 1]);
+  const cellP = cells.map(() => 1);
+  // 法向 x、frac=1/3 -> 平面 x=1：i=0 的右面与 i=1 的左面都贴住 -> 6 个单元
+  const csv = planeProfileCsv(points, cells, cellFaces, cellU, cellP, [1, 0, 0], 1 / 3);
+  const rows = csv.trim().split('\n').slice(1).map((l) => l.split(',').map(Number));
+  assert.equal(rows.length, 6);
+  for (const r of rows) assert.ok(r[0] === 0.5 || r[0] === 1.5, `cx=${r[0]}`);
+  // 顶面 frac=1：单层网格所有 cell 都有顶面
+  const top = planeProfileCsv(points, cells, cellFaces, cellU, cellP, [0, 0, 1], 1);
+  assert.equal(top.trim().split('\n').length - 1, 9);
+  assert.equal(planeProfileCsv(points, cells, null, cellU, cellP, [1, 0, 0], 0.5), null);
 });

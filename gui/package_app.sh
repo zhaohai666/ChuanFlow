@@ -61,11 +61,14 @@ merge_universal() {
 merge_universal "$APP/Contents/MacOS/chflow-gui" \
     target/aarch64-apple-darwin/release/chflow-gui \
     target/release/chflow-gui
-for exe in chflow-1d-steady chflow-1d-transient chflow-1d-twofluid; do
+for exe in chflow-1d-steady chflow-1d-transient chflow-1d-twofluid chflow-1d-nodal; do
     merge_universal "$APP/Contents/Resources/bin/$exe" \
         "$ROOT/build-arm64/src/1d/apps/$exe" \
         "$ROOT/build/src/1d/apps/$exe"
 done
+merge_universal "$APP/Contents/Resources/bin/chflow-pvt" \
+    "$ROOT/build-arm64/src/pvt/apps/chflow-pvt" \
+    "$ROOT/build/src/pvt/apps/chflow-pvt"
 merge_universal "$APP/Contents/Resources/bin/chflow-coupled-1d3d" \
     "$ROOT/build-arm64/src/coupling/apps/chflow-coupled-1d3d" \
     "$ROOT/build/src/coupling/apps/chflow-coupled-1d3d"
@@ -73,7 +76,8 @@ merge_universal "$APP/Contents/Resources/bin/chflow-coupled-1d3d" \
 cp "$ROOT"/tests/cases/coupled1d3d/case.dict \
    "$APP/Contents/Resources/cases/coupled1d3d.dict"
 for tpl in steadyNetwork steadyEquipmentValve steadyEquipmentPump \
-           steadyNetworkMultiphase transientBlowdown twoFluidTerrainSlug; do
+           steadyNetworkMultiphase transientBlowdown twoFluidTerrainSlug \
+           nodalVogel pvtFlash; do
     cp "$ROOT/tests/cases/$tpl/case.dict" "$APP/Contents/Resources/cases/$tpl.dict"
 done
 
@@ -130,6 +134,12 @@ echo "== packaged: $APP =="
 "$APP/Contents/Resources/bin/chflow-1d-twofluid" \
     "$APP/Contents/Resources/cases/twoFluidTerrainSlug.dict" >/dev/null && \
     echo "== bundled two-fluid slug smoke run: ok =="
+"$APP/Contents/Resources/bin/chflow-1d-nodal" \
+    "$APP/Contents/Resources/cases/nodalVogel.dict" >/dev/null && \
+    echo "== bundled nodal smoke run: ok =="
+"$APP/Contents/Resources/bin/chflow-pvt" \
+    "$APP/Contents/Resources/cases/pvtFlash.dict" >/dev/null && \
+    echo "== bundled pvt smoke run: ok =="
 # GUI binary itself must at least report its architecture
 lipo -archs "$APP/Contents/MacOS/chflow-gui"
 

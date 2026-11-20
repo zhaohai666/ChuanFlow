@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <vector>
 
 #include "cf/pvt/BlackOil.h"
 #include "cf/common/Rheology.h"
@@ -56,6 +57,20 @@ struct BeggsBrillIn
     // override. -1 (the default) means "ask the map", and in that case every
     // number below is exactly what 5.85 produced, bit for bit.
     int forcedRegime = -1;
+    // 5.143 (G4): WHICH published holdup law prices the liquid content. The
+    // correlation family is a second dispatch surface, orthogonal to the
+    // flow-pattern map above: 0 (the default) is Beggs-Brill's own horizontal
+    // + inclination holdup, exactly what 5.85 priced, bit for bit. 1 selects
+    // the Hagedorn-Brown holdup as restated by Whitson, Brule & Stephenson
+    // (JPT 2017, Appendix E) and 2 the Duns-Ros (API DL Bulletin 34) holdup
+    // region skeleton; BOTH replace ONLY the horizontal + inclination holdup
+    // block in beggsBrillDpDs, leaving the flow-pattern map, the friction
+    // multiplier S(y), the elevation and acceleration terms and the march
+    // itself untouched. A non-zero value therefore moves the holdup and,
+    // through it, the slippage density in the elevation and Ek terms and the
+    // friction multiplier on y = lambda/HL^2, but nothing else. See
+    // beggsBrill.cpp for the two laws and the Duns-Ros provenance caveat.
+    int correlation = 0;
 };
 
 struct BeggsBrillOut
@@ -135,7 +150,50 @@ struct BeggsBrillMarchOut
     // the difference is the override's footprint on the readout.
     int regimeMapOutlet = 0;
     bool ok = false;         // false when the march hit the pressure floor
+    // 5.144 (G6): the outlet temperature (K) of the PASSIVE thermal march.
+    // 0 when no SteadyThermal was handed to the march - every existing
+    // caller reads nothing here and gets the isothermal march, bit for bit.
+    double temperature = 0;
 };
+
+/// 5.144 (G6): the passive temperature march of a steady pipe. The whole
+/// point is PASSIVITY: the pressure solution above never reads T, so the
+/// Joule-Thomson and wall terms price the outlet temperature along the
+/// pressure profile the hydraulics already produced and cannot move a
+/// single pressure, rate or holdup number. Per march segment, with ds the
+/// segment length and pOld/pNew the segment's inlet/outlet pressures:
+///   T <- T + jouleThomson * (pNew - pOld)
+/// then, where the segment's overall coefficient per unit length U > 0
+/// (the segmentU list when present, else wallHeatTransfer),
+///   T <- T_wall + (T - T_wall) * exp(-U ds / (massRate * heatCapacity)),
+/// the exact solution of the steady convective balance
+///   m c_p dT/ds = U (T_wall - T)
+/// over the segment. T_wall is the constant wallTemperature, or the
+/// geothermal profile surfaceTemperature + geothermalGradient * depth with
+/// depth measured DOWNWARD from the inlet datum (the march has no surface
+/// datum of its own; the profile is anchored where the march starts). A
+/// dead line carries no convective law, so the wall term is skipped when
+/// the mass rate is zero. All-zero / null is the undeclared isothermal
+/// march.
+struct SteadyThermal
+{
+    double temperatureIn = 0;      // K at the march inlet
+    double jouleThomson = 0;       // K/Pa, signed: dT = jt * dp along the march
+    double wallHeatTransfer = 0;   // W/(m K) per unit length, 0 = insulated
+    const std::vector<double>* segmentU = nullptr; // per-segment U, size == segments
+    int wallModel = 0;             // 0 constant wallTemperature, 1 geothermal
+    double wallTemperature = 0;    // K (constant model)
+    double surfaceTemperature = 0; // K (geothermal at the inlet datum)
+    double geothermalGradient = 0; // K/m of true vertical depth below the inlet
+    double heatCapacity = 0;       // J/(kg K), the stream's c_p
+};
+
+/// 5.144 (G6): one thermal segment step, shared by the black-oil and the
+/// pvt-table marches so the two paths cannot drift apart. Returns the
+/// segment-outlet temperature.
+double steadyThermalAdvance(const SteadyThermal& th, double t,
+                            double pOld, double pNew, int segment,
+                            double ds, double sinTheta, double massRate);
 
 BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        double qoStd, double pInPa,
@@ -144,6 +202,8 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        int segments = 24,
                                        const Rheology& liquidRheology = {},
                                        int forcedRegime = -1,
-                                       const std::function<double(double)>* sigmaOfP = nullptr);
+                                       const std::function<double(double)>* sigmaOfP = nullptr,
+                                       int correlation = 0,
+                                       const SteadyThermal* thermal = nullptr);
 
 } // namespace cf

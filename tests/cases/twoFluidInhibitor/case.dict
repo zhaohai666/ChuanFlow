@@ -1,0 +1,82 @@
+// Thermodynamic hydrate inhibition (G5): the sealed subcooled line of
+// twoFluidHydrateSealed with an inhibitor{} block. The line is still (all
+// transport fluxes vanish), so the transported inhibitor fraction c stays
+// at its declared initial and the kinetics see the Hammerschmidt-offset
+// equilibrium line dT = T_eq(p) - kDepression c - T.
+// Base frame: kDepression 5, initial 1 -> the offset shaves 5 K off the
+// drive at every step; growth still runs to full conversion (the line is
+// gas-limited) but along a different trajectory than the k = 0 twin, and
+// the checker replicates the offset recursion cell by cell (1e-9).
+// Siblings: kDepression 30 suppresses the drive below zero for the whole
+// run (h stays exactly 0, the temperature relaxes to the wall with no
+// latent spikes, p stays at p0); initial 0 is the undeclared twin's
+// trajectory verbatim (offset zero at every cell).
+fluid
+{
+    rhoL 1000;
+    rhoG 200;
+    muL  0.01;
+    muG  1e-5;
+    cL   4180;
+    cG   2150;
+    gasR 287;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.02;
+    angleDeg 0;
+    roughness 0;
+    sections 10;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.5;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet  { type sealed; }
+    outlet { type sealed; }
+}
+
+thermal
+{
+    wallHeatTransfer 50;
+    wallModel constant;
+    wallTemperature 280;
+}
+
+hydrate
+{
+    curveA 35.2;
+    curveB -5684;
+    growthRate 0.01;
+    dissociationRate 0.01;
+    gasContent 122;
+    latentHeat 4.2e8;
+    initial 0;
+}
+
+inhibitor
+{
+    kDepression 5;
+    initial 1;
+}
+
+time
+{
+    dt 0.5;
+    endTime 800;
+    reportEvery 160;
+}

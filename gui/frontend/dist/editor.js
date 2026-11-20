@@ -372,6 +372,45 @@ export function applyWhatIfOverrides(caseText, param, target, value) {
 }
 
 /**
+ * Apply a scenario's whole override list to a transient dictionary, one
+ * what-if at a time (each edit re-scans the previous result, so multi-key
+ * scenarios compose exactly like the kernel reads them). Throws with the
+ * offending override index.
+ */
+export function applyScenarioOverrides(caseText, overrides) {
+  let text = caseText;
+  (overrides || []).forEach((o, i) => {
+    try {
+      text = applyWhatIfOverrides(text, o.param, o.target, o.value);
+    } catch (e) {
+      throw new Error(`工况第 ${i + 1} 项 (${o.param}${o.target ? ` @${o.target}` : ''}=${o.value}) 失败: ${e.message || e}`);
+    }
+  });
+  return text;
+}
+
+/**
+ * Replace a nodal case's whole top-level ipr{} block with a linear inflow of
+ * productivity index `j` at reservoir pressure `pRes`, leaving every other
+ * byte (fluid/well/solve/wellhead) untouched. Each such run's working point
+ * lies on the wellbore's VLP curve - this is the nodal sampler's text edit.
+ * Throws when the case has no balanced ipr{} block.
+ */
+export function iprLinearVariant(caseText, pRes, j) {
+  const m = /\bipr\s*\{/.exec(caseText);
+  if (!m) throw new Error('nodal 字典缺少 ipr{} 块');
+  const open = m.index + m[0].length - 1;
+  const close = braceEnd(caseText, open);
+  if (close < 0) throw new Error('ipr{} 花括号不平衡');
+  const block = `ipr {\n` +
+    `    form              linear;\n` +
+    `    reservoirPressure ${pRes};\n` +
+    `    productivityIndex ${j};\n` +
+    `}`;
+  return caseText.slice(0, m.index) + block + caseText.slice(close + 1);
+}
+
+/**
  * Arbitrary-plane clip: keep the cells whose centroid sits on the low side of
  * the plane with unit normal `normal`. `frac` (0..1) slides the plane between
  * the lowest and highest centroid projections, so axis-aligned clipping is the

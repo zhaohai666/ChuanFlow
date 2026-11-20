@@ -9,3 +9,6 @@ target_link_libraries(chflow-1d-twofluid PRIVATE cf1d)
 
 add_executable(chflow-1d-nodal nodalApp.cpp)
 target_link_libraries(chflow-1d-nodal PRIVATE cf1d)
+
+add_executable(chflow-1d-point-elements pointElementsApp.cpp)
+target_link_libraries(chflow-1d-point-elements PRIVATE cf1d)

@@ -647,6 +647,38 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         $<TARGET_FILE:chflow-1d-nodal>)
 
+# 5.143 (G4): the correlation family. The declared `correlation beggsBrill;`
+# twin of the standing multiphase case is byte-identical to it; on a
+# horizontal anchor each alternative holdup law (Hagedorn-Brown per Whitson
+# et al. 2017, Duns-Ros per the API Bulletin 34 skeleton) is re-derived
+# segment by segment against the kernel's own march, with the flow-pattern
+# map still evaluated and reported; unknown words, the single-phase scope,
+# the flowPattern clash and the transient / nodal rows are refused.
+add_test(
+    NAME verify.steadyCorrelations
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_correlations.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkMultiphase/case.dict
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-nodal>)
+
+# 5.144 (G6): the passive steady thermal march. A Joule-Thomson or wall
+# declaration appends a ` T <K>` token and moves no other byte on the
+# standing case; the token is re-derived segment by segment on the
+# black-oil march (constant wall) and on the pvt-table march (geothermal
+# from the inlet datum); inert shapes (wrong list size, missing c_p, wall
+# keys on a pure JT march), the constant-property scope, the pvt fluid
+# without a temperature and the transient / nodal rows are refused.
+add_test(
+    NAME verify.steadyThermal
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_thermal.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkMultiphase/case.dict
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-nodal>)
+
 # partitioned steady 1D<->3D coupling: the same duct solved in 3D replaces the
 # analytic law of edge X, so the checker compares the interface against the
 # closed-form network (branch split, pressure chain), the block against planar
@@ -1327,6 +1359,21 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         $<TARGET_FILE:chflow-1d-nodal>)
 
+# 5.140 / G9 the three new point elements on their own closed forms: the jet
+# pump's constant-area mixing momentum balance (the perfect square plus the
+# friction line) recomputed to 1e-9 in both solve modes, the PCP's kinematic
+# displacement minus its declared slip line with power = q dp, and the
+# plunger gas lift's batch schedule -- integral equals the declared volume,
+# window equals (t mod T) < w, thresholds and nozzle cap are the 5.89 laws
+# at depth. Negative areas, rpm 0, negative slip, oversized windows and
+# out-of-envelope rates are refused loudly.
+add_test(
+    NAME verify.g9PointElements
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_g9_point_elements.py
+        $<TARGET_FILE:chflow-1d-point-elements>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/g9PointElements/case.dict)
+
 # 5.74 / A2 gel strength and sub-threshold creep in the transient row: the
 # gel arm opens exactly on the latch recursion's predicted layer (22 layers
 # after the plain twin -- the restart pressure as calendar), the creep arms
@@ -1760,6 +1807,51 @@ foreach(tcase twoFluidFront twoFluidSteadyHoldupWallis
             ${CMAKE_CURRENT_SOURCE_DIR}/cases/${tcase}/case.dict
             ${mode})
 endforeach()
+
+# G8 emulsion mixing viscosity + G5 thermodynamic hydrate inhibition
+# (benchmark_alignment gap list): the mixing law on the transported water
+# cut, the Hammerschmidt-offset equilibrium line, the dry-line identity and
+# the loud rejections.
+add_test(
+    NAME verify.twoFluidEmulsionInhibitor
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_emulsion_inhibitor.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidEmulsion/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidInhibitor/case.dict)
+
+# G10 sand / cuttings transport: the suspended fraction riding the liquid
+# upwind, the settling/erosion bed exchange, the thin-layer feedback bore
+# and the loud rejections.
+add_test(
+    NAME verify.twoFluidSandTransport
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_sand_transport.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidSandTransport/case.dict)
+
+# G2 gas-cap feedback on the terrain slug travel velocity: the algebraic
+# ejection law re-derived from the reported p profile every frame, the
+# clamp, the terrain-dependent travel, the exact kinematic twin and the
+# loud rejections.
+add_test(
+    NAME verify.twoFluidTerrainDynamicUs
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_terrain_dynamic_us.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidTerrainDynamicUs/case.dict)
+
+# G1 (5.143): transient composition transport + per-cell PR flash
+# diagnostics. The checker replicates the upwind z recursion from the
+# reported vm, applies the Wilson-K single-phase clamps independently,
+# witnesses beta monotone in p across the compression/flash front, proves
+# the dry twin bit-identical and the loud feed rejections.
+add_test(
+    NAME verify.twoFluidComposition
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_composition.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidComposition/case.dict)
 
 # D2 increment 1 (5.96): wax precipitation / dissolution. Separate checker
 # (check_two_fluid_wax.py) because the van't Hoff recoil is re-derived from a

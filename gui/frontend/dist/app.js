@@ -12,7 +12,8 @@ import {
   removePipe, addSource, removeSource, setTime, hitTestNode,
   networkToCaseText, setPipeFields, updateSourceRate, setFluid,
   clipKeepsByPlane, adaptiveVectorIndices,
-  applyWhatIfOverrides, TRANSIENT_WHAT_IF_PARAMS,
+  applyWhatIfOverrides, TRANSIENT_WHAT_IF_PARAMS, iprLinearVariant,
+  applyScenarioOverrides,
 } from './editor.js';
 import {
   validateCaseText, toBarHeights, toTimeSeriesPoints,
@@ -25,9 +26,16 @@ import {
   rainbowColor, classifyLogLine, parseSteadyOutput, parseTransientOutput,
   extractCaseDetails, parseTwoFluidFrames, traceStreamlines,
   evaluateReports, reportsToCsv,
+  parseNodalIpr, iprCurvePoints, vlpSampleJs,
+  vorticityAndQ, isoSurfacePatches, fieldsToCsv, planeProfileCsv,
+  slugSeriesKeys, slugBands,
+  buildMonitorTree, monitorSeriesValues, monitorEnvBand,
+  compareSteadyRuns,
+  scenarioRowsTransient, scenarioRowsSteady,
+  pvtFlashCaseText, parsePvtOutput, pvtCurvesByT, parsePvtCaseDict, PVT_COMPONENTS,
 } from './workspace.js';
 import {
-  templateTarget, isPartialFidelity,
+  templateTarget, isPartialFidelity, isSteadyComparable,
 } from './templates.js';
 
 // ---------------------------------------------------------------------------
@@ -41,6 +49,10 @@ const DEFAULT_COUPLED_EXE =
   '/Users/haizai/project/ChuanFlow/build/src/coupling/apps/chflow-coupled-1d3d';
 const DEFAULT_TWOFLUID_EXE =
   '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-twofluid';
+const DEFAULT_NODAL_EXE =
+  '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-nodal';
+const DEFAULT_PVT_EXE =
+  '/Users/haizai/project/ChuanFlow/build/src/pvt/apps/chflow-pvt';
 const DEFAULT_COUPLED_CASE =
   '/Users/haizai/project/ChuanFlow/tests/cases/coupled1d3d/case.dict';
 const COUPLED_VTU = '/tmp/chflow_gui_coupled_block.vtu';
@@ -77,14 +89,20 @@ const state = {
   sel: null, // { kind, ref } from the tree / canvas
   steady: null,
   transient: null,
-  transientSeries: 'p:A',
+  monitors: [],
+  compare: null,
+  scenarios: [],
+  scenarioSel: null,
+  scenarioResults: null,
+  pvt: { comps: [{ name: 'methane', z: 0.5 }, { name: 'nPentane', z: 0.5 }], parsed: null },
   coupled: null,
   coupledEdge: null,
   vtu: null,
   colorMode: 'none',
   fieldMode: 'p',
-  view3d: { yaw: 0, pitch: 0, clipAxis: 'none', clipFrac: 0.5, clipNormal: [1, 0, 0], vectors: false, streamlines: false },
+  view3d: { yaw: 0, pitch: 0, clipAxis: 'none', clipFrac: 0.5, clipNormal: [1, 0, 0], vectors: false, streamlines: false, iso: { on: false, frac: 0.5 } },
   streamlineCache: null,
+  vortCache: null,
   reports: {
     defs: [
       { name: 'pAvg', field: 'p', op: 'volumeAverage' },
@@ -92,7 +110,8 @@ const state = {
     ],
     history: [], key: null,
   },
-  slug: { frames: [], idx: 0, playing: false, timer: null },
+  slug: { frames: [], idx: 0, playing: false, timer: null, series: ['p'] },
+  nodal: null,
   sweep: { rows: [], running: false, out: '', engine: 'steady' },
   loadedTemplate: null,
   job: { id: null, label: null, running: false, offset: 0, full: '' },
@@ -106,6 +125,8 @@ const engines = {
   coupled: DEFAULT_COUPLED_EXE,
   coupledCase: DEFAULT_COUPLED_CASE,
   twofluid: DEFAULT_TWOFLUID_EXE,
+  nodal: DEFAULT_NODAL_EXE,
+  pvt: DEFAULT_PVT_EXE,
 };
 
 let uidTimer = Date.now() % 100000;
@@ -196,6 +217,9 @@ function renderTree() {
     hasTransient: !!(state.transient && state.transient.samples.length),
     hasCoupled: !!state.coupled,
     coupledEdge: state.coupledEdge,
+    scenarios: state.scenarios.map((s) => ({
+      id: s.id, name: s.name, engine: s.engine, nOverrides: s.overrides.length,
+    })),
   });
   treeEl.innerHTML = '';
 
@@ -237,6 +261,13 @@ function isItemSelected(item) {
 
 function selectTreeItem(item) {
   state.sel = { kind: item.kind, ref: item.ref, treeId: item.id };
+  if (item.kind === 'scenario') {
+    state.scenarioSel = item.ref;
+    switchTab('scenarios');
+    renderTree();
+    renderScenarios();
+    return;
+  }
   if (item.kind === 'node' || item.kind === 'pipe') {
     state.model.selection = { kind: item.kind, id: item.ref };
   }
@@ -1212,6 +1243,7 @@ async function loadVtu() {
     }
     state.vtu = vtu;
     state.streamlineCache = null;
+    state.vortCache = null;
     renderField();
     setStatus(`已载入 ${vtu.cells.length} 个单元的场数据。`, 'ok');
   } catch (e) {
@@ -1243,10 +1275,25 @@ function renderField() {
     $('legendHi').textContent = '—';
     return;
   }
-  const { points, cells, cellU, cellP } = vtu;
-  const values = state.fieldMode === 'p'
-    ? cellP
-    : cellU.map((u) => Math.hypot(u[0], u[1], u[2]));
+  const { points, cells, cellU, cellP, cellFaces } = vtu;
+  // U6: vorticity / Q are Green-Gauss derived quantities over the kernel's
+  // own face rings; a VTU without faces cannot support them (note it, fall
+  // back to |U| so the view never blanks).
+  let isoNote = '';
+  let values;
+  if (state.fieldMode === 'vort' || state.fieldMode === 'q') {
+    if (!state.vortCache) state.vortCache = vorticityAndQ(points, cells, cellFaces, cellU);
+    if (!state.vortCache) {
+      isoNote = ' · 该 VTU 无 faces 数组，涡量/Q 不可用（退回 |U|）';
+      values = cellU.map((u) => Math.hypot(u[0], u[1], u[2]));
+    } else {
+      values = state.fieldMode === 'vort' ? state.vortCache.mag : state.vortCache.q;
+    }
+  } else {
+    values = state.fieldMode === 'p'
+      ? cellP
+      : cellU.map((u) => Math.hypot(u[0], u[1], u[2]));
+  }
   const [lo, hi] = fieldRange(values);
   const v3 = state.view3d;
   const yaw = (v3.yaw * Math.PI) / 180;
@@ -1315,6 +1362,33 @@ function renderField() {
     ctx.lineWidth = Math.max(0.5, 0.5 * dpr);
     ctx.stroke();
   });
+
+  // isosurface layer (U6): threshold-crossing face patches of the rendered
+  // scalar, drawn as translucent shells over the cell field; patches whose
+  // adjacent cells are clipped out are dropped with them.
+  let isoCount = 0;
+  let isoLevel = NaN;
+  if (v3.iso.on && cellFaces && cellFaces.length === cells.length) {
+    isoLevel = lo + v3.iso.frac * (hi - lo || 1);
+    const iso = isoSurfacePatches(points, cells, cellFaces, values, isoLevel);
+    ctx.lineWidth = Math.max(0.8, 1 * dpr);
+    iso.patches.forEach((ring, pi) => {
+      const [a, b] = iso.src[pi];
+      if (!keep[a] || !keep[b]) return;
+      ctx.beginPath();
+      ring.forEach((p, i) => {
+        const q = projectPoint({ x: p[0], y: p[1], z: p[2] }, centroid, yaw, pitch);
+        if (i === 0) ctx.moveTo(px(q.x), py(q.y));
+        else ctx.lineTo(px(q.x), py(q.y));
+      });
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(255,255,255,0.30)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(255,255,255,0.75)';
+      ctx.stroke();
+      isoCount += 1;
+    });
+  }
 
   // streamline layer (U7): cell-centred velocity integration with a 64-line
   // budget; colour follows the seed-cell speed on the same rainbow scale as
@@ -1395,7 +1469,10 @@ function renderField() {
     }
   }
 
-  const unit = state.fieldMode === 'p' ? unitLabel('pressure', state.units) : 'm/s';
+  const FIELD_NAMES = { p: '压力 p', u: '流速 |U|', vort: '涡量 |ω|', q: 'Q 判据' };
+  const unit = state.fieldMode === 'p' ? unitLabel('pressure', state.units)
+    : state.fieldMode === 'vort' ? '1/s'
+      : state.fieldMode === 'q' ? '1/s²' : 'm/s';
   const conv = state.fieldMode === 'p'
     ? (v) => toDisplay(v, 'pressure', state.units)
     : (v) => v;
@@ -1408,10 +1485,12 @@ function renderField() {
       : `剖切 ${v3.clipAxis}@${v3.clipFrac.toFixed(2)}`;
   $('fieldInfo').textContent =
     `块网格 ${cells.length} 单元 / ${points.length} 顶点 · ` +
-    `渲染场 ${state.fieldMode === 'p' ? '压力 p' : '流速 |U|'} · ` +
+    `渲染场 ${FIELD_NAMES[state.fieldMode] || state.fieldMode} · ` +
     `yaw ${v3.yaw}° pitch ${v3.pitch}° · ${clipTxt}` +
     (v3.vectors ? ` · 矢量 ${drawn}（按 |U| 着色 ${magLo.toPrecision(3)}–${magHi.toPrecision(3)} m/s）` : '') +
-    (v3.streamlines ? ` · 流线 ${streamCount}` : '');
+    (v3.streamlines ? ` · 流线 ${streamCount}` : '') +
+    (v3.iso.on ? ` · 等值面 ${isoCount} 片 @ ${Number(isoLevel.toPrecision(4))} ${unit}` : '') +
+    isoNote;
   recordReports();
 }
 
@@ -1558,6 +1637,50 @@ $('showStreamlines').addEventListener('change', (e) => {
   state.view3d.streamlines = e.target.checked;
   renderField();
 });
+$('isoOn').addEventListener('change', (e) => {
+  state.view3d.iso.on = e.target.checked;
+  renderField();
+});
+$('isoLevel').addEventListener('input', (e) => {
+  state.view3d.iso.frac = Number(e.target.value);
+  renderField();
+});
+
+// ---------------------------------------------------------------------------
+// field export (U9): CFD-Post-style CSV of all cells or of a plane profile
+// ---------------------------------------------------------------------------
+
+function exportNormal() {
+  const a = $('exportPlaneAxis').value;
+  return a === 'x' ? [1, 0, 0]
+    : a === 'y' ? [0, 1, 0]
+      : a === 'z' ? [0, 0, 1] : state.view3d.clipNormal;
+}
+
+async function writeExport(csv, label) {
+  const path = $('exportPath').value.trim() || '/tmp/chflow_gui_field_export.csv';
+  try {
+    await invoke('write_text_file', { path, content: csv });
+    setStatus(`${label} -> ${path}`, 'ok');
+  } catch (e) {
+    setStatus(`导出失败: ${e}`, 'error');
+  }
+}
+
+$('exportAllCsvBtn').addEventListener('click', () => {
+  const vtu = state.vtu;
+  if (!vtu) { setStatus('尚无场数据，请先载入 VTU。', 'error'); return; }
+  writeExport(fieldsToCsv(vtu.points, vtu.cells, vtu.cellU, vtu.cellP),
+    `已导出全部 ${vtu.cells.length} 个单元`);
+});
+$('exportPlaneCsvBtn').addEventListener('click', () => {
+  const vtu = state.vtu;
+  if (!vtu) { setStatus('尚无场数据，请先载入 VTU。', 'error'); return; }
+  const csv = planeProfileCsv(vtu.points, vtu.cells, vtu.cellFaces, vtu.cellU, vtu.cellP,
+    exportNormal(), Number($('exportPlaneFrac').value));
+  if (csv === null) { setStatus('该 VTU 无 faces 数组，剖面无法定位。', 'error'); return; }
+  writeExport(csv, `已导出剖面 ${csv.trim().split('\n').length - 1} 个单元`);
+});
 
 // ---------------------------------------------------------------------------
 // slug animation (chflow-1d-twofluid terrain-slug timeline)
@@ -1571,6 +1694,18 @@ function stopSlugPlayback() {
     s.timer = null;
   }
   $('slugPlayBtn').textContent = '▶ 播放';
+}
+
+// U3: overlay palette for the selectable per-cell series (kernel cell keys).
+const SLUG_SERIES_COLORS = {
+  p: '#e0a33e', T: '#ff8f6b', alpha: '#8fd3a8', water: '#7fb3ff',
+  vsl: '#c96a9b', vsg: '#9b8ad1', muEff: '#7db86a', wax: '#c9a06a',
+  h: '#5fd3c4', inh: '#4bb3c4', sand: '#d9c26a', bed: '#b08d57',
+};
+const SLUG_SERIES_FALLBACK = ['#e0a33e', '#ff8f6b', '#c96a9b', '#9b8ad1', '#7db86a'];
+
+function slugSeriesColor(key, i) {
+  return SLUG_SERIES_COLORS[key] || SLUG_SERIES_FALLBACK[i % SLUG_SERIES_FALLBACK.length];
 }
 
 function renderSlugFrame() {
@@ -1588,10 +1723,12 @@ function renderSlugFrame() {
 
   const cells = fr.cells;
   const n = cells.length || 1;
+  const bands = slugBands(fr);
+  const bandRow = 12 * dpr;
   const padL = 50 * dpr;
-  const padR = 30 * dpr;
+  const padR = 90 * dpr;
   const padT = 30 * dpr;
-  const padB = 40 * dpr;
+  const padB = (40 + bands.length * 14) * dpr;
   const bw = (cv.width - padL - padR) / n;
   const bh = cv.height - padT - padB;
 
@@ -1618,6 +1755,67 @@ function renderSlugFrame() {
     }
   });
 
+  // U3: selected quantities overlaid as per-frame-normalized polylines.
+  // 'p' falls back to the kernel's node pressure profile when the cell rows
+  // carry no p (the terrain-slug output shape).
+  const chosen = s.series || [];
+  const legend = [];
+  chosen.forEach((key, i) => {
+    const cellHas = cells.some((c) => Number.isFinite(c[key]));
+    let pts;
+    if (cellHas) {
+      pts = cells.map((c, j) => ({ x: padL + (j + 0.5) * bw, v: c[key] }));
+    } else if (key === 'p' && fr.nodeP && fr.nodeP.length) {
+      pts = fr.nodeP.map((v, j) => ({ x: padL + j * bw, v }));
+    } else return;
+    if (!pts.some((q) => Number.isFinite(q.v))) return;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const q of pts) {
+      if (Number.isFinite(q.v)) {
+        lo = Math.min(lo, q.v);
+        hi = Math.max(hi, q.v);
+      }
+    }
+    const color = slugSeriesColor(key, i);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.8 * dpr;
+    ctx.beginPath();
+    let started = false;
+    for (const q of pts) {
+      if (!Number.isFinite(q.v)) {
+        started = false;
+        continue;
+      }
+      const y = padT + bh - ((q.v - lo) / (hi - lo || 1)) * (bh - 6 * dpr) - 3 * dpr;
+      if (!started) {
+        ctx.moveTo(q.x, y);
+        started = true;
+      } else ctx.lineTo(q.x, y);
+    }
+    ctx.stroke();
+    legend.push({ key, color, lo, hi });
+  });
+  ctx.font = `${10 * dpr}px sans-serif`;
+  legend.forEach((lg, i) => {
+    const y = padT + 12 * dpr + i * 13 * dpr;
+    ctx.fillStyle = lg.color;
+    ctx.fillText(`${lg.key} ${lg.lo.toPrecision(3)}..${lg.hi.toPrecision(3)}`, cv.width - padR + 8 * dpr, y);
+  });
+
+  // U3: flow-assurance band strips (kernel cell flags, contiguous runs)
+  bands.forEach((b, r) => {
+    const y = padT + bh + (6 + r * 14) * dpr;
+    ctx.fillStyle = dark ? '#1a2536' : '#e6ecf3';
+    ctx.fillRect(padL, y, (cv.width - padL - padR), bandRow);
+    for (const run of b.runs) {
+      ctx.fillStyle = b.color;
+      ctx.fillRect(padL + run.from * bw, y, (run.to - run.from + 1) * bw, bandRow);
+    }
+    ctx.fillStyle = dark ? '#9aa7b8' : '#5b6b7d';
+    ctx.fillText(b.label, padL - 44 * dpr, y + bandRow - 2 * dpr);
+  });
+
   // axis labels every ~10 cells
   ctx.fillStyle = dark ? '#9aa7b8' : '#5b6b7d';
   ctx.font = `${10 * dpr}px sans-serif`;
@@ -1625,11 +1823,39 @@ function renderSlugFrame() {
   for (let i = 0; i < n; i += step) {
     const c = cells[i];
     if (!c) continue;
-    ctx.fillText(String(c.index ?? i), padL + i * bw, cv.height - padB + 14 * dpr);
+    ctx.fillText(String(c.index ?? i), padL + i * bw, padT + bh + (6 + bands.length * 14 + 12) * dpr);
   }
   $('slugReadout').textContent =
-    `t=${fr.t} · vm=${fr.vm} · dp=${fr.dp} · 帧 ${s.idx + 1}/${s.frames.length}`;
+    `t=${fr.t} · vm=${fr.vm} · dp=${fr.dp} · 帧 ${s.idx + 1}/${s.frames.length}` +
+    (legend.length ? ` · 叠画 ${legend.map((l) => l.key).join('/')}` : '');
 }
+
+/** U3: rebuild the series checkboxes from the keys the frames actually carry. */
+function renderSlugSeries() {
+  const box = $('slugSeries');
+  const keys = slugSeriesKeys(state.slug.frames);
+  const known = ['p', 'T', 'alpha', 'water', 'vsl', 'vsg', 'muEff', 'wax', 'h', 'inh', 'sand', 'bed'];
+  const ordered = [...known.filter((k) => keys.includes(k)), ...keys.filter((k) => !known.includes(k))];
+  const keep = new Set(state.slug.series.filter((k) => ordered.includes(k)));
+  if (!keep.size) {
+    for (const k of ['p', 'T', 'alpha']) if (ordered.includes(k)) keep.add(k);
+    if (!keep.size && ordered.length) keep.add(ordered[0]);
+  }
+  state.slug.series = [...keep];
+  box.innerHTML = ordered.map((k) =>
+    `<label class="chk"><input type="checkbox" data-key="${k}" ` +
+    `${keep.has(k) ? 'checked' : ''}/> ${k}</label>`).join('');
+}
+
+$('slugSeries').addEventListener('change', (e) => {
+  const cb = e.target;
+  if (cb.type !== 'checkbox') return;
+  const set = new Set(state.slug.series);
+  if (cb.checked) set.add(cb.dataset.key);
+  else set.delete(cb.dataset.key);
+  state.slug.series = [...set];
+  renderSlugFrame();
+});
 
 function slugStep() {
   const s = state.slug;
@@ -1698,6 +1924,7 @@ function onSlugDone(fullOutput) {
   slider.value = '0';
   slider.disabled = false;
   $('slugPlayBtn').disabled = false;
+  renderSlugSeries();
   const last = frames.at(-1);
   const withSlug = last.cells.filter((c) => c.s > 0).length;
   renderSlugFrame();
@@ -1708,6 +1935,580 @@ function onSlugDone(fullOutput) {
     'ok',
   );
 }
+
+// ---------------------------------------------------------------------------
+// nodal analysis (U2): IPR-VLP dual curves + working point from the kernel
+// ---------------------------------------------------------------------------
+
+async function runNodal() {
+  let path = $('nodalCasePath').value.trim();
+  if (!path) {
+    try {
+      const tpls = await invoke('case_templates');
+      const t = (tpls || []).find((x) => x.id === 'nodalVogel');
+      if (t) {
+        path = t.path;
+        $('nodalCasePath').value = path;
+      }
+    } catch (_) { /* keep empty -> error below */ }
+  }
+  if (!path) {
+    setStatus('请填写 nodal 算例路径（或从模板库载入 nodalVogel）。', 'error');
+    return;
+  }
+  let text;
+  try {
+    text = await invoke('read_text_file', { path });
+  } catch (e) {
+    setStatus(`读取 nodal 算例失败: ${e}`, 'error');
+    return;
+  }
+  let spec;
+  try {
+    spec = parseNodalIpr(text);
+  } catch (e) {
+    setStatus(`解析 ipr{} 失败: ${e}`, 'error');
+    return;
+  }
+  const count = Math.max(5, Math.min(25, Number($('nodalSamples').value) || 13));
+  const js = vlpSampleJs(spec, count);
+  const texts = [text, ...js.map((j) => iprLinearVariant(text, spec.pRes, j))];
+  $('runNodalBtn').disabled = true;
+  setStatus(`节点分析运行中：${texts.length} 次内核求解（1 工作点 + ${js.length} 个 VLP 采样）…`, 'busy');
+  let batch;
+  try {
+    batch = await invoke('run_nodal_texts', { texts, exePath: engines.nodal });
+  } catch (e) {
+    $('runNodalBtn').disabled = false;
+    setStatus(`节点分析失败: ${e}`, 'error');
+    return;
+  }
+  $('runNodalBtn').disabled = false;
+  const wp = batch[0]?.ok ? batch[0].summary : null;
+  if (!wp) {
+    setStatus(`节点分析失败：${batch[0]?.error || '无输出'}`, 'error');
+    return;
+  }
+  const vlp = [];
+  for (let k = 0; k < js.length; k += 1) {
+    const row = batch[k + 1];
+    if (row?.ok && row.summary.rate > 0) {
+      vlp.push({ j: js[k], q: row.summary.rate, p: row.summary.pwf });
+    }
+  }
+  vlp.sort((a, b) => a.q - b.q);
+  state.nodal = { spec, wp, vlp, path };
+  renderNodal();
+  setStatus(
+    `节点分析完成：工作点 q=${wp.rate.toPrecision(4)} sm3/s、p_wf=${wp.pwf.toPrecision(4)} Pa` +
+    `（${wp.ipr_form} IPR，${wp.flows ? '可自喷' : '不自喷'}），VLP 采样 ${vlp.length}/${js.length} 点。`,
+    'ok',
+  );
+}
+
+function renderNodal() {
+  const d = state.nodal;
+  const el = $('nodalChart');
+  if (!d) {
+    el.innerHTML = '<p class="empty">运行节点分析后绘制 IPR-VLP 双曲线。</p>';
+    $('nodalTable').querySelector('tbody').innerHTML = '';
+    return;
+  }
+  const u = state.units;
+  const ipr = iprCurvePoints(d.spec, 48);
+  const pts = [...ipr, ...d.vlp.map((v) => ({ q: v.q, p: v.p })), { q: d.wp.rate, p: d.wp.pwf }];
+  const valid = pts.filter((s) => Number.isFinite(s.q) && Number.isFinite(s.p));
+  if (valid.length < 3) {
+    el.innerHTML = '<p class="empty">内核未给出可绘采样点（井筒不自喷？检查井口压力）。</p>';
+    return;
+  }
+  const qHi = Math.max(...valid.map((s) => s.q), 1e-12) * 1.05;
+  const pLo = Math.min(...valid.map((s) => s.p), d.wp.staticP || Infinity) * 0.9;
+  const pHi = d.spec.pRes * 1.02;
+  const W = 560;
+  const H = 300;
+  const X = (q) => 56 + (q / (qHi || 1)) * (W - 76);
+  const Y = (p) => H - 30 - ((p - pLo) / (pHi - pLo || 1)) * (H - 54);
+  const iprPts = ipr.map((s) => `${X(s.q).toFixed(1)},${Y(s.p).toFixed(1)}`).join(' ');
+  const vlpPts = d.vlp.map((s) => `${X(s.q).toFixed(1)},${Y(s.p).toFixed(1)}`).join(' ');
+  const wx = X(d.wp.rate);
+  const wy = Y(d.wp.pwf);
+  const vlpDots = d.vlp.map((s) =>
+    `<circle cx="${X(s.q).toFixed(1)}" cy="${Y(s.p).toFixed(1)}" r="2.6" fill="#e0a33e"/>`).join('');
+  const staticLine = Number.isFinite(d.wp.staticP)
+    ? `<line x1="${X(0)}" y1="${Y(d.wp.staticP).toFixed(1)}" x2="${X(qHi)}" ` +
+      `y2="${Y(d.wp.staticP).toFixed(1)}" stroke="var(--muted)" stroke-dasharray="4 3"/>` +
+      `<text x="${X(qHi) - 4}" y="${(Y(d.wp.staticP) - 4).toFixed(1)}" text-anchor="end" ` +
+      `font-size="10" fill="var(--muted)">静液柱 ${fmtDisplay(d.wp.staticP, 'pressure', u, 4)}</text>`
+    : '';
+  el.innerHTML =
+    `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">` +
+    `<line x1="56" y1="${H - 30}" x2="${W - 20}" y2="${H - 30}" stroke="var(--line)"/>` +
+    `<line x1="56" y1="12" x2="56" y2="${H - 30}" stroke="var(--line)"/>` +
+    staticLine +
+    `<polyline points="${iprPts}" fill="none" stroke="#4bb3c4" stroke-width="2"/>` +
+    (d.vlp.length > 1
+      ? `<polyline points="${vlpPts}" fill="none" stroke="#e0a33e" stroke-width="1.6" stroke-dasharray="1 0"/>`
+      : '') +
+    vlpDots +
+    `<line x1="${(wx - 7).toFixed(1)}" y1="${wy.toFixed(1)}" x2="${(wx + 7).toFixed(1)}" ` +
+    `y2="${wy.toFixed(1)}" stroke="var(--bad)" stroke-width="2.4"/>` +
+    `<line x1="${wx.toFixed(1)}" y1="${(wy - 7).toFixed(1)}" x2="${wx.toFixed(1)}" ` +
+    `y2="${(wy + 7).toFixed(1)}" stroke="var(--bad)" stroke-width="2.4"/>` +
+    `<text x="${(wx + 10).toFixed(1)}" y="${(wy - 6).toFixed(1)}" font-size="11" fill="var(--bad)">` +
+    `工作点 q=${fmtDisplay(d.wp.rate, 'rate', u, 4)}</text>` +
+    `<text x="${W - 20}" y="${H - 12}" text-anchor="end" font-size="10" fill="var(--muted)">` +
+    `q (${unitLabel('rate', u)})</text>` +
+    `<text x="12" y="20" font-size="10" fill="var(--muted)">p (${unitLabel('pressure', u)})</text>` +
+    `<text x="${X(qHi * 0.55)}" y="${Y(ipr[Math.floor(ipr.length / 2)].p) - 6}" font-size="10" fill="#4bb3c4">IPR(${d.spec.form})</text>` +
+    (d.vlp.length > 1
+      ? `<text x="${X(d.vlp[Math.floor(d.vlp.length / 2)].q) + 8}" y="${Y(d.vlp[Math.floor(d.vlp.length / 2)].p) - 6}" font-size="10" fill="#e0a33e">VLP</text>`
+      : '') +
+    `</svg>`;
+  $('nodalReadout').textContent =
+    `工作点：q=${d.wp.rate.toPrecision(6)} sm3/s · p_wf=${d.wp.pwf.toPrecision(6)} Pa · ` +
+    `井口=${d.wp.regime || '—'} 持液率=${Number.isFinite(d.wp.holdup) ? d.wp.holdup.toPrecision(4) : '—'} · ` +
+    `迭代=${d.wp.iterations} flows=${d.wp.flows} ${d.wp.converged ? '收敛' : '未收敛'}`;
+  $('nodalTable').querySelector('tbody').innerHTML = d.vlp.map((s) =>
+    `<tr><td>${s.j.toExponential(2)}</td><td>${s.q.toPrecision(4)}</td><td>${s.p.toPrecision(5)}</td></tr>`).join('')
+    || '<tr><td>—</td><td>—</td><td>—</td></tr>';
+}
+
+$('runNodalBtn').addEventListener('click', runNodal);
+
+// ---------------------------------------------------------------------------
+// scenario manager (U1): named boundary/equipment patches, batch run,
+// comparison table + overlay curves (steady via run_case_texts, transient
+// via the U10 run_transient_texts parallel engine)
+// ---------------------------------------------------------------------------
+
+const STEADY_SCEN_PARAMS = [
+  { value: 'sourceRate', label: '源汇流量 (sm3/s)' },
+  { value: 'pipeDiameter', label: '管径 (m)' },
+  { value: 'pipeLength', label: '管长 (m)' },
+];
+let scenSeq = 0;
+
+function scenarioTargetOptions(engine, param) {
+  if (engine === 'steady') {
+    if (param === 'sourceRate') return state.model.sources.map((s) => s.name);
+    return state.model.pipes.map((p) => p.name);
+  }
+  const spec = TRANSIENT_WHAT_IF_PARAMS.find((p) => p.value === param);
+  if (!spec || spec.section === 'time') return [];
+  if (spec.section === 'sources') {
+    const names = [];
+    const re = /^\s*([A-Za-z_]\w*)\s*\{[\s\S]*?schedule\s*\{/gm;
+    let m;
+    while ((m = re.exec(caseText.value)) !== null) names.push(m[1]);
+    return names;
+  }
+  return state.model.pipes.map((p) => p.name);
+}
+
+function applySteadyScenario(model, overrides) {
+  const m = JSON.parse(JSON.stringify(model));
+  for (const o of overrides) {
+    if (o.param === 'sourceRate') {
+      const s = m.sources.find((x) => x.name === o.target);
+      if (!s) throw new Error(`稳态工况：源汇 ${o.target} 不存在`);
+      s.rate = Number(o.value);
+    } else if (o.param === 'pipeDiameter' || o.param === 'pipeLength') {
+      const p = m.pipes.find((x) => x.name === o.target);
+      if (!p) throw new Error(`稳态工况：管段 ${o.target} 不存在`);
+      p[o.param === 'pipeDiameter' ? 'diameter' : 'length'] = Number(o.value);
+    } else {
+      throw new Error(`稳态工况不支持参数 ${o.param}（边界/阀门时序请切瞬态引擎）`);
+    }
+  }
+  return m;
+}
+
+function renderScenarios() {
+  const list = $('scenList');
+  list.innerHTML = state.scenarios.map((s) =>
+    `<div class="scen-item${s.id === state.scenarioSel ? ' sel' : ''}" data-id="${s.id}">` +
+    `<span class="nm">${s.name}</span>` +
+    `<span class="badge">${s.engine === 'transient' ? '瞬态' : '稳态'}</span>` +
+    `<span class="badge">${s.overrides.length} 项</span>` +
+    `<button class="mini" data-act="dup" title="复制">⧉</button>` +
+    `<button class="mini" data-act="del" title="删除">✕</button></div>`).join('')
+    || '<p class="empty">尚无工况，点「＋ 新工况」。</p>';
+  renderScenarioEdit();
+  renderTree();
+}
+
+function renderScenarioEdit() {
+  const box = $('scenEdit');
+  const sc = state.scenarios.find((s) => s.id === state.scenarioSel);
+  if (!sc) {
+    box.innerHTML = '<p class="empty">＋ 新工况，或点模型树/列表中的工况。</p>';
+    return;
+  }
+  const params = sc.engine === 'steady' ? STEADY_SCEN_PARAMS : TRANSIENT_WHAT_IF_PARAMS;
+  const rows = sc.overrides.map((o, i) => {
+    const targets = scenarioTargetOptions(sc.engine, o.param);
+    return `<tr><td><select data-i="${i}" data-f="param">` +
+      params.map((p) => `<option value="${p.value}"${p.value === o.param ? ' selected' : ''}>${p.label}</option>`).join('') +
+      `</select></td><td>${targets.length
+        ? `<select data-i="${i}" data-f="target">` +
+          targets.map((t) => `<option value="${t}"${t === o.target ? ' selected' : ''}>${t}</option>`).join('') +
+          `</select>` : '<i>时间参数</i>'}</td>` +
+      `<td><input data-i="${i}" data-f="value" type="number" step="any" value="${o.value}" style="width:110px"/></td>` +
+      `<td><button class="mini" data-rm="${i}">✕</button></td></tr>`;
+  }).join('');
+  box.innerHTML =
+    `<label>名称 <input id="scenName" type="text" value="${sc.name}" style="width:160px"/></label>` +
+    ` <label>引擎 <select id="scenEngine">` +
+    `<option value="steady"${sc.engine === 'steady' ? ' selected' : ''}>稳态</option>` +
+    `<option value="transient"${sc.engine === 'transient' ? ' selected' : ''}>瞬态</option></select></label>` +
+    `<table class="data-table"><thead><tr><th>参数</th><th>对象</th><th>取值</th><th></th></tr></thead>` +
+    `<tbody>${rows}</tbody></table>` +
+    `<button id="scenAddOv" class="mini">＋ 加一项</button>`;
+}
+
+$('scenAddBtn').addEventListener('click', () => {
+  const id = `scen${++scenSeq}`;
+  state.scenarios.push({
+    id, name: `工况 ${state.scenarios.length + 1}`, engine: 'steady', overrides: [],
+  });
+  state.scenarioSel = id;
+  renderScenarios();
+  switchTab('scenarios');
+});
+
+$('scenList').addEventListener('click', (e) => {
+  const item = e.target.closest('.scen-item');
+  if (!item) return;
+  const id = item.dataset.id;
+  const act = e.target.dataset.act;
+  const idx = state.scenarios.findIndex((s) => s.id === id);
+  if (act === 'del') {
+    state.scenarios.splice(idx, 1);
+    if (state.scenarioSel === id) state.scenarioSel = null;
+  } else if (act === 'dup') {
+    const copy = JSON.parse(JSON.stringify(state.scenarios[idx]));
+    copy.id = `scen${++scenSeq}`;
+    copy.name = `${copy.name} 副本`;
+    state.scenarios.splice(idx + 1, 0, copy);
+    state.scenarioSel = copy.id;
+  } else {
+    state.scenarioSel = id;
+  }
+  renderScenarios();
+});
+
+$('scenEdit').addEventListener('click', (e) => {
+  const sc = state.scenarios.find((s) => s.id === state.scenarioSel);
+  if (!sc) return;
+  if (e.target.id === 'scenAddOv') {
+    const params = sc.engine === 'steady' ? STEADY_SCEN_PARAMS : TRANSIENT_WHAT_IF_PARAMS;
+    const p0 = params[0];
+    const targets = scenarioTargetOptions(sc.engine, p0.value);
+    sc.overrides.push({ param: p0.value, target: targets[0] || '', value: 0 });
+    renderScenarios();
+  } else if (e.target.dataset.rm !== undefined) {
+    sc.overrides.splice(Number(e.target.dataset.rm), 1);
+    renderScenarios();
+  }
+});
+
+$('scenEdit').addEventListener('change', (e) => {
+  const sc = state.scenarios.find((s) => s.id === state.scenarioSel);
+  if (!sc) return;
+  const i = e.target.dataset.i;
+  const f = e.target.dataset.f;
+  if (i !== undefined && f !== undefined) {
+    if (f === 'param') {
+      const targets = scenarioTargetOptions(sc.engine, e.target.value);
+      sc.overrides[Number(i)] = { param: e.target.value, target: targets[0] || '', value: sc.overrides[Number(i)].value };
+      renderScenarioEdit();
+    } else if (f === 'target') {
+      sc.overrides[Number(i)].target = e.target.value;
+    } else {
+      sc.overrides[Number(i)].value = Number(e.target.value);
+    }
+    renderTree();
+  } else if (e.target.id === 'scenName') {
+    sc.name = e.target.value || sc.name;
+    renderScenarios();
+  } else if (e.target.id === 'scenEngine') {
+    sc.engine = e.target.value;
+    sc.overrides = [];
+    renderScenarios();
+  }
+});
+
+async function runScenarios() {
+  const scs = state.scenarios;
+  if (!scs.length) {
+    $('scenStatus').textContent = '无工况可运行。';
+    return;
+  }
+  const texts = { steady: [], transient: [] };
+  const order = [];
+  try {
+    for (const s of scs) {
+      if (s.engine === 'steady') {
+        texts.steady.push(networkToCaseText(applySteadyScenario(state.model, s.overrides)));
+      } else {
+        if (!caseText.value.trim()) throw new Error(`瞬态工况「${s.name}」需要 case 字典（在「case 字典」页载入）`);
+        texts.transient.push(applyScenarioOverrides(caseText.value, s.overrides));
+      }
+      order.push(s);
+    }
+  } catch (e) {
+    $('scenStatus').textContent = `构建工况字典失败: ${e.message || e}`;
+    return;
+  }
+  $('scenRunAllBtn').disabled = true;
+  $('scenStatus').textContent = `批量运行 ${scs.length} 个工况…`;
+  const byId = new Map();
+  try {
+    if (texts.steady.length) {
+      const rows = scenarioRowsSteady(await invoke('run_case_texts', {
+        texts: texts.steady, exePath: engines.steady,
+      }));
+      order.filter((s) => s.engine === 'steady').forEach((s, i) => byId.set(s.id, rows[i]));
+    }
+    if (texts.transient.length) {
+      const rows = scenarioRowsTransient(await invoke('run_transient_texts', {
+        texts: texts.transient, exePath: engines.transient,
+      }));
+      order.filter((s) => s.engine === 'transient').forEach((s, i) => byId.set(s.id, rows[i]));
+    }
+  } catch (e) {
+    $('scenRunAllBtn').disabled = false;
+    $('scenStatus').textContent = `批量运行失败: ${e}`;
+    return;
+  }
+  $('scenRunAllBtn').disabled = false;
+  state.scenarioResults = order.map((s) => ({ name: s.name, engine: s.engine, row: byId.get(s.id) }));
+  const done = state.scenarioResults.filter((r) => r.row?.ok).length;
+  $('scenStatus').textContent = `批量运行完成：${done}/${scs.length} 成功。`;
+  populateScenSeries();
+  renderScenarioResults();
+}
+
+function populateScenSeries() {
+  const sel = $('scenSeriesSel');
+  const tRow = (state.scenarioResults || []).find((r) => r.engine === 'transient' && r.row?.series);
+  if (tRow) {
+    const s = tRow.row.series;
+    const opts = s.node_names.map((n) => `p:${n}`)
+      .concat(s.pipe_names.map((n) => `Q:${n}`));
+    sel.innerHTML = opts.map((o) => `<option value="${o}">${o}</option>`).join('');
+    sel.disabled = false;
+  } else {
+    sel.innerHTML = '<option value="">（稳态：末管 Q 柱状）</option>';
+    sel.disabled = true;
+  }
+}
+
+function renderScenarioResults() {
+  const box = $('scenResults');
+  const res = state.scenarioResults;
+  if (!res || !res.length) {
+    box.innerHTML = '<p class="empty">批量运行后显示对比表与叠画曲线。</p>';
+    return;
+  }
+  const u = state.units;
+  const f = (v, fam, sig = 5) => (Number.isFinite(v) ? `${Number(toDisplay(v, fam, u)).toPrecision(sig)}` : '—');
+  const rows = res.map((r) => {
+    const w = r.row;
+    if (!w) return `<tr><td>${r.name}</td><td>${r.engine}</td><td colspan="5">未运行</td></tr>`;
+    if (!w.ok) return `<tr><td>${r.name}</td><td>${r.engine}</td><td colspan="5" class="bad">${w.error}</td></tr>`;
+    if (r.engine === 'transient') {
+      return `<tr><td>${r.name}</td><td>瞬态</td><td>${w.steps} 帧</td>` +
+        `<td>${f(w.tEnd, 'time')}</td><td>${f(w.pEnd, 'pressure')}</td>` +
+        `<td>${f(w.qEnd, 'rate')}</td><td>${f(w.pPeak, 'pressure')}</td></tr>`;
+    }
+    return `<tr><td>${r.name}</td><td>稳态</td><td>${w.converged ? '✓' : '✗'} ${w.iterations} 次</td>` +
+      `<td>${Number.isFinite(w.residual) ? w.residual.toExponential(1) : '—'}</td>` +
+      `<td>—</td><td>${f(w.qEnd, 'rate')}</td><td>${f(w.maxDp, 'pressure')}</td></tr>`;
+  }).join('');
+  // overlay chart
+  const W = 600;
+  const H = 150;
+  let svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`;
+  const legend = [];
+  const seriesId = $('scenSeriesSel').value;
+  const tRes = res.filter((r) => r.engine === 'transient' && r.row?.ok && r.row.series);
+  if (tRes.length && seriesId) {
+    tRes.forEach((r, i) => {
+      const vals = monitorSeriesValues(r.row.series.samples, seriesId);
+      if (!vals || !vals.some(Number.isFinite)) return;
+      const fin = vals.filter(Number.isFinite);
+      const lo = Math.min(...fin);
+      const hi = Math.max(...fin);
+      const color = MONITOR_PALETTE[i % MONITOR_PALETTE.length];
+      const n = vals.length;
+      const pts = vals.map((v, j) => Number.isFinite(v)
+        ? `${(10 + (j / Math.max(1, n - 1)) * (W - 20)).toFixed(1)},${(H - 14 - ((v - lo) / (hi - lo || 1)) * (H - 28)).toFixed(1)}`
+        : null).filter(Boolean).join(' ');
+      svg += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/>`;
+      legend.push({ label: `${r.name} ${lo.toPrecision(3)}..${hi.toPrecision(3)}`, color });
+    });
+  } else {
+    const sRes = res.filter((r) => r.engine === 'steady' && r.row?.ok);
+    const use = sRes.length ? sRes : tRes;
+    const vals = use.map((r) => r.row.qEnd);
+    const hi = Math.max(...vals.filter(Number.isFinite).map(Math.abs), 1e-12);
+    const bw = Math.max(10, Math.min(50, (W - 40) / Math.max(1, use.length) - 10));
+    use.forEach((r, i) => {
+      const v = r.row.qEnd;
+      if (!Number.isFinite(v)) return;
+      const h = (Math.abs(v) / hi) * (H - 40);
+      const x = 30 + i * ((W - 60) / Math.max(1, use.length));
+      const color = MONITOR_PALETTE[i % MONITOR_PALETTE.length];
+      svg += `<rect x="${x.toFixed(1)}" y="${(H - 20 - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}"/>`;
+      svg += `<text x="${(x + bw / 2).toFixed(1)}" y="${H - 6}" font-size="9" text-anchor="middle" fill="var(--muted)">${r.name}</text>`;
+      legend.push({ label: `${r.name} Q=${v.toPrecision(4)}`, color });
+    });
+  }
+  svg += '</svg>';
+  box.innerHTML =
+    `<table class="data-table"><thead><tr><th>工况</th><th>引擎</th><th>收敛</th>` +
+    `<th>末帧 t</th><th>末 p</th><th>末 Q</th><th>峰值/Δ</th></tr></thead><tbody>${rows}</tbody></table>` +
+    svg +
+    `<p class="hint">${legend.map((l) => `<span style="color:${l.color}">■</span> ${l.label}`).join(' · ') || '无可叠画序列'}</p>`;
+}
+
+$('scenRunAllBtn').addEventListener('click', runScenarios);
+$('scenSeriesSel').addEventListener('change', renderScenarioResults);
+
+// ---------------------------------------------------------------------------
+// PVT fluid wizard (U4): composition -> chflow-pvt flash -> preview + curves
+// ---------------------------------------------------------------------------
+
+function renderPvtComps() {
+  $('pvtCompNames').innerHTML = PVT_COMPONENTS.map((n) => `<option value="${n}">`).join('');
+  const tb = $('pvtCompTable').querySelector('tbody');
+  tb.innerHTML = state.pvt.comps.map((c, i) =>
+    `<tr><td><input list="pvtCompNames" data-i="${i}" data-f="name" value="${c.name}" style="width:120px"/></td>` +
+    `<td><input type="number" step="any" min="0" data-i="${i}" data-f="z" value="${c.z}" style="width:90px"/></td>` +
+    `<td><button class="mini" data-rm="${i}">✕</button></td></tr>`).join('');
+}
+
+$('pvtAddComp').addEventListener('click', () => {
+  state.pvt.comps.push({ name: '', z: 0 });
+  renderPvtComps();
+});
+
+$('pvtCompTable').addEventListener('input', (e) => {
+  const i = Number(e.target.dataset.i);
+  const f = e.target.dataset.f;
+  if (Number.isNaN(i) || !f || !state.pvt.comps[i]) return;
+  state.pvt.comps[i][f] = f === 'z' ? Number(e.target.value) : e.target.value.trim();
+});
+
+$('pvtCompTable').addEventListener('click', (e) => {
+  if (e.target.dataset.rm === undefined) return;
+  state.pvt.comps.splice(Number(e.target.dataset.rm), 1);
+  renderPvtComps();
+});
+
+async function runPvt() {
+  const temps = $('pvtTemps').value.trim().split(/[\s,]+/).map(Number).filter(Number.isFinite);
+  const pressures = $('pvtPressures').value.trim().split(/[\s,]+/).map(Number).filter(Number.isFinite);
+  if (!temps.length || !pressures.length) {
+    $('pvtReadout').textContent = '温度与压力网格不能为空。';
+    return;
+  }
+  const base = {
+    components: state.pvt.comps,
+    pressures,
+    bubble: $('pvtBubble').checked,
+    viscosity: $('pvtVisc').checked,
+    surfaceTension: $('pvtSigma').checked,
+  };
+  $('runPvtBtn').disabled = true;
+  $('pvtReadout').textContent = `chflow-pvt 闪蒸中：${temps.length} 个温度 × ${pressures.length} 个压力…`;
+  const merged = { nComponents: 0, components: [], molarMass: NaN, flashes: [], bubble: null, tables: [] };
+  try {
+    for (const T of temps) {
+      const text = pvtFlashCaseText({ ...base, temperature: T });
+      const out = await invoke('run_pvt_text', { caseText: text, exePath: engines.pvt });
+      const one = parsePvtOutput(out);
+      merged.nComponents = one.nComponents;
+      merged.components = one.components;
+      merged.molarMass = one.molarMass;
+      merged.flashes.push(...one.flashes);
+      merged.tables.push(...one.tables);
+      if (one.bubble && !merged.bubble) merged.bubble = one.bubble;
+    }
+  } catch (e) {
+    $('runPvtBtn').disabled = false;
+    $('pvtReadout').textContent = `PVT 运行失败: ${e}`;
+    return;
+  }
+  $('runPvtBtn').disabled = false;
+  state.pvt.parsed = merged;
+  renderPvt();
+  $('pvtReadout').textContent =
+    `${merged.nComponents} 组分 · M=${merged.molarMass.toPrecision(5)} kg/mol · ` +
+    `${merged.flashes.length} 次闪蒸` +
+    (merged.bubble ? ` · 泡点 p=${merged.bubble.p.toPrecision(5)} Pa @ T=${merged.bubble.T}` : '');
+}
+
+function pvtSvgFamily(title, groups, key, colorSuffix) {
+  const W = 300;
+  const H = 130;
+  const all = groups.flatMap((g) => g.rows.map((r) => r[key])).filter((v) => Number.isFinite(v));
+  const ps = groups.flatMap((g) => g.rows.map((r) => r.p)).filter(Number.isFinite);
+  if (all.length < 2 || ps.length < 2) {
+    return `<h4>${title}：无数据</h4>`;
+  }
+  const lo = Math.min(...all);
+  const hi = Math.max(...all);
+  const pLo = Math.min(...ps);
+  const pHi = Math.max(...ps);
+  const X = (p) => 34 + ((p - pLo) / (pHi - pLo || 1)) * (W - 44);
+  const Y = (v) => H - 18 - ((v - lo) / (hi - lo || 1)) * (H - 30);
+  let svg = `<h4 style="margin:6px 0 2px;font-size:12px">${title}（${lo.toPrecision(3)}..${hi.toPrecision(3)}）</h4>` +
+    `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">` +
+    `<line x1="34" y1="${H - 18}" x2="${W - 10}" y2="${H - 18}" stroke="var(--line)"/>` +
+    `<line x1="34" y1="8" x2="34" y2="${H - 18}" stroke="var(--line)"/>`;
+  groups.forEach((g, i) => {
+    const color = MONITOR_PALETTE[i % MONITOR_PALETTE.length];
+    const pts = g.rows
+      .filter((r) => Number.isFinite(r[key]))
+      .map((r) => `${X(r.p).toFixed(1)},${Y(r[key]).toFixed(1)}`)
+      .join(' ');
+    if (!pts) return;
+    svg += `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"` +
+      `${colorSuffix === 'dash' ? ' stroke-dasharray="4 3"' : ''}/>`;
+    svg += `<text x="${W - 12}" y="${12 + i * 11}" font-size="9" text-anchor="end" fill="${color}">T=${g.T}</text>`;
+  });
+  svg += `<text x="${W - 12}" y="${H - 4}" font-size="9" text-anchor="end" fill="var(--muted)">p (Pa)</text></svg>`;
+  return svg;
+}
+
+function renderPvt() {
+  const d = state.pvt.parsed;
+  if (!d) return;
+  const tb = $('pvtFlashTable').querySelector('tbody');
+  tb.innerHTML = d.flashes.map((f) =>
+    `<tr><td>${f.T}</td><td>${f.p.toPrecision(4)}</td><td>${f.beta.toPrecision(3)}${f.single ? ' 单相' : ''}</td>` +
+    `<td>${Number.isFinite(f.rhoL) ? f.rhoL.toPrecision(4) : '—'}</td>` +
+    `<td>${Number.isFinite(f.rhoV) ? f.rhoV.toPrecision(4) : '—'}</td>` +
+    `<td>${Number.isFinite(f.muL) ? f.muL.toExponential(2) : '—'}</td>` +
+    `<td>${Number.isFinite(f.sigma) ? f.sigma.toExponential(2) : '—'}</td></tr>`).join('');
+  const groups = pvtCurvesByT(d);
+  $('pvtChart').innerHTML =
+    pvtSvgFamily('ρ vs p · 液相', groups, 'rhoL', '') +
+    pvtSvgFamily('ρ vs p · 气相', groups, 'rhoV', 'dash') +
+    (groups.some((g) => g.rows.some((r) => Number.isFinite(r.muL)))
+      ? pvtSvgFamily('μ vs p · 液相', groups, 'muL', '') +
+        pvtSvgFamily('μ vs p · 气相', groups, 'muV', 'dash')
+      : '') +
+    (groups.some((g) => g.rows.some((r) => Number.isFinite(r.sigma)))
+      ? pvtSvgFamily('σ vs p', groups, 'sigma', '')
+      : '');
+}
+
+$('runPvtBtn').addEventListener('click', runPvt);
+renderPvtComps();
 
 // ---------------------------------------------------------------------------
 // parameter sweep: steady model serialization or transient raw-dict what-if
@@ -2065,6 +2866,25 @@ async function loadTemplate(entry) {
     setStatus(`已载入模板「${entry.name}」：点「▶ 运行耦合」求解。`, 'ok');
     return;
   }
+  if (target.kind === 'nodal') {
+    $('nodalCasePath').value = entry.path;
+    switchTab('nodal');
+    setStatus(`已载入模板「${entry.name}」：点「▶ 节点分析」绘制 IPR-VLP 双曲线。`, 'ok');
+    return;
+  }
+  if (target.kind === 'pvt') {
+    const spec = parsePvtCaseDict(text);
+    if (spec.components.length) state.pvt.comps = spec.components;
+    if (Number.isFinite(spec.temperature)) $('pvtTemps').value = String(spec.temperature);
+    if (spec.pressures.length) $('pvtPressures').value = spec.pressures.join(' ');
+    $('pvtBubble').checked = spec.bubble;
+    $('pvtVisc').checked = spec.viscosity;
+    $('pvtSigma').checked = spec.surfaceTension;
+    renderPvtComps();
+    switchTab('pvt');
+    setStatus(`已载入模板「${entry.name}」：组分与网格已回填向导，点「▶ 闪蒸预览」。`, 'ok');
+    return;
+  }
   freshModel(text);
   state.loadedTemplate = entry.id;
   state.rawDictText = text;
@@ -2090,12 +2910,98 @@ async function renderTemplateMenu() {
     return;
   }
   for (const t of tpls) {
+    const row = document.createElement('div');
+    row.className = 'tpl-row';
     const b = document.createElement('button');
     b.textContent = (isPartialFidelity(t.id) ? '◇ ' : '◆ ') + t.name;
     b.title = t.path;
     b.addEventListener('click', () => loadTemplate(t));
-    menu.appendChild(b);
+    row.appendChild(b);
+    if (isSteadyComparable(t.id)) {
+      const c = document.createElement('button');
+      c.className = 'mini';
+      c.textContent = '对比';
+      c.title = `运行并对比：模板「${t.name}」与当前模型并行求解、叠画曲线`;
+      c.addEventListener('click', () => runTemplateCompare(t));
+      row.appendChild(c);
+    }
+    menu.appendChild(row);
   }
+}
+
+// U13: run a steady template beside the current model and overlay the results
+async function runTemplateCompare(t) {
+  if (state.job.running) {
+    setStatus('已有求解作业在运行，请先停止。', 'error');
+    return;
+  }
+  let tplText;
+  try {
+    tplText = await invoke('read_text_file', { path: t.path });
+  } catch (e) {
+    setStatus(`读取模板失败: ${e}`, 'error');
+    return;
+  }
+  const curText = networkToCaseText(state.model);
+  $('compareStatus').textContent = '并行求解中…';
+  document.querySelector('#bottomTabs [data-btab="curves"]').click();
+  let batch;
+  try {
+    batch = await invoke('run_case_texts', {
+      texts: [tplText, curText], exePath: engines.steady,
+    });
+  } catch (e) {
+    $('compareStatus').textContent = `失败: ${e}`;
+    return;
+  }
+  const [a, b] = batch;
+  if (!a?.ok || !b?.ok) {
+    $('compareStatus').textContent =
+      `求解失败：${!a?.ok ? `模板 ${a?.error}` : ''} ${!b?.ok ? `当前模型 ${b?.error}` : ''}`;
+    return;
+  }
+  state.compare = { name: t.name, a: a.summary, b: b.summary };
+  renderTemplateCompare();
+  $('compareStatus').textContent = `模板「${t.name}」 vs 当前模型：完成`;
+}
+
+function renderTemplateCompare() {
+  const box = $('tmplCompare');
+  const cmp = state.compare;
+  if (!cmp) {
+    box.innerHTML = '<p class="empty">从模板库点「对比」：模板与当前模型并行求解后在此叠画。</p>';
+    return;
+  }
+  const u = state.units;
+  const rows = compareSteadyRuns(cmp.a, cmp.b);
+  const fmt = (v, fam) => (Number.isFinite(v) ? `${Number(toDisplay(v, fam, u)).toPrecision(5)}` : '—');
+  const table = (list, fam) => list.map((r) =>
+    `<tr><td>${r.name}</td><td>${fmt(r.a, fam)}</td><td>${fmt(r.b, fam)}</td>` +
+    `<td>${Number.isFinite(r.d) ? r.d.toPrecision(3) : '—'}</td></tr>`).join('');
+  // overlay bars: template (accent) vs current (pipe), per-node pressure
+  const H = 120;
+  const names = rows.nodes.map((r) => r.name);
+  const maxP = Math.max(...rows.nodes.flatMap((r) => [r.a, r.b]).filter(Number.isFinite), 1);
+  const bw = Math.max(6, Math.min(24, 500 / Math.max(1, names.length * 2)));
+  let svg = `<svg class="chart" viewBox="0 0 600 ${H + 20}" preserveAspectRatio="xMidYMid meet">`;
+  rows.nodes.forEach((r, i) => {
+    const x = 20 + i * (560 / Math.max(1, names.length));
+    for (const [v, color, off] of [[r.a, 'var(--accent)', 0], [r.b, 'var(--pipe)', bw + 2]]) {
+      if (!Number.isFinite(v)) continue;
+      const h = (v / maxP) * (H - 20);
+      svg += `<rect x="${(x + off).toFixed(1)}" y="${(H - h + 5).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" fill="${color}"/>`;
+    }
+    svg += `<text x="${(x + bw).toFixed(1)}" y="${H + 16}" font-size="9" text-anchor="middle" fill="var(--muted)">${r.name}</text>`;
+  });
+  svg += '</svg>';
+  box.innerHTML =
+    `<h3>模板并排对比（${cmp.name}） <span class="hint">` +
+    `<span style="color:var(--accent)">■</span> 模板 · <span style="color:var(--pipe)">■</span> 当前模型</span></h3>` +
+    svg +
+    `<div class="cmp-grid">` +
+    `<table class="data-table"><thead><tr><th>节点</th><th>p 模板</th><th>p 当前</th><th>Δ</th></tr></thead><tbody>${table(rows.nodes, 'pressure')}</tbody></table>` +
+    `<table class="data-table"><thead><tr><th>管段</th><th>Q 模板</th><th>Q 当前</th><th>Δ</th></tr></thead><tbody>${table(rows.pipes, 'rate')}</tbody></table>` +
+    `</div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -2144,51 +3050,125 @@ function renderCharts() {
     $('pipeChart').innerHTML = '<p class="empty">运行稳态求解后显示。</p>';
   }
 
-  // transient series select
+  // transient multi-series overlay driven by the monitor tree (U5)
   const t = state.transient;
   if (t && t.samples.length) {
-    const opts = [];
-    for (const name of t.nodeNames) {
-      opts.push(`p:${name}`, `alpha:${name}`, `hydrate:${name}`);
-    }
-    for (const name of t.pipeNames) opts.push(`Q:${name}`);
-    const sel = $('seriesSelect');
-    if (sel.dataset.opts !== opts.join(',')) {
-      sel.innerHTML = opts.map((o) => `<option value="${o}">${o}</option>`).join('');
-      sel.dataset.opts = opts.join(',');
-      state.transientSeries = opts[0];
-      sel.value = opts[0];
-    }
-    if (!opts.includes(state.transientSeries)) state.transientSeries = opts[0];
-
     $('timeSlider').max = String(t.samples.length - 1);
     const idx = Math.min(Number($('timeSlider').value) || 0, t.samples.length - 1);
     const frame = t.samples[idx];
     $('timeReadout').textContent = `t=${frame.t}`;
-
-    const [kind, name] = state.transientSeries.split(':');
-    const getter =
-      kind === 'p' ? (s) => s.pressure[name]
-      : kind === 'alpha' ? (s) => s.alpha[name]
-      : kind === 'hydrate' ? (s) => s.hydrate[name]
-      : (s) => s.flow[name];
-    const pts = toTimeSeriesPoints(t.samples, getter, 560, 110);
-    $('transientChart').innerHTML =
-      `<svg class="chart" viewBox="0 0 600 120" preserveAspectRatio="none">` +
-      `<polyline points="${pts.points}" fill="none" stroke="var(--accent)" stroke-width="1.5"/>` +
-      `<circle cx="${(pts.points.split(' ')[idx] || '0,60').split(',')[0]}" cy="${(pts.points.split(' ')[idx] || '0,60').split(',')[1]}" r="3" fill="var(--coupled)"/>` +
-      `</svg>` +
-      `<p class="hint">${state.transientSeries} · t ${pts.tMin}..${pts.tMax} · 值域 ${pts.min.toPrecision(4)}..${pts.max.toPrecision(4)} ${kind === 'p' ? unitLabel('pressure', u) : kind === 'Q' ? unitLabel('rate', u) : ''}</p>`;
+    renderMonitorChart(t, idx);
   } else {
     $('transientChart').innerHTML = '<p class="empty">运行瞬态求解后显示时序曲线。</p>';
     $('timeReadout').textContent = '—';
   }
 }
 
-$('seriesSelect').addEventListener('change', (e) => {
-  state.transientSeries = e.target.value;
+// U5: monitor tree -> layered checkbox selection, curves generated per the
+// quantities the kernel actually declared.
+const MONITOR_PALETTE = ['#4bb3c4', '#e0a33e', '#8fd3a8', '#ff8f6b', '#9b8ad1', '#c96a9b', '#7db86a', '#d9c26a'];
+
+/** Series ids the current transient result can produce, pruned + defaulted. */
+function syncMonitors(t) {
+  const groups = buildMonitorTree(t);
+  const avail = new Set();
+  for (const g of groups) {
+    for (const it of g.items) for (const s of it.series) avail.add(s);
+  }
+  state.monitors = state.monitors.filter((s) => avail.has(s));
+  if (!state.monitors.length) {
+    const firstLine = [...avail].find((s) => s !== 'marker' && s !== 'env:p');
+    state.monitors = firstLine ? [firstLine, 'marker'] : [...avail];
+  }
+  return groups;
+}
+
+function renderMonitorTree() {
+  const box = $('monitorTree');
+  const t = state.transient;
+  if (!t || !t.samples.length) {
+    box.innerHTML = '<p class="empty">运行瞬态求解后生成变量选择树。</p>';
+    return;
+  }
+  const groups = syncMonitors(t);
+  box.innerHTML = groups.map((g) => {
+    const items = g.items.map((it) => it.series.map((s) =>
+      `<label class="chk"><input type="checkbox" data-series="${s}" ` +
+      `${state.monitors.includes(s) ? 'checked' : ''}/> ${it.series.length > 1 ? s : it.label}</label>`).join(''));
+    return `<div class="mgroup"><b>${g.label}</b>${items.join('')}</div>`;
+  }).join('');
+}
+
+function renderMonitorChart(t, idx) {
+  syncMonitors(t);
+  const W = 600;
+  const H = 120;
+  const sel = state.monitors.filter((s) => s !== 'marker');
+  const X = (i) => (i / Math.max(1, t.samples.length - 1)) * (W - 20) + 10;
+  const parts = [`<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`];
+  const legend = [];
+  // env:p first, so lines draw on top of the band
+  if (sel.includes('env:p')) {
+    const band = monitorEnvBand(t.samples, 'p');
+    const finite = band.filter((b) => Number.isFinite(b.lo));
+    if (finite.length) {
+      const lo = Math.min(...finite.map((b) => b.lo));
+      const hi = Math.max(...finite.map((b) => b.hi));
+      const Y = (v) => H - 10 - ((v - lo) / (hi - lo || 1)) * (H - 20);
+      const up = band.map((b, i) => `${X(i).toFixed(1)},${Y(b.hi).toFixed(1)}`).join(' ');
+      const dn = band.map((b, i) => `${X(i).toFixed(1)},${Y(b.lo).toFixed(1)}`).reverse().join(' ');
+      parts.push(`<polygon points="${up} ${dn}" fill="#4bb3c4" opacity="0.18"/>`);
+      legend.push({ label: `压力包络 ${lo.toPrecision(3)}..${hi.toPrecision(3)}`, color: '#4bb3c4' });
+    }
+  }
+  sel.filter((s) => s !== 'env:p').forEach((series, i) => {
+    const vals = monitorSeriesValues(t.samples, series);
+    if (!vals || !vals.some(Number.isFinite)) return;
+    const finite = vals.filter(Number.isFinite);
+    const lo = Math.min(...finite);
+    const hi = Math.max(...finite);
+    const color = MONITOR_PALETTE[i % MONITOR_PALETTE.length];
+    const pts = vals.map((v, j) => Number.isFinite(v)
+      ? `${X(j).toFixed(1)},${(H - 10 - ((v - lo) / (hi - lo || 1)) * (H - 20)).toFixed(1)}`
+      : null).filter(Boolean).join(' ');
+    parts.push(`<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5"/>`);
+    legend.push({ label: `${series} ${lo.toPrecision(3)}..${hi.toPrecision(3)}`, color });
+    if (state.monitors.includes('marker')) {
+      const v = vals[idx];
+      if (Number.isFinite(v)) {
+        parts.push(`<circle cx="${X(idx).toFixed(1)}" cy="${(H - 10 - ((v - lo) / (hi - lo || 1)) * (H - 20)).toFixed(1)}" r="3" fill="var(--coupled)"/>`);
+      }
+    }
+  });
+  if (state.monitors.includes('marker')) {
+    parts.push(`<line x1="${X(idx).toFixed(1)}" y1="6" x2="${X(idx).toFixed(1)}" y2="${H - 6}" stroke="var(--coupled)" stroke-dasharray="3 3"/>`);
+  }
+  parts.push('</svg>');
+  const u = state.units;
+  const kindUnit = (s) => (s.startsWith('p:') || s === 'env:p' ? unitLabel('pressure', u)
+    : s.startsWith('Q:') ? unitLabel('rate', u) : '');
+  parts.push(`<p class="hint">` + (legend.length
+    ? legend.map((l) => `<span style="color:${l.color}">■</span> ${l.label} ${kindUnit(l.label.split(' ')[0])}`).join(' · ')
+    : '未勾选变量') + ` · t ${t.samples[0].t}..${t.samples.at(-1).t}</p>`);
+  $('transientChart').innerHTML = parts.join('');
+}
+
+$('monitorTreeBtn').addEventListener('click', () => {
+  const box = $('monitorTree');
+  box.classList.toggle('hidden');
+  if (!box.classList.contains('hidden')) renderMonitorTree();
+});
+
+$('monitorTree').addEventListener('change', (e) => {
+  const cb = e.target;
+  if (cb.type !== 'checkbox') return;
+  const set = new Set(state.monitors);
+  if (cb.checked) set.add(cb.dataset.series);
+  else set.delete(cb.dataset.series);
+  state.monitors = [...set];
   renderCharts();
 });
+
 $('timeSlider').addEventListener('input', renderCharts);
 
 // ---------------------------------------------------------------------------
@@ -2388,22 +3368,28 @@ $('exePath').value = engines.steady;
 $('transientExePath').value = engines.transient;
 $('coupledExePath').value = engines.coupled;
 $('twofluidExePath').value = engines.twofluid;
+$('nodalExePath').value = engines.nodal;
+$('pvtExePath').value = engines.pvt;
 $('coupledCasePath').value = engines.coupledCase;
 
 (async () => {
   try {
     const paths = await invoke('default_engines');
-    if (Array.isArray(paths) && paths.length === 5 && paths[0] && paths[1]) {
+    if (Array.isArray(paths) && paths.length === 7 && paths[0] && paths[1]) {
       engines.steady = paths[0];
       engines.transient = paths[1];
       engines.coupled = paths[2];
       engines.coupledCase = paths[3];
       engines.twofluid = paths[4];
+      engines.nodal = paths[5];
+      engines.pvt = paths[6];
       $('exePath').value = paths[0];
       $('transientExePath').value = paths[1];
       $('coupledExePath').value = paths[2];
       $('coupledCasePath').value = paths[3];
       $('twofluidExePath').value = paths[4];
+      $('nodalExePath').value = paths[5];
+      $('pvtExePath').value = paths[6];
     }
   } catch (_) {
     /* keep developer defaults */
@@ -2411,13 +3397,15 @@ $('coupledCasePath').value = engines.coupledCase;
   renderTemplateMenu();
 })();
 
-['exePath', 'transientExePath', 'coupledExePath', 'twofluidExePath', 'coupledCasePath'].forEach((id) => {
+['exePath', 'transientExePath', 'coupledExePath', 'twofluidExePath', 'nodalExePath', 'pvtExePath', 'coupledCasePath'].forEach((id) => {
   $(id).addEventListener('change', (e) => {
     const v = e.target.value.trim();
     if (id === 'exePath') engines.steady = v;
     if (id === 'transientExePath') engines.transient = v;
     if (id === 'coupledExePath') engines.coupled = v;
     if (id === 'twofluidExePath') engines.twofluid = v;
+    if (id === 'nodalExePath') engines.nodal = v;
+    if (id === 'pvtExePath') engines.pvt = v;
     if (id === 'coupledCasePath') engines.coupledCase = v;
   });
 });

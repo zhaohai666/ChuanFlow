@@ -14,7 +14,125 @@ namespace
 
 constexpr double kGravity = 9.80665;
 
+// 5.143 (G4) law 1: the Hagedorn-Brown liquid holdup as restated by Whitson,
+// Brule & Stephenson, "Revisiting Hagedorn-Brown Correlation for Vertical
+// Two-Phase Flow" (JPT 69(6), 2017; SPE 169350), Appendix E. SI inputs; the
+// four dimensionless groups, the two y3 branches and the psi rational fit
+// are quoted there and were transcribed against the paper's worked example.
+// psi is the paper's rational fit to its own chart over
+// Ngv Nmu^0.38 / Nd^2.14 - clamped at 0.088 above and set to 1 below 0.01;
+// the chart-reading caveat is the paper's, not ours. The law is bounded
+// below by the no-slip content lambda (a holdup cannot undercut what the
+// mixture actually carries) and above by 1.
+double hagedornBrownHoldup(double vsl, double vsg, double lambda,
+                           double rhoL, double muL, double sigma,
+                           double d, double pPa)
+{
+    if (!(vsg > 0.0)) return 1.0; // no gas: the column is all liquid
+    if (!(vsl > 0.0)) return 0.0; // no liquid: nothing to hold
+    const double rhoSig = rhoL / (kGravity * sigma);
+    const double nlv = vsl * std::pow(rhoSig, 0.25);
+    const double ngv = vsg * std::pow(rhoSig, 0.25);
+    const double nd = d * std::sqrt(kGravity * rhoL / sigma);
+    const double nmu = muL
+        * std::pow(kGravity / (rhoL * sigma * sigma * sigma), 0.25);
+
+    const double x1 = std::min(std::max(nmu, 0.002), 0.5);
+    const double nmuC = 9.0950e-2 * x1 * x1 * x1 - 1.2183e-1 * x1 * x1
+                      + 5.6348e-2 * x1 + 1.9122e-3;
+    const double x2 = ngv * std::pow(nmu, 0.380) / std::pow(nd, 2.14);
+    double psi = 1.0;
+    if (x2 >= 0.01)
+    {
+        const double x = std::min(x2, 0.088);
+        const double num = 3.6917e-1 * x * x * x + 1.0029e-2 * x * x
+                         - 1.2769e-3 * x + 1.8089e-5;
+        const double den = x * x * x * x - 4.894e-2 * x * x * x
+                         + 2.7058e-2 * x * x - 1.2769e-3 * x + 1.9585e-5;
+        psi = num / den;
+    }
+    const double x3 = (nlv / std::pow(ngv, 0.575))
+                    * std::pow(pPa / 1.0e5, 0.10) * (nmuC / nd);
+    double y3;
+    if (x3 <= 4.6423e-5)
+    {
+        // the low-x3 asymptote of the published quadratic ratio, floored so
+        // the denominator stays away from its root
+        const double xx = std::max(x3, 2.1e-6);
+        y3 = (-3.7902e-5 * xx + 4.326e-11)
+           / (xx * xx - 1.9323e-4 * xx - 3.752e-10);
+    }
+    else if (x3 <= 5.0e-3)
+    {
+        y3 = (-18.53 * x3 * x3 + 1.147 * x3 + 6.4898e-5) / (x3 + 4.5319e-4);
+    }
+    else y3 = 0.98;
+    return std::max(psi * y3, lambda);
+}
+
+// 5.143 (G4) law 2: the Duns & Ros liquid holdup region skeleton (API
+// Bulletin 34, Vol I, Section C; Duns & Ros, BRP 1963). PROVENANCE WARNING:
+// this is a transcription of the PUBLISHED SKELETON - the no-slip multiplier
+// RL1 = 1 + 0.3 (Vsl + Vsg) below the L1 boundary, the linear blend to the
+// no-slip value across the L1..L2 band, no-slip above L2 - and it has NOT
+// been re-validated against the Bulletin's worked examples. The regression
+// checker re-derives the SAME formula, so it proves the code matches the
+// transcription, not the transcription matches the API. Treat numbers from
+// this law as engineering estimates until the Bulletin tables are anchored.
+// The Bulletin is written in field units (cp, lb/ft3, dynes/cm, ft/s, ft);
+// the conversions below are exact, and the dimensionless groups NL, NLV, ND
+// are the published ones.
+double dunsRosHoldup(double vsl, double vsg, double lambda,
+                    double rhoL, double muL, double sigma, double d)
+{
+    if (!(vsg > 0.0)) return 1.0; // no gas: the column is all liquid
+    if (!(vsl > 0.0)) return 0.0; // no liquid: nothing to hold
+    const double muCp = muL * 1000.0;
+    const double rhoLb = rhoL / 16.0184634;
+    const double sigDyn = sigma * 1000.0;
+    const double vslFt = vsl * 3.28083989501312;
+    const double vsgFt = vsg * 3.28083989501312;
+    const double dFt = d * 3.28083989501312;
+
+    const double nl = 0.15726 * muCp
+                    / std::pow(rhoLb * sigDyn * sigDyn * sigDyn, 0.25);
+    const double nlv = 1.938 * vslFt * std::pow(rhoLb / sigDyn, 0.25);
+    const double nd = 120.872 * dFt * std::sqrt(rhoLb / sigDyn);
+    const double l1 = 13.2 * (1.0 - lambda);
+    const double l2 = l1 + 0.42 * std::pow(nlv, 0.25) * std::pow(nl, 0.10)
+                    * std::pow(nd, 0.25);
+    const double rl1 = 1.0 + 0.3 * (vslFt + vsgFt);
+    double hl;
+    if (vsgFt < l1)
+        hl = lambda * rl1;
+    else if (vsgFt <= l2)
+        hl = lambda * (rl1 + (vsgFt - l1) / (l2 - l1) * (1.0 - rl1));
+    else
+        hl = lambda;
+    return std::min(std::max(hl, 0.0), 1.0);
+}
+
 } // namespace
+
+// 5.144 (G6): the one thermal segment step, defined here so the black-oil
+// march and the pvt-table march (network.cpp) share it and cannot drift.
+double steadyThermalAdvance(const SteadyThermal& th, double t,
+                            double pOld, double pNew, int segment,
+                            double ds, double sinTheta, double massRate)
+{
+    t += th.jouleThomson * (pNew - pOld);
+    const double u = th.segmentU ? (*th.segmentU)[segment]
+                                 : th.wallHeatTransfer;
+    if (u > 0.0 && massRate > 0.0)
+    {
+        const double depth = -(segment + 0.5) * sinTheta * ds;
+        const double tw = th.wallModel == 1
+            ? th.surfaceTemperature + th.geothermalGradient * depth
+            : th.wallTemperature;
+        t = tw + (t - tw) * std::exp(-u * ds / (massRate * th.heatCapacity));
+    }
+    return t;
+}
 
 BeggsBrillPattern beggsBrillPattern(double lambda, double nfr)
 {
@@ -74,6 +192,10 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
     out.l4 = pat.l4;
     out.transitionWeight = pat.transitionWeight;
 
+    const double theta = in.angleDeg * M_PI / 180.0;
+    double hl;
+    if (in.correlation == 0)
+    {
     // horizontal holdup with the >= lambda clamp; index 1 (transition) is
     // never taken directly - it blends hl0(0) and hl0(1) (= lambda)
     const double ab[4] = {0.98, 0.0, 0.845, 1.065};
@@ -84,7 +206,6 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
         const double v = ab[r] * std::pow(lambda, bb[r]) * std::pow(fr, -cb[r]);
         return std::max(v, lambda);
     };
-    double hl;
     if (regime == 1)
     {
         const double w = pat.transitionWeight;
@@ -96,7 +217,6 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
     }
 
     // inclination correction
-    const double theta = in.angleDeg * M_PI / 180.0;
     if (std::abs(in.angleDeg) > 1e-12 && lambda > 1e-9)
     {
         double d, e, f, h;
@@ -124,6 +244,26 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
             const double s1 = std::sin(1.8 * theta);
             hl *= 1.0 + c * (s1 - s1 * s1 * s1 / 3.0);
         }
+    }
+    }
+    else if (in.correlation == 1)
+    {
+        // 5.143 (G4): the Hagedorn-Brown / Whitson holdup REPLACES the
+        // horizontal + inclination block above and nothing else: the map,
+        // the friction multiplier, the elevation and Ek terms and the march
+        // read the same numbers. These laws price the holdup from the local
+        // superficial velocities and properties directly; the inclination
+        // correction above is Beggs-Brill's own, so it does not apply, and
+        // the liquid viscosity read here is the PVT one - the rheology
+        // increment (5.76) reprices the friction term only, exactly as it
+        // does on the Beggs-Brill path.
+        hl = hagedornBrownHoldup(in.vsl, in.vsg, lambda, in.rhoL, in.muL,
+                                 in.sigma, in.diameter, in.pPa);
+    }
+    else
+    {
+        hl = dunsRosHoldup(in.vsl, in.vsg, lambda, in.rhoL, in.muL,
+                           in.sigma, in.diameter);
     }
     hl = std::min(std::max(hl, 0.0), 1.0);
     out.holdup = hl;
@@ -175,9 +315,15 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        int segments,
                                        const Rheology& liquidRheology,
                                        int forcedRegime,
-                                       const std::function<double(double)>* sigmaOfP)
+                                       const std::function<double(double)>* sigmaOfP,
+                                       int correlation,
+                                       const SteadyThermal* thermal)
 {
     BeggsBrillMarchOut out;
+    if (thermal && thermal->segmentU
+        && static_cast<int>(thermal->segmentU->size()) != std::max(segments, 1))
+        cfFatal("beggsBrill: SteadyThermal segmentU needs exactly one entry "
+                "per march segment");
     const double pFloor = std::max(0.02 * pInPa, 1000.0);
     const double ds = length / static_cast<double>(std::max(segments, 1));
     const double area = 0.25 * M_PI * diameter * diameter;
@@ -188,6 +334,9 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
     out.massRate = qoStd * pvt::blackOilMassPerOilSm3(fluid);
 
     double p = pInPa;
+    // 5.144 (G6): the passive temperature state; 0 when no thermal march
+    // was declared, and nothing below reads it in that case.
+    double t = thermal ? thermal->temperatureIn : 0.0;
     double lastHoldup = 0, lastLambda = 0, lastVm = 0, lastFTp = 0;
     int lastRegime = 0;
     int lastRegimeMap = 0;
@@ -223,6 +372,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
         in.angleDeg = angleDeg;
         in.liquidRheology = liquidRheology;
         in.forcedRegime = forcedRegime;
+        in.correlation = correlation;
 
         BeggsBrillOut g;
         if (vsl + vsg > 1e-9)
@@ -259,10 +409,19 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
         out.regimeMax = std::max(out.regimeMax, g.regime);
         lastHoldup = g.holdup;
         lastLambda = g.lambdaL;
+        const double pOld = p;
         p -= g.dpPerMeter * ds;
-        if (!(p > pFloor))
+        const bool hitFloor = !(p > pFloor);
+        if (hitFloor) p = pFloor;
+        // 5.144 (G6): the passive thermal step on the ACTUAL segment dp
+        // (the floor clamp included), after the hydraulics of the segment
+        // are done. With thermal null this is the isothermal march, bit
+        // for bit - the pressure numbers above never saw t.
+        if (thermal)
+            t = steadyThermalAdvance(*thermal, t, pOld, p, i, ds, sinTheta,
+                                     out.massRate);
+        if (hitFloor)
         {
-            p = pFloor;
             out.pOutlet = p;
             out.dpTotal = pInPa - p;
             out.holdupOutlet = lastHoldup;
@@ -276,10 +435,12 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
             out.l2Outlet = lastL2;
             out.l3Outlet = lastL3;
             out.l4Outlet = lastL4;
+            out.temperature = t;
             out.ok = false;
             return out;
         }
     }
+    out.temperature = t;
     out.pOutlet = p;
     out.dpTotal = pInPa - p;
     out.holdupOutlet = lastHoldup;

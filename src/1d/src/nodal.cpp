@@ -300,6 +300,23 @@ NodalCase loadNodalCaseFromDict(const Dictionary& caseDict)
         cfFatal("nodal: well declares flowPattern: the writable flow-pattern "
                 "dispatch (5.88) is a steady-network pipe declaration; the VLP "
                 "well marches with the flow-pattern map's own choice");
+    // 5.143 (G4): same reason. The alternative holdup laws are a network
+    // pipe declaration; this march prices the Beggs-Brill law and a key
+    // here would be silently dropped rather than honoured.
+    if (wd.has("correlation"))
+        cfFatal("nodal: well declares correlation: the alternative holdup "
+                "laws (5.143) are a steady-network pipe declaration; the VLP "
+                "well marches with the Beggs-Brill holdup law");
+    // 5.144 (G6): same reason. The passive temperature march is a network
+    // pipe declaration; the VLP march is isothermal and reads none of the
+    // thermal keys.
+    if (wd.has("jouleThomson") || wd.has("wallHeatTransfer")
+        || wd.has("wallHeatTransferSegments") || wd.has("wallModel")
+        || wd.has("wallTemperature") || wd.has("surfaceTemperature")
+        || wd.has("geothermalGradient") || wd.has("heatCapacity"))
+        cfFatal("nodal: well declares a thermal parameter: the steady "
+                "temperature march (5.144) is a steady-network pipe "
+                "declaration; the VLP march is isothermal");
     // 5.89 (D1 increment 3): same reason. A VLP well is marched with a gas rate
     // it is handed; the valve that would have set that rate lives on the steady
     // network, so the keys are refused rather than left unread.

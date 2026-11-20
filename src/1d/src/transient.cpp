@@ -1002,6 +1002,24 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
                     "writable flow-pattern dispatch (5.88) is a steady-network "
                     "black-oil declaration; the transient row has no "
                     "Beggs-Brill pattern map to override");
+        if (pd.has("correlation"))
+            cfFatal("transient: pipe '" + name + "' declares correlation: the "
+                    "alternative holdup laws (5.143) are a steady-network "
+                    "black-oil declaration; the transient row has no "
+                    "Beggs-Brill holdup block to replace");
+        // 5.144 (G6): the steady thermal march is a marched-network pipe
+        // declaration. The transient row advances its own energy state (and
+        // the two-fluid row's thermal is a nested thermal{} block, not
+        // these keys), so a pipe-level thermal key here would be read by
+        // nothing - refuse it loudly.
+        if (pd.has("jouleThomson") || pd.has("wallHeatTransfer")
+            || pd.has("wallHeatTransferSegments") || pd.has("wallModel")
+            || pd.has("wallTemperature") || pd.has("surfaceTemperature")
+            || pd.has("geothermalGradient") || pd.has("heatCapacity"))
+            cfFatal("transient: pipe '" + name + "' declares a thermal "
+                    "parameter: the steady temperature march (5.144) is a "
+                    "steady-network pipe declaration; the transient row "
+                    "advances its own state and reads none of these keys");
         if (pd.has("liftDomePressure") || pd.has("liftAreaRatio")
             || pd.has("liftSpringPressure") || pd.has("liftDischargeCoeff")
             || pd.has("liftKappa"))

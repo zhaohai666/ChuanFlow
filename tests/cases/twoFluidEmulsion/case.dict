@@ -1,0 +1,61 @@
+// Emulsion mixing viscosity (G8): a rate-driven horizontal line whose
+// liquid is oil carrying a uniform 40% water cut, with emulsion{} declaring
+// the brinkman law. The holdup kinematics are viscosity-blind (the wallis
+// slip closure fixes F(a) = us a^2 + (vm - us) a), so the steady state is
+// the same alpha* = 0.5598164906 as the undeclared twin, and the emulsion
+// shows itself exactly where it belongs: the liquid share of the mixture
+// viscosity is priced at mu_e = mu_oil (1 + 2.5 phi) = 0.02 Pa s and the
+// per-cell Churchill pressure drop reads that number.
+// tests/check_two_fluid_emulsion_inhibitor.py replicates the transport to
+// the steady holdup (1e-9), asserts the muEff profile against the closed
+// form, recomputes dp from the reported fields with the emulsion mixture
+// viscosity, and exercises the richardson sibling (mu_e = mu_oil^0.6
+// mu_water^0.4 = 3.98107e-3), the dry-line identity (phi = 0 lands on the
+// undeclared twin bit for bit) and the loud rejections.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+emulsion
+{
+    model brinkman;
+    muWater 0.001;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.3;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.4;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.02;
+    roughness 0;
+    angleDeg 0;
+    sections 20;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.15; vsg 0.25; waterFraction 0.4; }
+    outlet { type fixedPressure; p 0; alpha 0.5; waterFraction 0.4; }
+}
+
+time
+{
+    dt 0.1;
+    endTime 400;
+    reportEvery 100;
+}

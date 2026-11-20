@@ -1,0 +1,66 @@
+// G1: transient composition transport + per-cell PR flash diagnostics.
+// A horizontal pressure-driven line (fixedPressure 12 MPa in, 2 MPa out,
+// wallis slip 0 so the holdup stays uniform and stationary) whose initial
+// gas inventory sits at the OUTLET pressure (rhoG = p_out/(gasR T) =
+// 13.333): the dense inlet ghost injects rhoG = p_in/(gasR T) = 80, so a
+// compression front travels downstream at exactly vM (slip 0 makes the gas
+// density front and the liquid composition front move together). Behind
+// the front the cells carry the heavy inlet feed zInlet at 12 MPa (Wilson
+// f(0) < 0: all-liquid, beta must be 0); ahead of them the light declared
+// feed z0 flashes two-phase at 2 MPa (f(0) > 0 > f(1)). The mole
+// fractions ride the liquid flux with the sand upwind rule; every step
+// every cell tpFlashes its own (T, p_i, z_i) and reports beta + z as
+// diagnostics. The checker replicates the z recursion from the reported
+// vm, applies the Wilson-K single-phase clamps, witnesses beta monotone
+// in p, and proves the dry twin (composition block removed) bit-identical.
+fluid
+{
+    rhoL 800;
+    rhoG 13.333333333333334; // = p_out / (gasR * T): initial p = p_out
+    muL  0.005;
+    muG  1e-5;
+    gasR 500;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0;
+    temperature 300;
+}
+
+composition
+{
+    methane 0.5;
+    propane 0.3;
+    nHexane 0.2;
+}
+
+pipe
+{
+    length 100;
+    diameter 0.05;
+    roughness 0;
+    angleDeg 0;
+    sections 10;
+}
+
+boundaries
+{
+    inlet  { type fixedPressure; p 12e6; alpha 0.5;
+             zInlet (0.1 0.3 0.6); }
+    outlet { type fixedPressure; p 2e6;  alpha 0.5; }
+}
+
+time
+{
+    dt 0.1;
+    endTime 20;
+    reportEvery 1;
+}

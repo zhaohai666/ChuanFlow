@@ -1089,17 +1089,19 @@ pub fn write_text_file(path: String, content: String) -> Result<(), String> {
 /// of the Finder-launched CWD being `/`) and falls back to the developer tree
 /// relative to this source file. Pure path resolution - no processes are
 /// spawned - so it is unit-testable.
-pub fn resolve_default_engines() -> (String, String, String, String, String) {
+pub fn resolve_default_engines() -> (String, String, String, String, String, String, String) {
     let steady_name = "chflow-1d-steady";
     let transient_name = "chflow-1d-transient";
     let coupled_name = "chflow-coupled-1d3d";
     let twofluid_name = "chflow-1d-twofluid";
+    let nodal_name = "chflow-1d-nodal";
+    let pvt_name = "chflow-pvt";
     let template_rel = "tests/cases/coupled1d3d/case.dict";
 
     // packaged layout: <...>/ChuanFlow GUI.app/Contents/MacOS/chflow-gui
     //              -> <...>/ChuanFlow GUI.app/Contents/Resources/bin/<exe>
     //              -> <...>/ChuanFlow GUI.app/Contents/Resources/cases/<case>
-    let packaged: Option<(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf)> =
+    let packaged: Option<(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf, PathBuf)> =
         std::env::current_exe().ok().and_then(|exe| {
             for ancestor in exe.ancestors().skip(1) {
                 // the Contents directory: its parent is the .app bundle
@@ -1110,13 +1112,15 @@ pub fn resolve_default_engines() -> (String, String, String, String, String) {
                     let transient = bin.join(transient_name);
                     let coupled = bin.join(coupled_name);
                     let twofluid = bin.join(twofluid_name);
+                    let nodal = bin.join(nodal_name);
+                    let pvt = bin.join(pvt_name);
                     if steady.exists() && transient.exists() {
                         let template = if cases.join("coupled1d3d.dict").exists() {
                             cases.join("coupled1d3d.dict")
                         } else {
                             coupled.clone()
                         };
-                        return Some((steady, transient, coupled, template, twofluid));
+                        return Some((steady, transient, coupled, template, twofluid, nodal, pvt));
                     }
                     break;
                 }
@@ -1124,13 +1128,15 @@ pub fn resolve_default_engines() -> (String, String, String, String, String) {
             None
         });
 
-    if let Some((steady, transient, coupled, template, twofluid)) = packaged {
+    if let Some((steady, transient, coupled, template, twofluid, nodal, pvt)) = packaged {
         return (
             steady.to_string_lossy().into_owned(),
             transient.to_string_lossy().into_owned(),
             coupled.to_string_lossy().into_owned(),
             template.to_string_lossy().into_owned(),
             twofluid.to_string_lossy().into_owned(),
+            nodal.to_string_lossy().into_owned(),
+            pvt.to_string_lossy().into_owned(),
         );
     }
 
@@ -1145,16 +1151,18 @@ pub fn resolve_default_engines() -> (String, String, String, String, String) {
         dev.join("src/coupling/apps").join(coupled_name).to_string_lossy().into_owned(),
         dev.parent().unwrap().join(template_rel).to_string_lossy().into_owned(),
         dev.join("src/1d/apps").join(twofluid_name).to_string_lossy().into_owned(),
+        dev.join("src/1d/apps").join(nodal_name).to_string_lossy().into_owned(),
+        dev.join("src/pvt/apps").join(pvt_name).to_string_lossy().into_owned(),
     )
 }
 
 /// Frontend hook: the default engine paths for this installation
 /// (packaged Resources/bin first, developer tree second):
-/// [steady, transient, coupled-1d3d, coupled template case, two-fluid].
+/// [steady, transient, coupled-1d3d, coupled template case, two-fluid, nodal, pvt].
 #[tauri::command]
 pub fn default_engines() -> Vec<String> {
-    let (steady, transient, coupled, template, twofluid) = resolve_default_engines();
-    vec![steady, transient, coupled, template, twofluid]
+    let (steady, transient, coupled, template, twofluid, nodal, pvt) = resolve_default_engines();
+    vec![steady, transient, coupled, template, twofluid, nodal, pvt]
 }
 
 /// One built-in case template: a kernel-verified case dictionary shipped with
@@ -1180,6 +1188,8 @@ pub fn resolve_case_templates() -> Vec<TemplateEntry> {
         ("transientBlowdown", "瞬态放空（罐排空 2x2 解析）"),
         ("twoFluidTerrainSlug", "地形段塞（捕集-行进-卸载弛豫振荡）"),
         ("coupled1d3d", "1D↔3D 耦合（网络嵌 SIMPLE 块）"),
+        ("nodalVogel", "节点分析（Vogel IPR × Beggs-Brill 垂直举升）"),
+        ("pvtFlash", "PVT 闪蒸（烃组分 + 黏度/表面张力）"),
     ];
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let dev_cases = root.join("tests/cases");
@@ -1430,6 +1440,217 @@ pub fn run_transient_texts(texts: Vec<String>, exe_path: String) -> Vec<Transien
 }
 
 // ---------------------------------------------------------------------------
+// Nodal analysis (U2): IPR-VLP working point + batched VLP sampling
+// ---------------------------------------------------------------------------
+
+/// One `chflow-1d-nodal` result: the IPR declaration echo, the static column,
+/// the working point (rate / bottom-hole pressure) and the solve status.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct NodalSummary {
+    pub ipr_form: String,
+    pub p_res: f64,
+    pub q_max: f64,
+    pub static_p: f64,
+    pub rate: f64,
+    pub pwf: f64,
+    pub holdup: f64,
+    pub regime: String,
+    pub iterations: u64,
+    pub flows: bool,
+    pub converged: bool,
+}
+
+/// Parse the stdout of `chflow-1d-nodal`. The app emits (12 significant
+/// digits, [chflow] prefix tolerated):
+///   `nodal: ipr <form> p_res <p> qmax <q>, well ...`
+///   `column p <p> (the rate-0 static column)`
+///   `well q <q> pwf <p> pth <p>`
+///   `well holdup <hl> regime <name>`
+///   `nodal solved: iterations=N flows=true|false (converged|NOT converged)`
+/// Pure function, unit-testable without the engine.
+pub fn parse_nodal_output(out: &str) -> Result<NodalSummary, String> {
+    let mut s = NodalSummary {
+        ipr_form: String::new(),
+        p_res: f64::NAN,
+        q_max: f64::NAN,
+        static_p: f64::NAN,
+        rate: f64::NAN,
+        pwf: f64::NAN,
+        holdup: f64::NAN,
+        regime: String::new(),
+        iterations: 0,
+        flows: false,
+        converged: false,
+    };
+    let mut saw_well = false;
+    let mut saw_solved = false;
+    for raw in out.lines() {
+        let line = raw.trim().replace("[chflow] ", "");
+        let line = line.trim();
+        let toks: Vec<&str> = line.split_whitespace().collect();
+        if toks.len() >= 7 && toks[0] == "nodal:" && toks[1] == "ipr" {
+            s.ipr_form = toks[2].to_string();
+            if toks[3] == "p_res" {
+                s.p_res = toks[4].parse().unwrap_or(f64::NAN);
+            }
+            if toks[5] == "qmax" {
+                s.q_max = toks[6].trim_end_matches(',').parse().unwrap_or(f64::NAN);
+            }
+        } else if toks.len() >= 2 && toks[0] == "column" && toks[1] == "p" {
+            s.static_p = toks[2].parse().unwrap_or(f64::NAN);
+        } else if toks.len() >= 4 && toks[0] == "well" && toks[1] == "q" {
+            s.rate = toks[2].parse().unwrap_or(f64::NAN);
+            if toks[3] == "pwf" {
+                s.pwf = toks.get(4).and_then(|v| v.parse().ok()).unwrap_or(f64::NAN);
+            }
+            saw_well = true;
+        } else if toks.len() >= 4 && toks[0] == "well" && toks[1] == "holdup" {
+            s.holdup = toks[2].parse().unwrap_or(f64::NAN);
+            if toks[3] == "regime" {
+                s.regime = toks.get(4).copied().unwrap_or("").to_string();
+            }
+        } else if line.starts_with("nodal solved:") {
+            s.iterations = after_key_u64(line, "iterations=");
+            s.flows = line.contains("flows=true");
+            s.converged = line.contains("(converged)") && !line.contains("(NOT converged)");
+            saw_solved = true;
+        }
+    }
+    if !saw_well || !saw_solved {
+        return Err("not chflow-1d-nodal output (missing well/nodal solved line)".to_string());
+    }
+    Ok(s)
+}
+
+fn after_key_u64(line: &str, key: &str) -> u64 {
+    let pos = match line.find(key) {
+        Some(p) => p + key.len(),
+        None => return 0,
+    };
+    line[pos..]
+        .split_whitespace()
+        .next()
+        .unwrap_or("0")
+        .parse()
+        .unwrap_or(0)
+}
+
+/// Run one nodal case text through `chflow-1d-nodal` and parse the working
+/// point. Unlike `run_case_text` there is no network validation: a nodal
+/// dictionary is not a network case.
+pub fn run_nodal_text(case_text: String, exe_path: String) -> Result<NodalSummary, String> {
+    let path = std::env::temp_dir().join(format!(
+        "chflow_gui_nodal_{}_{}.dict", std::process::id(), unique_tmp_id()));
+    std::fs::write(&path, &case_text)
+        .map_err(|e| format!("failed to write temporary case file: {e}"))?;
+    let output = std::process::Command::new(&exe_path)
+        .arg(&path)
+        .output()
+        .map_err(|e| format!("failed to spawn '{exe_path}': {e}"));
+    let _ = std::fs::remove_file(&path);
+    let output = output?;
+    if !output.status.success() {
+        return Err(format!(
+            "'{exe_path}' exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    parse_nodal_output(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// One row of the nodal batch (VLP sampling): positionally aligned with the
+/// input texts, like `RunRow` / `TransientRunRow`.
+#[derive(Debug, Clone, Serialize)]
+pub struct NodalRunRow {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<NodalSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Run many nodal case texts concurrently through the same engine binary —
+/// the VLP-curve sampler's batch primitive (one linear-IPR variant per
+/// productivity index; every working point lies on the wellbore's VLP curve).
+/// Same scoped worker pool as `run_case_texts` / `run_transient_texts`.
+#[tauri::command]
+pub fn run_nodal_texts(texts: Vec<String>, exe_path: String) -> Vec<NodalRunRow> {
+    if texts.is_empty() {
+        return Vec::new();
+    }
+    let workers = std::cmp::min(
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
+        texts.len(),
+    )
+    .min(8);
+    let rows: std::sync::Mutex<Vec<Option<NodalRunRow>>> =
+        std::sync::Mutex::new((0..texts.len()).map(|_| None).collect());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let next = &next;
+            let rows = &rows;
+            let texts = &texts;
+            let exe_path = &exe_path;
+            scope.spawn(move || loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if i >= texts.len() {
+                    break;
+                }
+                let row = match run_nodal_text(texts[i].clone(), exe_path.clone()) {
+                    Ok(summary) => NodalRunRow { ok: true, summary: Some(summary), error: None },
+                    Err(e) => NodalRunRow { ok: false, summary: None, error: Some(e) },
+                };
+                rows.lock().expect("nodal row mutex")[i] = Some(row);
+            });
+        }
+    });
+    rows.into_inner()
+        .expect("nodal rows mutex")
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            r.unwrap_or_else(|| NodalRunRow {
+                ok: false,
+                summary: None,
+                error: Some(format!("nodal row {i} never finished")),
+            })
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// PVT flash report (U4): run chflow-pvt and hand the raw report to the
+// frontend parser (the flash case dictionary is not a network case, so there
+// is no Rust-side validation; parsing is JS-side like the two-fluid frames).
+// ---------------------------------------------------------------------------
+
+/// Write a flash case text to a temporary dictionary, run `chflow-pvt` on it
+/// and return its raw stdout (the JS `parsePvtOutput` turns it into curves).
+#[tauri::command]
+pub fn run_pvt_text(case_text: String, exe_path: String) -> Result<String, String> {
+    let path = std::env::temp_dir().join(format!(
+        "chflow_gui_pvt_{}_{}.dict", std::process::id(), unique_tmp_id()));
+    std::fs::write(&path, &case_text)
+        .map_err(|e| format!("failed to write temporary case file: {e}"))?;
+    let output = std::process::Command::new(&exe_path)
+        .arg(&path)
+        .output()
+        .map_err(|e| format!("failed to spawn '{exe_path}': {e}"));
+    let _ = std::fs::remove_file(&path);
+    let output = output?;
+    if !output.status.success() {
+        return Err(format!(
+            "'{exe_path}' exited with {}: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+// ---------------------------------------------------------------------------
 // Tests (no WebView required)
 // ---------------------------------------------------------------------------
 
@@ -1470,7 +1691,7 @@ mod tests {
 
     #[test]
     fn resolve_default_engines_returns_existing_paths() {
-        let (steady, transient, coupled, template, twofluid) = resolve_default_engines();
+        let (steady, transient, coupled, template, twofluid, nodal, pvt) = resolve_default_engines();
         // At least one of the two layouts must resolve: the packaged
         // Resources/bin (only inside a bundle) or the developer tree
         // (always present after a CMake build in CI/dev).
@@ -1483,6 +1704,8 @@ mod tests {
             assert!(Path::new(&transient).exists(), "dev fallback {transient} must exist");
             assert!(Path::new(&coupled).exists(), "dev fallback {coupled} must exist");
             assert!(Path::new(&twofluid).exists(), "dev fallback {twofluid} must exist");
+            assert!(Path::new(&nodal).exists(), "dev fallback {nodal} must exist");
+            assert!(Path::new(&pvt).exists(), "dev fallback {pvt} must exist");
             assert!(
                 Path::new(&template).exists() && template.ends_with("coupled1d3d/case.dict"),
                 "coupling template {template} must exist"
@@ -1491,9 +1714,76 @@ mod tests {
     }
 
     #[test]
+    fn parse_nodal_output_reads_working_point() {
+        let out = "[chflow] nodal: ipr vogel p_res 2.2e7 qmax 0.006, well 2400 m x 0.062 m, wellhead 2.5e6 Pa\n\
+                   [chflow] column p 18642604.4027 (the rate-0 static column)\n\
+                   [chflow] well q 0.00290785579167 pwf 15120468.4282 pth 2.5e6\n\
+                   [chflow] well holdup 0.401234567891 regime distributed\n\
+                   [chflow] nodal solved: iterations=9 flows=true (converged)\n";
+        let s = parse_nodal_output(out).unwrap();
+        assert_eq!(s.ipr_form, "vogel");
+        assert_eq!(s.p_res, 2.2e7);
+        assert_eq!(s.q_max, 0.006);
+        assert_eq!(s.static_p, 18642604.4027);
+        assert_eq!(s.rate, 0.00290785579167);
+        assert_eq!(s.pwf, 15120468.4282);
+        assert_eq!(s.holdup, 0.401234567891);
+        assert_eq!(s.regime, "distributed");
+        assert_eq!(s.iterations, 9);
+        assert!(s.flows);
+        assert!(s.converged);
+    }
+
+    #[test]
+    fn parse_nodal_output_no_flow_and_rejects_noise() {
+        let s = parse_nodal_output(
+            "nodal: ipr linear p_res 2e7 qmax 0.002, well 1000 m x 0.1 m, wellhead 9e6 Pa\n\
+             column p 10500000 (the rate-0 static column)\n\
+             well q 0 pwf 10500000 pth 9e6\n\
+             nodal solved: iterations=12 flows=false (converged)\n",
+        )
+        .unwrap();
+        assert_eq!(s.rate, 0.0);
+        assert!(!s.flows);
+        assert!(s.converged);
+        assert!(parse_nodal_output("steady solved: iterations=3 residual=1e-9 (converged)").is_err());
+    }
+
+    #[test]
+    fn run_nodal_texts_keeps_order_and_reports_errors() {
+        let tmp = std::env::temp_dir().join(format!("chflow_gui_nodal_fake_{}.sh", std::process::id()));
+        std::fs::write(
+            &tmp,
+            "#!/bin/sh\ncat \"$1\" | grep -o 'productivityIndex [0-9.eE+-]*' | awk \
+             '{printf \"nodal: ipr linear p_res 2e7 qmax 1, well 1 m x 1 m, wellhead 1 Pa\\n\"; \
+             printf \"well q %s pwf 1234 pth 1\\n\", $2*100; \
+             printf \"nodal solved: iterations=1 flows=true (converged)\\n\"}'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let mk = |j: &str| format!("ipr {{ form linear; reservoirPressure 2e7; productivityIndex {j}; }}\n");
+        let rows = run_nodal_texts(
+            vec![mk("0.001"), "not a case".to_string(), mk("0.002")],
+            tmp.to_string_lossy().into_owned(),
+        );
+        let _ = std::fs::remove_file(&tmp);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].ok);
+        assert_eq!(rows[0].summary.as_ref().unwrap().rate, 0.1);
+        assert!(!rows[1].ok);
+        assert!(rows[1].error.as_ref().unwrap().contains("missing well"));
+        assert!(rows[2].ok);
+        assert_eq!(rows[2].summary.as_ref().unwrap().rate, 0.2);
+    }
+
+    #[test]
     fn case_templates_resolve_to_existing_verified_cases() {
         let templates = resolve_case_templates();
-        assert_eq!(templates.len(), 7);
+        assert_eq!(templates.len(), 9);
         for t in &templates {
             assert!(
                 Path::new(&t.path).exists(),
@@ -1506,6 +1796,8 @@ mod tests {
         let ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
         assert!(ids.contains(&"twoFluidTerrainSlug"));
         assert!(ids.contains(&"coupled1d3d"));
+        assert!(ids.contains(&"nodalVogel"));
+        assert!(ids.contains(&"pvtFlash"));
         // the slug template must end at the verified case file
         let slug = templates.iter().find(|t| t.id == "twoFluidTerrainSlug").unwrap();
         assert!(slug.path.ends_with("twoFluidTerrainSlug/case.dict") || slug.path.ends_with("twoFluidTerrainSlug.dict"));

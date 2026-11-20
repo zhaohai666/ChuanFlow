@@ -90,6 +90,9 @@
           <button data-tab="field" class="tab">3D 场视图</button>
           <button data-tab="coupled" class="tab">耦合视图</button>
           <button data-tab="slug" class="tab">段塞动画</button>
+          <button data-tab="nodal" class="tab">节点分析</button>
+          <button data-tab="scenarios" class="tab">工况管理</button>
+          <button data-tab="pvt" class="tab">PVT 流体</button>
           <button data-tab="sweep" class="tab">参数扫描</button>
           <button data-tab="dict" class="tab">case 字典</button>
         </div>
@@ -131,6 +134,8 @@
                 <select id="fieldMode">
                   <option value="p">压力 p</option>
                   <option value="u">流速 |U|</option>
+                  <option value="vort">涡量 |ω|（Green-Gauss）</option>
+                  <option value="q">Q 判据（涡核识别）</option>
                 </select>
               </label>
               <button id="loadVtuBtn">载入并渲染</button>
@@ -160,6 +165,29 @@
               </label>
               <label class="chk"><input id="showVectors" type="checkbox" /> 矢量图（按模着色）</label>
               <label class="chk"><input id="showStreamlines" type="checkbox" /> 流线</label>
+              <label class="chk"><input id="isoOn" type="checkbox" /> 等值面壳层</label>
+              <label>等值面水平
+                <input id="isoLevel" type="range" min="0" max="1" value="0.5" step="0.01" />
+              </label>
+            </div>
+            <div class="canvas-toolbar">
+              <label class="grow">导出路径
+                <input id="exportPath" type="text" spellcheck="false"
+                       value="/tmp/chflow_gui_field_export.csv" />
+              </label>
+              <button id="exportAllCsvBtn">导出全部单元 CSV</button>
+              <label>剖面法向
+                <select id="exportPlaneAxis">
+                  <option value="x">x</option>
+                  <option value="y">y</option>
+                  <option value="z" selected>z</option>
+                  <option value="custom">自定义</option>
+                </select>
+              </label>
+              <label>剖面位置
+                <input id="exportPlaneFrac" type="range" min="0" max="1" value="1" step="0.01" />
+              </label>
+              <button id="exportPlaneCsvBtn">导出剖面 CSV</button>
             </div>
             <canvas id="fieldCanvas" class="field-canvas"></canvas>
             <div class="field-legend">
@@ -205,6 +233,9 @@
               </label>
               <button id="runSlugBtn" class="primary">▶ 运行段塞</button>
             </div>
+            <div class="canvas-toolbar" id="slugSeries">
+              <span class="hint">叠加量（运行后按内核 cell 行实际字段生成）：</span>
+            </div>
             <div class="canvas-toolbar player-bar">
               <button id="slugPlayBtn" disabled>▶ 播放</button>
               <label>速度
@@ -220,6 +251,96 @@
             </div>
             <canvas id="slugCanvas" class="field-canvas"></canvas>
             <p class="hint" id="slugInfo">持率剖面动画：绿 = 第一相体积分数 alpha，红框 = 段塞单元（s &gt; 0），蓝 = 水（water）。</p>
+          </section>
+
+          <!-- 节点分析（chflow-1d-nodal：IPR-VLP 双曲线与工作点） -->
+          <section id="tab-nodal" class="tab-page">
+            <div class="canvas-toolbar">
+              <label class="grow">节点分析算例（nodal 字典）
+                <input id="nodalCasePath" type="text" spellcheck="false"
+                       placeholder="nodalVogel 模板或自拟 nodal 算例（ipr/well/fluid/wellheadPressure）" />
+              </label>
+              <label>VLP 采样数
+                <input id="nodalSamples" type="number" min="5" max="25" value="13" style="width: 56px" />
+              </label>
+              <button id="runNodalBtn" class="primary">▶ 节点分析</button>
+            </div>
+            <div class="nodal-grid">
+              <div>
+                <h3>IPR-VLP 合成曲线</h3>
+                <div id="nodalChart" class="chart-box"></div>
+              </div>
+              <div>
+                <h3>工作点与采样表</h3>
+                <pre id="nodalReadout" class="status">载入 nodal 算例后点「▶ 节点分析」：内核逐 J 求解采样 VLP 曲线。</pre>
+                <table id="nodalTable" class="data-table"><thead><tr>
+                  <th>J (m3/s/Pa)</th><th>q (sm3/s)</th><th>p_wf (Pa)</th>
+                </tr></thead><tbody></tbody></table>
+              </div>
+            </div>
+            <p class="hint">IPR 曲线按字典 ipr{} 闭式绘制；VLP 由内核逐 productivityIndex 求解的工作点串成（每点均在井筒 VLP 曲线上），红色十字为原算例交点工作点。</p>
+          </section>
+
+          <!-- 工况管理（U1：多工况挂模型树，批量运行 + 对比表 + 叠画） -->
+          <section id="tab-scenarios" class="tab-page">
+            <div class="canvas-toolbar">
+              <button id="scenAddBtn" class="mini">＋ 新工况</button>
+              <button id="scenRunAllBtn" class="primary">▶ 批量运行全部工况</button>
+              <label>叠画量
+                <select id="scenSeriesSel"></select>
+              </label>
+              <span id="scenStatus" class="hint"></span>
+            </div>
+            <div class="scen-grid">
+              <div>
+                <h3>工况列表（亦挂在模型树）</h3>
+                <div id="scenList" class="scen-list"></div>
+              </div>
+              <div>
+                <h3>工况编辑</h3>
+                <div id="scenEdit" class="scen-edit"><p class="empty">＋ 新工况，或点模型树/列表中的工况。</p></div>
+              </div>
+            </div>
+            <h3 style="padding: 0 14px">工况对比</h3>
+            <div id="scenResults" class="scen-results"><p class="empty">批量运行后显示对比表与叠画曲线。</p></div>
+          </section>
+
+          <!-- PVT 流体配置向导（U4：组分声明 -> 闪蒸预览 -> 物性曲线） -->
+          <section id="tab-pvt" class="tab-page">
+            <div class="canvas-toolbar">
+              <label>温度网格 (K)
+                <input id="pvtTemps" type="text" spellcheck="false" value="320" style="width: 120px" />
+              </label>
+              <label>压力网格 (Pa)
+                <input id="pvtPressures" type="text" spellcheck="false" value="1e6 4e6 1.2e7" style="width: 180px" />
+              </label>
+              <label class="chk"><input id="pvtBubble" type="checkbox" checked /> 泡点</label>
+              <label class="chk"><input id="pvtVisc" type="checkbox" /> 黏度 (LBC)</label>
+              <label class="chk"><input id="pvtSigma" type="checkbox" /> 表面张力 (WK)</label>
+              <button id="runPvtBtn" class="primary">▶ 闪蒸预览</button>
+            </div>
+            <div class="pvt-grid">
+              <div>
+                <h3>组分声明（摩尔分数，内核归一化）</h3>
+                <table class="data-table" id="pvtCompTable">
+                  <thead><tr><th>组分</th><th>z</th><th></th></tr></thead>
+                  <tbody></tbody>
+                </table>
+                <button id="pvtAddComp" class="mini">＋ 加组分</button>
+                <datalist id="pvtCompNames"></datalist>
+                <pre id="pvtReadout" class="status">声明组分与网格后点「▶ 闪蒸预览」：经 chflow-pvt 逐温度取数。</pre>
+              </div>
+              <div>
+                <h3>闪蒸预览</h3>
+                <table class="data-table" id="pvtFlashTable">
+                  <thead><tr><th>T</th><th>p</th><th>β</th><th>ρL</th><th>ρV</th><th>μL</th><th>σ</th></tr></thead>
+                  <tbody></tbody>
+                </table>
+                <h3>物性曲线（ρ / μ / σ 对 p，逐温度成族）</h3>
+                <div id="pvtChart" class="chart-box"></div>
+              </div>
+            </div>
+            <p class="hint">全部数值由 chflow-pvt 的 PR 闪蒸报告解析得到；黏度/表面张力曲线仅在勾选对应模型后有数据（单组分纯物质 WK 界面张力为零，属内核声明的边界）。</p>
           </section>
 
           <!-- 参数扫描（稳态逐值求解） -->
@@ -277,6 +398,10 @@
                   <input id="coupledExePath" type="text" spellcheck="false" /></label>
                 <label class="field"><span>双流体段塞求解器</span>
                   <input id="twofluidExePath" type="text" spellcheck="false" /></label>
+                <label class="field"><span>节点分析求解器</span>
+                  <input id="nodalExePath" type="text" spellcheck="false" /></label>
+                <label class="field"><span>PVT 闪蒸求解器</span>
+                  <input id="pvtExePath" type="text" spellcheck="false" /></label>
                 <div class="actions">
                   <button id="applyDictBtn" class="primary">应用字典到模型</button>
                   <button id="runDictBtn">运行字典</button>
@@ -315,14 +440,19 @@
             <div class="curves-grid">
               <div><h3>节点压力</h3><div id="nodeChart" class="chart-box"></div></div>
               <div><h3>管道流量 Q</h3><div id="pipeChart" class="chart-box"></div></div>
-              <div>
+              <div class="curves-transient">
                 <h3>瞬态时序
-                  <select id="seriesSelect"></select>
+                  <button id="monitorTreeBtn" class="mini">变量选择树</button>
                   <input id="timeSlider" type="range" min="0" max="0" value="0" step="1" />
                   <b id="timeReadout">—</b>
                 </h3>
+                <div id="monitorTree" class="monitor-tree hidden"></div>
                 <div id="transientChart" class="chart-box"></div>
               </div>
+            </div>
+            <p id="compareStatus" class="hint"></p>
+            <div id="tmplCompare" class="tmpl-compare">
+              <p class="empty">从模板库点「对比」：模板与当前模型并行求解后在此叠画。</p>
             </div>
           </div>
           <div id="btab-conv" class="btab-page">

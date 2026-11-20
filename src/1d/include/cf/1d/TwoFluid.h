@@ -109,6 +109,26 @@ namespace cf
 /// absorbs it) as a source in the temperature equation. Requires the gas
 /// EOS (fluid gasR > 0) and a thermal{} block: both p_i and T_i drive the
 /// kinetics.
+/// With an emulsion{} block the Newtonian liquid share of the wall law is
+/// priced with an EMULSION viscosity built from the transported water cut
+/// phi = water[i] (the liquid is oil carrying dispersed water):
+///   brinkman:   mu_e = mu_oil (1 + 2.5 phi)      (Brinkman 1952, dilute)
+///   richardson: mu_e = mu_oil^(1-phi) mu_water^phi (log-linear product rule)
+/// mu_oil is the declared fluid muL, mu_water the declared emulsion muWater.
+/// Both laws are exactly muL at phi = 0, so a dry line reproduces the
+/// standing suite bit for bit; the declaration-off path never reads them.
+/// The law prices the NEWTONIAN liquid share only: a declared power-law or
+/// yield liquid carries its own wall law (5.75/5.77) and an emulsion
+/// declaration alongside flowIndex > 0 is refused, not silently ignored.
+/// With an inhibitor{} block the hydrate kinetics see a depressed
+/// equilibrium line: the transported inhibitor mass fraction c of the
+/// liquid (riding the liquid with the water-cut upwind rule, inlet
+/// composition inhibitorFraction) lowers T_eq by the Hammerschmidt-style
+/// linear term kDepression * c, so the subcooling drive becomes
+///   dT = T_eq(p) - kDepression c - T.
+/// The equilibrium curve itself stays the declared Clausius form; the
+/// inhibitor is a pure offset of its evaluation point (thermodynamic
+/// inhibition only - no kinetic rate modification, no partitioning).
 /// With an entrainment{} block the sections also carry a droplet fraction d
 /// of the liquid (the film-droplet split of annular flow; transport level
 /// only in this increment - the closure, momentum and properties stay
@@ -122,6 +142,27 @@ namespace cf
 /// impose that share of the liquid rate; pressure ghosts inject
 /// qd_ghost vG_ghost); junction mixing weights the droplet fraction with
 /// the liquid volume flow like the water cut.
+/// G1 (transient composition tracking / volatile oil): with a composition{}
+/// block the liquid carries a multi-component mole-fraction vector z that
+/// rides the liquid flux with the water-cut/sand upwind rule (N - 1
+/// independent fractions per cell, the last closed by 1 - sum), inlet
+/// composition zInlet forced at phaseRates faces and injected on backflow
+/// at fixedPressure faces, junction mixing liquid-volume-flow weighted.
+/// Every step each cell flashes its own (T_i, p_i, z_i) feed with the PR
+/// tpFlash of the pvt layer (the same true flash the steady liveFlash uses,
+/// 5.121) and the result - vapour fraction beta and the two PR phase mass
+/// densities - is stored as a per-section DIAGNOSTIC field: it is reported
+/// (comp/z columns) but NEVER rewrites the momentum, holdup or density
+/// fields. That is the minimum verifiable slice of the benchmark's
+/// "per-cell phase update": the composition evolves in time (fronts advect,
+/// cells flash at their local state) while the standing suite stays
+/// bit-identical on the undeclared path. Flash pressure: the cell's EOS
+/// pressure p_i = rhoG_i gasR T_i when the gas EOS is on and the cell has
+/// gas volume; where that is unavailable (gasR = 0, or a liquid-full cell)
+/// the declared fixedPressure boundary pressure (outlet first, then inlet)
+/// serves as the flash reference - a case with neither is refused at load.
+/// The feed temperature is sectionTemperature(i) (the thermal{} field, or
+/// the declared initial temperature when thermal is off).
 
 struct TwoFluidFluid
 {
@@ -229,6 +270,14 @@ struct TwoFluidBoundary
                                   // as that share of the liquid rate,
                                   // pressure ghosts inject it at the ghost
                                   // gas velocity
+    double inhibitorFraction = 0; // inhibitor mass fraction of the inflow
+                                  // liquid (inhibitor on)
+    double sandFraction = 0;      // suspended sand fraction of the inflow
+                                  // liquid (sand on)
+    std::vector<double> zInlet;   // G1: mole fractions of the inflow liquid
+                                  // in the declared component order
+                                  // (composition on); empty = the declared
+                                  // feed z0
     double temperature = 0;  // K, temperature of the inflow ghost cell
                              // (required on both ends when thermal is on,
                              // the unused one for potential backflow)
@@ -348,6 +397,23 @@ struct TwoFluidTerrain
     /// 0 (default) keeps increment 1's read-only pooling map; > 0 enables the
     /// sealed capture / travel / discharge cycle (terrainSlugStep).
     double slugVelocity = 0;
+    /// G2: gas-cap feedback on the travel velocity. With dynamicUs the lump
+    /// no longer crawls at the constant slugVelocity: the gas pocket behind
+    /// it pushes at a DECLARED cap pressure that relaxes towards the EOS
+    /// pressure of the cell at the slug rear with time constant gasCapTime,
+    /// and the travel velocity is the energy-balance ejection value
+    ///   u_s = sqrt(2 max(p_cap - p_front, 0) / rhoL)
+    /// where p_front is the downstream cell's EOS pressure plus the
+    /// hydrostatic head rhoL g (z(front) - z(dip)) the front must still lift
+    /// the column over the terrain ahead. The slug therefore accelerates on
+    /// a high cap, decelerates climbing the rise (p_front grows with the
+    /// elevation) and the cycle period becomes terrain-dependent -- the
+    /// qualitative signature of severe slugging. Requires the EOS (gasR).
+    /// maxSlugVelocity (optional) clamps the ejection value; the declared
+    /// slugVelocity keeps its gate role (0 = no cycle at all).
+    bool dynamicUs = false;
+    double gasCapTime = 0;       // s, cap-pressure relaxation time (> 0)
+    double maxSlugVelocity = 0;  // m/s optional clamp (0 = none)
 };
 
 struct TwoFluidTerrainDip
@@ -380,6 +446,10 @@ struct TwoFluidTerrainSlug
     double volume = 0;       // liquid per m2 of bore carried by the lump
     bool active = false;     // a lump is in flight
     double capturedFrom = 0; // basin inventory at the capture instant (diagnostic)
+    double velocity = 0;     // m/s, current travel velocity (dynamicUs; the
+                             // constant slugVelocity when undeclared)
+    double capPressure = 0;  // Pa, gas-cap pressure behind the lump
+                             // (dynamicUs; 0 when undeclared)
 };
 
 /// Gas-hydrate kinetics (see the class documentation above). The equilibrium
@@ -497,6 +567,53 @@ struct TwoFluidEntrainment
     double initial = 0;    // initial droplet fraction of the liquid
 };
 
+/// Emulsion mixing viscosity of the liquid (see the class documentation):
+/// the water cut the transport already carries decides how far the declared
+/// oil viscosity muL is priced up. model 0 = no law (the wall keeps its
+/// Newtonian muL verbatim), 1 = brinkman, 2 = richardson. muWater is the
+/// dispersed water's own viscosity (only richardson reads it; it is still
+/// required so the declaration says what the emulsion is made of).
+struct TwoFluidEmulsion
+{
+    int model = 0;        // 0 = off, 1 = brinkman, 2 = richardson
+    double muWater = 0;   // Pa s, dispersed-phase viscosity (> 0 when on)
+};
+
+/// G10: 1D sand / cuttings transport, a DECLARED reduced model in the
+/// spirit of the wax/scale deposits (not a discrete-particle or bed-
+/// geometry solver). The liquid carries a suspended sand volume fraction
+/// S (transported on the liquid flux with the water-cut upwind rule, inlet
+/// composition sandFraction) and the wall holds a static bed fraction B
+/// (fraction of the cell's total volume, never transported). Per step the
+/// two exchange by a one-sided switch on the mixture velocity:
+///   vM < criticalVelocity: settling,  S_new = S / (1 + dt vt/(D/2)),
+///                          dB = alpha (S - S_new)
+///   vM >= criticalVelocity: erosion,  B_new = B / (1 + dt erodeRate
+///                          (vM/uCrit - 1)),  dS = (B - B_new)/alpha
+/// (implicit Euler on both sides, so S and B stay non-negative and the
+/// cell's total sand volume S alpha + B changes only by transport). With
+/// feedback the bed joins the deposit total that shrinks the effective
+/// bore (5.98/5.99 thin-layer law: dEff = D sqrt(1 - deposits - B)).
+struct TwoFluidSand
+{
+    double terminalVelocity = 0; // m/s, settling velocity vt (> 0)
+    double criticalVelocity = 0; // m/s, deposition/erosion switch uCrit (> 0)
+    double erodeRate = 0;        // 1/s, erosion rate coefficient (>= 0)
+    double initial = 0;          // initial suspended fraction of the liquid
+    double bedInitial = 0;       // initial bed fraction of the cell volume
+    bool feedback = false;       // bed shrinks the effective bore
+};
+
+/// Thermodynamic hydrate inhibition (Hammerschmidt-style linear depression):
+/// T_eq_eff = T_eq(p) - kDepression * c, with c the transported inhibitor
+/// mass fraction of the liquid. kDepression is a DECLARED coefficient (K per
+/// unit mass fraction) - the kernel carries no inhibitor chemistry table.
+struct TwoFluidInhibitor
+{
+    double kDepression = 0; // K per unit mass fraction, > 0 when on
+    double initial = 0;     // initial inhibitor fraction of the liquid
+};
+
 struct TwoFluidCase
 {
     TwoFluidFluid fluid;
@@ -527,6 +644,21 @@ struct TwoFluidCase
     bool entrainmentOn = false;  // film-droplet split solved (entrainment{}
                                  // present)
     TwoFluidEntrainment entrainment;
+    bool emulsionOn = false;     // emulsion mixing viscosity declared
+                                 // (emulsion{} present)
+    TwoFluidEmulsion emulsion;
+    bool inhibitorOn = false;    // thermodynamic hydrate inhibition declared
+                                 // (inhibitor{} present; needs hydrate{})
+    TwoFluidInhibitor inhibitor;
+    bool sandOn = false;         // sand/cuttings transport declared (sand{})
+    TwoFluidSand sand;
+    // G1: transient composition tracking + per-cell PR flash diagnostics
+    // (composition{} present). The loader validated the feed: names are
+    // known components, 2 <= N <= 8, z >= 0, sum within 1e-8 of 1
+    // (auto-normalised to exactly 1).
+    bool compositionOn = false;
+    std::vector<std::string> compositionNames; // declared component order
+    std::vector<double> compositionZ0;         // feed mole fractions z
     bool slugOn = false;         // slug-body statistics solved (slug{} present)
     TwoFluidSlug slug;
     bool terrainOn = false;      // low-point pooling map solved (terrain{} present)
@@ -623,6 +755,77 @@ public:
     /// Droplet fraction of the liquid per section (entrainment on);
     /// zeros unless the entrainment{} block is present.
     std::vector<double> cellEntrained() const { return entrained_; }
+    /// Inhibitor mass fraction of the liquid per section (inhibitor on);
+    /// zeros unless the inhibitor{} block is present.
+    std::vector<double> cellInhibitor() const { return inhibitor_; }
+    /// Suspended sand volume fraction of the liquid per section (sand on);
+    /// zeros unless the sand{} block is present.
+    std::vector<double> cellSand() const { return sandFrac_; }
+    /// Static bed fraction of the cell's total volume per section (sand
+    /// on); zeros unless the sand{} block is present.
+    std::vector<double> cellBed() const { return bed_; }
+    double endSand(bool atInlet) const
+    {
+        return cfg_.sandOn ? (atInlet ? sandFrac_[0] : sandFrac_[n_ - 1])
+                           : 0.0;
+    }
+    /// G1: true when a composition{} feed was declared (the liquid carries
+    /// a transported mole-fraction vector and every cell is PR-flashed).
+    bool compositionOn() const { return cfg_.compositionOn; }
+    int compositionCount() const
+    {
+        return static_cast<int>(cfg_.compositionNames.size());
+    }
+    const std::vector<std::string>& compositionNames() const
+    {
+        return cfg_.compositionNames;
+    }
+    /// Mole fraction of component k (declared order) per section; empty
+    /// unless composition{} is declared. k = N - 1 is the closed fraction
+    /// 1 - sum of the transported ones.
+    std::vector<double> cellComposition(int k) const;
+    /// PR flash vapour fraction (mole basis) per section - the per-cell
+    /// flash DIAGNOSTIC of the transported composition at the cell's own
+    /// (T, p); empty unless composition{} is declared. It feeds the report
+    /// only: the momentum, holdup and density fields never read it.
+    std::vector<double> cellVaporFraction() const
+    {
+        return cfg_.compositionOn ? compBeta_ : std::vector<double>();
+    }
+    /// PR liquid / vapour phase mass densities (kg/m3) of the same flash;
+    /// empty unless composition{} is declared.
+    std::vector<double> cellFlashLiquidDensity() const
+    {
+        return cfg_.compositionOn ? compRhoL_ : std::vector<double>();
+    }
+    std::vector<double> cellFlashGasDensity() const
+    {
+        return cfg_.compositionOn ? compRhoG_ : std::vector<double>();
+    }
+    /// Component k of the state at an end (junction mixing); k = N - 1 is
+    /// the closed fraction.
+    double endComposition(int k, bool atInlet) const
+    {
+        if (!cfg_.compositionOn)
+            return 0.0;
+        const int i = atInlet ? 0 : n_ - 1;
+        if (k < static_cast<int>(compZ_.size()))
+            return compZ_[k][i];
+        double s = 0.0;
+        for (const std::vector<double>& zc : compZ_)
+            s += zc[i];
+        return 1.0 - s;
+    }
+    /// Effective Newtonian liquid viscosity per section (emulsion on): the
+    /// mixing law on the transported water cut; zeros unless emulsion{} is
+    /// declared.
+    std::vector<double> cellLiquidViscosity() const
+    {
+        if (!cfg_.emulsionOn) return std::vector<double>();
+        std::vector<double> mu(n_);
+        for (int i = 0; i < n_; ++i) mu[i] = liquidViscosityAt(i);
+        return mu;
+    }
     /// Slug bodies in the current holdup field: maximal runs of sections
     /// with alpha >= alphaThreshold and length >= minLength, in flow
     /// order (empty unless the slug{} block is present). See TwoFluidSlug.
@@ -746,6 +949,12 @@ public:
                    ? (atInlet ? entrained_[0] : entrained_[n_ - 1])
                    : 0.0;
     }
+    double endInhibitor(bool atInlet) const
+    {
+        return cfg_.inhibitorOn
+                   ? (atInlet ? inhibitor_[0] : inhibitor_[n_ - 1])
+                   : 0.0;
+    }
     double endTemperature(bool atInlet) const
     {
         return cfg_.thermalOn ? (atInlet ? T_[0] : T_[n_ - 1])
@@ -780,6 +989,11 @@ private:
     void terrainSlugStep(double dt);
     void entrainmentStep(double dt);
     void hydrateStep(double dt);
+    void sandStep(double dt);
+    /// G1 composition flash step: per-cell PR tpFlash of the transported
+    /// (T_i, p_i, z_i) feed into the diagnostic beta/rhoL/rhoG fields -
+    /// reads the fields, never writes them
+    void compositionStep(double dt);
     void waxStep(double dt);
     void asphalteneStep(double dt);
     void scaleStep(double dt);
@@ -799,6 +1013,18 @@ private:
     {
         return cfg_.hydrate.curveB / (std::log(p) - cfg_.hydrate.curveA);
     }
+    // the same line seen by the kinetics: with inhibitor{} the local
+    // transported fraction depresses it by kDepression c (Hammerschmidt
+    // linear term); without, the declared curve verbatim
+    double equilibriumTemperatureInhibited(double p, int i) const
+    {
+        return equilibriumTemperature(p)
+             - (cfg_.inhibitorOn ? cfg_.inhibitor.kDepression * inhibitor_[i]
+                                 : 0.0);
+    }
+    // effective Newtonian liquid viscosity at a section: the emulsion law
+    // on the transported water cut when declared, muL otherwise
+    double liquidViscosityAt(int i) const;
     // liquid-flux function coefficients F(a) = qa a^2 + qb a + qc at the
     // current mixture velocity (algebraic closures; the dynamic closure
     // builds face-local coefficients from the slip state)
@@ -881,6 +1107,24 @@ private:
                                    // on (area()/transport still use D)
     std::vector<double> entrained_; // droplet fraction of the liquid
                                     // (entrainment on)
+    std::vector<double> inhibitor_; // inhibitor mass fraction of the liquid
+                                    // (inhibitor on)
+    std::vector<double> sandFrac_;  // G10: suspended sand fraction of the
+                                    // liquid (sand on)
+    std::vector<double> bed_;       // G10: static bed fraction of the cell
+                                    // volume (sand on)
+    // G1: transported liquid composition + per-cell PR flash diagnostics.
+    // compZ_ holds the N - 1 independent mole fractions (content alpha*z
+    // per component, upwind-transported with the water-cut/sand rule);
+    // the last component closes by 1 - sum. compBeta_/compRhoL_/compRhoG_
+    // are the tpFlash diagnostics of the last compositionStep.
+    std::vector<std::vector<double>> compZ_; // (N-1) x n_ mole fractions
+    std::vector<double> compBeta_;           // PR flash vapour fraction
+    std::vector<double> compRhoL_;           // PR flash liquid mass density
+    std::vector<double> compRhoG_;           // PR flash vapour mass density
+    double flashPRef_ = 0; // fixedPressure boundary pressure used as the
+                           // flash pressure where the cell EOS pressure is
+                           // unavailable (0 = none declared)
     double wallHeatRate_ = 0;
     double inletHeatRate_ = 0;
     // radial formation grid (formationOn): node radii shared across sections,
@@ -980,6 +1224,38 @@ private:
 ///       relaxTime 8;             // s, film<->droplet exchange time
 ///       initial 0;               // initial droplet fraction of the liquid
 ///   }
+///   emulsion     // optional: emulsion mixing viscosity on the water cut
+///   {
+///       model brinkman;          // or richardson
+///       muWater 0.001;           // Pa s, dispersed water viscosity
+///   }
+///   inhibitor    // optional: thermodynamic hydrate inhibition; needs
+///                // hydrate{}
+///   {
+///       kDepression 1.1;         // K per unit mass fraction
+///       initial 0;               // initial inhibitor fraction of the liquid
+///   }
+///   boundaries { inlet { ... inhibitorFraction 0.3; } }  // inflow fraction
+///   composition  // optional (G1): transient composition tracking +
+///                // per-cell PR flash diagnostics. 2..8 named components
+///                // (cf::pvt::requireComponent), each with its feed mole
+///                // fraction; the fractions must be >= 0 and sum to 1
+///                // within 1e-8 (auto-normalised to exactly 1, anything
+///                // else is refused). The liquid carries the mole
+///                // fractions (N - 1 transported, last closed by 1 - sum)
+///                // with the water-cut/sand upwind rule; every step every
+///                // cell flashes (T_i, p_i, z_i) with the pvt tpFlash and
+///                // reports beta + the two phase mass densities as
+///                // DIAGNOSTICS only - the momentum/holdup/density fields
+///                // are untouched.
+///   {
+///       methane 0.5;             // component name = its feed mole fraction
+///       propane 0.3;
+///       nHexane 0.2;
+///   }
+///   boundaries { inlet { ... zInlet (0.2 0.4 0.4); } }  // inflow mole
+///                // fractions in the declared component order (composition
+///                // on; empty = the declared feed z0)
 ///   time { dt 0.25; endTime 30; reportEvery 4; }
 TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict);
 
@@ -1044,7 +1320,8 @@ private:
         std::vector<double> rates; // signed per-pipe rates into the node
         // last mixed junction-face state (kept when nothing flows in)
         double alphaJ = 0, waterJ = 0, hydrateJ = 0, waxJ = 0, entrJ = 0,
-               tJ = 0, rhoJ = 0;
+               inhibJ = 0, sandJ = 0, tJ = 0, rhoJ = 0;
+        std::vector<double> zJ; // G1: mixed mole fractions (composition on)
     };
     void solveNetwork(double dt);
 

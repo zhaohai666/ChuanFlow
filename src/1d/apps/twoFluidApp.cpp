@@ -18,6 +18,30 @@ std::string num(double v)
     os << std::setprecision(12) << v;
     return os.str();
 }
+
+// G1: the per-cell composition columns - " comp <beta>" (PR flash vapour
+// fraction diagnostic) plus the transported mole fractions " z0 ... zN-1"
+// (empty string when no composition{} feed was declared)
+std::string compositionReport(const TwoFluidPipe& s, int i)
+{
+    if (!s.compositionOn()) return std::string();
+    std::string out = " comp " + num(s.cellVaporFraction()[i]);
+    const int nc = s.compositionCount();
+    for (int k = 0; k < nc; ++k)
+        out += " z" + std::to_string(k) + " " + num(s.cellComposition(k)[i]);
+    return out;
+}
+
+// G1: the declaration line naming the feed components and their z0
+std::string compositionDecl(const TwoFluidCase& c)
+{
+    std::string line = "twoFluid composition: "
+                     + std::to_string(c.compositionNames.size())
+                     + " components";
+    for (std::size_t k = 0; k < c.compositionNames.size(); ++k)
+        line += " " + c.compositionNames[k] + " " + num(c.compositionZ0[k]);
+    return line;
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -52,6 +76,8 @@ int main(int argc, char** argv)
                 log::info("twoFluid liquid rheology: flowIndex ",
                           num(nc.perPipe.fluid.flowIndex), " consistency ",
                           num(nc.perPipe.fluid.consistency));
+            if (nc.perPipe.compositionOn)
+                log::info(compositionDecl(nc.perPipe)); // G1
 
             TwoFluidNetwork net(nc);
             auto emit = [&](const TwoFluidNetwork& n)
@@ -101,6 +127,9 @@ int main(int argc, char** argv)
                     const std::vector<double> ent
                         = nc.perPipe.entrainmentOn ? s.cellEntrained()
                                                    : std::vector<double>();
+                    const std::vector<double> inh
+                        = nc.perPipe.inhibitorOn ? s.cellInhibitor()
+                                                 : std::vector<double>();
                     for (int i = 0; i < s.sections(); ++i)
                         log::info("pcell ", pn, " ", i, " alpha ",
                                   num(a[i]), " water ", num(w[i]), " vsl ",
@@ -113,7 +142,10 @@ int main(int argc, char** argv)
                                   az.empty() ? "" : (" asph " + num(az[i])),
                                   sc.empty() ? "" : (" scale " + num(sc[i])),
                                   ent.empty() ? ""
-                                              : (" entr " + num(ent[i])));
+                                              : (" entr " + num(ent[i])),
+                                  inh.empty() ? ""
+                                              : (" inh " + num(inh[i])),
+                                  compositionReport(s, i));
                 }
             };
 
@@ -144,6 +176,23 @@ int main(int argc, char** argv)
                           (3.0 * c.fluid.flowIndex + 1.0)
                               / (4.0 * c.fluid.flowIndex),
                           c.fluid.flowIndex)), ")");
+        // emulsion/inhibitor declarations name themselves, so the report
+        // says which mixing law and which depression line the run used
+        if (c.emulsionOn)
+            log::info("twoFluid emulsion: model ",
+                      c.emulsion.model == 1 ? "brinkman" : "richardson",
+                      " muWater ", num(c.emulsion.muWater), " muOil ",
+                      num(c.fluid.muL));
+        if (c.inhibitorOn)
+            log::info("twoFluid inhibitor: kDepression ",
+                      num(c.inhibitor.kDepression), " initial ",
+                      num(c.inhibitor.initial));
+        if (c.sandOn)
+            log::info("twoFluid sand: vt ", num(c.sand.terminalVelocity),
+                      " uCrit ", num(c.sand.criticalVelocity), " erodeRate ",
+                      num(c.sand.erodeRate), " feedback ",
+                      c.sand.feedback ? "true" : "false");
+        if (c.compositionOn) log::info(compositionDecl(c)); // G1
 
         TwoFluidPipe sim(c);
 
@@ -176,8 +225,10 @@ int main(int argc, char** argv)
             const std::vector<double> wx
                 = c.waxOn ? s.cellWax() : std::vector<double>();
             const std::vector<double> de
-                = c.waxOn && c.wax.feedback ? s.cellEffectiveDiameter()
-                                            : std::vector<double>();
+                = (c.waxOn && c.wax.feedback)
+                      || (c.sandOn && c.sand.feedback)
+                          ? s.cellEffectiveDiameter()
+                          : std::vector<double>();
             const std::vector<double> az
                 = c.asphalteneOn ? s.cellAsphaltene()
                                  : std::vector<double>();
@@ -186,6 +237,15 @@ int main(int argc, char** argv)
             const std::vector<double> ent
                 = c.entrainmentOn ? s.cellEntrained()
                                   : std::vector<double>();
+            const std::vector<double> inh
+                = c.inhibitorOn ? s.cellInhibitor() : std::vector<double>();
+            const std::vector<double> me
+                = c.emulsionOn ? s.cellLiquidViscosity()
+                               : std::vector<double>();
+            const std::vector<double> sa
+                = c.sandOn ? s.cellSand() : std::vector<double>();
+            const std::vector<double> be
+                = c.sandOn ? s.cellBed() : std::vector<double>();
             for (int i = 0; i < s.sections(); ++i)
             {
                 log::info("cell ", i, " alpha ", num(a[i]), " water ",
@@ -199,7 +259,12 @@ int main(int argc, char** argv)
                           de.empty() ? "" : (" dEff " + num(de[i])),
                           az.empty() ? "" : (" asph " + num(az[i])),
                           sc.empty() ? "" : (" scale " + num(sc[i])),
-                          ent.empty() ? "" : (" entr " + num(ent[i])));
+                          ent.empty() ? "" : (" entr " + num(ent[i])),
+                          inh.empty() ? "" : (" inh " + num(inh[i])),
+                          me.empty() ? "" : (" muEff " + num(me[i])),
+                          sa.empty() ? "" : (" sand " + num(sa[i])),
+                          be.empty() ? "" : (" bed " + num(be[i])),
+                          compositionReport(s, i));
             }
             if (c.slugOn)
             {
@@ -236,6 +301,10 @@ int main(int argc, char** argv)
                               num(slugs[k].front), " vol ",
                               num(slugs[k].volume), " from ",
                               num(slugs[k].capturedFrom),
+                              c.terrain.dynamicUs
+                                  ? (" us " + num(slugs[k].velocity)
+                                     + " pcap " + num(slugs[k].capPressure))
+                                  : std::string(),
                               slugs[k].active ? " ACTIVE" : " IDLE");
             }
             if (!T.empty())

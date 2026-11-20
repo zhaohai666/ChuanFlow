@@ -4,6 +4,9 @@ add_library(cf1d STATIC
     src/beggsBrill.cpp
     src/gasLiftValve.cpp
     src/rodPump.cpp
+    src/jetPump.cpp
+    src/progressiveCavityPump.cpp
+    src/plungerGasLift.cpp
     src/twoFluid.cpp
     src/nodal.cpp
 )

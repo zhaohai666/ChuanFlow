@@ -227,6 +227,20 @@ export function networkToCaseText(model) {
     if (p.pumpShutoffHead) fields += ` pumpShutoffHead ${fmt(p.pumpShutoffHead)};`;
     if (p.pumpStages) fields += ` pumpStages ${fmt(p.pumpStages)};`;
     if (p.pumpSpeed) fields += ` pumpSpeed ${fmt(p.pumpSpeed)};`;
+    if (p.pumpGasFraction) fields += ` pumpGasFraction ${fmt(p.pumpGasFraction)};`;
+    if (p.pumpIntakePressure) fields += ` pumpIntakePressure ${fmt(p.pumpIntakePressure)};`;
+    if (p.liftDomePressure) fields += ` liftDomePressure ${fmt(p.liftDomePressure)};`;
+    if (p.liftAreaRatio) fields += ` liftAreaRatio ${fmt(p.liftAreaRatio)};`;
+    if (p.liftSpringPressure) fields += ` liftSpringPressure ${fmt(p.liftSpringPressure)};`;
+    if (p.liftDischargeCoeff) fields += ` liftDischargeCoeff ${fmt(p.liftDischargeCoeff)};`;
+    if (p.liftKappa) fields += ` liftKappa ${fmt(p.liftKappa)};`;
+    if (p.rodPlungerDiameter) fields += ` rodPlungerDiameter ${fmt(p.rodPlungerDiameter)};`;
+    if (p.rodStrokeLength) fields += ` rodStrokeLength ${fmt(p.rodStrokeLength)};`;
+    if (p.rodStrokesPerMinute) fields += ` rodStrokesPerMinute ${fmt(p.rodStrokesPerMinute)};`;
+    if (p.rodDiameter) fields += ` rodDiameter ${fmt(p.rodDiameter)};`;
+    if (p.rodLength) fields += ` rodLength ${fmt(p.rodLength)};`;
+    if (p.rodYoungModulus) fields += ` rodYoungModulus ${fmt(p.rodYoungModulus)};`;
+    if (p.rodDensity) fields += ` rodDensity ${fmt(p.rodDensity)};`;
     lines.push(`    ${p.name} { ${fields} }`);
   }
   lines.push('}', '', 'sources', '{');
@@ -243,4 +257,62 @@ export function networkToCaseText(model) {
     );
   }
   return lines.join('\n') + '\n';
+}
+
+/**
+ * Arbitrary-plane clip: keep the cells whose centroid sits on the low side of
+ * the plane with unit normal `normal`. `frac` (0..1) slides the plane between
+ * the lowest and highest centroid projections, so axis-aligned clipping is the
+ * special case normal = [1,0,0]. Degenerate normals keep every cell.
+ * Pure so node --test can assert against the axis clip it replaces.
+ */
+export function clipKeepsByPlane(cells, points, normal, frac) {
+  const len = Math.hypot(normal[0], normal[1], normal[2]);
+  if (!Number.isFinite(len) || len < 1e-12) return cells.map(() => true);
+  const nx = normal[0] / len;
+  const ny = normal[1] / len;
+  const nz = normal[2] / len;
+  const proj = cells.map((vids) => {
+    let cx = 0, cy = 0, cz = 0;
+    for (const v of vids) {
+      cx += points[v].x;
+      cy += points[v].y;
+      cz += points[v].z;
+    }
+    const m = vids.length || 1;
+    return nx * (cx / m) + ny * (cy / m) + nz * (cz / m);
+  });
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const s of proj) {
+    lo = Math.min(lo, s);
+    hi = Math.max(hi, s);
+  }
+  const d = lo + frac * (hi - lo || 1);
+  return proj.map((s) => s <= d);
+}
+
+/**
+ * Magnitude-adaptive vector thinning: keep ceil(max/2) of the strongest cells
+ * (ties broken by lower index) plus floor(max/2) evenly spaced indices from
+ * the remainder, so hotspots stay dense without losing coverage. Deterministic
+ * and capped at maxArrows. Pure so node --test can verify the cap and the
+ * always-keep-strongest contract.
+ */
+export function adaptiveVectorIndices(mags, maxArrows) {
+  const idx = mags.map((_, i) => i);
+  if (!Number.isFinite(maxArrows) || maxArrows <= 0) return [];
+  if (idx.length <= maxArrows) return idx;
+  const hot = Math.ceil(maxArrows / 2);
+  const rest = Math.floor(maxArrows / 2);
+  const byMag = [...idx].sort((a, b) => (mags[b] - mags[a]) || (a - b));
+  const keep = new Set(byMag.slice(0, hot));
+  const remaining = idx.filter((i) => !keep.has(i));
+  if (remaining.length > 0 && rest > 0) {
+    const step = remaining.length / rest;
+    for (let k = 0; k < rest; k += 1) {
+      keep.add(remaining[Math.min(remaining.length - 1, Math.floor(k * step))]);
+    }
+  }
+  return [...keep].sort((a, b) => a - b);
 }

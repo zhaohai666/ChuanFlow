@@ -22,6 +22,8 @@ import {
   updateSourceRate,
   hitTestNode,
   networkToCaseText,
+  clipKeepsByPlane,
+  adaptiveVectorIndices,
 } from '../frontend/dist/editor.js';
 import {
   UNIT_SYSTEMS,
@@ -566,4 +568,70 @@ test('templates: 模板目标页与保真度标注', () => {
   assert.deepEqual(templateTarget('steadyEquipmentPump'), { tab: 'canvas', kind: 'dict' });
   assert.equal(isPartialFidelity('steadyNetworkMultiphase'), true);
   assert.equal(isPartialFidelity('steadyEquipmentValve'), false);
+});
+
+test('clipKeepsByPlane: 轴对齐等价旧语义 + 任意法向 + 退化', () => {
+  const points = [
+    { x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 1, y: 1, z: 0 },
+    { x: 0, y: 1, z: 0 }, { x: 0, y: 0, z: 2 }, { x: 1, y: 0, z: 2 },
+    { x: 1, y: 1, z: 2 }, { x: 0, y: 1, z: 2 },
+  ];
+  const cells = [
+    [0, 1, 2, 3], // z 层 0（质心 z=0）
+    [4, 5, 6, 7], // z 层 2（质心 z=2）
+  ];
+  // frac=0.5 在两格质心中点处剖切：x 法向两格质心 x 相同 → 保留语义不炸
+  assert.deepEqual(clipKeepsByPlane(cells, points, [1, 0, 0], 0.5), [true, true]);
+  // z 法向、frac=0.5：只保留低侧（z=0 层）
+  assert.deepEqual(clipKeepsByPlane(cells, points, [0, 0, 1], 0.5), [true, false]);
+  // 非单位长度法向：归一化后同一结果
+  assert.deepEqual(clipKeepsByPlane(cells, points, [0, 0, 7], 0.5), [true, false]);
+  // 反向法向翻转保留侧
+  assert.deepEqual(clipKeepsByPlane(cells, points, [0, 0, -1], 0.5), [false, true]);
+  // 退化（零向量）全保留
+  assert.deepEqual(clipKeepsByPlane(cells, points, [0, 0, 0], 0.5), [true, true]);
+});
+
+test('adaptiveVectorIndices: 上限、最强必保、确定性与覆盖', () => {
+  const mags = Array.from({ length: 1000 }, (_, i) => Math.abs(Math.sin(i)));
+  mags[777] = 1e9; // 最强格
+  const idx = adaptiveVectorIndices(mags, 400);
+  assert.equal(idx.length <= 400, true);
+  assert.equal(idx.includes(777), true, '最强格必须保留');
+  assert.deepEqual(idx, [...idx].sort((a, b) => a - b), '输出升序');
+  assert.deepEqual(adaptiveVectorIndices(mags, 400), idx, '确定性');
+  // 小于上限时全保留
+  assert.deepEqual(adaptiveVectorIndices([1, 2, 3], 10), [0, 1, 2]);
+  // 非法上限
+  assert.deepEqual(adaptiveVectorIndices([1, 2], 0), []);
+  // 覆盖：非热点也有被抽中的（rest 半额均匀采样）
+  const hot = adaptiveVectorIndices(Array.from({ length: 1000 }, () => 0.5), 400);
+  assert.equal(hot.length <= 400, true);
+  assert.ok(hot.length > 200, '覆盖半额应填满采样位');
+});
+
+test('设备族：序列化往返 + 平管不泄漏 + details 解析', () => {
+  let m = emptyModel();
+  const { model: m1, id: a } = addNode(m, 0, 0, 'A');
+  const { model: m2, id: b } = addNode(m1, 100, 100, 'B');
+  const m3 = addPipe(m2, a, b); // addPipe returns the model directly
+  m = setPipeFields(m3, m3.pipes[0].id, {
+    liftDomePressure: 1.6e7, liftAreaRatio: 0.31,
+    rodPlungerDiameter: 0.038, rodStrokesPerMinute: 6,
+    pumpGasFraction: 0.25, pumpIntakePressure: 3.5e6,
+  });
+  const text = networkToCaseText(m);
+  for (const key of ['liftDomePressure', 'liftAreaRatio', 'rodPlungerDiameter',
+    'rodStrokesPerMinute', 'pumpGasFraction', 'pumpIntakePressure']) {
+    assert.ok(text.includes(key), `missing ${key}`);
+  }
+  // 平管字节恒等：无设备键时不泄漏（M5 语义保持）
+  const plain = networkToCaseText(emptyModel());
+  assert.equal(plain.includes('liftDomePressure'), false);
+  // details 解析读回全部设备键
+  const details = extractCaseDetails(text);
+  const p = details.pipes[Object.keys(details.pipes)[0]];
+  assert.equal(p.liftDomePressure, 1.6e7);
+  assert.equal(p.rodStrokesPerMinute, 6);
+  assert.equal(p.pumpIntakePressure, 3.5e6);
 });

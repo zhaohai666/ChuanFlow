@@ -480,6 +480,20 @@ export function extractCaseDetails(text) {
       pumpShutoffHead: kv.pumpShutoffHead !== undefined ? Number(kv.pumpShutoffHead) : 0,
       pumpStages: kv.pumpStages !== undefined ? Number(kv.pumpStages) : 0,
       pumpSpeed: kv.pumpSpeed !== undefined ? Number(kv.pumpSpeed) : 0,
+      pumpGasFraction: kv.pumpGasFraction !== undefined ? Number(kv.pumpGasFraction) : 0,
+      pumpIntakePressure: kv.pumpIntakePressure !== undefined ? Number(kv.pumpIntakePressure) : 0,
+      liftDomePressure: kv.liftDomePressure !== undefined ? Number(kv.liftDomePressure) : 0,
+      liftAreaRatio: kv.liftAreaRatio !== undefined ? Number(kv.liftAreaRatio) : 0,
+      liftSpringPressure: kv.liftSpringPressure !== undefined ? Number(kv.liftSpringPressure) : 0,
+      liftDischargeCoeff: kv.liftDischargeCoeff !== undefined ? Number(kv.liftDischargeCoeff) : 0,
+      liftKappa: kv.liftKappa !== undefined ? Number(kv.liftKappa) : 0,
+      rodPlungerDiameter: kv.rodPlungerDiameter !== undefined ? Number(kv.rodPlungerDiameter) : 0,
+      rodStrokeLength: kv.rodStrokeLength !== undefined ? Number(kv.rodStrokeLength) : 0,
+      rodStrokesPerMinute: kv.rodStrokesPerMinute !== undefined ? Number(kv.rodStrokesPerMinute) : 0,
+      rodDiameter: kv.rodDiameter !== undefined ? Number(kv.rodDiameter) : 0,
+      rodLength: kv.rodLength !== undefined ? Number(kv.rodLength) : 0,
+      rodYoungModulus: kv.rodYoungModulus !== undefined ? Number(kv.rodYoungModulus) : 0,
+      rodDensity: kv.rodDensity !== undefined ? Number(kv.rodDensity) : 0,
     };
   }
   return details;

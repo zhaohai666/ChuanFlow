@@ -105,6 +105,8 @@
               <span class="hint">设备（作用选中管段）：</span>
               <button id="addValveBtn" title="给选中管段加节流阀（valve K）">加阀门</button>
               <button id="addPumpBtn" title="给选中管段加离心泵（pumpHead/pumpRate）">加泵</button>
+              <button id="addGasLiftBtn" title="给选中管段加气举阀（liftDomePressure 开关，§5.89 稳态元件）">加气举阀</button>
+              <button id="addRodPumpBtn" title="给选中管段加有杆泵（rodPlungerDiameter 开关，§5.90 稳态元件）">加有杆泵</button>
               <button id="removeDeviceBtn" title="移除选中管段的内嵌设备">移除设备</button>
               <label>线云图
                 <select id="colorMode">
@@ -145,7 +147,13 @@
                   <option value="x">x</option>
                   <option value="y">y</option>
                   <option value="z">z</option>
+                  <option value="custom">自定义法向</option>
                 </select>
+              </label>
+              <label class="clip-normal" id="clipNormalRow" hidden>法向 (nx, ny, nz)
+                <input id="clipNx" type="number" step="0.1" value="1" style="width:56px" />
+                <input id="clipNy" type="number" step="0.1" value="0" style="width:56px" />
+                <input id="clipNz" type="number" step="0.1" value="0" style="width:56px" />
               </label>
               <label>剖切位置
                 <input id="clipFrac" type="range" min="0" max="1" value="0.5" step="0.01" />

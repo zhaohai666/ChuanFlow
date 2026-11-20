@@ -7,6 +7,7 @@ pub fn run() {
             commands::default_engines,
             commands::run_case,
             commands::run_case_text,
+            commands::run_case_texts,
             commands::validate_case,
             commands::run_transient_text,
             commands::start_case,

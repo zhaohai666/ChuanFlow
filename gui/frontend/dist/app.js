@@ -11,6 +11,7 @@ import {
   emptyModel, addNode, moveNode, removeNode, setNodePressure, addPipe,
   removePipe, addSource, removeSource, setTime, hitTestNode,
   networkToCaseText, setPipeFields, updateSourceRate, setFluid,
+  clipKeepsByPlane, adaptiveVectorIndices,
 } from './editor.js';
 import {
   validateCaseText, toBarHeights, toTimeSeriesPoints,
@@ -80,7 +81,7 @@ const state = {
   vtu: null,
   colorMode: 'none',
   fieldMode: 'p',
-  view3d: { yaw: 0, pitch: 0, clipAxis: 'none', clipFrac: 0.5, vectors: false },
+  view3d: { yaw: 0, pitch: 0, clipAxis: 'none', clipFrac: 0.5, clipNormal: [1, 0, 0], vectors: false },
   slug: { frames: [], idx: 0, playing: false, timer: null },
   sweep: { rows: [], running: false, out: '' },
   loadedTemplate: null,
@@ -355,6 +356,65 @@ function renderProps() {
       state.model = setPipeFields(state.model, p.id, { pumpSpeed: v });
       afterModelChange();
     }));
+    // ESP advanced intake semantics (steady kernel reads both keys)
+    propsEl.appendChild(numInput('气锁体积分数 pumpGasFraction', p.pumpGasFraction ?? 0, null, (v) => {
+      state.model = setPipeFields(state.model, p.id, { pumpGasFraction: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('吸入口压力 pumpIntakePressure (Pa)', p.pumpIntakePressure ?? 0, 'pressure', (v) => {
+      state.model = setPipeFields(state.model, p.id, { pumpIntakePressure: v });
+      afterModelChange();
+    }));
+    // gas-lift valve (§5.89, steady-only): dome pressure is the switch
+    propsEl.appendChild(numInput('气举阀充压 liftDomePressure (Pa)', p.liftDomePressure ?? 0, 'pressure', (v) => {
+      state.model = setPipeFields(state.model, p.id, { liftDomePressure: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('气举阀面积比 liftAreaRatio', p.liftAreaRatio ?? 0, null, (v) => {
+      state.model = setPipeFields(state.model, p.id, { liftAreaRatio: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('弹簧压力 liftSpringPressure (Pa)', p.liftSpringPressure ?? 0, 'pressure', (v) => {
+      state.model = setPipeFields(state.model, p.id, { liftSpringPressure: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('流量系数 liftDischargeCoeff', p.liftDischargeCoeff ?? 0, null, (v) => {
+      state.model = setPipeFields(state.model, p.id, { liftDischargeCoeff: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('流道指数 liftKappa', p.liftKappa ?? 0, null, (v) => {
+      state.model = setPipeFields(state.model, p.id, { liftKappa: v });
+      afterModelChange();
+    }));
+    // rod pump (§5.90, steady-only; transient refuses it)
+    propsEl.appendChild(numInput('柱塞直径 rodPlungerDiameter (m)', p.rodPlungerDiameter ?? 0, 'length', (v) => {
+      state.model = setPipeFields(state.model, p.id, { rodPlungerDiameter: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('冲程长度 rodStrokeLength (m)', p.rodStrokeLength ?? 0, 'length', (v) => {
+      state.model = setPipeFields(state.model, p.id, { rodStrokeLength: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('冲次 rodStrokesPerMinute', p.rodStrokesPerMinute ?? 0, null, (v) => {
+      state.model = setPipeFields(state.model, p.id, { rodStrokesPerMinute: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('抽油杆直径 rodDiameter (m)', p.rodDiameter ?? 0, 'length', (v) => {
+      state.model = setPipeFields(state.model, p.id, { rodDiameter: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('抽油杆长度 rodLength (m)', p.rodLength ?? 0, 'length', (v) => {
+      state.model = setPipeFields(state.model, p.id, { rodLength: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('杆材杨氏模量 rodYoungModulus (Pa)', p.rodYoungModulus ?? 0, 'pressure', (v) => {
+      state.model = setPipeFields(state.model, p.id, { rodYoungModulus: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('杆材密度 rodDensity (kg/m³)', p.rodDensity ?? 0, 'density', (v) => {
+      state.model = setPipeFields(state.model, p.id, { rodDensity: v });
+      afterModelChange();
+    }));
     if (state.steady) {
       const r = state.steady.pipes.find((x) => x.name === p.name);
       if (r) {
@@ -476,7 +536,47 @@ function appendDeviceGlyph(p, ax, ay, bx, by) {
     renderTree();
   };
 
-  if (p.valve) {
+  if (p.liftDomePressure) {
+    // gas-lift valve (§5.89): dome charge + port, drawn as a bell with stem
+    g.setAttribute('class', 'dev-gaslift');
+    const bell = document.createElementNS(NS, 'path');
+    bell.setAttribute(
+      'd',
+      `M ${mx - 8},${my + 6} Q ${mx - 8},${my - 9} ${mx},${my - 9} ` +
+      `Q ${mx + 8},${my - 9} ${mx + 8},${my + 6} Z`,
+    );
+    const port = document.createElementNS(NS, 'circle');
+    port.setAttribute('cx', mx);
+    port.setAttribute('cy', my + 8);
+    port.setAttribute('r', 2.5);
+    g.append(bell, port);
+    const bits = [`气举阀 ${p.name}: dome=${p.liftDomePressure}`];
+    if (p.liftAreaRatio) bits.push(`Ar=${p.liftAreaRatio}`);
+    if (p.liftSpringPressure) bits.push(`spring=${p.liftSpringPressure}`);
+    if (p.liftDischargeCoeff) bits.push(`Cd=${p.liftDischargeCoeff}`);
+    if (p.liftKappa) bits.push(`kappa=${p.liftKappa}`);
+    title.textContent = bits.join(' ');
+  } else if (p.rodPlungerDiameter) {
+    // rod pump (§5.90): barrel + plunger, drawn as a piston jack
+    g.setAttribute('class', 'dev-rodpump');
+    const barrel = document.createElementNS(NS, 'rect');
+    barrel.setAttribute('x', mx - 10);
+    barrel.setAttribute('y', my - 5);
+    barrel.setAttribute('width', 20);
+    barrel.setAttribute('height', 10);
+    const horse = document.createElementNS(NS, 'path');
+    horse.setAttribute(
+      'd',
+      `M ${mx},${my - 5} L ${mx},${my - 12} L ${mx + 7},${my - 12}`,
+    );
+    g.append(barrel, horse);
+    const bits = [`有杆泵 ${p.name}: bore=${p.rodPlungerDiameter}`];
+    if (p.rodStrokeLength) bits.push(`stroke=${p.rodStrokeLength}`);
+    if (p.rodStrokesPerMinute) bits.push(`spm=${p.rodStrokesPerMinute}`);
+    if (p.rodDiameter) bits.push(`rodD=${p.rodDiameter}`);
+    if (p.rodLength) bits.push(`rodL=${p.rodLength}`);
+    title.textContent = bits.join(' ');
+  } else if (p.valve) {
     g.setAttribute('class', 'dev-valve');
     const t1 = document.createElementNS(NS, 'polygon');
     t1.setAttribute('points', `${mx - 7},${my - 7} ${mx - 7},${my + 7} ${mx},${my}`);
@@ -512,6 +612,8 @@ function appendDeviceGlyph(p, ax, ay, bx, by) {
     if (p.pumpShutoffHead) bits.push(`shutoff=${p.pumpShutoffHead}`);
     if (p.pumpStages) bits.push(`stages=${p.pumpStages}`);
     if (p.pumpSpeed) bits.push(`speed=${p.pumpSpeed}`);
+    if (p.pumpGasFraction) bits.push(`gasFrac=${p.pumpGasFraction}`);
+    if (p.pumpIntakePressure) bits.push(`intake=${p.pumpIntakePressure}`);
     title.textContent = bits.join(' ');
   }
   g.appendChild(title);
@@ -724,11 +826,45 @@ $('addPumpBtn').addEventListener('click', () => {
     setStatus(`管段 ${p.name} 已加离心泵（pumpHead=${patch.pumpHead} m, pumpRate=${patch.pumpRate} m³/s）。`, 'ok');
   });
 });
+$('addGasLiftBtn').addEventListener('click', () => {
+  withSelectedPipe((p) => {
+    const patch = { liftDomePressure: p.liftDomePressure || 1.6e7 };
+    state.model = setPipeFields(state.model, p.id, patch);
+    setStatus(
+      `管段 ${p.name} 已加气举阀（liftDomePressure=${patch.liftDomePressure} Pa，§5.89 稳态元件）。`,
+      'ok',
+    );
+  });
+});
+$('addRodPumpBtn').addEventListener('click', () => {
+  withSelectedPipe((p) => {
+    const patch = {
+      rodPlungerDiameter: p.rodPlungerDiameter || 0.038,
+      rodStrokeLength: p.rodStrokeLength || 2.5,
+      rodStrokesPerMinute: p.rodStrokesPerMinute || 6,
+      // point element: the kernel refuses a barrel bore on a marched pipe
+      // (length) and reads no pipe bore ("the bore that matters is the
+      // barrel's"), so both geometry fields go to zero
+      length: 0,
+      diameter: 0,
+    };
+    state.model = setPipeFields(state.model, p.id, patch);
+    setStatus(
+      `管段 ${p.name} 已加有杆泵（bore=${patch.rodPlungerDiameter} m, spm=${patch.rodStrokesPerMinute}，§5.90 稳态点元件——管长已置 0）。`,
+      'ok',
+    );
+  });
+});
 $('removeDeviceBtn').addEventListener('click', () => {
   withSelectedPipe((p) => {
     state.model = setPipeFields(state.model, p.id, {
       valve: 0, pumpHead: 0, pumpRate: 0,
       pumpShutoffHead: 0, pumpStages: 0, pumpSpeed: 0,
+      pumpGasFraction: 0, pumpIntakePressure: 0,
+      liftDomePressure: 0, liftAreaRatio: 0, liftSpringPressure: 0,
+      liftDischargeCoeff: 0, liftKappa: 0,
+      rodPlungerDiameter: 0, rodStrokeLength: 0, rodStrokesPerMinute: 0,
+      rodDiameter: 0, rodLength: 0, rodYoungModulus: 0, rodDensity: 0,
     });
     setStatus(`管段 ${p.name} 的内嵌设备已移除。`, 'ok');
   });
@@ -1105,19 +1241,18 @@ function renderField() {
   const yaw = (v3.yaw * Math.PI) / 180;
   const pitch = (v3.pitch * Math.PI) / 180;
 
-  // clip: keep cells whose centroid sits on the low side of the axis plane
-  const keep = cells.map((vids) => {
-    if (v3.clipAxis === 'none') return true;
-    const c = cellCentroid(points, vids);
-    const coord = c[v3.clipAxis];
-    let amin = Infinity, amax = -Infinity;
-    for (const cc of cells) {
-      const v = cellCentroid(points, cc)[v3.clipAxis];
-      amin = Math.min(amin, v);
-      amax = Math.max(amax, v);
-    }
-    return coord <= amin + v3.clipFrac * (amax - amin || 1);
-  });
+  // clip: arbitrary plane through cell centroids. `clipAxis` picks a unit
+  // axis (x/y/z) or 'custom' to use the free normal `clipNormal`; both are
+  // the same plane equation, so the axis form is the n=[1,0,0] special case.
+  const clipNormal = v3.clipAxis === 'none'
+    ? null
+    : v3.clipAxis === 'x' ? [1, 0, 0]
+      : v3.clipAxis === 'y' ? [0, 1, 0]
+        : v3.clipAxis === 'z' ? [0, 0, 1]
+          : v3.clipNormal;
+  const keep = clipNormal
+    ? clipKeepsByPlane(cells, points, clipNormal, v3.clipFrac)
+    : cells.map(() => true);
 
   const dpr = window.devicePixelRatio || 1;
   cv.width = cv.clientWidth * dpr;
@@ -1170,18 +1305,22 @@ function renderField() {
     ctx.stroke();
   });
 
-  // velocity vectors at cell centroids (stride-thinned to <= 400 arrows)
+  // velocity vectors at cell centroids (magnitude-adaptive thinning to
+  // <= 400 arrows: hotspots stay dense, coverage is sampled evenly)
   let drawn = 0;
   if (v3.vectors) {
     const visible = cells.map((_, k) => k).filter((k) => keep[k]);
-    const stride = Math.max(1, Math.ceil(visible.length / 400));
-    const maxMag = Math.max(...cellU.map((u) => Math.hypot(u[0], u[1], u[2])), 1e-12);
+    const mags = cellU.map((u) => Math.hypot(u[0], u[1], u[2]));
+    const drawnIdx = new Set(adaptiveVectorIndices(
+      visible.map((k) => mags[k]), 400,
+    ).map((local) => visible[local]));
+    const maxMag = Math.max(...mags, 1e-12);
     const arrowLen = Math.min(cv.width, cv.height) * 0.09;
     const vecColor = state.theme === 'dark' ? '#e6edf6' : '#1c2733';
     ctx.strokeStyle = vecColor;
     ctx.lineWidth = Math.max(1, 1.2 * dpr);
     for (const k of visible) {
-      if (k % stride !== 0) continue;
+      if (!drawnIdx.has(k)) continue;
       const u = cellU[k];
       const mag = Math.hypot(u[0], u[1], u[2]);
       if (mag <= 0) continue;
@@ -1220,7 +1359,11 @@ function renderField() {
     : (v) => v;
   $('legendLo').textContent = `${Number(conv(lo).toPrecision(5))} ${unit}`;
   $('legendHi').textContent = `${Number(conv(hi).toPrecision(5))} ${unit}`;
-  const clipTxt = v3.clipAxis === 'none' ? '无剖切' : `剖切 ${v3.clipAxis}@${v3.clipFrac.toFixed(2)}`;
+  const clipTxt = v3.clipAxis === 'none'
+    ? '无剖切'
+    : v3.clipAxis === 'custom'
+      ? `剖切 n=[${v3.clipNormal.map((x) => x.toFixed(2)).join(',')}]\u2009@${v3.clipFrac.toFixed(2)}`
+      : `剖切 ${v3.clipAxis}@${v3.clipFrac.toFixed(2)}`;
   $('fieldInfo').textContent =
     `块网格 ${cells.length} 单元 / ${points.length} 顶点 · ` +
     `渲染场 ${state.fieldMode === 'p' ? '压力 p' : '流速 |U|'} · ` +
@@ -1243,8 +1386,22 @@ $('viewPitch').addEventListener('input', (e) => {
 });
 $('clipAxis').addEventListener('change', (e) => {
   state.view3d.clipAxis = e.target.value;
+  $('clipNormalRow').hidden = e.target.value !== 'custom';
   renderField();
 });
+// custom plane normal: read the three components, normalized in the pure
+// helper (a zero vector keeps every cell, so a typo never blanks the view)
+function readClipNormal() {
+  state.view3d.clipNormal = [
+    Number($('clipNx').value) || 0,
+    Number($('clipNy').value) || 0,
+    Number($('clipNz').value) || 0,
+  ];
+  renderField();
+}
+$('clipNx').addEventListener('input', readClipNormal);
+$('clipNy').addEventListener('input', readClipNormal);
+$('clipNz').addEventListener('input', readClipNormal);
 $('clipFrac').addEventListener('input', (e) => {
   state.view3d.clipFrac = Number(e.target.value);
   renderField();
@@ -1455,12 +1612,13 @@ async function runSweep() {
   }
 
   state.sweep = { rows: [], running: true, out: state.sweep.out };
-  $('sweepStatus').textContent = `扫描中：0/${values.length}…`;
   const maxRef = Math.max(...values, 0);
-  for (let i = 0; i < values.length; i += 1) {
-    const v = values[i];
-    // clone the model, apply the parameter, serialize -> the sweep always runs
-    // exactly what the editor model represents
+
+  // Build every per-value case text up front (clone the model, apply the
+  // parameter, serialize), then hand the whole batch to the parallel
+  // run_case_texts command: scoped-thread worker pool, one engine process
+  // per row, results mapped back by index.
+  const texts = values.map((v) => {
     const m = JSON.parse(JSON.stringify(state.model));
     if (param === 'sourceRate') {
       for (const s of m.sources) if (s.name === target) s.rate = v;
@@ -1470,32 +1628,48 @@ async function runSweep() {
         else p.length = v;
       }
     }
-    const text = networkToCaseText(m);
-    let row;
-    try {
-      const sum = await invoke('run_case_text', { caseText: text, exePath: engines.steady });
-      const pipes = sum.pipes || [];
-      const nodes = sum.nodes || [];
-      const maxDp = pipes.length ? Math.max(...pipes.map((p) => Math.abs(p.dp || 0))) : 0;
-      row = {
-        value: v,
-        converged: !!sum.converged,
-        iterations: sum.iterations || 0,
-        residual: sum.residual || 0,
-        q: pipes.length ? pipes[pipes.length - 1].q : NaN,
-        maxDp,
-        pipes,
-        nodes,
-        error: null,
-      };
-    } catch (e) {
-      row = { value: v, converged: false, iterations: 0, residual: NaN, q: NaN, maxDp: NaN, pipes: [], nodes: [], error: String(e) };
-    }
-    state.sweep.rows.push(row);
-    $('sweepStatus').textContent =
-      `扫描中：${i + 1}/${values.length}（value=${row.value} ` +
-      `${row.error ? `失败: ${row.error}` : row.converged ? 'converged' : '未收敛'}）`;
+    return networkToCaseText(m);
+  });
+  $('sweepStatus').textContent = `并行扫描：${values.length} 项已提交…`;
+
+  let batch;
+  try {
+    batch = await invoke('run_case_texts', { texts, exePath: engines.steady });
+  } catch (e) {
+    state.sweep.running = false;
+    setStatus(`并行扫描失败：${e}`, 'error');
+    return;
   }
+
+  const rows = batch.map((r, i) => {
+    const v = values[i];
+    if (!r || !r.ok) {
+      return {
+        value: v, converged: false, iterations: 0, residual: NaN,
+        q: NaN, maxDp: NaN, pipes: [], nodes: [], error: String(r && r.error || '未知错误'),
+      };
+    }
+    const sum = r.summary;
+    const pipes = sum.pipes || [];
+    const nodes = sum.nodes || [];
+    const maxDp = pipes.length ? Math.max(...pipes.map((p) => Math.abs(p.dp || 0))) : 0;
+    return {
+      value: v,
+      converged: !!sum.converged,
+      iterations: sum.iterations || 0,
+      residual: sum.residual || 0,
+      q: pipes.length ? pipes[pipes.length - 1].q : NaN,
+      maxDp,
+      pipes,
+      nodes,
+      error: null,
+    };
+  });
+  state.sweep.rows = rows;
+  const failed = rows.filter((r) => r.error).length;
+  const unconverged = rows.filter((r) => !r.error && !r.converged).length;
+  $('sweepStatus').textContent =
+    `并行扫描完成：${values.length} 项（失败 ${failed}、未收敛 ${unconverged}）`;
   state.sweep.running = false;
   renderSweepResults(maxRef);
 }

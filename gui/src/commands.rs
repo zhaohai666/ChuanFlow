@@ -65,6 +65,40 @@ pub struct PipeDef {
     pub pump_stages: f64,
     #[serde(default)]
     pub pump_speed: f64,
+    /// ESP advanced intake semantics (`network.cpp` reads both keys; the
+    /// affinity-law pump is steady-network, transient rejects pumps).
+    #[serde(default)]
+    pub pump_gas_fraction: f64,
+    #[serde(default)]
+    pub pump_intake_pressure: f64,
+    /// Gas-lift valve (§5.89): the dome pressure is the switch, the rest are
+    /// its port/spring parameters. Steady-network element.
+    #[serde(default)]
+    pub lift_dome_pressure: f64,
+    #[serde(default)]
+    pub lift_area_ratio: f64,
+    #[serde(default)]
+    pub lift_spring_pressure: f64,
+    #[serde(default)]
+    pub lift_discharge_coeff: f64,
+    #[serde(default)]
+    pub lift_kappa: f64,
+    /// Rod pump (§5.90): the barrel bore is the switch. Steady-network
+    /// element (transient explicitly refuses it: no polished rod exists).
+    #[serde(default)]
+    pub rod_plunger_diameter: f64,
+    #[serde(default)]
+    pub rod_stroke_length: f64,
+    #[serde(default)]
+    pub rod_strokes_per_minute: f64,
+    #[serde(default)]
+    pub rod_diameter: f64,
+    #[serde(default)]
+    pub rod_length: f64,
+    #[serde(default)]
+    pub rod_young_modulus: f64,
+    #[serde(default)]
+    pub rod_density: f64,
 }
 
 impl Default for PipeDef {
@@ -83,6 +117,20 @@ impl Default for PipeDef {
             pump_shutoff_head: 0.0,
             pump_stages: 0.0,
             pump_speed: 0.0,
+            pump_gas_fraction: 0.0,
+            pump_intake_pressure: 0.0,
+            lift_dome_pressure: 0.0,
+            lift_area_ratio: 0.0,
+            lift_spring_pressure: 0.0,
+            lift_discharge_coeff: 0.0,
+            lift_kappa: 0.0,
+            rod_plunger_diameter: 0.0,
+            rod_stroke_length: 0.0,
+            rod_strokes_per_minute: 0.0,
+            rod_diameter: 0.0,
+            rod_length: 0.0,
+            rod_young_modulus: 0.0,
+            rod_density: 0.0,
         }
     }
 }
@@ -323,6 +371,20 @@ pub fn parse_case_text(text: &str) -> Result<NetworkCase, String> {
                         pump_shutoff_head: num("pumpShutoffHead", 0.0),
                         pump_stages: num("pumpStages", 0.0),
                         pump_speed: num("pumpSpeed", 0.0),
+                        pump_gas_fraction: num("pumpGasFraction", 0.0),
+                        pump_intake_pressure: num("pumpIntakePressure", 0.0),
+                        lift_dome_pressure: num("liftDomePressure", 0.0),
+                        lift_area_ratio: num("liftAreaRatio", 0.0),
+                        lift_spring_pressure: num("liftSpringPressure", 0.0),
+                        lift_discharge_coeff: num("liftDischargeCoeff", 0.0),
+                        lift_kappa: num("liftKappa", 0.0),
+                        rod_plunger_diameter: num("rodPlungerDiameter", 0.0),
+                        rod_stroke_length: num("rodStrokeLength", 0.0),
+                        rod_strokes_per_minute: num("rodStrokesPerMinute", 0.0),
+                        rod_diameter: num("rodDiameter", 0.0),
+                        rod_length: num("rodLength", 0.0),
+                        rod_young_modulus: num("rodYoungModulus", 0.0),
+                        rod_density: num("rodDensity", 0.0),
                     });
                 }
                 "sources" => {
@@ -487,6 +549,48 @@ pub fn serialize_network_case(case: &NetworkCase) -> String {
         }
         if p.pump_speed != 0.0 {
             fields.push_str(&format!(" pumpSpeed {};", fmt_num(p.pump_speed)));
+        }
+        if p.pump_gas_fraction != 0.0 {
+            fields.push_str(&format!(" pumpGasFraction {};", fmt_num(p.pump_gas_fraction)));
+        }
+        if p.pump_intake_pressure != 0.0 {
+            fields.push_str(&format!(" pumpIntakePressure {};", fmt_num(p.pump_intake_pressure)));
+        }
+        if p.lift_dome_pressure != 0.0 {
+            fields.push_str(&format!(" liftDomePressure {};", fmt_num(p.lift_dome_pressure)));
+        }
+        if p.lift_area_ratio != 0.0 {
+            fields.push_str(&format!(" liftAreaRatio {};", fmt_num(p.lift_area_ratio)));
+        }
+        if p.lift_spring_pressure != 0.0 {
+            fields.push_str(&format!(" liftSpringPressure {};", fmt_num(p.lift_spring_pressure)));
+        }
+        if p.lift_discharge_coeff != 0.0 {
+            fields.push_str(&format!(" liftDischargeCoeff {};", fmt_num(p.lift_discharge_coeff)));
+        }
+        if p.lift_kappa != 0.0 {
+            fields.push_str(&format!(" liftKappa {};", fmt_num(p.lift_kappa)));
+        }
+        if p.rod_plunger_diameter != 0.0 {
+            fields.push_str(&format!(" rodPlungerDiameter {};", fmt_num(p.rod_plunger_diameter)));
+        }
+        if p.rod_stroke_length != 0.0 {
+            fields.push_str(&format!(" rodStrokeLength {};", fmt_num(p.rod_stroke_length)));
+        }
+        if p.rod_strokes_per_minute != 0.0 {
+            fields.push_str(&format!(" rodStrokesPerMinute {};", fmt_num(p.rod_strokes_per_minute)));
+        }
+        if p.rod_diameter != 0.0 {
+            fields.push_str(&format!(" rodDiameter {};", fmt_num(p.rod_diameter)));
+        }
+        if p.rod_length != 0.0 {
+            fields.push_str(&format!(" rodLength {};", fmt_num(p.rod_length)));
+        }
+        if p.rod_young_modulus != 0.0 {
+            fields.push_str(&format!(" rodYoungModulus {};", fmt_num(p.rod_young_modulus)));
+        }
+        if p.rod_density != 0.0 {
+            fields.push_str(&format!(" rodDensity {};", fmt_num(p.rod_density)));
         }
         out.push_str(&format!("    {} {{ {} }}\n", p.name, fields));
     }
@@ -1156,6 +1260,77 @@ pub fn validate_case(case_text: String) -> Result<NetworkCase, String> {
     parse_case_text(&case_text)
 }
 
+/// One row of the parallel sweep: per-index result so order is preserved
+/// regardless of which worker finished when.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunRow {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<SolverSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Run many case texts concurrently through the same engine binary — the
+/// parameter sweep's batch primitive. Each row keeps its input index (the
+/// frontend maps values to rows positionally), workers are scoped threads
+/// capped by both `available_parallelism` and 8 (process storms are worse
+/// than queueing), and every temporary dict is uniquely named so workers
+/// never share a file.
+#[tauri::command]
+pub fn run_case_texts(texts: Vec<String>, exe_path: String) -> Vec<RunRow> {
+    if texts.is_empty() {
+        return Vec::new();
+    }
+    let workers = std::cmp::min(
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
+        texts.len(),
+    )
+    .min(8);
+    let rows: std::sync::Mutex<Vec<Option<RunRow>>> =
+        std::sync::Mutex::new((0..texts.len()).map(|_| None).collect());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let next = &next;
+            let rows = &rows;
+            let texts = &texts;
+            let exe_path = &exe_path;
+            scope.spawn(move || loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if i >= texts.len() {
+                    break;
+                }
+                let row = match run_case_text(texts[i].clone(), exe_path.clone()) {
+                    Ok(summary) => RunRow {
+                        ok: true,
+                        summary: Some(summary),
+                        error: None,
+                    },
+                    Err(e) => RunRow {
+                        ok: false,
+                        summary: None,
+                        error: Some(e),
+                    },
+                };
+                rows.lock().expect("sweep row mutex")[i] = Some(row);
+            });
+        }
+    });
+    rows.into_inner()
+        .expect("sweep rows mutex")
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            r.unwrap_or_else(|| RunRow {
+                ok: false,
+                summary: None,
+                error: Some(format!("sweep row {i} never finished")),
+            })
+        })
+        .collect()
+}
+
 /// Run a transient case, writing its text to a temp dictionary and parsing the
 /// time series from stdout. The case must carry a `time{}` block.
 #[tauri::command]
@@ -1628,5 +1803,102 @@ time { dt 0.01; endTime 1; reportEvery 10; }
         // Serialized text must be runnable: real loader reads `node` and time.
         assert!(serialize_network_case(&case).contains("node A;"));
         assert!(serialize_network_case(&case).contains("endTime 1"));
+    }
+
+    #[test]
+    fn device_families_roundtrip_and_stay_absent_when_zero() {
+        // Gas-lift valve (§5.89), rod pump (§5.90) and ESP advanced intake —
+        // every key the steadyNetwork kernel reads must survive the GUI
+        // round-trip, and a plain pipe must stay byte-identical.
+        let text = "nodes\n{\n A {}\n B {}\n}\npipes\n{\n \
+GL { from A; to B; length 100; diameter 0.05; liftDomePressure 1.6e7; liftAreaRatio 0.31; liftSpringPressure 9e6; liftDischargeCoeff 0.85; liftKappa 1.4; }\n \
+RP { from A; to B; length 800; diameter 0.062; rodPlungerDiameter 0.038; rodStrokeLength 2.5; rodStrokesPerMinute 6; rodDiameter 0.0222; rodLength 1200; rodYoungModulus 2.1e11; rodDensity 7850; }\n \
+ESP { from A; to B; length 600; diameter 0.05; pumpHead 800; pumpRate 0.01; pumpGasFraction 0.25; pumpIntakePressure 3.5e6; }\n \
+PLAIN { from A; to B; length 100; diameter 0.05; }\n}\n";
+        let case = parse_case_text(text).expect("parse");
+        let gl = &case.pipes[0];
+        assert_eq!(gl.lift_dome_pressure, 1.6e7);
+        assert_eq!(gl.lift_area_ratio, 0.31);
+        assert_eq!(gl.lift_spring_pressure, 9e6);
+        assert_eq!(gl.lift_discharge_coeff, 0.85);
+        assert_eq!(gl.lift_kappa, 1.4);
+        let rp = &case.pipes[1];
+        assert_eq!(rp.rod_plunger_diameter, 0.038);
+        assert_eq!(rp.rod_strokes_per_minute, 6.0);
+        assert_eq!(rp.rod_young_modulus, 2.1e11);
+        assert_eq!(rp.rod_density, 7850.0);
+        let esp = &case.pipes[2];
+        assert_eq!(esp.pump_gas_fraction, 0.25);
+        assert_eq!(esp.pump_intake_pressure, 3.5e6);
+        assert_eq!(esp.pump_head, 800.0);
+
+        let round = parse_case_text(&serialize_network_case(&case)).expect("re-parse");
+        assert_eq!(round, case);
+        let text2 = serialize_network_case(&round);
+        assert!(text2.contains("liftDomePressure"));
+        assert!(text2.contains("rodPlungerDiameter"));
+        assert!(text2.contains("pumpGasFraction"));
+        assert!(text2.contains("pumpIntakePressure"));
+        // Plain pipe: no device keys leak into its serialization.
+        assert!(text2.contains(
+            "PLAIN { from A; to B; length 100; diameter 0.05; roughness 0; elevation 0; }"
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn run_case_texts_runs_every_row_and_keeps_order() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = std::env::temp_dir().join(format!(
+            "chflow_gui_fake_batch_{}_{}.sh", std::process::id(), unique_tmp_id()));
+        // The fake engine echoes the case name it was handed so the test can
+        // assert that result row i came from text i (order preservation under
+        // concurrency), and still prints a parseable summary line.
+        fs::write(
+            &script,
+            "#!/bin/sh\ncase_file=\"$1\"\n\
+             nodes=$(grep -c 'pressure' \"$case_file\" || true)\n\
+             echo \"[chflow] node A p 30000\"\n\
+             echo \"[chflow] steady solved: iterations=$nodes residual=1e-9 (converged)\"\n",
+        )
+        .unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        // Five texts with 1..5 fixed-pressure nodes: row i must report
+        // iterations = i (the fake engine counts `pressure` occurrences),
+        // proving results map back to their inputs, not to completion order.
+        let texts: Vec<String> = (1..=5)
+            .map(|k| {
+                // One node per line: the fake engine counts *lines* containing
+                // `pressure` (grep -c), so row i must report iterations = i.
+                let mut nodes = String::new();
+                for j in 0..k {
+                    nodes.push_str(&format!(" F{j} {{ pressure 1e5; }}\n"));
+                }
+                format!(
+                    "nodes\n{{\n{nodes}}}\npipes\n{{\n P {{ from F0; to F0; }}\n}}\n"
+                )
+            })
+            .collect();
+        let rows = run_case_texts(texts, script.to_string_lossy().into_owned());
+        assert_eq!(rows.len(), 5);
+        for (i, row) in rows.iter().enumerate() {
+            assert!(row.ok, "row {i} failed: {:?}", row.error);
+            let s = row.summary.as_ref().expect("summary present");
+            assert_eq!(s.iterations, (i + 1) as u64, "row {i} order");
+        }
+        let _ = fs::remove_file(&script);
+
+        // Missing engine: every row fails loudly, none panics.
+        let rows = run_case_texts(
+            vec!["nodes\n{\n A {}\n}\n".into(), "nodes\n{\n B {}\n}\n".into()],
+            "/definitely/not/a/real/chflow-binary".into(),
+        );
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|r| !r.ok && r.error.is_some()));
     }
 }

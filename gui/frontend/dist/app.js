@@ -37,6 +37,22 @@ import {
 import {
   templateTarget, isPartialFidelity, isSteadyComparable,
 } from './templates.js';
+import {
+  REGIME_NAMES, REGIME_COLORS, mapPoint, regimeHit, regimeMapDrawCommands,
+} from './regimemap.js';
+import {
+  tornadoData, tornadoCommands,
+} from './tornado.js';
+import {
+  marchingSquares, rasterizeSliceField, contourColor, profileBands,
+} from './contour.js';
+import {
+  nextParamSetId, paramSetsToJson, parseParamSets, activateSet, findConflicts,
+  applySetToModel, mergeOverrides,
+} from './paramsets.js';
+import {
+  createMonitorState, feedMonitor, monitorDrawCommands,
+} from './monitor.js';
 
 // ---------------------------------------------------------------------------
 // state
@@ -100,7 +116,7 @@ const state = {
   vtu: null,
   colorMode: 'none',
   fieldMode: 'p',
-  view3d: { yaw: 0, pitch: 0, clipAxis: 'none', clipFrac: 0.5, clipNormal: [1, 0, 0], vectors: false, streamlines: false, iso: { on: false, frac: 0.5 } },
+  view3d: { yaw: 0, pitch: 0, clipAxis: 'none', clipFrac: 0.5, clipNormal: [1, 0, 0], vectors: false, streamlines: false, iso: { on: false, frac: 0.5 }, contours: { on: false, levels: 5 } },
   streamlineCache: null,
   vortCache: null,
   reports: {
@@ -110,7 +126,12 @@ const state = {
     ],
     history: [], key: null,
   },
-  slug: { frames: [], idx: 0, playing: false, timer: null, series: ['p'] },
+  slug: { frames: [], idx: 0, playing: false, timer: null, series: ['p'], bands: false },
+  regime: { diameter: 0.05, vsl: 0.1, vsg: 0.3 },
+  tornado: { rows: [], running: false, data: null },
+  paramSets: [],
+  activeParamSet: null,
+  monitorStream: createMonitorState(1500),
   nodal: null,
   sweep: { rows: [], running: false, out: '', engine: 'steady' },
   loadedTemplate: null,
@@ -188,6 +209,8 @@ function switchTab(tabId) {
   }
   if (tabId === 'field') renderField();
   if (tabId === 'slug' && state.slug.frames.length) renderSlugFrame();
+  if (tabId === 'regime') renderRegimeMap();
+  if (tabId === 'paramsets') renderParamSets();
 }
 
 $('mainTabs').addEventListener('click', (e) => {
@@ -205,6 +228,7 @@ $('bottomTabs').addEventListener('click', (e) => {
     page.classList.toggle('active', page.id === `btab-${b.dataset.btab}`);
   }
   if (b.dataset.btab === 'curves') renderCharts();
+  if (b.dataset.btab === 'monitor') renderMonitorPanel();
 });
 
 // ---------------------------------------------------------------------------
@@ -1048,6 +1072,7 @@ async function startJob(label, caseText_, isPath = false) {
   try {
     const id = await invoke('start_case', { label, exePath: exe, casePath });
     state.job = { id, label, running: true, offset: 0, full: '' };
+    state.monitorStream = createMonitorState(1500); // F17: fresh iteration clock per job
     setJobChip(true, label);
     appendLog(`[job ${id}] 启动 ${label}: ${exe} ${casePath}`);
     setStatus(`作业 ${label} 已启动。`);
@@ -1084,6 +1109,9 @@ setInterval(async () => {
     appendLog(chunk);
     state.job.full += chunk;
     state.job.offset = st.output.length;
+    // F17: incremental ITER/MONITOR parsing off the same stream
+    feedMonitor(state.monitorStream, chunk);
+    if (document.querySelector('#btab-monitor.active')) renderMonitorPanel();
   }
   if (st.finished) {
     const label = state.job.label;
@@ -1390,6 +1418,40 @@ function renderField() {
     });
   }
 
+  // contour layer (F16): marching squares over the clip plane (or a z-slice
+  // through the kept cells when no clip is active), levels evenly spaced
+  // inside [lo, hi]; colours reuse the field rainbow so the legend applies.
+  let contourLines = 0;
+  if (v3.contours.on) {
+    const grid = rasterizeSliceField(points, cells, values, keep,
+      clipNormal || [0, 0, 1], 28);
+    if (grid) {
+      const nL = Math.max(2, Math.min(15, Number(v3.contours.levels) || 5));
+      const levels = Array.from({ length: nL },
+        (_, k) => lo + ((k + 1) / (nL + 1)) * (hi - lo || 1));
+      const cs = marchingSquares(grid.field, grid.nx, grid.ny, levels,
+        { dx: grid.dx, dy: grid.dy, x0: grid.x0, y0: grid.y0 });
+      const wp = (p) => ({
+        x: grid.origin[0] + grid.u[0] * p[0] + grid.v[0] * p[1],
+        y: grid.origin[1] + grid.u[1] * p[0] + grid.v[1] * p[1],
+        z: grid.origin[2] + grid.u[2] * p[0] + grid.v[2] * p[1],
+      });
+      ctx.lineWidth = Math.max(1, 1.2 * dpr);
+      for (const lv of cs) {
+        ctx.strokeStyle = contourColor(lv.level, lo, hi);
+        for (const [p, q] of lv.segments) {
+          const a = projectPoint(wp(p), centroid, yaw, pitch);
+          const b = projectPoint(wp(q), centroid, yaw, pitch);
+          ctx.beginPath();
+          ctx.moveTo(px(a.x), py(a.y));
+          ctx.lineTo(px(b.x), py(b.y));
+          ctx.stroke();
+          contourLines += 1;
+        }
+      }
+    }
+  }
+
   // streamline layer (U7): cell-centred velocity integration with a 64-line
   // budget; colour follows the seed-cell speed on the same rainbow scale as
   // the |U| field, and the geometry is cached per loaded VTU so rotating the
@@ -1490,6 +1552,7 @@ function renderField() {
     (v3.vectors ? ` · 矢量 ${drawn}（按 |U| 着色 ${magLo.toPrecision(3)}–${magHi.toPrecision(3)} m/s）` : '') +
     (v3.streamlines ? ` · 流线 ${streamCount}` : '') +
     (v3.iso.on ? ` · 等值面 ${isoCount} 片 @ ${Number(isoLevel.toPrecision(4))} ${unit}` : '') +
+    (v3.contours.on ? ` · 等值线 ${contourLines} 段（${v3.contours.levels} 层）` : '') +
     isoNote;
   recordReports();
 }
@@ -1724,11 +1787,15 @@ function renderSlugFrame() {
   const cells = fr.cells;
   const n = cells.length || 1;
   const bands = slugBands(fr);
+  // F16 reuse: 1-D holdup contour bands over the same cell axis
+  const cBands = state.slug.bands
+    ? profileBands(cells.map((c) => (Number.isFinite(c.alpha) ? c.alpha : NaN)), [0.25, 0.5, 0.75])
+    : [];
   const bandRow = 12 * dpr;
   const padL = 50 * dpr;
   const padR = 90 * dpr;
   const padT = 30 * dpr;
-  const padB = (40 + bands.length * 14) * dpr;
+  const padB = (40 + (bands.length + cBands.length) * 14) * dpr;
   const bw = (cv.width - padL - padR) / n;
   const bh = cv.height - padT - padB;
 
@@ -1816,6 +1883,20 @@ function renderSlugFrame() {
     ctx.fillText(b.label, padL - 44 * dpr, y + bandRow - 2 * dpr);
   });
 
+  // F16: holdup contour bands (α >= level), one strip per level
+  cBands.forEach((b, r) => {
+    const y = padT + bh + (6 + (bands.length + r) * 14) * dpr;
+    ctx.fillStyle = dark ? '#1a2536' : '#e6ecf3';
+    ctx.fillRect(padL, y, (cv.width - padL - padR), bandRow);
+    const col = ['#3fbf6f', '#4bb3c4', '#8fd3a8'][r % 3];
+    for (const run of b.runs) {
+      ctx.fillStyle = col;
+      ctx.fillRect(padL + run.from * bw, y, (run.to - run.from + 1) * bw, bandRow);
+    }
+    ctx.fillStyle = dark ? '#9aa7b8' : '#5b6b7d';
+    ctx.fillText(`α≥${b.level}`, padL - 44 * dpr, y + bandRow - 2 * dpr);
+  });
+
   // axis labels every ~10 cells
   ctx.fillStyle = dark ? '#9aa7b8' : '#5b6b7d';
   ctx.font = `${10 * dpr}px sans-serif`;
@@ -1823,7 +1904,7 @@ function renderSlugFrame() {
   for (let i = 0; i < n; i += step) {
     const c = cells[i];
     if (!c) continue;
-    ctx.fillText(String(c.index ?? i), padL + i * bw, padT + bh + (6 + bands.length * 14 + 12) * dpr);
+    ctx.fillText(String(c.index ?? i), padL + i * bw, padT + bh + (6 + (bands.length + cBands.length) * 14 + 12) * dpr);
   }
   $('slugReadout').textContent =
     `t=${fr.t} · vm=${fr.vm} · dp=${fr.dp} · 帧 ${s.idx + 1}/${s.frames.length}` +
@@ -3260,6 +3341,492 @@ $('menuToggleRight').addEventListener('click', () => {
 });
 
 // ---------------------------------------------------------------------------
+// P4 流型图（Beggs-Brill 图，内核 beggsBrillPattern 真值源）
+// ---------------------------------------------------------------------------
+
+function renderRegimeMap() {
+  const cv = $('regimeCanvas');
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = cv.clientWidth * dpr;
+  cv.height = cv.clientHeight * dpr;
+  const ctx = cv.getContext('2d');
+  const dark = state.theme === 'dark';
+  const D = Number($('regimeD').value) || 0.05;
+  const pts = [];
+  const op = mapPoint(Number($('regimeVsl').value), Number($('regimeVsg').value), D);
+  pts.push({ lambda: op.lambda, nfr: op.nfr, label: '工况点' });
+  if ($('regimeSlug').checked) {
+    const fr = state.slug.frames[state.slug.idx];
+    if (fr && Array.isArray(fr.cells)) {
+      for (const c of fr.cells) {
+        if (!Number.isFinite(c.vsl) || !Number.isFinite(c.vsg)) continue;
+        const m = mapPoint(c.vsl, c.vsg, D);
+        pts.push({ lambda: m.lambda, nfr: m.nfr, label: `#${c.index ?? ''}` });
+      }
+    }
+  }
+  const { commands } = regimeMapDrawCommands({
+    width: cv.width, height: cv.height, points: pts,
+  });
+  ctx.fillStyle = dark ? '#0c1220' : '#fbfcfe';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.font = `${10 * dpr}px sans-serif`;
+  for (const c of commands) {
+    if (c.type === 'rect') {
+      ctx.globalAlpha = 0.42;
+      ctx.fillStyle = c.color;
+      ctx.fillRect(c.x, c.y, c.w + 1, c.h + 1);
+      ctx.globalAlpha = 1;
+    } else if (c.type === 'polyline') {
+      ctx.strokeStyle = dark ? '#e8edf4' : '#22303f';
+      ctx.lineWidth = 1.4 * dpr;
+      ctx.beginPath();
+      c.points.forEach((p, i) => (i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y)));
+      ctx.stroke();
+    } else if (c.type === 'label') {
+      ctx.fillStyle = dark ? '#e8edf4' : '#22303f';
+      ctx.fillText(c.text, c.x + 4 * dpr, c.y + 3 * dpr);
+    } else if (c.type === 'marker') {
+      ctx.strokeStyle = dark ? '#ffffff' : '#111111';
+      ctx.lineWidth = 1.6 * dpr;
+      ctx.beginPath();
+      ctx.arc(c.x, c.y, 4 * dpr, 0, 7);
+      ctx.stroke();
+      ctx.fillStyle = dark ? '#ffffff' : '#111111';
+      ctx.fillText(c.label, c.x + 6 * dpr, c.y - 4 * dpr);
+    }
+  }
+  const slugN = pts.length - 1;
+  $('regimeStatus').textContent =
+    `工况点：λ=${op.lambda.toPrecision(3)} Nfr=${op.nfr.toPrecision(3)} → ` +
+    `${REGIME_NAMES[regimeHit(op.lambda, op.nfr)]}` +
+    (slugN ? ` · 叠加段塞逐段点 ${slugN} 个` : ' · 无段塞计算点（先运行段塞）');
+  $('regimeLegend').innerHTML = REGIME_NAMES
+    .map((n, i) => `<span style="color:${REGIME_COLORS[i]}">■</span> ${n}`).join(' · ')
+    + ' · 横轴 λ=v_sl/v_m（无滑移持液率），纵轴 Nfr=v_m²/(gD)（对数）';
+}
+
+$('regimeDrawBtn').addEventListener('click', renderRegimeMap);
+
+// ---------------------------------------------------------------------------
+// P20 敏感性龙卷风图（复用稳态批量扫描调度）
+// ---------------------------------------------------------------------------
+
+function tornadoCurrentValue(param, target) {
+  if (param === 'sourceRate') {
+    const s = state.model.sources.find((x) => x.name === target);
+    return s ? Number(s.rate) : NaN;
+  }
+  const p = state.model.pipes.find((x) => x.name === target);
+  if (!p) return NaN;
+  return Number(param === 'pipeDiameter' ? p.diameter : p.length);
+}
+
+function steadyMetric(r, metric) {
+  if (!r || !r.ok || !r.summary) return NaN;
+  const pipes = r.summary.pipes || [];
+  if (!pipes.length) return NaN;
+  if (metric === 'qEnd') return pipes[pipes.length - 1].q;
+  return Math.max(...pipes.map((p) => Math.abs(p.dp || 0)));
+}
+
+async function runTornado() {
+  if (state.tornado.running) return;
+  if ($('sweepEngine').value !== 'steady') {
+    $('tornadoStatus').textContent = '龙卷风分析当前基于稳态批量扫描：请把上方引擎切到「稳态管网」。';
+    return;
+  }
+  const rows = state.tornado.rows.length
+    ? state.tornado.rows
+    : [{ param: $('sweepParam').value, target: $('sweepTarget').value }];
+  const lowFrac = (Number($('tornadoLow').value) || 0) / 100;
+  const highFrac = (Number($('tornadoHigh').value) || 0) / 100;
+  const metric = $('tornadoMetric').value;
+  const specs = [];
+  for (const row of rows) {
+    const cur = tornadoCurrentValue(row.param, row.target);
+    if (!Number.isFinite(cur)) {
+      $('tornadoStatus').textContent = `参数 ${row.param}@${row.target} 在当前模型中不存在，已跳过。`;
+      continue;
+    }
+    specs.push({ ...row, cur });
+  }
+  if (!specs.length) {
+    $('tornadoStatus').textContent = '没有可分析的参数（当前模型缺少对应对象）。';
+    return;
+  }
+  const texts = [networkToCaseText(state.model)];
+  for (const s of specs) {
+    for (const frac of [lowFrac, highFrac]) {
+      texts.push(networkToCaseText(applySteadyScenario(state.model, [{
+        param: s.param, target: s.target, value: s.cur * (1 + frac),
+      }])));
+    }
+  }
+  state.tornado.running = true;
+  $('tornadoStatus').textContent = `龙卷风分析：基准 + ${specs.length} 参数 × 2 水平已提交并行求解…`;
+  let batch;
+  try {
+    batch = await invoke('run_case_texts', { texts, exePath: engines.steady });
+  } catch (e) {
+    state.tornado.running = false;
+    $('tornadoStatus').textContent = `龙卷风分析失败：${e}`;
+    return;
+  }
+  const cases = specs.map((s, i) => ({
+    label: `${s.param}@${s.target}`,
+    low: steadyMetric(batch[1 + 2 * i], metric),
+    high: steadyMetric(batch[2 + 2 * i], metric),
+  }));
+  state.tornado.data = tornadoData(steadyMetric(batch[0], metric), cases);
+  state.tornado.running = false;
+  $('tornadoStatus').textContent =
+    `龙卷风分析完成：${cases.length} 个参数（指标 ${metric === 'qEnd' ? '出口 Q' : '最大 dp'}）。`;
+  renderTornadoChart();
+}
+
+function renderTornadoChart() {
+  const el = $('tornadoChart');
+  const rows = state.tornado.data;
+  if (!rows || !rows.length) {
+    el.innerHTML = '<p class="empty">点「▶ 龙卷风分析」：基准值居中，按 |高−低| 降序的双向条形。</p>';
+    return;
+  }
+  const W = 560;
+  const H = 40 + rows.length * 34;
+  const { commands } = tornadoCommands(rows, { width: W, height: H, marginL: 170 });
+  let svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`;
+  for (const c of commands) {
+    if (c.type === 'line') {
+      svg += `<line x1="${c.x1.toFixed(1)}" y1="${c.y1.toFixed(1)}" x2="${c.x2.toFixed(1)}" `
+        + `y2="${c.y2.toFixed(1)}" stroke="var(--text)" stroke-dasharray="4 3"/>`;
+    } else if (c.type === 'rect' && c.w > 0) {
+      svg += `<rect x="${c.x.toFixed(1)}" y="${c.y.toFixed(1)}" width="${c.w.toFixed(1)}" `
+        + `height="${c.h.toFixed(1)}" fill="${c.color}" opacity="0.8"/>`;
+    } else if (c.type === 'text') {
+      svg += `<text x="${c.x.toFixed(1)}" y="${(c.y + 3).toFixed(1)}" font-size="10" `
+        + `text-anchor="${c.anchor}" fill="var(--text)">${c.text}</text>`;
+    }
+  }
+  svg += '</svg>';
+  el.innerHTML = svg;
+}
+
+$('tornadoAddBtn').addEventListener('click', () => {
+  const row = { param: $('sweepParam').value, target: $('sweepTarget').value };
+  if (!row.target) {
+    $('tornadoStatus').textContent = '当前扫描参数需要作用对象但对象为空：先建模型。';
+    return;
+  }
+  if (state.tornado.rows.some((r) => r.param === row.param && r.target === row.target)) {
+    $('tornadoStatus').textContent = `${row.param}@${row.target} 已在敏感性列表中。`;
+    return;
+  }
+  state.tornado.rows.push(row);
+  $('tornadoStatus').textContent =
+    `敏感性参数：${state.tornado.rows.map((r) => `${r.param}@${r.target}`).join('、')}`;
+});
+$('tornadoClearBtn').addEventListener('click', () => {
+  state.tornado.rows = [];
+  state.tornado.data = null;
+  renderTornadoChart();
+  $('tornadoStatus').textContent = '已清空敏感性参数列表。';
+});
+$('tornadoRunBtn').addEventListener('click', runTornado);
+
+// ---------------------------------------------------------------------------
+// F16 等值线 / 等值带控件
+// ---------------------------------------------------------------------------
+
+$('contourOn').addEventListener('change', (e) => {
+  state.view3d.contours.on = e.target.checked;
+  renderField();
+});
+$('contourLevels').addEventListener('change', (e) => {
+  state.view3d.contours.levels = Number(e.target.value) || 5;
+  renderField();
+});
+$('slugBandsOn').addEventListener('change', (e) => {
+  state.slug.bands = e.target.checked;
+  if (state.slug.frames.length) renderSlugFrame();
+});
+
+// ---------------------------------------------------------------------------
+// F18 参数集（Workbench 级 parameter set）
+// ---------------------------------------------------------------------------
+
+function renderParamSets() {
+  const list = $('psList');
+  list.innerHTML = state.paramSets.map((s) =>
+    `<div class="scen-item${s.id === state.activeParamSet ? ' sel' : ''}" data-id="${s.id}">` +
+    `<span class="nm">${s.name}</span>` +
+    `<span class="badge">${s.engine === 'transient' ? '瞬态' : '稳态'}</span>` +
+    `<span class="badge">${(s.overrides || []).length} 项</span>` +
+    `<button class="mini" data-act="apply" title="激活：精确应用到当前模型/字典">✔</button>` +
+    `<button class="mini" data-act="del" title="删除">✕</button></div>`).join('')
+    || '<p class="empty">尚无参数集，点「＋ 新参数集」。</p>';
+  renderParamSetEdit();
+  const conflicts = findConflicts(state.paramSets);
+  if (conflicts.length) {
+    $('psStatus').textContent = `⚠ 参数集冲突 ${conflicts.length} 处：` +
+      conflicts.map((c) => `${c.key}（${c.valueA} vs ${c.valueB}）`).join('、');
+  }
+}
+
+function renderParamSetEdit() {
+  const box = $('psEdit');
+  const ps = state.paramSets.find((s) => s.id === state.activeParamSet);
+  if (!ps) {
+    box.innerHTML = '<p class="empty">＋ 新参数集，或点列表中的参数集。</p>';
+    return;
+  }
+  const params = ps.engine === 'steady' ? STEADY_SCEN_PARAMS : TRANSIENT_WHAT_IF_PARAMS;
+  const rows = (ps.overrides || []).map((o, i) => {
+    const targets = scenarioTargetOptions(ps.engine, o.param);
+    return `<tr><td><select data-i="${i}" data-f="param">` +
+      params.map((p) => `<option value="${p.value}"${p.value === o.param ? ' selected' : ''}>${p.label}</option>`).join('') +
+      `</select></td><td><select data-i="${i}" data-f="target">` +
+      (targets.length
+        ? targets.map((t) => `<option${t === o.target ? ' selected' : ''}>${t}</option>`).join('')
+        : '<option value="">（全局）</option>') +
+      `</select></td><td><input data-i="${i}" data-f="value" type="number" step="any" value="${o.value}"/></td>` +
+      `<td><button class="mini" data-act="rm" data-i="${i}">✕</button></td></tr>`;
+  }).join('');
+  box.innerHTML =
+    `<label class="field"><span>名称</span><input id="psName" value="${ps.name}"/></label>` +
+    `<label class="field"><span>描述</span><input id="psDesc" value="${ps.description || ''}"/></label>` +
+    `<label class="field"><span>引擎</span><select id="psEngine">` +
+    `<option value="steady"${ps.engine === 'steady' ? ' selected' : ''}>稳态管网</option>` +
+    `<option value="transient"${ps.engine === 'transient' ? ' selected' : ''}>瞬态 what-if</option></select></label>` +
+    `<table class="data-table"><thead><tr><th>参数</th><th>对象</th><th>覆盖值</th><th></th></tr></thead>` +
+    `<tbody>${rows}</tbody></table>` +
+    `<div class="actions"><button id="psAddOverride" class="mini">＋ 覆盖项</button>` +
+    `<button id="psMergeBtn" class="mini" title="把上方当前扫描选择并入本参数集">＋ 并入扫描参数</button>` +
+    `<button id="psApplyBtn" class="primary">激活（应用到当前模型）</button></div>`;
+}
+
+function applyParamSet(ps) {
+  try {
+    if (ps.engine === 'transient') {
+      caseText.value = activateSet(ps, state.model, caseText.value);
+      applyDict(false);
+    } else {
+      state.model = applySetToModel(state.model, ps);
+      afterModelChange();
+    }
+    state.activeParamSet = ps.id;
+    setStatus(`参数集「${ps.name}」已激活（${(ps.overrides || []).length} 项覆盖精确应用）。`, 'ok');
+    renderParamSets();
+  } catch (e) {
+    setStatus(`激活参数集失败：${e.message || e}`, 'error');
+  }
+}
+
+async function runAllParamSets() {
+  if (!state.paramSets.length) {
+    $('psStatus').textContent = '尚无参数集可求解。';
+    return;
+  }
+  const steady = state.paramSets.filter((s) => s.engine !== 'transient');
+  const transient = state.paramSets.filter((s) => s.engine === 'transient');
+  const parts = [];
+  try {
+    if (steady.length) {
+      const texts = steady.map((s) => networkToCaseText(applySetToModel(state.model, s)));
+      const batch = await invoke('run_case_texts', { texts, exePath: engines.steady });
+      parts.push({ engine: 'steady', sets: steady, batch });
+    }
+    if (transient.length) {
+      const texts = transient.map((s) => activateSet(s, state.model, caseText.value));
+      const batch = await invoke('run_transient_texts', { texts, exePath: engines.transient });
+      parts.push({ engine: 'transient', sets: transient, batch });
+    }
+  } catch (e) {
+    $('psStatus').textContent = `批量求解失败：${e}`;
+    return;
+  }
+  const rows = [];
+  for (const part of parts) {
+    const norm = part.engine === 'steady' ? scenarioRowsSteady(part.batch) : scenarioRowsTransient(part.batch);
+    part.sets.forEach((s, i) => {
+      const r = norm[i];
+      if (part.engine === 'steady') {
+        rows.push({
+          name: s.name, engine: '稳态',
+          ok: r.ok ? (r.converged ? '✓ 收敛' : '未收敛') : `错误：${r.error}`,
+          iters: r.ok ? r.iterations : '—',
+          resid: r.ok ? Number(r.residual).toExponential(2) : '—',
+          a: r.ok ? fmtDisplay(r.maxDp, 'pressure', state.units, 4) : '—',
+          b: r.ok ? fmtDisplay(r.qEnd, 'rate', state.units, 4) : '—',
+        });
+      } else {
+        rows.push({
+          name: s.name, engine: '瞬态',
+          ok: r.ok ? `${r.steps} 步` : `错误：${r.error}`,
+          iters: r.ok ? Number(r.tEnd).toPrecision(4) : '—',
+          resid: '—',
+          a: r.ok ? fmtDisplay(r.pEnd, 'pressure', state.units, 4) : '—',
+          b: r.ok ? fmtDisplay(r.qEnd, 'rate', state.units, 4) : '—',
+        });
+      }
+    });
+  }
+  $('psResults').innerHTML =
+    `<table class="data-table"><thead><tr><th>参数集</th><th>引擎</th><th>状态</th>` +
+    `<th>迭代/时长</th><th>残差</th><th>最大 dp / 终态 p</th><th>出口 Q</th></tr></thead><tbody>` +
+    rows.map((r) => `<tr><td>${r.name}</td><td>${r.engine}</td><td>${r.ok}</td>` +
+      `<td>${r.iters}</td><td>${r.resid}</td><td>${r.a}</td><td>${r.b}</td></tr>`).join('') +
+    '</tbody></table>';
+  $('psStatus').textContent = `批量求解完成：${rows.length} 个参数集。`;
+}
+
+$('psAddBtn').addEventListener('click', () => {
+  const ps = {
+    id: nextParamSetId(),
+    name: `参数集 ${state.paramSets.length + 1}`,
+    description: '',
+    engine: $('sweepEngine') ? $('sweepEngine').value : 'steady',
+    overrides: [],
+  };
+  state.paramSets.push(ps);
+  state.activeParamSet = ps.id;
+  renderParamSets();
+});
+$('psRunAllBtn').addEventListener('click', runAllParamSets);
+$('psExportBtn').addEventListener('click', async () => {
+  try {
+    await invoke('write_text_file', {
+      path: '/tmp/chflow_paramsets.json',
+      content: paramSetsToJson(state.paramSets, state.activeParamSet),
+    });
+    $('psStatus').textContent = '参数集已导出 /tmp/chflow_paramsets.json。';
+  } catch (e) {
+    $('psStatus').textContent = `导出失败：${e}`;
+  }
+});
+$('psImportBtn').addEventListener('click', async () => {
+  try {
+    const text = await invoke('read_text_file', { path: '/tmp/chflow_paramsets.json' });
+    const data = parseParamSets(text);
+    state.paramSets = data.sets;
+    state.activeParamSet = data.activeId;
+    renderParamSets();
+    $('psStatus').textContent = `已导入 ${data.sets.length} 个参数集。`;
+  } catch (e) {
+    $('psStatus').textContent = `导入失败：${e}`;
+  }
+});
+$('psList').addEventListener('click', (e) => {
+  const item = e.target.closest('.scen-item');
+  if (!item) return;
+  const ps = state.paramSets.find((s) => s.id === item.dataset.id);
+  if (!ps) return;
+  const act = e.target.dataset.act;
+  if (act === 'del') {
+    state.paramSets = state.paramSets.filter((s) => s.id !== ps.id);
+    if (state.activeParamSet === ps.id) state.activeParamSet = null;
+    renderParamSets();
+  } else if (act === 'apply') {
+    applyParamSet(ps);
+  } else {
+    state.activeParamSet = ps.id;
+    renderParamSets();
+  }
+});
+$('psEdit').addEventListener('change', (e) => {
+  const ps = state.paramSets.find((s) => s.id === state.activeParamSet);
+  if (!ps) return;
+  const el = e.target;
+  if (el.id === 'psName') ps.name = el.value;
+  else if (el.id === 'psDesc') ps.description = el.value;
+  else if (el.id === 'psEngine') { ps.engine = el.value; renderParamSetEdit(); return; }
+  else if (el.dataset.i !== undefined) {
+    const o = ps.overrides[Number(el.dataset.i)];
+    if (!o) return;
+    if (el.dataset.f === 'value') o.value = Number(el.value);
+    else if (el.dataset.f === 'param') { o.param = el.value; o.target = ''; renderParamSetEdit(); return; }
+    else if (el.dataset.f === 'target') o.target = el.value;
+  }
+  renderParamSets();
+});
+$('psEdit').addEventListener('click', (e) => {
+  const ps = state.paramSets.find((s) => s.id === state.activeParamSet);
+  if (!ps) return;
+  if (e.target.id === 'psAddOverride') {
+    const params = ps.engine === 'steady' ? STEADY_SCEN_PARAMS : TRANSIENT_WHAT_IF_PARAMS;
+    ps.overrides.push({ param: params[0].value, target: '', value: 0 });
+    renderParamSetEdit();
+  } else if (e.target.dataset.act === 'rm') {
+    ps.overrides.splice(Number(e.target.dataset.i), 1);
+    renderParamSetEdit();
+  } else if (e.target.id === 'psApplyBtn') {
+    applyParamSet(ps);
+  } else if (e.target.id === 'psMergeBtn') {
+    const row = {
+      param: $('sweepParam').value,
+      target: $('sweepTarget').value,
+      value: tornadoCurrentValue($('sweepParam').value, $('sweepTarget').value),
+    };
+    if (!Number.isFinite(row.value)) {
+      $('psStatus').textContent = '当前扫描参数在模型中无对应对象，无法并入。';
+      return;
+    }
+    ps.overrides = mergeOverrides(ps.overrides, [row]);
+    renderParamSetEdit();
+    renderParamSets();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// F17 在线监控面板（ITER / MONITOR 增量流）
+// ---------------------------------------------------------------------------
+
+const MONITOR_PALETTE2 = ['#4bb3c4', '#e0a33e', '#8fd3a8', '#ff8f6b', '#9b8ad1', '#c96a9b', '#7db86a'];
+
+function renderMonitorPanel() {
+  const st = state.monitorStream;
+  const el = $('monitorChart');
+  const nMon = Object.keys(st.monitors).length;
+  $('monitorStatus').textContent =
+    `iter=${st.lastIter} · 残差采样=${st.iters.length} · monitor 曲线=${nMon}` +
+    ` · 乱序拒绝=${st.rejected} · 坏行=${st.malformed}`;
+  if (!st.iters.length && !nMon) {
+    el.innerHTML = '<p class="empty">暂无 ITER/MONITOR 行：运行任意求解后此面板按流增量解析逐迭代监控。</p>';
+    $('monitorLegend').textContent = '';
+    return;
+  }
+  const W = 560;
+  const H = 160;
+  const { commands, seriesNames } = monitorDrawCommands(st, W, H);
+  let svg = `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`;
+  let idx = 0;
+  for (const c of commands) {
+    if (c.role === 'tick') {
+      svg += `<line x1="${c.x1}" y1="${c.y1.toFixed(1)}" x2="${c.x2}" y2="${c.y2.toFixed(1)}" `
+        + 'stroke="var(--muted)" stroke-dasharray="2 3" opacity="0.5"/>';
+      svg += `<text x="2" y="${(c.y1 - 2).toFixed(1)}" font-size="8" fill="var(--muted)">`
+        + `${c.value.toExponential(0)}</text>`;
+    } else if (c.type === 'polyline') {
+      const color = MONITOR_PALETTE2[idx % MONITOR_PALETTE2.length];
+      idx += 1;
+      svg += `<polyline points="${c.points}" fill="none" stroke="${color}" stroke-width="1.4"/>`;
+    }
+  }
+  svg += '</svg>';
+  el.innerHTML = svg;
+  let j = 0;
+  $('monitorLegend').innerHTML = seriesNames.map((n) => {
+    const color = MONITOR_PALETTE2[j++ % MONITOR_PALETTE2.length];
+    return `<span style="color:${color}">■</span> ${n}`;
+  }).join(' · ');
+}
+
+$('monitorClearBtn').addEventListener('click', () => {
+  state.monitorStream = createMonitorState(1500);
+  renderMonitorPanel();
+});
+
+// ---------------------------------------------------------------------------
 // project save / load / new
 // ---------------------------------------------------------------------------
 
@@ -3270,6 +3837,8 @@ function projectJson() {
     model: state.model,
     units: state.units,
     theme: state.theme,
+    paramSets: state.paramSets,
+    activeParamSet: state.activeParamSet,
   }, null, 2);
 }
 
@@ -3306,6 +3875,8 @@ async function openProject() {
     state.coupledEdge = null;
     if (data.units) applyUnits(data.units);
     if (data.theme) applyTheme(data.theme);
+    state.paramSets = Array.isArray(data.paramSets) ? data.paramSets : [];
+    state.activeParamSet = data.activeParamSet ?? null;
     afterModelChange();
     setStatus(`工程已载入：${path}`, 'ok');
     appendLog(`[project] 已载入 ${path}`);
@@ -3315,6 +3886,8 @@ async function openProject() {
 }
 
 function newProject() {
+  state.paramSets = [];
+  state.activeParamSet = null;
   freshModel(DEFAULT_CASE);
   setStatus('已新建工程（示例算例）。', 'ok');
 }

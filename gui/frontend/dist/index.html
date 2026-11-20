@@ -90,8 +90,10 @@
           <button data-tab="field" class="tab">3D 场视图</button>
           <button data-tab="coupled" class="tab">耦合视图</button>
           <button data-tab="slug" class="tab">段塞动画</button>
+          <button data-tab="regime" class="tab">流型图</button>
           <button data-tab="nodal" class="tab">节点分析</button>
           <button data-tab="scenarios" class="tab">工况管理</button>
+          <button data-tab="paramsets" class="tab">参数集</button>
           <button data-tab="pvt" class="tab">PVT 流体</button>
           <button data-tab="sweep" class="tab">参数扫描</button>
           <button data-tab="dict" class="tab">case 字典</button>
@@ -168,6 +170,15 @@
               <label class="chk"><input id="isoOn" type="checkbox" /> 等值面壳层</label>
               <label>等值面水平
                 <input id="isoLevel" type="range" min="0" max="1" value="0.5" step="0.01" />
+              </label>
+              <label class="chk"><input id="contourOn" type="checkbox" /> 等值线（剖切面/切片）</label>
+              <label>等值线层数
+                <select id="contourLevels">
+                  <option value="3">3</option>
+                  <option value="5" selected>5</option>
+                  <option value="7">7</option>
+                  <option value="9">9</option>
+                </select>
               </label>
             </div>
             <div class="canvas-toolbar">
@@ -249,8 +260,32 @@
               <input id="slugFrame" class="grow" type="range" min="0" max="0" value="0" step="1" disabled />
               <b id="slugReadout" class="readout">—</b>
             </div>
+            <div class="canvas-toolbar">
+              <label class="chk"><input id="slugBandsOn" type="checkbox" /> 沿程持率等值带（α≥0.25/0.5/0.75）</label>
+              <span class="hint">等值带复用 F16 profileBands：按当前帧 alpha 逐段着色。</span>
+            </div>
             <canvas id="slugCanvas" class="field-canvas"></canvas>
             <p class="hint" id="slugInfo">持率剖面动画：绿 = 第一相体积分数 alpha，红框 = 段塞单元（s &gt; 0），蓝 = 水（water）。</p>
+          </section>
+
+          <!-- 流型图（P4：Beggs-Brill 图，内核 beggsBrillPattern 真值源） -->
+          <section id="tab-regime" class="tab-page">
+            <div class="canvas-toolbar">
+              <label>管径 D (m)
+                <input id="regimeD" type="number" step="0.005" min="0.005" value="0.05" style="width:76px" />
+              </label>
+              <label>v_sl (m/s)
+                <input id="regimeVsl" type="number" step="0.01" value="0.1" style="width:70px" />
+              </label>
+              <label>v_sg (m/s)
+                <input id="regimeVsg" type="number" step="0.01" value="0.3" style="width:70px" />
+              </label>
+              <label class="chk"><input id="regimeSlug" type="checkbox" checked /> 叠加段塞逐段计算点</label>
+              <button id="regimeDrawBtn" class="primary">绘制流型图</button>
+              <span id="regimeStatus" class="hint">λ–Nfr 坐标（对数 Nfr），边界为内核 §5.85/D4 闭式。</span>
+            </div>
+            <canvas id="regimeCanvas" class="field-canvas"></canvas>
+            <p class="hint" id="regimeLegend"></p>
           </section>
 
           <!-- 节点分析（chflow-1d-nodal：IPR-VLP 双曲线与工作点） -->
@@ -303,6 +338,29 @@
             </div>
             <h3 style="padding: 0 14px">工况对比</h3>
             <div id="scenResults" class="scen-results"><p class="empty">批量运行后显示对比表与叠画曲线。</p></div>
+          </section>
+
+          <!-- 参数集（F18：Workbench 级命名参数覆盖组，批量求解 + 对比） -->
+          <section id="tab-paramsets" class="tab-page">
+            <div class="canvas-toolbar">
+              <button id="psAddBtn" class="mini">＋ 新参数集</button>
+              <button id="psRunAllBtn" class="primary">▶ 批量求解全部参数集</button>
+              <button id="psExportBtn">导出 JSON</button>
+              <button id="psImportBtn">导入 JSON</button>
+              <span id="psStatus" class="hint">参数集随工程保存；激活即把覆盖精确应用到当前模型/字典。</span>
+            </div>
+            <div class="scen-grid">
+              <div>
+                <h3>参数集列表</h3>
+                <div id="psList" class="scen-list"></div>
+              </div>
+              <div>
+                <h3>参数集编辑</h3>
+                <div id="psEdit" class="scen-edit"><p class="empty">＋ 新参数集，或点列表中的参数集。</p></div>
+              </div>
+            </div>
+            <h3 style="padding: 0 14px">参数集对比</h3>
+            <div id="psResults" class="scen-results"><p class="empty">批量求解全部参数集后显示对比表。</p></div>
           </section>
 
           <!-- PVT 流体配置向导（U4：组分声明 -> 闪蒸预览 -> 物性曲线） -->
@@ -379,6 +437,26 @@
                 <div id="sweepChart" class="chart-box"></div>
               </div>
             </div>
+            <div class="canvas-toolbar">
+              <span class="hint">敏感性龙卷风（稳态）：</span>
+              <label>低水平 %
+                <input id="tornadoLow" type="number" step="5" value="-20" style="width:64px" />
+              </label>
+              <label>高水平 %
+                <input id="tornadoHigh" type="number" step="5" value="20" style="width:64px" />
+              </label>
+              <label>指标
+                <select id="tornadoMetric">
+                  <option value="maxDp">最大管段压降</option>
+                  <option value="qEnd">出口流量</option>
+                </select>
+              </label>
+              <button id="tornadoAddBtn" class="mini">＋ 加入当前扫描参数</button>
+              <button id="tornadoRunBtn" class="primary">▶ 龙卷风分析</button>
+              <button id="tornadoClearBtn" class="mini">清空</button>
+              <span id="tornadoStatus" class="hint">未加入任何参数时，默认分析上方当前选中的参数。</span>
+            </div>
+            <div id="tornadoChart" class="chart-box"><p class="empty">龙卷风图：基准值居中，按 |高−低| 降序的双向条形。</p></div>
           </section>
 
           <!-- case 字典 -->
@@ -429,12 +507,22 @@
       <div class="bottom">
         <div class="tabbar small" id="bottomTabs">
           <button data-btab="log" class="tab active">求解日志</button>
+          <button data-btab="monitor" class="tab">在线监控</button>
           <button data-btab="curves" class="tab">监测曲线</button>
           <button data-btab="conv" class="tab">收敛监控</button>
         </div>
         <div class="bottom-body">
           <div id="btab-log" class="btab-page active">
             <div id="logPanel" class="log-panel"></div>
+          </div>
+          <div id="btab-monitor" class="btab-page">
+            <div class="canvas-toolbar">
+              <span class="hint">逐迭代监控流（ITER / MONITOR 行）增量解析，运行中实时刷新：</span>
+              <b id="monitorStatus" class="readout">—</b>
+              <button id="monitorClearBtn" class="mini">清空</button>
+            </div>
+            <div id="monitorChart" class="chart-box"></div>
+            <p id="monitorLegend" class="hint"></p>
           </div>
           <div id="btab-curves" class="btab-page">
             <div class="curves-grid">

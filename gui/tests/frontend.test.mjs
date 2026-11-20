@@ -80,6 +80,42 @@ import {
   isPartialFidelity,
   isSteadyComparable,
 } from '../frontend/dist/templates.js';
+import {
+  beggsBrillPattern,
+  mapPoint,
+  regimeHit,
+  sampleBoundaries,
+  regimeField,
+  projectToCanvas,
+  regimeMapDrawCommands,
+} from '../frontend/dist/regimemap.js';
+import {
+  tornadoData,
+  tornadoCommands,
+} from '../frontend/dist/tornado.js';
+import {
+  marchingSquares,
+  joinSegments,
+  rasterizeSliceField,
+  profileBands,
+} from '../frontend/dist/contour.js';
+import {
+  mergeOverrides,
+  findConflicts,
+  paramSetsToJson,
+  parseParamSets,
+  applySetToModel,
+  activateSet,
+  overrideKey,
+} from '../frontend/dist/paramsets.js';
+import {
+  createMonitorState,
+  feedMonitor,
+  logY,
+  logTicks,
+  rollingWindow,
+  monitorDrawCommands,
+} from '../frontend/dist/monitor.js';
 
 const SAMPLE = `// 三节点串联管网
 solver { type steadyNetwork; }
@@ -1321,4 +1357,367 @@ test('planeProfileCsv: 剖面取落在平面上的面所属单元；无 faces �
   const top = planeProfileCsv(points, cells, cellFaces, cellU, cellP, [0, 0, 1], 1);
   assert.equal(top.trim().split('\n').length - 1, 9);
   assert.equal(planeProfileCsv(points, cells, null, cellU, cellP, [1, 0, 0], 0.5), null);
+});
+
+// ---------------------------------------------------------------------------
+// P4（流型图）：Beggs-Brill 图纯函数（内核 beggsBrillPattern 的可执行移植）
+// ---------------------------------------------------------------------------
+
+test('P4 beggsBrillPattern: 边界闭式值与核内公式逐位一致', () => {
+  const p = beggsBrillPattern(0.5, 10);
+  assert.ok(Math.abs(p.l1 - 316.0 * 0.5 ** 0.302) < 1e-9);
+  assert.ok(Math.abs(p.l2 - 0.0009252 * 0.5 ** -2.4684) < 1e-12);
+  assert.ok(Math.abs(p.l3 - 0.1 * 0.5 ** -1.4516) < 1e-12);
+  assert.ok(Math.abs(p.l4 - 0.5 * 0.5 ** -6.738) < 1e-9);
+  assert.equal(p.regime, 2); // λ>=0.4 且 l3 < nfr <= l4 -> 间歇
+});
+
+test('P4 beggsBrillPattern: 四类流型判定覆盖 + 过渡权重', () => {
+  assert.equal(beggsBrillPattern(0.5, 0.001).regime, 0); // nfr < L2
+  const t = beggsBrillPattern(0.5, 0.1); // L2..L3 带内
+  assert.equal(t.regime, 1);
+  const w = (t.l3 - 0.1) / (t.l3 - t.l2);
+  assert.ok(Math.abs(t.transitionWeight - w) < 1e-12);
+  assert.equal(beggsBrillPattern(0.5, 1000).regime, 3); // nfr > L4
+  assert.equal(beggsBrillPattern(0.005, 10).regime, 0); // λ<0.01 且 nfr<L1
+  assert.equal(beggsBrillPattern(0.005, 100).regime, 3);
+});
+
+test('P4 mapPoint: vsl/vsg+管径 -> (λ, Nfr) 守恒', () => {
+  const m = mapPoint(0.3, 0.7, 0.1);
+  assert.ok(Math.abs(m.lambda - 0.3) < 1e-12);
+  assert.ok(Math.abs(m.nfr - 1 / (9.81 * 0.1)) < 1e-9);
+  assert.ok(Math.abs(m.vm - 1) < 1e-12);
+  const s = mapPoint(0.25, 0.25, 0.05);
+  assert.ok(Math.abs(s.lambda - 0.5) < 1e-12);
+  const z = mapPoint(0, 0, 0.1);
+  assert.equal(z.lambda, 0);
+  assert.equal(z.nfr, 0);
+});
+
+test('P4 sampleBoundaries: 单调性与有限性（L1 升、L2/L3/L4 降）', () => {
+  const b = sampleBoundaries(0.02, 0.9, 20);
+  assert.ok(b.l1.length === 21);
+  for (let i = 1; i < b.l1.length; i += 1) assert.ok(b.l1[i].nfr > b.l1[i - 1].nfr);
+  for (const key of ['l2', 'l3', 'l4']) {
+    for (let i = 1; i < b[key].length; i += 1) assert.ok(b[key][i].nfr < b[key][i - 1].nfr);
+  }
+  for (const arr of Object.values(b)) for (const p of arr) assert.ok(Number.isFinite(p.nfr) && p.nfr > 0);
+});
+
+test('P4 regimeField/regimeHit: 栅格场与逐点命中一致', () => {
+  const lamAxis = [0.005, 0.1, 0.5, 0.9];
+  const nfrAxis = [0.01, 1, 100, 1e5];
+  const f = regimeField(lamAxis, nfrAxis);
+  for (let j = 0; j < nfrAxis.length; j += 1) {
+    for (let i = 0; i < lamAxis.length; i += 1) {
+      assert.equal(f[j][i], regimeHit(lamAxis[i], nfrAxis[j]));
+      assert.ok(f[j][i] >= 0 && f[j][i] <= 3);
+    }
+  }
+});
+
+test('P4 projectToCanvas: 线性 λ + 对数 Nfr 定位与钳位', () => {
+  const axes = { lamLo: 0, lamHi: 1, nfrLo: 1e-3, nfrHi: 1e7 };
+  const q = projectToCanvas(0.5, 10, axes, 600, 400);
+  assert.ok(Math.abs(q.x - 300) < 1e-9);
+  assert.ok(Math.abs(q.y - 400 * (1 - (1 - -3) / 10)) < 1e-9); // log10(10)=1
+  assert.equal(projectToCanvas(0.5, 1e-3, axes, 600, 400).y, 400);
+  assert.equal(projectToCanvas(0.5, 1e7, axes, 600, 400).y, 0);
+  assert.equal(projectToCanvas(2, 1, axes, 600, 400).x, 600); // 越界钳位
+});
+
+test('P4 regimeMapDrawCommands: 色带数=栅格数、4 条边界线、工况点标记命中一致', () => {
+  const pts = [{ lambda: 0.5, nfr: 10, label: 'P1 出口' }];
+  const { commands } = regimeMapDrawCommands({ resX: 12, resY: 10, points: pts });
+  const rects = commands.filter((c) => c.type === 'rect');
+  assert.equal(rects.length, 120);
+  for (const r of rects) assert.ok(r.regime >= 0 && r.regime <= 3);
+  const lines = commands.filter((c) => c.type === 'polyline');
+  assert.deepEqual(lines.map((l) => l.boundary).sort(), ['l1', 'l2', 'l3', 'l4']);
+  const markers = commands.filter((c) => c.type === 'marker');
+  assert.equal(markers.length, 1);
+  assert.equal(markers[0].regime, regimeHit(0.5, 10));
+  assert.equal(markers[0].label, 'P1 出口');
+});
+
+// ---------------------------------------------------------------------------
+// P20（敏感性龙卷风图）
+// ---------------------------------------------------------------------------
+
+test('P20 tornadoData: 按 |高−低| 降序、双向增量相对基准', () => {
+  const rows = tornadoData(100, [
+    { label: 'A', low: 90, high: 110 },
+    { label: 'B', low: 95, high: 101 },
+    { label: 'C', low: 50, high: 60 },
+  ]);
+  assert.deepEqual(rows.map((r) => r.label), ['A', 'C', 'B']);
+  assert.ok(Math.abs(rows[0].swing - 20) < 1e-12);
+  assert.ok(Math.abs(rows[0].lowDelta + 10) < 1e-12);
+  assert.ok(Math.abs(rows[0].highDelta - 10) < 1e-12);
+  assert.ok(Math.abs(rows[1].swing - 10) < 1e-12);
+});
+
+test('P20 tornadoData: 退化（低=高=基准）零幅度、NaN 水平塌回基准', () => {
+  const rows = tornadoData(5, [
+    { label: 'flat', low: 5, high: 5 },
+    { label: 'nan', low: NaN, high: 8 },
+  ]);
+  assert.equal(rows[0].label, 'nan'); // 幅度 3 > 0
+  assert.ok(Math.abs(rows[0].lowDelta) < 1e-12);
+  assert.ok(Math.abs(rows[1].swing) < 1e-12);
+});
+
+test('P20 tornadoCommands: 基准线居中、条形从基准线起画', () => {
+  const rows = tornadoData(0, [{ label: 'x', low: -1, high: 1 }]);
+  const { commands, baseX } = tornadoCommands(rows, { width: 560, height: 220 });
+  const base = commands.find((c) => c.role === 'baseline');
+  assert.ok(Math.abs(base.x1 - baseX) < 1e-12);
+  assert.ok(Math.abs(baseX - (130 + (560 - 150) / 2)) < 1e-9); // 域 [-1,1] 的 0 恰居中
+  const rects = commands.filter((c) => c.type === 'rect');
+  assert.equal(rects.length, 2);
+  assert.ok(Math.abs(rects[0].x + rects[0].w - baseX) < 1e-9); // 低条右端贴基准线
+  assert.ok(Math.abs(rects[1].x - baseX) < 1e-9); // 高条左端贴基准线
+});
+
+test('P20 tornadoCommands: 退化行零宽度', () => {
+  const rows = tornadoData(2, [{ label: 'z', low: 2, high: 2 }]);
+  const { commands } = tornadoCommands(rows, { domainLo: 0, domainHi: 4 });
+  for (const c of commands.filter((k) => k.type === 'rect')) assert.equal(c.w, 0);
+});
+
+// ---------------------------------------------------------------------------
+// F16（等值线 marching squares）
+// ---------------------------------------------------------------------------
+
+function circleField(n, half = 2) {
+  const field = new Array(n * n);
+  for (let j = 0; j < n; j += 1) {
+    for (let i = 0; i < n; i += 1) {
+      const x = -half + (2 * half * i) / (n - 1);
+      const y = -half + (2 * half * j) / (n - 1);
+      field[j * n + i] = x * x + y * y;
+    }
+  }
+  return field;
+}
+
+test('F16 marchingSquares: f=x²+y² 阈值 r² 的交点全落在半径 r 圆上', () => {
+  const n = 41;
+  const field = circleField(n);
+  const dx = 4 / (n - 1);
+  const [c] = marchingSquares(field, n, n, [1], { dx, dy: dx, x0: -2, y0: -2 });
+  assert.ok(c.segments.length > 4);
+  for (const [p, q] of c.segments) {
+    for (const v of [p, q]) {
+      const r = Math.hypot(v[0], v[1]);
+      assert.ok(Math.abs(r - 1) < 0.02, `r=${r}`);
+    }
+  }
+});
+
+test('F16 marchingSquares: 层数=阈值数、周长随水平单调增', () => {
+  const n = 41;
+  const field = circleField(n);
+  const dx = 4 / (n - 1);
+  const out = marchingSquares(field, n, n, [0.25, 1, 2.25], { dx, dy: dx, x0: -2, y0: -2 });
+  assert.equal(out.length, 3);
+  const len = (lv) => lv.segments.reduce((s, [p, q]) => s + Math.hypot(q[0] - p[0], q[1] - p[1]), 0);
+  assert.ok(len(out[0]) < len(out[1]) && len(out[1]) < len(out[2]));
+  // 半径 = 阈值平方根（0.5 / 1 / 1.5），周长 ~ 2πr 同序
+  assert.ok(Math.abs(len(out[1]) - 2 * Math.PI) < 0.2);
+});
+
+test('F16 marchingSquares: 均匀场无线、越界水平无线', () => {
+  const field = new Array(9).fill(3);
+  assert.equal(marchingSquares(field, 3, 3, [3])[0].segments.length, 0); // 全 >= 但无跨越
+  assert.equal(marchingSquares(field, 3, 3, [5])[0].segments.length, 0);
+});
+
+test('F16 marchingSquares: 鞍点 case5 固定歧义规则（中心均值判向）', () => {
+  // 行主序 [a,b,d,c]：a=10,b=0,c=10,d=0 -> case 5，中心=5 >= 5 -> 隔离低角 b、d
+  const hi = marchingSquares([10, 0, 0, 10], 2, 2, [5]);
+  const segs = hi[0].segments.map(([p, q]) => [p.slice(), q.slice()].sort());
+  assert.deepEqual(segs, [[[0, 0.5], [0.5, 1]], [[0.5, 0], [1, 0.5]]].map((s) => s.slice().sort()));
+  // 中心 < 阈值 -> 另一组对角（隔离高角 a、c）：一条连左边与底边，一条连右边与顶边
+  const lo = marchingSquares([10, 0, 0, 10], 2, 2, [5.1]);
+  assert.equal(lo[0].segments.length, 2);
+  const edgeOf = (v) => (v[0] === 0 ? 'L' : v[0] === 1 ? 'R' : v[1] === 0 ? 'B' : 'T');
+  const edges = lo[0].segments.map(([p, q]) => [edgeOf(p), edgeOf(q)].sort().join('-')).sort();
+  assert.deepEqual(edges, ['B-L', 'R-T']); // 隔离高角 a(左下)、c(右上)
+});
+
+test('F16 marchingSquares: 鞍点 case10 与 case5 规则一致互补', () => {
+  // 行主序 [a,b,d,c]：a=0,b=10,c=0,d=10 -> case 10，中心=5 >= 5 -> 隔离低角 a、c
+  const r = marchingSquares([0, 10, 10, 0], 2, 2, [5]);
+  const segs = r[0].segments.map(([p, q]) => [p.slice(), q.slice()].sort());
+  assert.deepEqual(segs, [[[0, 0.5], [0.5, 0]], [[1, 0.5], [0.5, 1]]].map((s) => s.slice().sort()));
+});
+
+test('F16 joinSegments: 端点匹配串成闭合环', () => {
+  const segs = [
+    [[0, 0], [1, 0]], [[1, 0], [1, 1]], [[1, 1], [0, 1]], [[0, 1], [0, 0]],
+  ];
+  const chains = joinSegments(segs);
+  assert.equal(chains.length, 1);
+  assert.equal(chains[0].length, 5);
+  assert.deepEqual(chains[0][0], chains[0][4]);
+});
+
+test('F16 rasterizeSliceField: 均匀场栅格化一致、keep 过滤生效', () => {
+  const points = [{ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }];
+  const cells = [[0, 1]];
+  const grid = rasterizeSliceField(points, cells, [7], [true], [1, 0, 0], 5);
+  assert.ok(grid);
+  assert.equal(grid.nx, 5);
+  for (const v of grid.field) assert.equal(v, 7);
+  assert.equal(rasterizeSliceField(points, cells, [7], [false], [1, 0, 0], 5), null);
+  assert.equal(rasterizeSliceField(points, cells, [7], null, [0, 0, 0], 5), null);
+});
+
+test('F16 profileBands: 1D 沿程等值带连续段', () => {
+  const b = profileBands([0, 0.5, 0.9, 0.2, 0.95], [0.4, 0.8]);
+  assert.deepEqual(b[0].runs, [{ from: 1, to: 2 }, { from: 4, to: 4 }]);
+  assert.deepEqual(b[1].runs, [{ from: 2, to: 2 }, { from: 4, to: 4 }]);
+  assert.deepEqual(profileBands([NaN, 0.5], [0.4])[0].runs, [{ from: 1, to: 1 }]);
+});
+
+// ---------------------------------------------------------------------------
+// F18（Workbench 级参数集）
+// ---------------------------------------------------------------------------
+
+test('F18 mergeOverrides: 同键覆盖值、保留基序、追加新键、不改入参', () => {
+  const base = [{ param: 'sourceRate', target: 'E', value: 1 }, { param: 'dt', target: '', value: 0.01 }];
+  const patch = [{ param: 'sourceRate', target: 'E', value: 2 }, { param: 'endTime', target: '', value: 5 }];
+  const m = mergeOverrides(base, patch);
+  assert.equal(m.length, 3);
+  assert.equal(m[0].value, 2); // 覆盖语义
+  assert.equal(m[2].param, 'endTime');
+  assert.equal(base[0].value, 1); // 入参未被改动
+  assert.equal(overrideKey(m[1]), 'dt@');
+});
+
+test('F18 findConflicts: 同键不同值才冲突', () => {
+  const sets = [
+    { id: 'a', overrides: [{ param: 'sourceRate', target: 'E', value: 1 }, { param: 'dt', value: 0.1 }] },
+    { id: 'b', overrides: [{ param: 'sourceRate', target: 'E', value: 2 }, { param: 'dt', value: 0.1 }] },
+  ];
+  const c = findConflicts(sets);
+  assert.equal(c.length, 1);
+  assert.equal(c[0].key, 'sourceRate@E');
+  assert.equal(c[0].valueA, 1);
+  assert.equal(c[0].valueB, 2);
+});
+
+test('F18 参数集 JSON 往返精确 + 非法输入拒绝', () => {
+  const sets = [{
+    id: 'ps1', name: '高含水', description: '含水上升工况', engine: 'steady',
+    overrides: [{ param: 'sourceRate', target: 'E', value: 3e-6 }],
+  }];
+  const back = parseParamSets(paramSetsToJson(sets, 'ps1'));
+  assert.equal(back.activeId, 'ps1');
+  assert.deepEqual(back.sets, sets);
+  assert.throws(() => parseParamSets(JSON.stringify({ kind: 'other', version: 1, sets: [] })), /参数集/);
+  assert.throws(() => parseParamSets(JSON.stringify({ kind: 'chuanflow-paramsets', version: 99, sets: [] })), /版本/);
+  assert.throws(() => parseParamSets(JSON.stringify({ kind: 'chuanflow-paramsets', version: 1 })), /sets/);
+});
+
+test('F18 applySetToModel: 稳态激活精确替换且不动原模型', () => {
+  const model = {
+    nodes: [{ id: 'n1', name: 'E', x: 0, y: 0, pressure: null }],
+    pipes: [{ id: 'p1', name: 'P1', from: 'E', to: 'E', length: 100, diameter: 0.05, roughness: 0, elevation: 0 }],
+    sources: [{ name: 'S1', node: 'E', rate: 1e-6 }],
+    fluid: { rho: 850, mu: 0.1 },
+    time: { dt: 0.01, endTime: 1, reportEvery: 1 },
+  };
+  const set = { name: 's', overrides: [{ param: 'sourceRate', target: 'S1', value: 2.5e-6 }] };
+  const m2 = applySetToModel(model, set);
+  assert.equal(m2.sources[0].rate, 2.5e-6);
+  assert.equal(model.sources[0].rate, 1e-6);
+  assert.throws(() => applySetToModel(model, { name: 's', overrides: [{ param: 'sourceRate', target: 'NOPE', value: 1 }] }), /不存在/);
+  assert.throws(() => applySetToModel(model, { name: 's', overrides: [{ param: 'valveCloseStart', target: 'P1', value: 1 }] }), /不支持/);
+});
+
+test('F18 activateSet: 瞬态走字典精确替换、稳态走模型序列化', () => {
+  const dict = 'time { dt 0.01; endTime 1; reportEvery 1; }\n';
+  const out = activateSet(
+    { name: 't', engine: 'transient', overrides: [{ param: 'endTime', target: '', value: 5 }] },
+    null, dict,
+  );
+  assert.equal(out, 'time { dt 0.01; endTime 5; reportEvery 1; }\n');
+  const model = {
+    nodes: [], pipes: [],
+    sources: [{ name: 'S1', node: 'E', rate: 1e-6 }],
+    fluid: { rho: 850, mu: 0.1 }, time: { dt: 0.01, endTime: 1, reportEvery: 1 },
+  };
+  const txt = activateSet(
+    { name: 's', engine: 'steady', overrides: [{ param: 'sourceRate', target: 'S1', value: 3e-6 }] },
+    model, '',
+  );
+  assert.match(txt, /rate 0\.000003/);
+  assert.doesNotThrow(() => validateCaseText(txt));
+});
+
+// ---------------------------------------------------------------------------
+// F17（在线 monitor 增量解析）
+// ---------------------------------------------------------------------------
+
+test('F17 feedMonitor: 完整 ITER/MONITOR 行入库', () => {
+  const st = createMonitorState();
+  feedMonitor(st, 'ITER 1 0.5 0.4 0.3 0.2\nMONITOR qTop 1 1.5\n');
+  assert.equal(st.iters.length, 1);
+  assert.deepEqual(st.iters[0].resid, [0.5, 0.4, 0.3, 0.2]);
+  assert.deepEqual(st.monitors.qTop, [{ iter: 1, value: 1.5 }]);
+  assert.equal(st.rejected, 0);
+});
+
+test('F17 feedMonitor: 半行续传（任意切分不丢不重）', () => {
+  const st = createMonitorState();
+  const r1 = feedMonitor(st, 'ITER 1 0.5 0.');
+  assert.equal(r1.events.length, 0);
+  assert.equal(st.iters.length, 0);
+  const r2 = feedMonitor(st, '4\nITER 2 0.1 0.1\n');
+  assert.equal(st.iters.length, 2);
+  assert.ok(Math.abs(st.iters[0].resid[1] - 0.4) < 1e-12);
+  assert.equal(st.lastIter, 2);
+  assert.equal(r2.events.filter((e) => e.kind === 'iter').length, 2); // 续接行 + 新行同批到达
+});
+
+test('F17 feedMonitor: 乱序/重复迭代号拒绝、坏行计入 malformed', () => {
+  const st = createMonitorState();
+  feedMonitor(st, 'ITER 5 0.1 0.1\n');
+  feedMonitor(st, 'ITER 3 0.2 0.2\nITER 5 0.3 0.3\n');
+  assert.equal(st.iters.length, 1);
+  assert.equal(st.rejected, 2);
+  feedMonitor(st, 'ITER x 0.1\nMONITOR n notanint 1\n');
+  assert.equal(st.malformed, 2);
+  feedMonitor(st, '[chflow] ITER 6 0.05 0.05\n');
+  assert.equal(st.iters.length, 2);
+});
+
+test('F17 feedMonitor: MONITOR 逐名单调（旧迭代样本拒绝）', () => {
+  const st = createMonitorState();
+  feedMonitor(st, 'MONITOR pB 3 1\nMONITOR pB 2 1\nMONITOR pB 5 2\n');
+  assert.equal(st.monitors.pB.length, 2);
+  assert.equal(st.rejected, 1);
+});
+
+test('F17 logY/logTicks: 对数刻度采样点闭式', () => {
+  assert.equal(logY(1, 1e-5, 1, 100), 0);
+  assert.equal(logY(1e-5, 1e-5, 1, 100), 100);
+  assert.ok(Math.abs(logY(1e-3, 1e-5, 1, 100) - 60) < 1e-9);
+  assert.equal(logY(0, 1e-5, 1, 100), 100); // 非正数贴底
+  assert.deepEqual(logTicks(1e-4, 1e2), [1e-4, 1e-3, 1e-2, 1e-1, 1, 10, 100]);
+});
+
+test('F17 rollingWindow + monitorDrawCommands: 滚动窗口与曲线指令', () => {
+  assert.deepEqual(rollingWindow([1, 2, 3, 4, 5], 3), [3, 4, 5]);
+  const st = createMonitorState(2);
+  feedMonitor(st, 'ITER 1 0.5 0.4\nITER 2 0.1 0.05\nITER 3 0.01 0.005\n');
+  assert.equal(st.iters.length, 2); // maxPoints 截断保留最新
+  const { commands, seriesNames } = monitorDrawCommands(st, 500, 120);
+  assert.deepEqual(seriesNames, ['resid:0', 'resid:1']);
+  const polys = commands.filter((c) => c.type === 'polyline');
+  assert.equal(polys.length, 2);
+  assert.ok(commands.some((c) => c.role === 'tick'));
 });

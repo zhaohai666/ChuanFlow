@@ -24,6 +24,8 @@ import {
   networkToCaseText,
   clipKeepsByPlane,
   adaptiveVectorIndices,
+  applyWhatIfOverrides,
+  TRANSIENT_WHAT_IF_PARAMS,
 } from '../frontend/dist/editor.js';
 import {
   UNIT_SYSTEMS,
@@ -40,6 +42,10 @@ import {
   cellCentroid,
   fieldRange,
   rainbowColor,
+  traceStreamlines,
+  cellVolumes,
+  evaluateReports,
+  reportsToCsv,
   classifyLogLine,
   parseSteadyOutput,
   parseTransientOutput,
@@ -634,4 +640,206 @@ test('设备族：序列化往返 + 平管不泄漏 + details 解析', () => {
   assert.equal(p.liftDomePressure, 1.6e7);
   assert.equal(p.rodStrokesPerMinute, 6);
   assert.equal(p.pumpIntakePressure, 3.5e6);
+});
+
+// ---------------------------------------------------------------------------
+// U10 / §5.137: transient what-if overrides on the raw dictionary
+// ---------------------------------------------------------------------------
+
+const WHAT_IF_CASE = `// real transientValve shape (volume/bulk/schedules preserved)
+fluid { rho 850; mu 0.1; }
+nodes
+{
+    TANK { volume 5; bulkModulus 4.0e7; pressure 5.0e5; liquidFraction 1; }
+    OUT  { fixedPressure 0; }
+}
+pipes
+{
+    LINE
+    {
+        from TANK; to OUT; length 100; diameter 0.05;
+        valve 20;
+        valveClose { start 2; end 6; closedK 1.0e12; }
+        valveOpen  { start 10; end 14; }
+    }
+}
+sources
+{
+    inj { node TANK; rate 0;
+      schedule { openRate 2.0e-6;
+                 close { start 1.2; end 1.4; }
+                 open  { start 2.0; end 2.2; } } }
+}
+time { dt 0.02; endTime 20; reportEvery 1; }
+`;
+
+test('what-if：关阀/开阀/关闭 K 精确替换嵌套块且不碰其他字节', () => {
+  const a = applyWhatIfOverrides(WHAT_IF_CASE, 'valveCloseStart', 'LINE', 3.5);
+  assert.ok(a.includes('valveClose { start 3.5; end 6; closedK 1.0e12; }'));
+  assert.ok(a.includes('valveOpen  { start 10; end 14; }'));
+  const b = applyWhatIfOverrides(WHAT_IF_CASE, 'valveOpenEnd', 'LINE', 15);
+  assert.ok(b.includes('valveOpen  { start 10; end 15; }'));
+  assert.ok(b.includes('valveClose { start 2; end 6;'));
+  const c = applyWhatIfOverrides(WHAT_IF_CASE, 'closedK', 'LINE', 5e11);
+  assert.ok(c.includes('closedK 500000000000;'));
+  // 只有目标数值变化：把改后的值换回原值必须逐字节回到输入
+  assert.equal(applyWhatIfOverrides(a, 'valveCloseStart', 'LINE', 2), WHAT_IF_CASE);
+});
+
+test('what-if：源日程与全局 time 参数', () => {
+  assert.ok(applyWhatIfOverrides(WHAT_IF_CASE, 'scheduleOpenRate', 'inj', 3e-6)
+    .includes('openRate 0.000003;'));
+  const closed = applyWhatIfOverrides(WHAT_IF_CASE, 'scheduleCloseStart', 'inj', 0.8);
+  assert.ok(closed.includes('close { start 0.8; end 1.4; }'));
+  assert.ok(closed.includes('open  { start 2.0; end 2.2; }'));
+  const opened = applyWhatIfOverrides(WHAT_IF_CASE, 'scheduleOpenStart', 'inj', 2.5);
+  assert.ok(opened.includes('open  { start 2.5; end 2.2; }')); // 引擎负责 start>end 拒收
+  assert.ok(applyWhatIfOverrides(WHAT_IF_CASE, 'endTime', null, 30)
+    .includes('time { dt 0.02; endTime 30; reportEvery 1; }'));
+  assert.ok(applyWhatIfOverrides(WHAT_IF_CASE, 'dt', null, 0.01)
+    .includes('time { dt 0.01; endTime 20;'));
+  assert.ok(applyWhatIfOverrides(WHAT_IF_CASE, 'reportEvery', null, 5)
+    .includes('reportEvery 5;'));
+});
+
+test('what-if：参数表完备 + 非法值/缺目标/缺键大声拒收', () => {
+  assert.equal(TRANSIENT_WHAT_IF_PARAMS.length, 13);
+  assert.throws(() => applyWhatIfOverrides(WHAT_IF_CASE, 'noSuchParam', 'LINE', 1), /unsupported/);
+  assert.throws(() => applyWhatIfOverrides(WHAT_IF_CASE, 'valveCloseStart', 'LINE', NaN), /not finite/);
+  assert.throws(() => applyWhatIfOverrides(WHAT_IF_CASE, 'valveCloseStart', null, 3), /needs a target/);
+  assert.throws(() => applyWhatIfOverrides(WHAT_IF_CASE, 'valveCloseStart', 'NOPE', 3), /no pipes entry/);
+  assert.throws(() => applyWhatIfOverrides(WHAT_IF_CASE, 'scheduleOpenRate', 'LINE', 3), /no sources entry/);
+  assert.throws(() => applyWhatIfOverrides('time { dt 1; }', 'endTime', null, 3), /no endTime key/);
+  assert.throws(() => applyWhatIfOverrides('nodes {}', 'endTime', null, 3), /no time\{\} block/);
+  // 注释里的同名块不得被误认（braceEnd 跳过 // 行）
+  assert.throws(() => applyWhatIfOverrides('// valveClose { start 1; }\nnodes {}',
+    'valveCloseStart', 'LINE', 3), /no pipes entry/);
+});
+
+// ---------------------------------------------------------------------------
+// U7 / §5.138: streamline integration through the cell velocity field
+// ---------------------------------------------------------------------------
+
+test('流线：均匀场严格直线、旋转场切向、零速/出界终止', () => {
+  const grid = (nx, ny, nz) => {
+    const points = [], cells = [];
+    // hex vertices, one shared point list per lattice node; cell = 8 corners
+    for (let k = 0; k <= nz; k++) for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++)
+      points.push({ x: i, y: j, z: k });
+    const id = (i, j, k) => i + (nx + 1) * (j + (ny + 1) * k);
+    for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++)
+      cells.push([id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k),
+        id(i, j, k + 1), id(i + 1, j, k + 1), id(i + 1, j + 1, k + 1), id(i, j + 1, k + 1)]);
+    return { points, cells };
+  };
+  const { points, cells } = grid(6, 4, 2);
+  const uniform = cells.map(() => [2, 0, 0]);
+  const lines = traceStreamlines(points, cells, uniform, [[0.5, 1.5, 0.5]], { maxSteps: 20 });
+  assert.equal(lines.length, 1);
+  const line = lines[0];
+  assert.ok(line.length > 10);
+  assert.ok(line.every((p) => Math.abs(p[1] - 1.5) < 1e-12 && Math.abs(p[2] - 0.5) < 1e-12));
+  assert.ok(line[1][0] > line[0][0]);
+  assert.ok(line[line.length - 1][0] <= 6.2, 'stops at the domain boundary');
+  assert.equal(traceStreamlines(points, cells, cells.map(() => [0, 0, 0]),
+    [[0.5, 0.5, 0.5]], { maxSteps: 20 }).length, 0);
+
+  const rotCells = grid(9, 9, 1);
+  const rotU = rotCells.cells.map((vids) => {
+    const c = cellCentroid(rotCells.points, vids);
+    return [-c.y + 4, c.x - 4, 0];
+  });
+  const circle = traceStreamlines(rotCells.points, rotCells.cells, rotU,
+    [[5, 4, 0.5]], { maxSteps: 60, stepScale: 0.05 });
+  assert.equal(circle.length, 1);
+  assert.ok(circle[0].length > 20);
+  assert.ok(circle[0][1][1] > 4, 'counter-clockwise tangent at seed');
+  const radii = circle[0].map((p) => Math.hypot(p[0] - 4, p[1] - 4));
+  assert.ok(Math.max(...radii) < 1.5 && Math.min(...radii) > 0.6,
+    `Euler drift stays bounded: ${Math.min(...radii)}..${Math.max(...radii)}`);
+});
+
+test('流线：大网格 + 多种子的性能预算', () => {
+  const nx = 20, ny = 20, nz = 8;
+  const points = [], cells = [];
+  for (let k = 0; k <= nz; k++) for (let j = 0; j <= ny; j++) for (let i = 0; i <= nx; i++)
+    points.push({ x: i, y: j, z: k });
+  const id = (i, j, k) => i + (nx + 1) * (j + (ny + 1) * k);
+  for (let k = 0; k < nz; k++) for (let j = 0; j < ny; j++) for (let i = 0; i < nx; i++)
+    cells.push([id(i, j, k), id(i + 1, j, k), id(i + 1, j + 1, k), id(i, j + 1, k),
+      id(i, j, k + 1), id(i + 1, j, k + 1), id(i + 1, j + 1, k + 1), id(i, j + 1, k + 1)]);
+  const u = cells.map(() => [1, 0.2, 0]);
+  const seeds = Array.from({ length: 24 }, (_, i) => [i % 20 + 0.5, Math.floor(i / 20) * 9 + 0.5, 4.5]);
+  const t0 = Date.now();
+  const lines = traceStreamlines(points, cells, u, seeds, { maxSteps: 60 });
+  assert.ok(lines.length >= 20);
+  assert.ok(Date.now() - t0 < 3000, 'streamline tracing stays under the render budget');
+});
+
+// ---------------------------------------------------------------------------
+// U8 / §5.139: report definitions from real VTU face geometry
+// ---------------------------------------------------------------------------
+
+test('report definitions：六面体闭式体积/体积分/面通量/面平均 + CSV', () => {
+  const points = [
+    { x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }, { x: 0, y: 1, z: 0 },
+    { x: 0, y: 0, z: 0.5 }, { x: 1, y: 0, z: 0.5 }, { x: 1, y: 1, z: 0.5 }, { x: 0, y: 1, z: 0.5 },
+  ];
+  const vtu = {
+    points,
+    cells: [[0, 1, 2, 3, 4, 5, 6, 7]],
+    cellFaces: [[[0, 3, 7, 4], [1, 5, 6, 2], [0, 4, 5, 1], [3, 2, 6, 7], [0, 1, 2, 3], [4, 7, 6, 5]]],
+    cellU: [[2, 0, 0]],
+    cellP: [10],
+  };
+  const vols = cellVolumes(points, vtu.cells, vtu.cellFaces);
+  assert.ok(Math.abs(vols[0] - 0.5) < 1e-14, `volume ${vols[0]}`);
+  const defs = [
+    { name: 'pInt', field: 'p', op: 'volumeIntegral' },
+    { name: 'pAvg', field: 'p', op: 'volumeAverage' },
+    { name: 'pMax', field: 'p', op: 'max' },
+    { name: 'pMin', field: 'p', op: 'min' },
+    { name: 'ux', field: 'Ux', op: 'volumeAverage' },
+    { name: 'flux', field: '|U|', op: 'flux', normal: [1, 0, 0], frac: 0 },
+    { name: 'surf', field: 'p', op: 'surfaceAverage', normal: [1, 0, 0], frac: 0 },
+  ];
+  const r = evaluateReports(vtu, defs).reduce((acc, x) => ({ ...acc, [x.name]: x.value }), {});
+  assert.ok(Math.abs(r.pInt - 5) < 1e-14);
+  assert.ok(Math.abs(r.pAvg - 10) < 1e-14);
+  assert.equal(r.pMax, 10);
+  assert.equal(r.pMin, 10);
+  assert.equal(r.ux, 2);
+  assert.ok(Math.abs(r.flux - 2 * 0.5) < 1e-14, `flux ${r.flux}`);
+  assert.ok(Math.abs(r.surf - 10) < 1e-14, `surface average ${r.surf}`);
+  const csv = reportsToCsv([{ pInt: 5, pAvg: 10 }, { pInt: 6, pAvg: 12 }], defs.slice(0, 2));
+  assert.equal(csv, 'step,pInt,pAvg\n1,5,10\n2,6,12\n');
+  assert.ok(Number.isNaN(evaluateReports({ ...vtu, cellFaces: null }, defs)[0].value));
+});
+
+test('report definitions：两单元体积加权 ≠ 算术平均', () => {
+  const points = [
+    { x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }, { x: 0, y: 1, z: 0 },
+    { x: 2, y: 0, z: 0 }, { x: 2, y: 1, z: 0 },
+    { x: 0, y: 0, z: 1 }, { x: 1, y: 0, z: 1 }, { x: 1, y: 1, z: 1 }, { x: 0, y: 1, z: 1 },
+    { x: 2, y: 0, z: 1 }, { x: 2, y: 1, z: 1 },
+  ];
+  const facesA = [[0, 3, 9, 6], [1, 2, 8, 7], [0, 6, 7, 1], [3, 2, 8, 9],
+    [0, 1, 2, 3], [6, 9, 8, 7]];
+  const facesB = [[1, 7, 8, 2], [4, 10, 11, 5], [1, 4, 10, 7], [2, 8, 11, 5],
+    [1, 2, 5, 4], [7, 10, 11, 8]];
+  const vtu = {
+    points,
+    cells: [[0, 1, 2, 3, 6, 7, 8, 9], [1, 4, 5, 2, 7, 10, 11, 8]],
+    cellFaces: [facesA, facesB],
+    cellU: [[0, 0, 0], [0, 0, 0]],
+    cellP: [100, 1000],
+  };
+  const vols = cellVolumes(points, vtu.cells, vtu.cellFaces);
+  assert.ok(Math.abs(vols[0] - 1) < 1e-14 && Math.abs(vols[1] - 1) < 1e-14);
+  const [vInt, vAvg] = evaluateReports(vtu, [
+    { name: 'i', field: 'p', op: 'volumeIntegral' },
+    { name: 'a', field: 'p', op: 'volumeAverage' },
+  ]);
+  assert.ok(Math.abs(vInt.value - 1100) < 1e-12);
+  assert.ok(Math.abs(vAvg.value - 550) < 1e-12);
 });

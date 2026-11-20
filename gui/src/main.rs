@@ -10,6 +10,7 @@ pub fn run() {
             commands::run_case_texts,
             commands::validate_case,
             commands::run_transient_text,
+            commands::run_transient_texts,
             commands::start_case,
             commands::poll_job,
             commands::stop_job,

@@ -158,7 +158,8 @@
               <label>剖切位置
                 <input id="clipFrac" type="range" min="0" max="1" value="0.5" step="0.01" />
               </label>
-              <label class="chk"><input id="showVectors" type="checkbox" /> 矢量图</label>
+              <label class="chk"><input id="showVectors" type="checkbox" /> 矢量图（按模着色）</label>
+              <label class="chk"><input id="showStreamlines" type="checkbox" /> 流线</label>
             </div>
             <canvas id="fieldCanvas" class="field-canvas"></canvas>
             <div class="field-legend">
@@ -224,6 +225,12 @@
           <!-- 参数扫描（稳态逐值求解） -->
           <section id="tab-sweep" class="tab-page">
             <div class="canvas-toolbar">
+              <label>引擎
+                <select id="sweepEngine">
+                  <option value="steady">稳态管网</option>
+                  <option value="transient">瞬态 what-if</option>
+                </select>
+              </label>
               <label>扫描参数
                 <select id="sweepParam">
                   <option value="sourceRate">源注入率</option>
@@ -319,6 +326,36 @@
             </div>
           </div>
           <div id="btab-conv" class="btab-page">
+            <div class="canvas-toolbar">
+              <label>场
+                <select id="reportField">
+                  <option value="p">压力 p</option>
+                  <option value="|U|">流速 |U|</option>
+                  <option value="Ux">Ux</option><option value="Uy">Uy</option><option value="Uz">Uz</option>
+                </select>
+              </label>
+              <label>操作
+                <select id="reportOp">
+                  <option value="volumeAverage">体积平均</option>
+                  <option value="volumeIntegral">体积分</option>
+                  <option value="max">最大值</option>
+                  <option value="min">最小值</option>
+                  <option value="flux">面通量</option>
+                  <option value="surfaceAverage">面平均</option>
+                </select>
+              </label>
+              <label>法向 x<input id="reportNx" type="number" value="1" step="0.1" style="width:52px" /></label>
+              <label>y<input id="reportNy" type="number" value="0" step="0.1" style="width:52px" /></label>
+              <label>z<input id="reportNz" type="number" value="0" step="0.1" style="width:52px" /></label>
+              <label>位置<input id="reportFrac" type="range" min="0" max="1" value="1" step="0.01" /></label>
+              <button id="reportAddBtn">＋ 定义</button>
+              <button id="reportExportBtn">导出 CSV</button>
+            </div>
+            <div class="sweep-grid">
+              <div><h3>report definitions（真实 VTU 面/体积分）</h3><div id="reportDefs"></div></div>
+              <div><h3>当前值与场更新历史</h3><div id="reportTable"></div>
+                <div id="reportChart" class="chart-box"></div></div>
+            </div>
             <div id="convergence" class="conv-panel"><p>等待运行…</p></div>
           </div>
         </div>

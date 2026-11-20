@@ -12,6 +12,7 @@ import {
   removePipe, addSource, removeSource, setTime, hitTestNode,
   networkToCaseText, setPipeFields, updateSourceRate, setFluid,
   clipKeepsByPlane, adaptiveVectorIndices,
+  applyWhatIfOverrides, TRANSIENT_WHAT_IF_PARAMS,
 } from './editor.js';
 import {
   validateCaseText, toBarHeights, toTimeSeriesPoints,
@@ -22,7 +23,8 @@ import {
 import {
   buildProjectTree, parseCoupledOutput, parseVtu, cellCentroid, fieldRange,
   rainbowColor, classifyLogLine, parseSteadyOutput, parseTransientOutput,
-  extractCaseDetails, parseTwoFluidFrames,
+  extractCaseDetails, parseTwoFluidFrames, traceStreamlines,
+  evaluateReports, reportsToCsv,
 } from './workspace.js';
 import {
   templateTarget, isPartialFidelity,
@@ -81,9 +83,17 @@ const state = {
   vtu: null,
   colorMode: 'none',
   fieldMode: 'p',
-  view3d: { yaw: 0, pitch: 0, clipAxis: 'none', clipFrac: 0.5, clipNormal: [1, 0, 0], vectors: false },
+  view3d: { yaw: 0, pitch: 0, clipAxis: 'none', clipFrac: 0.5, clipNormal: [1, 0, 0], vectors: false, streamlines: false },
+  streamlineCache: null,
+  reports: {
+    defs: [
+      { name: 'pAvg', field: 'p', op: 'volumeAverage' },
+      { name: 'fluxX', field: 'Ux', op: 'flux', normal: [1, 0, 0], frac: 1 },
+    ],
+    history: [], key: null,
+  },
   slug: { frames: [], idx: 0, playing: false, timer: null },
-  sweep: { rows: [], running: false, out: '' },
+  sweep: { rows: [], running: false, out: '', engine: 'steady' },
   loadedTemplate: null,
   job: { id: null, label: null, running: false, offset: 0, full: '' },
   collapsedLeft: false,
@@ -1201,6 +1211,7 @@ async function loadVtu() {
       return;
     }
     state.vtu = vtu;
+    state.streamlineCache = null;
     renderField();
     setStatus(`已载入 ${vtu.cells.length} 个单元的场数据。`, 'ok');
   } catch (e) {
@@ -1305,6 +1316,36 @@ function renderField() {
     ctx.stroke();
   });
 
+  // streamline layer (U7): cell-centred velocity integration with a 64-line
+  // budget; colour follows the seed-cell speed on the same rainbow scale as
+  // the |U| field, and the geometry is cached per loaded VTU so rotating the
+  // view never re-integrates.
+  let streamCount = 0;
+  const magsAll = cellU.map((u) => Math.hypot(u[0], u[1], u[2]));
+  const [magLo, magHi] = fieldRange(magsAll);
+  if (v3.streamlines) {
+    if (!state.streamlineCache) {
+      const centres = cells.map((cids) => cellCentroid(points, cids));
+      const stride = Math.max(1, Math.ceil(centres.length / 64));
+      const seeds = centres.filter((_, k) => k % stride === 0 && magsAll[k] > 1e-12)
+        .map((c) => [c.x, c.y, c.z]);
+      state.streamlineCache = traceStreamlines(points, cells, cellU, seeds,
+        { maxSteps: 120 });
+    }
+    ctx.lineWidth = Math.max(0.8, 1.0 * dpr);
+    for (const line of state.streamlineCache) {
+      ctx.strokeStyle = rainbowColor(magsAll[line.seedCell] ?? magLo, magLo, magHi);
+      ctx.beginPath();
+      line.forEach((p, i) => {
+        const q = projectPoint({ x: p[0], y: p[1], z: p[2] }, centroid, yaw, pitch);
+        if (i === 0) ctx.moveTo(px(q.x), py(q.y));
+        else ctx.lineTo(px(q.x), py(q.y));
+      });
+      ctx.stroke();
+      streamCount += 1;
+    }
+  }
+
   // velocity vectors at cell centroids (magnitude-adaptive thinning to
   // <= 400 arrows: hotspots stay dense, coverage is sampled evenly)
   let drawn = 0;
@@ -1316,8 +1357,6 @@ function renderField() {
     ).map((local) => visible[local]));
     const maxMag = Math.max(...mags, 1e-12);
     const arrowLen = Math.min(cv.width, cv.height) * 0.09;
-    const vecColor = state.theme === 'dark' ? '#e6edf6' : '#1c2733';
-    ctx.strokeStyle = vecColor;
     ctx.lineWidth = Math.max(1, 1.2 * dpr);
     for (const k of visible) {
       if (!drawnIdx.has(k)) continue;
@@ -1332,6 +1371,9 @@ function renderField() {
       const ux = u[0] * cyaw - u[1] * syaw;
       const uy = u[0] * syaw + u[1] * cyaw;
       const vp = { x: ux, y: uy * Math.cos(pitch) - u[2] * Math.sin(pitch) };
+      // magnitude-based colour on the same scale as the |U| field legend
+      const vecColor = rainbowColor(mag, magLo, magHi);
+      ctx.strokeStyle = vecColor;
       const s = arrowLen / maxMag;
       const x1 = px(q.x);
       const y1 = py(q.y);
@@ -1368,8 +1410,110 @@ function renderField() {
     `块网格 ${cells.length} 单元 / ${points.length} 顶点 · ` +
     `渲染场 ${state.fieldMode === 'p' ? '压力 p' : '流速 |U|'} · ` +
     `yaw ${v3.yaw}° pitch ${v3.pitch}° · ${clipTxt}` +
-    (v3.vectors ? ` · 矢量 ${drawn}` : '');
+    (v3.vectors ? ` · 矢量 ${drawn}（按 |U| 着色 ${magLo.toPrecision(3)}–${magHi.toPrecision(3)} m/s）` : '') +
+    (v3.streamlines ? ` · 流线 ${streamCount}` : '');
+  recordReports();
 }
+
+// ---------------------------------------------------------------------------
+// report definitions (U8): face/volume integrals from the kernel's own VTU
+// ---------------------------------------------------------------------------
+
+function recordReports() {
+  const vtu = state.vtu;
+  if (!vtu || !vtu.cellFaces || vtu.cellFaces.length !== vtu.cells.length) return;
+  if (state.reports.key !== vtu) {
+    state.reports.key = vtu;
+    state.reports.history = [];
+  }
+  if (state.reports.history.length && state.reports.history.at(-1).__vtu === vtu) return;
+  const values = evaluateReports(vtu, state.reports.defs);
+  const entry = { __vtu: vtu };
+  for (const r of values) entry[r.name] = r.value;
+  state.reports.history.push(entry);
+  renderReports();
+}
+
+function renderReports() {
+  const defs = state.reports.defs;
+  const hist = state.reports.history;
+  $('reportDefs').innerHTML = defs.map((d, i) =>
+    `<div class="status">#${i + 1} <b>${d.name}</b> · ${d.field} · ${d.op}` +
+    (d.normal ? ` · n=[${d.normal.join(',')}] @${(d.frac ?? 0.5).toFixed(2)}` : '') +
+    ` <button data-report-remove="${i}" title="移除此定义">✕</button></div>`).join('')
+    || '<p class="empty">尚无定义：选场与操作后点「＋ 定义」。</p>';
+  const last = hist.at(-1);
+  $('reportTable').innerHTML = defs.map((d) => {
+    const v = last ? last[d.name] : NaN;
+    return `<div class="status">${d.name} = ${Number.isFinite(v) ? v.toPrecision(8) : '—'}` +
+      (v === undefined && last ? '（未定义）' : '') + '</div>';
+  }).join('') || '<p class="empty">—</p>';
+
+  const W = 520, H = 120;
+  const palette = ['var(--accent)', '#e0a33e', '#4bb3c4', '#c96a9b'];
+  if (hist.length < 2 || !defs.length) {
+    $('reportChart').innerHTML = '<p class="empty">载入 VTU 场后记录历史（每次场更新一点）。</p>';
+    return;
+  }
+  const ys = defs.map((d) => hist.map((h) => h[d.name]).filter(Number.isFinite));
+  const all = ys.flat();
+  if (!all.length) {
+    $('reportChart').innerHTML = '<p class="empty">数据不足。</p>';
+    return;
+  }
+  const lo = Math.min(...all), hi = Math.max(...all);
+  const polys = ys.map((vals, i) => {
+    const pts = vals.map((v, k) => {
+      const x = 36 + (k / Math.max(1, hist.length - 1)) * (W - 56);
+      const y = H - 18 - ((v - lo) / (hi - lo || 1)) * (H - 42);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    return `<polyline points="${pts}" fill="none" stroke="${palette[i % palette.length]}" stroke-width="1.8"/>`;
+  }).join('');
+  $('reportChart').innerHTML =
+    `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">` +
+    `<line x1="36" y1="${H - 18}" x2="${W - 10}" y2="${H - 18}" stroke="var(--line)"/>` +
+    polys + `</svg><p class="hint">值域 ${lo.toPrecision(4)}..${hi.toPrecision(4)}</p>`;
+}
+
+$('reportAddBtn').addEventListener('click', () => {
+  const field = $('reportField').value;
+  const op = $('reportOp').value;
+  const name = `${field}_${op}_${state.reports.defs.length + 1}`;
+  const needsNormal = op === 'flux' || op === 'surfaceAverage';
+  state.reports.defs.push({
+    name, field, op,
+    ...(needsNormal ? {
+      normal: [Number($('reportNx').value) || 0, Number($('reportNy').value) || 0,
+        Number($('reportNz').value) || 0],
+      frac: Number($('reportFrac').value),
+    } : {}),
+  });
+  state.reports.history = [];
+  recordReports();
+});
+$('reportDefs').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-report-remove]');
+  if (!btn) return;
+  state.reports.defs.splice(Number(btn.dataset.reportRemove), 1);
+  state.reports.history = [];
+  recordReports();
+});
+$('reportExportBtn').addEventListener('click', async () => {
+  if (!state.reports.history.length) {
+    setStatus('尚无 report 历史：先载入 VTU 场。', 'error');
+    return;
+  }
+  const path = `/tmp/chflow_gui_reports_${++uidTimer}.csv`;
+  try {
+    await invoke('write_text_file', {
+      path, content: reportsToCsv(state.reports.history, state.reports.defs),
+    });
+    setStatus(`report 历史已导出：${path}`, 'ok');
+  } catch (e) {
+    setStatus(`report CSV 导出失败：${e}`, 'error');
+  }
+});
 
 $('loadVtuBtn').addEventListener('click', loadVtu);
 $('fieldMode').addEventListener('change', (e) => {
@@ -1408,6 +1552,10 @@ $('clipFrac').addEventListener('input', (e) => {
 });
 $('showVectors').addEventListener('change', (e) => {
   state.view3d.vectors = e.target.checked;
+  renderField();
+});
+$('showStreamlines').addEventListener('change', (e) => {
+  state.view3d.streamlines = e.target.checked;
   renderField();
 });
 
@@ -1562,14 +1710,26 @@ function onSlugDone(fullOutput) {
 }
 
 // ---------------------------------------------------------------------------
-// parameter sweep (steady, one run_case_text per value)
+// parameter sweep: steady model serialization or transient raw-dict what-if
 // ---------------------------------------------------------------------------
 
 function sweepTargetOptions() {
+  const engine = $('sweepEngine').value;
   const param = $('sweepParam').value;
-  if (param === 'sourceRate') {
-    return state.model.sources.map((s) => s.name);
+  if (engine === 'transient') {
+    const spec = TRANSIENT_WHAT_IF_PARAMS.find((p) => p.value === param);
+    if (!spec || spec.section === 'time') return [];
+    if (spec.section === 'sources') {
+      // Parse the raw dictionary so schedules kept only there stay addressable.
+      const names = [];
+      const re = /^\s*([A-Za-z_]\w*)\s*\{[\s\S]*?schedule\s*\{/gm;
+      let m;
+      while ((m = re.exec(caseText.value)) !== null) names.push(m[1]);
+      return names;
+    }
+    return state.model.pipes.map((p) => p.name);
   }
+  if (param === 'sourceRate') return state.model.sources.map((s) => s.name);
   return state.model.pipes.map((p) => p.name);
 }
 
@@ -1578,10 +1738,76 @@ function renderSweepTargets(keep = true) {
   const prev = keep ? sel.value : null;
   const opts = sweepTargetOptions();
   sel.innerHTML = opts.map((o) => `<option value="${o}">${o}</option>`).join('');
+  sel.disabled = opts.length === 0;
   if (prev && opts.includes(prev)) sel.value = prev;
+  const transient = $('sweepEngine').value === 'transient';
+  $('sweepStatus').textContent = transient
+    ? '瞬态 what-if：对每个取值精确替换当前 case 字典的一个声明（schedule / 阀日程 / time），其余字节不变；并行调真实瞬态引擎，多工况时间序列叠画。'
+    : '稳态扫描：基于当前编辑器模型序列化的字典逐值求解（编辑器未建模的字典键不参与）。';
+  $('sweepTable').querySelector('thead').innerHTML = transient
+    ? '<tr><th>取值</th><th>样本</th><th>终态 p</th><th>终态 Q</th><th>峰值 p</th><th>末时刻</th></tr>'
+    : '<tr><th>取值</th><th>收敛</th><th>迭代</th><th>残差</th><th>出口 Q</th><th>最大 dp</th></tr>';
 }
 
 $('sweepParam').addEventListener('change', () => renderSweepTargets(false));
+$('sweepEngine').addEventListener('change', (e) => {
+  state.sweep.engine = e.target.value;
+  const sel = $('sweepParam');
+  if (state.sweep.engine === 'transient') {
+    sel.innerHTML = TRANSIENT_WHAT_IF_PARAMS.map(
+      (p) => `<option value="${p.value}">${p.label}</option>`).join('');
+  } else {
+    sel.innerHTML = '<option value="sourceRate">源注入率</option>' +
+      '<option value="pipeDiameter">管段直径</option>' +
+      '<option value="pipeLength">管段长度</option>';
+  }
+  state.sweep.rows = [];
+  renderSweepTargets(false);
+});
+
+async function runTransientSweep(values, param, target) {
+  const baseText = caseText.value;
+  let texts;
+  try {
+    texts = values.map((v) => applyWhatIfOverrides(baseText, param, target, v));
+  } catch (e) {
+    setStatus(`瞬态 what-if 参数化失败：${e.message || e}`, 'error');
+    return;
+  }
+  $('sweepStatus').textContent = `瞬态 what-if：${values.length} 项已提交真实引擎…`;
+  let batch;
+  try {
+    batch = await invoke('run_transient_texts', { texts, exePath: engines.transient });
+  } catch (e) {
+    state.sweep.running = false;
+    setStatus(`瞬态批量扫描失败：${e}`, 'error');
+    return;
+  }
+  state.sweep.rows = batch.map((r, i) => {
+    const value = values[i];
+    if (!r || !r.ok) return { value, error: String((r && r.error) || '未知错误'), series: null };
+    const s = r.series;
+    const samples = s.samples || [];
+    const last = samples[samples.length - 1] || {};
+    const firstNode = s.node_names[0];
+    const firstPipe = s.pipe_names[0];
+    return {
+      value,
+      error: null,
+      series: s,
+      steps: s.steps,
+      tEnd: last.t ?? NaN,
+      pEnd: firstNode ? last.pressure?.[firstNode] : NaN,
+      qEnd: firstPipe ? last.flow?.[firstPipe] : NaN,
+      pPeak: firstNode ? Math.max(...samples.map((x) => x.pressure?.[firstNode] ?? -Infinity)) : NaN,
+    };
+  });
+  state.sweep.running = false;
+  const failed = state.sweep.rows.filter((r) => r.error).length;
+  $('sweepStatus').textContent =
+    `瞬态 what-if 完成：${values.length} 项（失败 ${failed}），时间序列在下方叠画。`;
+  renderTransientSweepResults();
+}
 
 async function runSweep() {
   if (state.sweep.running) {
@@ -1592,18 +1818,21 @@ async function runSweep() {
     setStatus('已有求解作业在运行，请先停止。', 'error');
     return;
   }
-  if (isPartialFidelity(state.loadedTemplate)) {
+  const engine = $('sweepEngine').value;
+  if (engine === 'steady' && isPartialFidelity(state.loadedTemplate)) {
     setStatus('当前模板为黑油/PVT 偏保真算例：编辑器模型无法完整复刻其字典，扫描已禁用。', 'error');
     return;
   }
   const param = $('sweepParam').value;
   const target = $('sweepTarget').value;
+  const spec = engine === 'transient'
+    ? TRANSIENT_WHAT_IF_PARAMS.find((p) => p.value === param) : null;
   const values = $('sweepValues').value
     .split(',')
     .map((s) => Number(s.trim()))
     .filter((v) => Number.isFinite(v));
-  if (!target) {
-    setStatus('扫描作用对象为空：请先建好模型（源或管段）。', 'error');
+  if (!target && !(spec && spec.section === 'time')) {
+    setStatus('扫描作用对象为空：请先建好模型（源或管段），或选一个全局时间参数。', 'error');
     return;
   }
   if (!values.length) {
@@ -1611,7 +1840,11 @@ async function runSweep() {
     return;
   }
 
-  state.sweep = { rows: [], running: true, out: state.sweep.out };
+  state.sweep = { rows: [], running: true, out: state.sweep.out, engine };
+  if (engine === 'transient') {
+    await runTransientSweep(values, param, target);
+    return;
+  }
   const maxRef = Math.max(...values, 0);
 
   // Build every per-value case text up front (clone the model, apply the
@@ -1714,7 +1947,7 @@ function renderSweepResults(valueMax) {
     $('sweepChart').innerHTML = '<p class="empty">数据不足，无法绘制响应曲线。</p>';
     return;
   }
-  const vLo = Math.min(...values.filter(Number.isFinite), 0);
+  const vLo = Math.min(...rows.map((r) => r.value).filter(Number.isFinite), 0);
   const yLo = Math.min(...valid.map((s) => s.v));
   const yHi = Math.max(...valid.map((s) => s.v));
   const W = 560;
@@ -1732,9 +1965,76 @@ function renderSweepResults(valueMax) {
     `<p class="hint">${state.sweep.out} 随取值变化 · 值域 ${yLo.toPrecision(4)}..${yHi.toPrecision(4)}</p>`;
 }
 
+/** Transient what-if results: one time-series polyline per parameter value. */
+function renderTransientSweepResults() {
+  const u = state.units;
+  const rows = state.sweep.rows;
+  const tbody = $('sweepTable').querySelector('tbody');
+  tbody.innerHTML = rows.map((r) => `<tr>` +
+    `<td>${Number(r.value.toPrecision(6))}</td>` +
+    `<td>${r.error ? `<span style="color:var(--bad)">${r.error}</span>` : r.series.samples.length}</td>` +
+    `<td>${Number.isFinite(r.pEnd) ? fmtDisplay(r.pEnd, 'pressure', u, 4) : '—'}</td>` +
+    `<td>${Number.isFinite(r.qEnd) ? fmtDisplay(r.qEnd, 'rate', u, 4) : '—'}</td>` +
+    `<td>${Number.isFinite(r.pPeak) ? fmtDisplay(r.pPeak, 'pressure', u, 4) : '—'}</td>` +
+    `<td>${Number.isFinite(r.tEnd) ? r.tEnd.toPrecision(6) : '—'}</td></tr>`).join('')
+    || '<tr><td>—</td></tr>';
+
+  const first = rows.find((r) => !r.error && r.series);
+  const opts = [];
+  if (first) {
+    for (const n of first.series.node_names) opts.push(`p:${n}`);
+    for (const p of first.series.pipe_names) opts.push(`Q:${p}`);
+  }
+  const sel = $('sweepOut');
+  const prev = state.sweep.out;
+  sel.innerHTML = opts.map((o) => `<option value="${o}">${o}</option>`).join('');
+  if (prev && opts.includes(prev)) sel.value = prev;
+  if (opts.length) state.sweep.out = sel.value;
+
+  const [kind, name] = (state.sweep.out || '').split(':');
+  const pick = (s) => {
+    const samples = s.samples || [];
+    if (kind === 'Q') return samples.map((x) => ({ t: x.t, v: x.flow?.[name] ?? NaN }));
+    return samples.map((x) => ({ t: x.t, v: x.pressure?.[name] ?? NaN }));
+  };
+  const series = rows.filter((r) => !r.error && r.series).map((r) => ({
+    label: Number(r.value.toPrecision(5)), points: pick(r.series),
+  }));
+  const valid = series.flatMap((s) => s.points).filter((p) => Number.isFinite(p.v));
+  if (valid.length < 2 || !opts.length) {
+    $('sweepChart').innerHTML = '<p class="empty">数据不足，无法绘制工况叠画。</p>';
+    return;
+  }
+  const tHi = Math.max(...valid.map((p) => p.t), 1e-12);
+  const yLo = Math.min(...valid.map((p) => p.v));
+  const yHi = Math.max(...valid.map((p) => p.v));
+  const W = 560, H = 180;
+  const palette = ['var(--accent)', '#e0a33e', '#4bb3c4', '#c96a9b', '#7db86a', '#9b8ad1'];
+  const polys = series.map((s, i) => {
+    const pts = s.points.filter((p) => Number.isFinite(p.v)).map((p) => {
+      const x = 40 + (p.t / tHi) * (W - 60);
+      const y = H - 24 - ((p.v - yLo) / (yHi - yLo || 1)) * (H - 54);
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    }).join(' ');
+    return `<polyline points="${pts}" fill="none" stroke="${palette[i % palette.length]}" stroke-width="1.8"/>` +
+      `<text x="${W - 8}" y="${28 + i * 14}" text-anchor="end" font-size="10" ` +
+      `fill="${palette[i % palette.length]}">${s.label}</text>`;
+  }).join('');
+  $('sweepChart').innerHTML =
+    `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">` +
+    `<line x1="40" y1="${H - 24}" x2="${W - 10}" y2="${H - 24}" stroke="var(--line)"/>` +
+    polys + `</svg>` +
+    `<p class="hint">${state.sweep.out} 随时间的多工况叠画（每色一个取值） · ` +
+    `值域 ${yLo.toPrecision(4)}..${yHi.toPrecision(4)}</p>`;
+}
+
 $('sweepRunBtn').addEventListener('click', runSweep);
 $('sweepOut').addEventListener('change', (e) => {
   state.sweep.out = e.target.value;
+  if (state.sweep.engine === 'transient') {
+    renderTransientSweepResults();
+    return;
+  }
   const maxRef = Math.max(...state.sweep.rows.map((r) => r.value), 0);
   renderSweepResults(maxRef);
 });

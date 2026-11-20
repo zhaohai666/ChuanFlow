@@ -241,6 +241,11 @@ export function parseVtu(text) {
     if (!connMatch || !offMatch) return null;
     const conn = connMatch[1].trim().split(/\s+/).map(Number);
     const offsets = offMatch[1].trim().split(/\s+/).map(Number);
+    // VtkWriter's faces array is nested: per cell [nFaces, nPts, ids..., ...].
+    // It is optional for field display but required for report definitions
+    // (surface/volume integrals), so parse it when present.
+    const faceMatch = /Name="faces" format="ascii">\s*([\s\S]*?)<\/DataArray>/.exec(text);
+    const faceData = faceMatch ? faceMatch[1].trim().split(/\s+/).map(Number) : [];
 
     const uMatch = /<DataArray type="Float64" Name="U" NumberOfComponents="3" format="ascii">\s*([\s\S]*?)<\/DataArray>/.exec(text);
     const pMatch = /<DataArray type="Float64" Name="p" format="ascii">\s*([\s\S]*?)<\/DataArray>/.exec(text);
@@ -248,19 +253,31 @@ export function parseVtu(text) {
     const p = pMatch ? pMatch[1].trim().split(/\s+/).map(Number) : [];
 
     const cells = [];
+    const cellFaces = [];
     let prev = 0;
     let k = 0;
+    let fi = 0;
     const cellU = [];
     const cellP = [];
     for (const o of offsets) {
       const vids = conn.slice(prev, o);
       prev = o;
       cells.push(vids);
+      if (faceData.length) {
+        const rings = [];
+        const nf = faceData[fi++] || 0;
+        for (let f = 0; f < nf; f += 1) {
+          const nv = faceData[fi++] || 0;
+          rings.push(faceData.slice(fi, fi + nv));
+          fi += nv;
+        }
+        cellFaces.push(rings);
+      }
       cellU.push(U.length >= 3 * (k + 1) ? [U[3 * k], U[3 * k + 1], U[3 * k + 2]] : [0, 0, 0]);
       cellP.push(p.length > k ? p[k] : 0);
       k += 1;
     }
-    return { points, cells, cellU, cellP };
+    return { points, cells, cellFaces, cellU, cellP };
   } catch (_) {
     return null;
   }
@@ -276,6 +293,86 @@ export function cellCentroid(points, vids) {
   }
   const n = vids.length || 1;
   return { x: x / n, y: y / n, z: z / n };
+}
+
+/**
+ * Streamlines through a cell-centred velocity field (U7 / §5.138). The cell
+ * centres are bucketed into a uniform grid so each Euler step samples the
+ * nearest cell in O(1) instead of scanning every cell; integration uses a
+ * normalised direction and a fraction of the local cell size, and stops on
+ * leaving the bounding box (one cell of slack), a vanishing velocity, a step
+ * budget, or returning near the seed (closed recirculation). Pure so node
+ * --test can assert straight-line and circular-field behaviour.
+ */
+export function traceStreamlines(points, cells, cellU, seeds, opts = {}) {
+  if (!cells.length || !seeds.length) return [];
+  const maxSteps = opts.maxSteps ?? 120;
+  const stepScale = opts.stepScale ?? 0.2;
+  const speedEps = opts.speedEps ?? 1e-12;
+  const gridN = opts.gridN ?? 12;
+  const centres = cells.map((vids) => cellCentroid(points, vids));
+  let xlo = Infinity, ylo = Infinity, zlo = Infinity;
+  let xhi = -Infinity, yhi = -Infinity, zhi = -Infinity;
+  for (const c of centres) {
+    xlo = Math.min(xlo, c.x); xhi = Math.max(xhi, c.x);
+    ylo = Math.min(ylo, c.y); yhi = Math.max(yhi, c.y);
+    zlo = Math.min(zlo, c.z); zhi = Math.max(zhi, c.z);
+  }
+  const hx = (xhi - xlo) / gridN || 1;
+  const hy = (yhi - ylo) / gridN || 1;
+  const hz = (zhi - zlo) / gridN || 1;
+  const ds = stepScale * Math.min(hx, hy, hz);
+  const ix = (x) => Math.max(0, Math.min(gridN - 1, Math.floor((x - xlo) / hx)));
+  const iy = (y) => Math.max(0, Math.min(gridN - 1, Math.floor((y - ylo) / hy)));
+  const iz = (z) => Math.max(0, Math.min(gridN - 1, Math.floor((z - zlo) / hz)));
+  const buckets = new Map();
+  centres.forEach((c, k) => {
+    const key = ix(c.x) + gridN * (iy(c.y) + gridN * iz(c.z));
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(k);
+  });
+  const nearest = (p) => {
+    const bx = ix(p.x), by = iy(p.y), bz = iz(p.z);
+    let best = -1, bestD = Infinity;
+    for (let r = 0; r <= 3; r += 1) {
+      for (let a = -r; a <= r; a += 1) for (let b = -r; b <= r; b += 1) for (let c = -r; c <= r; c += 1) {
+        if (Math.max(Math.abs(a), Math.abs(b), Math.abs(c)) !== r) continue;
+        const gx = bx + a, gy = by + b, gz = bz + c;
+        if (gx < 0 || gy < 0 || gz < 0 || gx >= gridN || gy >= gridN || gz >= gridN) continue;
+        for (const k of buckets.get(gx + gridN * (gy + gridN * gz)) || []) {
+          const c0 = centres[k];
+          const d = (c0.x - p.x) ** 2 + (c0.y - p.y) ** 2 + (c0.z - p.z) ** 2;
+          if (d < bestD) { bestD = d; best = k; }
+        }
+      }
+      if (best >= 0) break; // nearest bucket ring found; a nearer cell cannot be further out
+    }
+    return best;
+  };
+
+  const lines = [];
+  for (const seed of seeds) {
+    let p = { x: seed[0], y: seed[1], z: seed[2] };
+    const line = [[p.x, p.y, p.z]];
+    line.seedCell = -1;
+    for (let step = 0; step < maxSteps; step += 1) {
+      const k = nearest(p);
+      if (k < 0) break;
+      if (line.seedCell < 0) line.seedCell = k;
+      const u = cellU[k] || [0, 0, 0];
+      const mag = Math.hypot(u[0], u[1], u[2]);
+      if (!Number.isFinite(mag) || mag <= speedEps) break;
+      const f = ds / mag;
+      const q = { x: p.x + u[0] * f, y: p.y + u[1] * f, z: p.z + u[2] * f };
+      if (q.x < xlo - hx || q.x > xhi + hx || q.y < ylo - hy || q.y > yhi + hy
+          || q.z < zlo - hz || q.z > zhi + hz) break;
+      p = q;
+      line.push([p.x, p.y, p.z]);
+      if (step > 4 && Math.hypot(p.x - seed[0], p.y - seed[1], p.z - seed[2]) <= ds) break;
+    }
+    if (line.length > 1) lines.push(line);
+  }
+  return lines;
 }
 
 /** [min, max] of a numeric array (NaN-safe). */
@@ -317,6 +414,131 @@ export function rainbowColor(value, min, max) {
     }
   }
   return 'rgb(214,47,39)';
+}
+
+/** Newell's area vector of a planar vertex ring; |S| is the face area. */
+export function areaVector(points, ring) {
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < ring.length; i += 1) {
+    const a = points[ring[i]];
+    const b = points[ring[(i + 1) % ring.length]];
+    nx += (a.y - b.y) * (a.z + b.z);
+    ny += (a.z - b.z) * (a.x + b.x);
+    nz += (a.x - b.x) * (a.y + b.y);
+  }
+  return { x: nx / 2, y: ny / 2, z: nz / 2 };
+}
+
+/** Divergence-theorem cell volumes from the VTU face rings (U8 / §5.139). */
+export function cellVolumes(points, cells, cellFaces) {
+  if (!cellFaces || cellFaces.length !== cells.length) return null;
+  return cells.map((vids, c) => {
+    const centre = cellCentroid(points, vids);
+    let vol = 0;
+    for (const ring of cellFaces[c]) {
+      if (ring.length < 3) continue;
+      const s = areaVector(points, ring);
+      const f = cellCentroid(points, ring);
+      vol += Math.abs(s.x * (f.x - centre.x) + s.y * (f.y - centre.y)
+        + s.z * (f.z - centre.z));
+    }
+    return vol / 3;
+  });
+}
+
+/**
+ * Evaluate report definitions against a parsed VTU field. Supported fields:
+ * p, |U|, Ux/Uy/Uz; operations: volumeIntegral, volumeAverage, max, min,
+ * flux (through a unit normal) and surfaceAverage (on the plane described by
+ * `normal` and the fractional position along the field's projected extent).
+ * All weights come from the mesh's own face geometry — no hardcoded cell size.
+ */
+export function evaluateReports(vtu, defs) {
+  const volumes = cellVolumes(vtu.points, vtu.cells, vtu.cellFaces);
+  const n = vtu.cells.length;
+  const field = (name, c) => {
+    if (name === 'p') return vtu.cellP[c];
+    const u = vtu.cellU[c] || [0, 0, 0];
+    if (name === '|U|') return Math.hypot(u[0], u[1], u[2]);
+    if (name === 'Ux') return u[0];
+    if (name === 'Uy') return u[1];
+    if (name === 'Uz') return u[2];
+    return NaN;
+  };
+  return defs.map((def) => {
+    let value = NaN;
+    if (def.op === 'volumeIntegral' || def.op === 'volumeAverage') {
+      if (!volumes) return { name: def.name, value: NaN, error: 'VTU has no faces array' };
+      let num = 0, den = 0;
+      for (let c = 0; c < n; c += 1) {
+        const v = field(def.field, c);
+        if (!Number.isFinite(v)) continue;
+        num += v * volumes[c];
+        den += volumes[c];
+      }
+      value = def.op === 'volumeIntegral' ? num : (den > 0 ? num / den : NaN);
+    } else if (def.op === 'max' || def.op === 'min') {
+      const vals = [];
+      for (let c = 0; c < n; c += 1) {
+        const v = field(def.field, c);
+        if (Number.isFinite(v)) vals.push(v);
+      }
+      value = vals.length ? (def.op === 'max' ? Math.max(...vals) : Math.min(...vals)) : NaN;
+    } else if (def.op === 'flux' || def.op === 'surfaceAverage') {
+      if (!volumes || !vtu.cellFaces) {
+        return { name: def.name, value: NaN, error: 'VTU has no faces array' };
+      }
+      const nv = def.normal || [1, 0, 0];
+      const len = Math.hypot(nv[0], nv[1], nv[2]) || 1;
+      const nx = nv[0] / len, ny = nv[1] / len, nz = nv[2] / len;
+      // plane position from the FACE-centre projection extent, so frac=0/1
+      // select the true boundary face layer even in a one-cell-thick mesh
+      let lo = Infinity, hi = -Infinity;
+      for (const rings of vtu.cellFaces) for (const ring of rings) {
+        if (ring.length < 3) continue;
+        const f = cellCentroid(vtu.points, ring);
+        const p = f.x * nx + f.y * ny + f.z * nz;
+        lo = Math.min(lo, p); hi = Math.max(hi, p);
+      }
+      const target = lo + (def.frac ?? 0.5) * (hi - lo || 1);
+      let num = 0, den = 0;
+      for (let c = 0; c < n; c += 1) {
+        for (const ring of vtu.cellFaces[c]) {
+          if (ring.length < 3) continue;
+          const s = areaVector(vtu.points, ring);
+          const projected = s.x * nx + s.y * ny + s.z * nz;
+          if (Math.abs(projected) < 1e-14) continue;
+          const f = cellCentroid(vtu.points, ring);
+          const fp = f.x * nx + f.y * ny + f.z * nz;
+          const tol = Math.cbrt(volumes[c]) * 0.3;
+          if (Math.abs(fp - target) > tol) continue;
+          const w = Math.abs(projected);
+          if (def.op === 'flux') {
+            const u = vtu.cellU[c] || [0, 0, 0];
+            num += (u[0] * nx + u[1] * ny + u[2] * nz) * w;
+            den += 1;
+          } else {
+            const v = field(def.field, c);
+            if (!Number.isFinite(v)) continue;
+            num += v * w;
+            den += w;
+          }
+        }
+      }
+      value = def.op === 'flux' ? num : (den > 0 ? num / den : NaN);
+    }
+    return { name: def.name, value, error: null };
+  });
+}
+
+/** Report history -> CSV text (one row per recorded field update). */
+export function reportsToCsv(history, defs) {
+  const header = ['step', ...defs.map((d) => d.name)].join(',');
+  const rows = history.map((h, i) => [i + 1, ...defs.map((d) => {
+    const v = h[d.name];
+    return Number.isFinite(v) ? String(v) : '';
+  })].join(','));
+  return [header, ...rows].join('\n') + '\n';
 }
 
 /**

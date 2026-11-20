@@ -260,6 +260,118 @@ export function networkToCaseText(model) {
 }
 
 /**
+ * Transient what-if parameters (U10 / §5.137). Each entry maps a UI label to
+ * a precise dictionary location. `section` decides which target list the GUI
+ * offers; `global` parameters need no target at all.
+ */
+export const TRANSIENT_WHAT_IF_PARAMS = [
+  { value: 'valveCloseStart', label: '关阀开始 (s)', section: 'pipes', block: 'valveClose', key: 'start' },
+  { value: 'valveCloseEnd', label: '关阀结束 (s)', section: 'pipes', block: 'valveClose', key: 'end' },
+  { value: 'closedK', label: '关闭阻力 K', section: 'pipes', block: 'valveClose', key: 'closedK' },
+  { value: 'valveOpenStart', label: '开阀开始 (s)', section: 'pipes', block: 'valveOpen', key: 'start' },
+  { value: 'valveOpenEnd', label: '开阀结束 (s)', section: 'pipes', block: 'valveOpen', key: 'end' },
+  { value: 'scheduleOpenRate', label: '源注入率 (m³/s)', section: 'sources', block: 'schedule', key: 'scheduleOpenRate' },
+  { value: 'scheduleCloseStart', label: '源关闭开始 (s)', section: 'sources', block: 'schedule', key: 'scheduleCloseStart' },
+  { value: 'scheduleCloseEnd', label: '源关闭结束 (s)', section: 'sources', block: 'schedule', key: 'scheduleCloseEnd' },
+  { value: 'scheduleOpenStart', label: '源重启开始 (s)', section: 'sources', block: 'schedule', key: 'scheduleOpenStart' },
+  { value: 'scheduleOpenEnd', label: '源重启结束 (s)', section: 'sources', block: 'schedule', key: 'scheduleOpenEnd' },
+  { value: 'endTime', label: '终止时间 (s)', section: 'time', block: 'time', key: 'endTime' },
+  { value: 'dt', label: '时间步 (s)', section: 'time', block: 'time', key: 'dt' },
+  { value: 'reportEvery', label: '报告间隔 (步)', section: 'time', block: 'time', key: 'reportEvery' },
+];
+
+const NUMBER_RE = '[-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eE][-+]?\\d+)?';
+
+/** Locate `{ ... }` matching the opening brace at `open`, skipping // comments. */
+function braceEnd(text, open) {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === '/' && text[i + 1] === '/') {
+      const eol = text.indexOf('\n', i);
+      i = eol < 0 ? text.length : eol;
+      continue;
+    }
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+function blockBody(text, name, from = 0) {
+  const m = new RegExp(`\\b${name}\\s*\\{`).exec(text.slice(from));
+  if (!m) return null;
+  const open = from + m.index + m[0].length - 1;
+  const end = braceEnd(text, open);
+  return end < 0 ? null : { body: text.slice(open + 1, end), start: open + 1, end };
+}
+
+function namedEntry(text, section, name) {
+  const sec = blockBody(text, section);
+  if (!sec) return null;
+  const m = new RegExp(`\\b${name}\\s*\\{`).exec(sec.body);
+  if (!m) return null;
+  const open = sec.start + m.index + m[0].length - 1;
+  const end = braceEnd(text, open);
+  return end < 0 ? null : { body: text.slice(open + 1, end), start: open + 1, end };
+}
+
+function replaceNumber(body, key, value) {
+  const re = new RegExp(`(\\b${key}\\s+)(${NUMBER_RE})(\\s*;)`);
+  if (!re.test(body)) return null;
+  return body.replace(re, `$1${value}$3`);
+}
+
+/**
+ * Apply one transient what-if override to a case-dictionary TEXT, changing
+ * exactly one number and leaving every other byte untouched. The transient
+ * sweeps operate on the raw dictionary rather than the editor model because
+ * tank volume, bulk modulus and valve/source schedules cannot be faithfully
+ * reconstructed from the model — this is the honest counterpart of the
+ * steady sweep's model serialization. Throws on an unsupported parameter,
+ * missing target entry, non-finite value or a key that is not present.
+ */
+export function applyWhatIfOverrides(caseText, param, target, value) {
+  const spec = TRANSIENT_WHAT_IF_PARAMS.find((p) => p.value === param);
+  if (!spec) throw new Error(`unsupported what-if parameter: ${param}`);
+  const v = Number(value);
+  if (!Number.isFinite(v)) throw new Error(`what-if value is not finite: ${value}`);
+  if (spec.section === 'time') {
+    const timeBlock = blockBody(caseText, 'time');
+    if (!timeBlock) throw new Error('case has no time{} block');
+    const changed = replaceNumber(timeBlock.body, spec.key, v);
+    if (changed === null) throw new Error(`time{} has no ${spec.key} key`);
+    return caseText.slice(0, timeBlock.start) + changed + caseText.slice(timeBlock.end);
+  }
+  if (!target) throw new Error(`what-if ${param} needs a target entry`);
+  const entry = namedEntry(caseText, spec.section, target);
+  if (!entry) throw new Error(`case has no ${spec.section} entry named ${target}`);
+  let block = entry;
+  const isStartEnd = spec.key.endsWith('Start') || spec.key.endsWith('End');
+  if (spec.section === 'sources') {
+    // sources.<name>.schedule { openRate; close { start; end; }; open { ... }; }
+    const sched = blockBody(entry.body, 'schedule');
+    if (!sched) throw new Error(`source ${target} has no schedule{} block`);
+    block = { body: sched.body, start: entry.start + sched.start, end: entry.start + sched.end };
+    if (isStartEnd) {
+      const inner = spec.key.startsWith('scheduleClose') ? 'close' : 'open';
+      const sub = blockBody(block.body, inner);
+      if (!sub) throw new Error(`source ${target} has no schedule.${inner}{} block`);
+      block = { body: sub.body, start: block.start + sub.start, end: block.start + sub.end };
+    }
+  } else if (spec.section === 'pipes') {
+    // pipes.<name>.valveClose { start; end; closedK; } / valveOpen { start; end; }
+    const sub = blockBody(entry.body, spec.block);
+    if (!sub) throw new Error(`pipe ${target} has no ${spec.block}{} block`);
+    block = { body: sub.body, start: entry.start + sub.start, end: entry.start + sub.end };
+  }
+  const lookupKey = isStartEnd ? (spec.key.endsWith('Start') ? 'start' : 'end')
+    : spec.key === 'scheduleOpenRate' ? 'openRate' : spec.key;
+  const changed = replaceNumber(block.body, lookupKey, v);
+  if (changed === null) throw new Error(`entry ${target} has no ${lookupKey} key`);
+  return caseText.slice(0, block.start) + changed + caseText.slice(block.end);
+}
+
+/**
  * Arbitrary-plane clip: keep the cells whose centroid sits on the low side of
  * the plane with unit normal `normal`. `frac` (0..1) slides the plane between
  * the lowest and highest centroid projections, so axis-aligned clipping is the

@@ -1359,6 +1359,76 @@ pub fn run_transient_text(case_text: String, exe_path: String) -> Result<Transie
     parse_transient_output(&String::from_utf8_lossy(&output.stdout))
 }
 
+/// One row of the transient what-if batch. `series` is positionally aligned
+/// with the frontend's parameter values, just like `RunRow` for steady sweeps.
+#[derive(Debug, Clone, Serialize)]
+pub struct TransientRunRow {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub series: Option<TransientSeries>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Run many transient case texts through the same engine binary concurrently.
+/// The scoped worker pool mirrors `run_case_texts` (capped at 8 workers, unique
+/// temp dictionary per row); the row index is preserved regardless of which
+/// worker finished first. This is the batch primitive for transient what-if
+/// sweeps: one an offline case text per parameter value, all real engine runs.
+#[tauri::command]
+pub fn run_transient_texts(texts: Vec<String>, exe_path: String) -> Vec<TransientRunRow> {
+    if texts.is_empty() {
+        return Vec::new();
+    }
+    let workers = std::cmp::min(
+        std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4),
+        texts.len(),
+    )
+    .min(8);
+    let rows: std::sync::Mutex<Vec<Option<TransientRunRow>>> =
+        std::sync::Mutex::new((0..texts.len()).map(|_| None).collect());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let next = &next;
+            let rows = &rows;
+            let texts = &texts;
+            let exe_path = &exe_path;
+            scope.spawn(move || loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if i >= texts.len() {
+                    break;
+                }
+                let row = match run_transient_text(texts[i].clone(), exe_path.clone()) {
+                    Ok(series) => TransientRunRow {
+                        ok: true,
+                        series: Some(series),
+                        error: None,
+                    },
+                    Err(e) => TransientRunRow {
+                        ok: false,
+                        series: None,
+                        error: Some(e),
+                    },
+                };
+                rows.lock().expect("transient sweep row mutex")[i] = Some(row);
+            });
+        }
+    });
+    rows.into_inner()
+        .expect("transient sweep rows mutex")
+        .into_iter()
+        .enumerate()
+        .map(|(i, r)| {
+            r.unwrap_or_else(|| TransientRunRow {
+                ok: false,
+                series: None,
+                error: Some(format!("transient sweep row {i} never finished")),
+            })
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // Tests (no WebView required)
 // ---------------------------------------------------------------------------
@@ -1707,6 +1777,57 @@ random banner text
         let _ = fs::remove_file(&script);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn run_transient_texts_keeps_order_and_reports_errors() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        // The fake engine echoes each case's endTime as its last sample time,
+        // so a positional mix-up is visible even when workers finish in a
+        // different order than the input rows.
+        let script = std::env::temp_dir().join(format!(
+            "chflow_gui_fake_transient_batch_{}_{}.sh", std::process::id(), unique_tmp_id()));
+        fs::write(&script, "#!/bin/sh\n\
+            v=$(grep -o 'endTime [0-9.]*' \"$1\" | head -1 | cut -d' ' -f2)\n\
+            cat <<EOF\n\
+            transient solved: steps=10\n\
+            t 0\n\
+            node A p 1 alpha 1 hydrate 0\n\
+            t $v\n\
+            node A p 2 alpha 1 hydrate 0\n\
+            pipe P Q 3\n\
+            EOF\n").unwrap();
+        let mut perms = fs::metadata(&script).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).unwrap();
+
+        let case = |end: f64| format!(
+            "nodes\n{{\n A {{ pressure 1; }}\n}}\npipes\n{{\n P {{ from A; to A; }}\n}}\n\
+             time {{ dt 0.1; endTime {end}; }}\n");
+        let texts = vec![case(1.0), case(2.0), case(3.0), case(4.0), case(5.0)];
+        let rows = run_transient_texts(texts, script.to_string_lossy().into_owned());
+        assert_eq!(rows.len(), 5);
+        for (i, row) in rows.iter().enumerate() {
+            assert!(row.ok, "row {i} failed: {:?}", row.error);
+            let s = row.series.as_ref().unwrap();
+            assert_eq!(s.samples.len(), 2);
+            assert_eq!(s.samples[1].t, (i + 1) as f64, "row {i} out of order");
+            assert_eq!(s.samples[1].pressure["A"], 2.0);
+        }
+        // One invalid row must not poison the others; its slot carries the
+        // engine-side rejection verbatim.
+        let bad = "nodes\n{\n A {}\n}\npipes\n{\n P { from A; to A; }\n}\n";
+        let mut texts = vec![case(9.0), bad.to_string(), case(8.0)];
+        let rows = run_transient_texts(std::mem::take(&mut texts), script.to_string_lossy().into_owned());
+        assert!(rows[0].ok);
+        assert!(!rows[1].ok);
+        assert!(rows[1].error.as_ref().unwrap().contains("time{}"));
+        assert!(rows[2].ok);
+        assert_eq!(rows[2].series.as_ref().unwrap().samples[1].t, 8.0);
+        let _ = fs::remove_file(&script);
+    }
+
     #[test]
     fn run_transient_text_requires_time_block() {
         let case = "nodes\n{\n A {}\n}\npipes\n{\n P { from A; to A; }\n}\n";
@@ -1741,6 +1862,37 @@ random banner text
         assert_eq!(series.samples[0].t, 0.0);
         assert_eq!(series.samples[0].pressure["A"], 200_000.0);
         assert!(series.steps >= 100);
+    }
+
+    /// Real-engine what-if: the SAME case with two valve-close schedules must
+    /// give two genuinely different transient series. The case text is read
+    /// from the repository's CTest-verified transientValve regression case,
+    /// not a hand-written stand-in.
+    #[test]
+    fn run_transient_texts_real_engine_what_if() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let exe = root.join("build/src/1d/apps/chflow-1d-transient");
+        if !exe.exists() {
+            return;
+        }
+        let base = std::fs::read_to_string(
+            root.join("tests/cases/transientValve/case.dict")).expect("case file");
+        let case = |start: f64| base.replace("valveClose { start 2;", &format!(
+            "valveClose {{ start {start};"));
+        let texts = vec![case(2.0), case(5.0)];
+        let rows = run_transient_texts(texts, exe.to_string_lossy().into_owned());
+        assert_eq!(rows.len(), 2);
+        for (i, row) in rows.iter().enumerate() {
+            assert!(row.ok, "row {i} failed: {:?}", row.error);
+            assert!(row.series.as_ref().unwrap().samples.len() > 2);
+        }
+        let a = rows[0].series.as_ref().unwrap();
+        let b = rows[1].series.as_ref().unwrap();
+        let last_a = a.samples.last().unwrap();
+        let last_b = b.samples.last().unwrap();
+        let node = &a.node_names[0];
+        assert!((last_a.pressure[node] - last_b.pressure[node]).abs() > 1.0,
+            "the two valve schedules must change the tank pressure");
     }
 
     #[test]

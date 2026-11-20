@@ -116,8 +116,12 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 </plist>
 PLIST
 
-# icon: png -> icns (best effort; the app runs fine without it)
-if command -v sips >/dev/null 2>&1; then
+# icon: per-size rendered iconset -> icns via iconutil (small tiles are
+# zoomed/thickened by make_icon.py so the pipe/hub/cube stay legible at 16pt).
+# Fall back to regenerating the master PNG then sips if iconutil is missing.
+if [ -f icons/chflow.icns ]; then
+    cp icons/chflow.icns "$APP/Contents/Resources/chflow.icns"
+elif command -v sips >/dev/null 2>&1; then
     sips -s format icns icons/icon.png --out "$APP/Contents/Resources/chflow.icns" >/dev/null 2>&1 || true
 fi
 

@@ -5169,6 +5169,36 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界。** 3D 剖切为轴对齐平面保留低侧（任意斜面/6 面盒剖切待增量）；矢量图为均匀抽稀（按模着色/流线待增量）；扫描为逐值串行稳态（并行与瞬态扫描待增量）；设备族仅覆盖阀/离心泵（气举阀与有杆泵需 PVT/日程接线，暂不进 GUI）；段塞动画渲染持率剖面（速度廓线/压力剖面叠加待增量）。
 
+### 5.135 M8 细粒度扩展：任意平面剖切 + 自适应矢量抽稀 + 设备族全开 + 并行参数扫描 + DMG 打包
+
+> **状态（2026-11-20）**：§5.134 五项边界的细粒度清零 + 打包升级。Rust 25/25 + node 42/42 + 真实引擎设备冒烟（ESP / 气举阀 / 有杆泵三族逐个在真实内核上收敛）；DMG 实打包并只读挂载验证通过。code b9901ee。
+
+**任意平面剖切（`clipKeepsByPlane` 纯函数）。** §5.134 的轴对齐剖切推广到任意法向平面：`clipNormal`（默认 x 轴）归一化后取单元集合质心沿法向的投影区间，`d = lo + frac·(hi−lo)`（零法向向量全保留、`hi−lo` 退化时取 1），质心投影 `< d` 保留——轴对齐剖切成为 `(1,0,0)/(0,1,0)/(0,0,1)` 特例（同一函数，旧行为逐位不变）；GUI 工具条轴下拉新增 `custom`，显示法向三分量输入框。`editor.js` 纯函数层 node --test 直测（轴等价 / 任意法向 / 退化三组）。
+
+**矢量自适应抽稀（`adaptiveVectorIndices` 纯函数）。** §5.134 的均匀 stride 抽稀改为按模选择：超过 400 支预算时上半额（ceil(max/2)）按幅值降序取最强（tie 按索引升序，保证确定性）、下半额（floor(max/2)）从余量均匀采样，输出升序索引——最强结构（如射流核心）不再被均匀抽稀丢掉。测试覆盖上限、最强必保、确定性、覆盖。
+
+**设备族全开（§5.89/§5.90 全链路进 GUI）。** `PipeDef` 新增 14 个设备字段（ESP 进阶 `pumpGasFraction/pumpIntakePressure`；气举阀 `liftDomePressure/liftAreaRatio/liftSpringPressure/liftDischargeCoeff/liftKappa`；有杆泵 `rodPlungerDiameter/rodStrokeLength/rodStrokesPerMinute/rodDiameter/rodLength/rodYoungModulus/rodDensity`），Default/parse/serialize 三同步（非零才发 camelCase 键，平管字节恒等）；`extractCaseDetails` 同步解析；画布新增气举阀（波纹管 bell path + 阀孔 circle）与有杆泵（泵筒 rect + 驴头 horse path）SVG glyph，`<title>` 悬浮全部参数，ESP tooltip 补 gasFrac/intake；属性面板 16 个 numInput；工具条「加气举阀 / 加有杆泵」按钮——**有杆泵 patch 强制 `length: 0, diameter: 0`**（内核点元件约束：瞬态明确拒收非零几何），「移除设备」清空全部 21 个设备键。真实引擎冒烟：气举阀需 `fluid{pvt}` 表、有杆泵管长/直径非 0 被内核正确拒收后，改用「ESP + marched 管 / 有杆泵 + 零几何点元件」的**双定压节点形态真实收敛（32 迭代，rod NO-LOAD 卡片全链路输出）**。
+
+**并行参数扫描（`run_case_texts`）。** §5.134 扫描的逐值串行 `run_case_text` 改为批量 `run_case_texts(texts, exe_path) -> Vec<RunRow>`：`std::thread::scope` worker pool（`AtomicUsize` 任务队列取列 + `Mutex` 结果槽，workers = min(available_parallelism, len, 8)），逐行独立 `run_case_text`，行序严格保持（fake exe `grep -c` 计数 + `iterations == i+1` 断言）。GUI `runSweep` 一次 invoke 批量下发，完成态状态行汇总。临时文件命名加模块级 `AtomicU64` 唯一后缀（D12 的 `std::process::id()` 方案在同进程多线程并发下会互踩——gui.unit 全量回归 flake 的根因，本轮修复）。
+
+**DMG 打包（`package_app.sh --dmg`，`--universal` opt-in）。** §5.132 的 .app 手工组装升级：`--universal` 先尝试 lipo 合并 arm64 slice（缺则单架构，本机为真 Intel Mac，`hw.optional.arm64=0`，如实单架构）；`--dmg` 走经典流程——本机 `hdiutil create -srcfolder` 报「功能未实现」（非沙箱 + 最小复现均失败），改**空白 RW HFS+ 映像 → 挂载拷贝 → convert UDZO → 只读挂载验证 app 存在**，附「安装说明-拖入 Applications.txt」（Gatekeeper ad-hoc 签名说明）；实跑产出 `gui/dist/ChuanFlow-GUI.dmg`（4.4 MB），只读挂载验证通过，三求解器冒烟 ok（x86_64）。
+
+**边界。** 剖切为平面保留单侧（盒剖切/曲面待增量）；矢量为选择层（按模着色/流线另格）；扫描为稳态并行（瞬态扫描另格，G3）；设备 glyph 为静态图标（参数实时联动曲线另格）；DMG 未做公证（ad-hoc 签名首次打开需右键绕 Gatekeeper）。
+
+### 5.136 PETSc 分布式线性求解对照（M6/A11）：PETSc 自身 MPI 机器 vs 自研分布式 CG
+
+> **状态（2026-11-20）**：同一 16384 格图-Laplacian 系统上，两条真正独立的分布式求解路径交叉全绿（np=1/2/4，`verify.petscDistributed` 2.94 s）。PETSc 3.23.4 MPI 版（MPICH 4.2.3，`/tmp/petsc-mpi-install`）真实编译 + 实跑。code 28f1c1d。
+
+**动机。** §5.122 的 A11 对照是「自研分布式 CG vs 自研串行 solveCG」；本节把对照升级为「PETSc 自己的 MPI 机器 vs 自研分布式 CG」——两套分解（PETSc 默认连续块分区 vs 自研坐标中位数 Decomposition，刻意不同）、两套实现，交叉的才是真正独立的两条分布式路径。
+
+**`chflow-3d-petsc-distributed`（`src/3d/apps/petscDistributedApp.cpp`）。** 与 mpiLinearSolverApp 同一系统形态（图-Laplacian + `b = A·xExact`，10 项多项式解析解），但求解走 PETSc：`MatCreateAIJ(PETSC_DECIDE, ...)` + 逐行 `dnnz/onnz` 精确预分配（CSR row census：本 rank 行块内列为 d、块外为 o）+ `KSPCG/PCJACOBI` + `MatGetOwnershipRange` 连续块分区；`MPI_Reduce(MAX)` 收 analyticDiff，`MPI_Gatherv` 按 rank 秩序重组全局解（连续块 ⇒ 秩序即 cell 序）；rank 0 dump 六列 `(cell, xPetsc, xSerial, xExact, cx, cy, cz)`，与 mpiLinearSolver dump 同格式——一个 checker 直接比两份 dump。`#define PCHK(call)` 封装 `CHKERRABORT`。
+
+**三个真实缺陷当轮修复。** ① np=1 时 `MatCreateAIJ` 可能物化为 SEQAIJ，`MatMPIAIJSetPreallocation` 在该路径不传递预分配计数（"New nonzero at (0,0) caused a malloc"）→ 改类型无关的 `MatXAIJSetPreallocation`（SEQ/MPI 两态都正确路由）；② `VecRestoreArrayRead(x, &xp)` 在 `MPI_Gatherv` **之前**归还，xp 悬垂（analyticDiff 是 gather 前本地段算的所以日志好看，dump 却读到失效内存，maxDiff 6.39）→ restore 挪到 Gatherv 之后；③ 顶层 CMake manual-prefix 发现只链 `libpetsc.a`，MPI 版头文件要 `mpi.h`（MPICH 目录）、归档要 `-lmpi -lpmpi` → 解析 `${PETSC_DIR}/lib/petsc/conf/petscvariables` 的 `MPI_INCLUDE`（剥 `-I` 前缀取纯目录）与 `MPICC_SHOW`（取 `-L/-l` flag）并入 `PETSc_INCLUDE_DIRS/PETSc_LIBRARIES`；顺序版（`--with-mpi=0`）两行不存在/为空，该块为 no-op，行为不变。另：MPI 工具链不在默认 PATH 时 `find_package(MPI)` 静默失败导致两个 MPI target 都不生成——configure 需显式 `-DMPI_CXX_COMPILER`/`-DMPIEXEC_EXECUTABLE`（A11 一贯要求显式 MPI 环境，此处如实记录）。
+
+**算例与 checker。** `tests/cases/petscDistributed/case.dict`：32×32×16 = 16384 格（对照 §5.122 的 256 格），`ranks (1 2 4)`，tol 1e-11 / maxIter 2000 / shift 1.0。`tests/check_petsc_distributed.py`（CTest `verify.petscDistributed`，两 app 同名 dump 冲突 ⇒ 每次运行在私有临时目录并先读后删）：每个 app 每个 rank——收敛、迭代数 ∈ [1, 2000]、分布式与串行迭代差 ≤2、**解析解从 case 多项式与 dump 质心独立重推**（不信任 app 的解析列）、dump 全局 cell 序 0..N−1、rank 无关性（跨 np 分布式解与串行列都逐位一致）；**交叉项**——PETSc 分布式解 vs 自研分布式解逐 cell 一致（tol 1e-6）、两 app 的串行参考列一致。实测：PETSc 42 迭代（串行 43）收敛，analyticDiff 7.06e-11、petscSerialDiff 5.36e-11、serAnalyticDiff 3.62e-11，np=1/2/4 全部一致。
+
+**边界。** PETSc 版为 demo 级对照 app（图-Laplacian 系统，非管网方程组接线）；GPU（Kokkos CUDA/HIP）仍需 GPU 机器（README M6 边界不变）；PETSc 通过 `PETSC_DIR` 手工前缀发现（3.23+ 不再装 CMake config），系统级安装走 find_package 不受影响。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

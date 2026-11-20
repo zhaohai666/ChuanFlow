@@ -473,7 +473,59 @@ export function extractCaseDetails(text) {
       diameter: kv.diameter !== undefined ? Number(kv.diameter) : 0.05,
       roughness: kv.roughness !== undefined ? Number(kv.roughness) : 0,
       elevation: kv.elevation !== undefined ? Number(kv.elevation) : 0,
+      // inline equipment (network.cpp pipe keys), 0 = absent
+      valve: kv.valve !== undefined ? Number(kv.valve) : 0,
+      pumpHead: kv.pumpHead !== undefined ? Number(kv.pumpHead) : 0,
+      pumpRate: kv.pumpRate !== undefined ? Number(kv.pumpRate) : 0,
+      pumpShutoffHead: kv.pumpShutoffHead !== undefined ? Number(kv.pumpShutoffHead) : 0,
+      pumpStages: kv.pumpStages !== undefined ? Number(kv.pumpStages) : 0,
+      pumpSpeed: kv.pumpSpeed !== undefined ? Number(kv.pumpSpeed) : 0,
     };
   }
   return details;
+}
+
+
+/**
+ * Parse chflow-1d-twofluid per-frame output into an animation-ready timeline.
+ * A frame starts at the "[chflow] t <t> vm <vm> dp <dp>" line and gathers the
+ * per-cell lines that follow; each cell line is "cell <i> alpha <a> water <w>
+ * vsl <v> vsg <g> [T <T>] [p <p>] [s <s>]" — the trailing keys depend on the
+ * case's features (thermal / EOS / terrain slugs), so every pair is stored by
+ * name instead of by position.
+ */
+export function parseTwoFluidFrames(out) {
+  const frames = [];
+  let cur = null;
+  const tRe = /^t\s+(\S+)\s+vm\s+(\S+)\s+dp\s+(\S+)/;
+  const cellRe = /^cell\s+(\d+)\s+(.*)$/;
+  for (const raw of out.split('\n')) {
+    const line = raw.trim().replace('[chflow] ', '').trim();
+    if (!line) continue;
+    const tm = tRe.exec(line);
+    if (tm) {
+      if (cur) frames.push(cur);
+      cur = {
+        t: Number(tm[1]),
+        vm: Number(tm[2]),
+        dp: Number(tm[3]),
+        cells: [],
+      };
+      continue;
+    }
+    const cm = cellRe.exec(line);
+    if (cm && cur) {
+      const cell = { index: Number(cm[1]) };
+      for (const stmt of cm[2].split(/\s+(?=[A-Za-z])/)) {
+        const parts = stmt.trim().split(/\s+/);
+        if (parts.length >= 2) {
+          const num = Number(parts[1]);
+          cell[parts[0]] = Number.isFinite(num) ? num : parts[1];
+        }
+      }
+      cur.cells.push(cell);
+    }
+  }
+  if (cur) frames.push(cur);
+  return frames;
 }

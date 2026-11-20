@@ -21,8 +21,11 @@ import {
 import {
   buildProjectTree, parseCoupledOutput, parseVtu, cellCentroid, fieldRange,
   rainbowColor, classifyLogLine, parseSteadyOutput, parseTransientOutput,
-  extractCaseDetails,
+  extractCaseDetails, parseTwoFluidFrames,
 } from './workspace.js';
+import {
+  templateTarget, isPartialFidelity,
+} from './templates.js';
 
 // ---------------------------------------------------------------------------
 // state
@@ -33,6 +36,8 @@ const DEFAULT_TRANSIENT_EXE =
   '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-transient';
 const DEFAULT_COUPLED_EXE =
   '/Users/haizai/project/ChuanFlow/build/src/coupling/apps/chflow-coupled-1d3d';
+const DEFAULT_TWOFLUID_EXE =
+  '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-twofluid';
 const DEFAULT_COUPLED_CASE =
   '/Users/haizai/project/ChuanFlow/tests/cases/coupled1d3d/case.dict';
 const COUPLED_VTU = '/tmp/chflow_gui_coupled_block.vtu';
@@ -75,6 +80,10 @@ const state = {
   vtu: null,
   colorMode: 'none',
   fieldMode: 'p',
+  view3d: { yaw: 0, pitch: 0, clipAxis: 'none', clipFrac: 0.5, vectors: false },
+  slug: { frames: [], idx: 0, playing: false, timer: null },
+  sweep: { rows: [], running: false, out: '' },
+  loadedTemplate: null,
   job: { id: null, label: null, running: false, offset: 0, full: '' },
   collapsedLeft: false,
   collapsedRight: false,
@@ -85,6 +94,7 @@ const engines = {
   transient: DEFAULT_TRANSIENT_EXE,
   coupled: DEFAULT_COUPLED_EXE,
   coupledCase: DEFAULT_COUPLED_CASE,
+  twofluid: DEFAULT_TWOFLUID_EXE,
 };
 
 let uidTimer = Date.now() % 100000;
@@ -145,6 +155,7 @@ function switchTab(tabId) {
     sec.classList.toggle('active', sec.id === `tab-${tabId}`);
   }
   if (tabId === 'field') renderField();
+  if (tabId === 'slug' && state.slug.frames.length) renderSlugFrame();
 }
 
 $('mainTabs').addEventListener('click', (e) => {
@@ -314,6 +325,36 @@ function renderProps() {
       state.model = setPipeFields(state.model, p.id, { elevation: v });
       afterModelChange();
     }));
+
+    // inline equipment (network.cpp pipe keys), 0 = absent
+    const devHead = document.createElement('p');
+    devHead.className = 'note';
+    devHead.textContent = '内嵌设备（0 = 无）：';
+    propsEl.appendChild(devHead);
+    propsEl.appendChild(numInput('阀门 valve K', p.valve ?? 0, null, (v) => {
+      state.model = setPipeFields(state.model, p.id, { valve: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('泵扬程 pumpHead (m)', p.pumpHead ?? 0, 'length', (v) => {
+      state.model = setPipeFields(state.model, p.id, { pumpHead: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('泵工况流量 pumpRate (m³/s)', p.pumpRate ?? 0, 'rate', (v) => {
+      state.model = setPipeFields(state.model, p.id, { pumpRate: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('关死扬程 pumpShutoffHead (m)', p.pumpShutoffHead ?? 0, 'length', (v) => {
+      state.model = setPipeFields(state.model, p.id, { pumpShutoffHead: v });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('泵级数 pumpStages', p.pumpStages ?? 0, null, (v) => {
+      state.model = setPipeFields(state.model, p.id, { pumpStages: Math.max(0, Math.round(v)) });
+      afterModelChange();
+    }));
+    propsEl.appendChild(numInput('转速 pumpSpeed (fraction)', p.pumpSpeed ?? 0, null, (v) => {
+      state.model = setPipeFields(state.model, p.id, { pumpSpeed: v });
+      afterModelChange();
+    }));
     if (state.steady) {
       const r = state.steady.pipes.find((x) => x.name === p.name);
       if (r) {
@@ -420,6 +461,64 @@ function renderProps() {
 // 1D canvas (SVG drag editor)
 // ---------------------------------------------------------------------------
 
+function appendDeviceGlyph(p, ax, ay, bx, by) {
+  const mx = (ax + bx) / 2;
+  const my = (ay + by) / 2;
+  const NS = 'http://www.w3.org/2000/svg';
+  const g = document.createElementNS(NS, 'g');
+  g.dataset.pipeId = p.id;
+  const title = document.createElementNS(NS, 'title');
+  const sel = () => {
+    state.sel = { kind: 'pipe', ref: p.id };
+    state.model.selection = { kind: 'pipe', id: p.id };
+    renderCanvas();
+    renderProps();
+    renderTree();
+  };
+
+  if (p.valve) {
+    g.setAttribute('class', 'dev-valve');
+    const t1 = document.createElementNS(NS, 'polygon');
+    t1.setAttribute('points', `${mx - 7},${my - 7} ${mx - 7},${my + 7} ${mx},${my}`);
+    const t2 = document.createElementNS(NS, 'polygon');
+    t2.setAttribute('points', `${mx + 7},${my - 7} ${mx + 7},${my + 7} ${mx},${my}`);
+    const stem = document.createElementNS(NS, 'line');
+    stem.setAttribute('x1', mx);
+    stem.setAttribute('y1', my - 7);
+    stem.setAttribute('x2', mx);
+    stem.setAttribute('y2', my - 12);
+    g.append(t1, t2, stem);
+    title.textContent = `节流阀 ${p.name}: valve K=${p.valve}`;
+  } else if (p.pumpHead || p.pumpRate) {
+    g.setAttribute('class', 'dev-pump');
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('cx', mx);
+    c.setAttribute('cy', my);
+    c.setAttribute('r', 9);
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    const tri = document.createElementNS(NS, 'polygon');
+    tri.setAttribute(
+      'points',
+      `${mx + ux * 6},${my + uy * 6} ${mx - ux * 4 - uy * 4},${my - uy * 4 + ux * 4} ${mx - ux * 4 + uy * 4},${my - uy * 4 - ux * 4}`,
+    );
+    g.append(c, tri);
+    const bits = [`泵 ${p.name}:`];
+    if (p.pumpHead) bits.push(`pumpHead=${p.pumpHead}`);
+    if (p.pumpRate) bits.push(`pumpRate=${p.pumpRate}`);
+    if (p.pumpShutoffHead) bits.push(`shutoff=${p.pumpShutoffHead}`);
+    if (p.pumpStages) bits.push(`stages=${p.pumpStages}`);
+    if (p.pumpSpeed) bits.push(`speed=${p.pumpSpeed}`);
+    title.textContent = bits.join(' ');
+  }
+  g.appendChild(title);
+  g.addEventListener('click', sel);
+  svg.appendChild(g);
+}
+
 function renderCanvas() {
   const m = state.model;
   svg.innerHTML = '';
@@ -463,8 +562,12 @@ function renderCanvas() {
     label.setAttribute('class', 'edge-label');
     label.textContent = res
       ? `${p.name}  Q ${fmtDisplay(res.q, 'rate', state.units, 4)}  dp ${fmtDisplay(res.dp, 'pressure', state.units, 4)}`
-      : `${p.name}`;
+      :       `${p.name}`;
     svg.appendChild(label);
+
+    if (p.valve || p.pumpHead || p.pumpRate) {
+      appendDeviceGlyph(p, a.x, a.y, b.x, b.y);
+    }
   }
 
   // nodes
@@ -587,6 +690,51 @@ $('colorMode').addEventListener('change', (e) => {
 });
 
 // ---------------------------------------------------------------------------
+// inline equipment (valve / pump) on the selected pipe
+// ---------------------------------------------------------------------------
+
+function selectedPipe() {
+  if (!state.sel || state.sel.kind !== 'pipe') return null;
+  return state.model.pipes.find((x) => x.id === state.sel.ref) || null;
+}
+
+function withSelectedPipe(fn) {
+  const p = selectedPipe();
+  if (!p) {
+    setStatus('先选中一条管段（画布或项目树），再操作设备。', 'error');
+    return;
+  }
+  fn(p);
+  afterModelChange();
+}
+
+$('addValveBtn').addEventListener('click', () => {
+  withSelectedPipe((p) => {
+    state.model = setPipeFields(state.model, p.id, { valve: p.valve || 20 });
+    setStatus(`管段 ${p.name} 已加节流阀（valve K=${p.valve || 20}）。`, 'ok');
+  });
+});
+$('addPumpBtn').addEventListener('click', () => {
+  withSelectedPipe((p) => {
+    const patch = {
+      pumpHead: p.pumpHead || 25,
+      pumpRate: p.pumpRate || 3.0e-4,
+    };
+    state.model = setPipeFields(state.model, p.id, patch);
+    setStatus(`管段 ${p.name} 已加离心泵（pumpHead=${patch.pumpHead} m, pumpRate=${patch.pumpRate} m³/s）。`, 'ok');
+  });
+});
+$('removeDeviceBtn').addEventListener('click', () => {
+  withSelectedPipe((p) => {
+    state.model = setPipeFields(state.model, p.id, {
+      valve: 0, pumpHead: 0, pumpRate: 0,
+      pumpShutoffHead: 0, pumpStages: 0, pumpSpeed: 0,
+    });
+    setStatus(`管段 ${p.name} 的内嵌设备已移除。`, 'ok');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // dict tab
 // ---------------------------------------------------------------------------
 
@@ -617,6 +765,7 @@ $('resetBtn').addEventListener('click', () => {
 function freshModel(text) {
   const r = validateCaseText(text);
   const details = extractCaseDetails(text);
+  state.loadedTemplate = null;
   const m = emptyModel();
   if (details.fluid && Number.isFinite(details.fluid.rho)) m.fluid = details.fluid;
   if (details.time && Number.isFinite(details.time.dt)) m.time = details.time;
@@ -644,6 +793,12 @@ function freshModel(text) {
         diameter: geo.diameter ?? 0.05,
         roughness: geo.roughness ?? 0,
         elevation: geo.elevation ?? 0,
+        valve: geo.valve ?? 0,
+        pumpHead: geo.pumpHead ?? 0,
+        pumpRate: geo.pumpRate ?? 0,
+        pumpShutoffHead: geo.pumpShutoffHead ?? 0,
+        pumpStages: geo.pumpStages ?? 0,
+        pumpSpeed: geo.pumpSpeed ?? 0,
       });
     }
     for (const s of r.sources) {
@@ -694,7 +849,7 @@ async function writeCaseFile(text, base) {
   return path;
 }
 
-async function startJob(label, caseText_) {
+async function startJob(label, caseText_, isPath = false) {
   if (state.job.running) {
     setStatus('已有作业在运行，请先停止。', 'error');
     return;
@@ -702,11 +857,14 @@ async function startJob(label, caseText_) {
   const exe =
     label === 'steady' ? engines.steady
     : label === 'transient' ? engines.transient
+    : label === 'slug' ? engines.twofluid
     : engines.coupled;
   let casePath;
   if (label === 'coupled') {
     casePath = await prepareCoupledCase();
     if (!casePath) return;
+  } else if (label === 'slug') {
+    casePath = isPath ? caseText_ : await writeCaseFile(caseText_, label);
   } else {
     casePath = await writeCaseFile(caseText_, label);
   }
@@ -716,7 +874,7 @@ async function startJob(label, caseText_) {
     setJobChip(true, label);
     appendLog(`[job ${id}] 启动 ${label}: ${exe} ${casePath}`);
     setStatus(`作业 ${label} 已启动。`);
-    switchTab(label === 'coupled' ? 'coupled' : 'canvas');
+    switchTab(label === 'coupled' ? 'coupled' : label === 'slug' ? 'slug' : 'canvas');
   } catch (e) {
     appendLog(`启动失败: ${e}`);
     setStatus(`启动失败: ${e}`, 'error');
@@ -760,6 +918,7 @@ setInterval(async () => {
       if (label === 'steady') onSteadyDone(full);
       else if (label === 'transient') onTransientDone(full);
       else if (label === 'coupled') onCoupledDone(full);
+      else if (label === 'slug') onSlugDone(full);
     } else {
       appendLog(`[job] ${label} 退出码 ${st.exit}`);
       setStatus(`${label} 求解失败（退出码 ${st.exit}），详见求解日志。`, 'error');
@@ -913,6 +1072,21 @@ async function loadVtu() {
   }
 }
 
+function projectPoint(p, c, yaw, pitch) {
+  // rotate around the block centroid (yaw about z), then tilt with pitch and
+  // take an orthographic x-right / y-up projection
+  const dx = p.x - c.x;
+  const dy = p.y - c.y;
+  const dz = p.z - c.z;
+  const cy = Math.cos(yaw);
+  const sy = Math.sin(yaw);
+  const rx = dx * cy - dy * sy;
+  const ry = dx * sy + dy * cy;
+  const cp = Math.cos(pitch);
+  const sp = Math.sin(pitch);
+  return { x: rx, y: ry * cp - dz * sp };
+}
+
 function renderField() {
   const cv = $('fieldCanvas');
   const vtu = state.vtu;
@@ -927,6 +1101,23 @@ function renderField() {
     ? cellP
     : cellU.map((u) => Math.hypot(u[0], u[1], u[2]));
   const [lo, hi] = fieldRange(values);
+  const v3 = state.view3d;
+  const yaw = (v3.yaw * Math.PI) / 180;
+  const pitch = (v3.pitch * Math.PI) / 180;
+
+  // clip: keep cells whose centroid sits on the low side of the axis plane
+  const keep = cells.map((vids) => {
+    if (v3.clipAxis === 'none') return true;
+    const c = cellCentroid(points, vids);
+    const coord = c[v3.clipAxis];
+    let amin = Infinity, amax = -Infinity;
+    for (const cc of cells) {
+      const v = cellCentroid(points, cc)[v3.clipAxis];
+      amin = Math.min(amin, v);
+      amax = Math.max(amax, v);
+    }
+    return coord <= amin + v3.clipFrac * (amax - amin || 1);
+  });
 
   const dpr = window.devicePixelRatio || 1;
   cv.width = cv.clientWidth * dpr;
@@ -934,14 +1125,21 @@ function renderField() {
   const ctx = cv.getContext('2d');
   ctx.clearRect(0, 0, cv.width, cv.height);
 
-  // x-y projection bounds over used vertices
-  let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+  // projection bounds over visible vertices only
+  let cx = 0, cy2 = 0, cz = 0, n = 0;
   for (const c of cells) {
-    for (const v of c) {
-      xmin = Math.min(xmin, points[v].x);
-      xmax = Math.max(xmax, points[v].x);
-      ymin = Math.min(ymin, points[v].y);
-      ymax = Math.max(ymax, points[v].y);
+    for (const v of c) { cx += points[v].x; cy2 += points[v].y; cz += points[v].z; n += 1; }
+  }
+  const centroid = { x: cx / (n || 1), y: cy2 / (n || 1), z: cz / (n || 1) };
+  let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+  for (let k = 0; k < cells.length; k += 1) {
+    if (!keep[k]) continue;
+    for (const v of cells[k]) {
+      const q = projectPoint(points[v], centroid, yaw, pitch);
+      xmin = Math.min(xmin, q.x);
+      xmax = Math.max(xmax, q.x);
+      ymin = Math.min(ymin, q.y);
+      ymax = Math.max(ymax, q.y);
     }
   }
   const mx = 60 * dpr;
@@ -954,12 +1152,15 @@ function renderField() {
   const py = (y) => cv.height - my - (y - ymin) * scale;
 
   values.forEach((val, k) => {
+    if (!keep[k]) return;
     const vids = cells[k];
     if (vids.length < 3) return;
     ctx.beginPath();
-    ctx.moveTo(px(points[vids[0]].x), py(points[vids[0]].y));
+    const q0 = projectPoint(points[vids[0]], centroid, yaw, pitch);
+    ctx.moveTo(px(q0.x), py(q0.y));
     for (let i = 1; i < vids.length; i += 1) {
-      ctx.lineTo(px(points[vids[i]].x), py(points[vids[i]].y));
+      const q = projectPoint(points[vids[i]], centroid, yaw, pitch);
+      ctx.lineTo(px(q.x), py(q.y));
     }
     ctx.closePath();
     ctx.fillStyle = rainbowColor(val, lo, hi);
@@ -969,15 +1170,62 @@ function renderField() {
     ctx.stroke();
   });
 
+  // velocity vectors at cell centroids (stride-thinned to <= 400 arrows)
+  let drawn = 0;
+  if (v3.vectors) {
+    const visible = cells.map((_, k) => k).filter((k) => keep[k]);
+    const stride = Math.max(1, Math.ceil(visible.length / 400));
+    const maxMag = Math.max(...cellU.map((u) => Math.hypot(u[0], u[1], u[2])), 1e-12);
+    const arrowLen = Math.min(cv.width, cv.height) * 0.09;
+    const vecColor = state.theme === 'dark' ? '#e6edf6' : '#1c2733';
+    ctx.strokeStyle = vecColor;
+    ctx.lineWidth = Math.max(1, 1.2 * dpr);
+    for (const k of visible) {
+      if (k % stride !== 0) continue;
+      const u = cellU[k];
+      const mag = Math.hypot(u[0], u[1], u[2]);
+      if (mag <= 0) continue;
+      const c = cellCentroid(points, cells[k]);
+      const q = projectPoint(c, centroid, yaw, pitch);
+      // rotate the vector with the view yaw so arrows match the picture
+      const cyaw = Math.cos(yaw);
+      const syaw = Math.sin(yaw);
+      const ux = u[0] * cyaw - u[1] * syaw;
+      const uy = u[0] * syaw + u[1] * cyaw;
+      const vp = { x: ux, y: uy * Math.cos(pitch) - u[2] * Math.sin(pitch) };
+      const s = arrowLen / maxMag;
+      const x1 = px(q.x);
+      const y1 = py(q.y);
+      const x2 = px(q.x + vp.x * s / scale);
+      const y2 = py(q.y + vp.y * s / scale);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+      const ang = Math.atan2(y2 - y1, x2 - x1);
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(x2 - 6 * dpr * Math.cos(ang - 0.4), y2 - 6 * dpr * Math.sin(ang - 0.4));
+      ctx.lineTo(x2 - 6 * dpr * Math.cos(ang + 0.4), y2 - 6 * dpr * Math.sin(ang + 0.4));
+      ctx.closePath();
+      ctx.fillStyle = ctx.strokeStyle;
+      ctx.fill();
+      drawn += 1;
+    }
+  }
+
   const unit = state.fieldMode === 'p' ? unitLabel('pressure', state.units) : 'm/s';
   const conv = state.fieldMode === 'p'
     ? (v) => toDisplay(v, 'pressure', state.units)
     : (v) => v;
   $('legendLo').textContent = `${Number(conv(lo).toPrecision(5))} ${unit}`;
   $('legendHi').textContent = `${Number(conv(hi).toPrecision(5))} ${unit}`;
+  const clipTxt = v3.clipAxis === 'none' ? '无剖切' : `剖切 ${v3.clipAxis}@${v3.clipFrac.toFixed(2)}`;
   $('fieldInfo').textContent =
     `块网格 ${cells.length} 单元 / ${points.length} 顶点 · ` +
-    `渲染场 ${state.fieldMode === 'p' ? '压力 p' : '流速 |U|'} · x-y 投影`;
+    `渲染场 ${state.fieldMode === 'p' ? '压力 p' : '流速 |U|'} · ` +
+    `yaw ${v3.yaw}° pitch ${v3.pitch}° · ${clipTxt}` +
+    (v3.vectors ? ` · 矢量 ${drawn}` : '');
 }
 
 $('loadVtuBtn').addEventListener('click', loadVtu);
@@ -985,6 +1233,396 @@ $('fieldMode').addEventListener('change', (e) => {
   state.fieldMode = e.target.value;
   renderField();
 });
+$('viewYaw').addEventListener('input', (e) => {
+  state.view3d.yaw = Number(e.target.value);
+  renderField();
+});
+$('viewPitch').addEventListener('input', (e) => {
+  state.view3d.pitch = Number(e.target.value);
+  renderField();
+});
+$('clipAxis').addEventListener('change', (e) => {
+  state.view3d.clipAxis = e.target.value;
+  renderField();
+});
+$('clipFrac').addEventListener('input', (e) => {
+  state.view3d.clipFrac = Number(e.target.value);
+  renderField();
+});
+$('showVectors').addEventListener('change', (e) => {
+  state.view3d.vectors = e.target.checked;
+  renderField();
+});
+
+// ---------------------------------------------------------------------------
+// slug animation (chflow-1d-twofluid terrain-slug timeline)
+// ---------------------------------------------------------------------------
+
+function stopSlugPlayback() {
+  const s = state.slug;
+  s.playing = false;
+  if (s.timer) {
+    clearInterval(s.timer);
+    s.timer = null;
+  }
+  $('slugPlayBtn').textContent = '▶ 播放';
+}
+
+function renderSlugFrame() {
+  const cv = $('slugCanvas');
+  const s = state.slug;
+  const fr = s.frames[s.idx];
+  if (!fr) return;
+  const dpr = window.devicePixelRatio || 1;
+  cv.width = cv.clientWidth * dpr;
+  cv.height = cv.clientHeight * dpr;
+  const ctx = cv.getContext('2d');
+  const dark = state.theme === 'dark';
+  ctx.fillStyle = dark ? '#0c1220' : '#fbfcfe';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+
+  const cells = fr.cells;
+  const n = cells.length || 1;
+  const padL = 50 * dpr;
+  const padR = 30 * dpr;
+  const padT = 30 * dpr;
+  const padB = 40 * dpr;
+  const bw = (cv.width - padL - padR) / n;
+  const bh = cv.height - padT - padB;
+
+  cells.forEach((c, i) => {
+    const x = padL + i * bw;
+    const alpha = Number.isFinite(c.alpha) ? Math.max(0, Math.min(1, c.alpha)) : 0;
+    const water = Number.isFinite(c.water) ? Math.max(0, Math.min(1, c.water)) : 0;
+    const slug = Number.isFinite(c.s) ? c.s > 0 : false;
+    const hA = alpha * bh;
+    const hW = Math.min(water, alpha) * bh;
+    // gas headspace
+    ctx.fillStyle = dark ? '#1a2536' : '#e6ecf3';
+    ctx.fillRect(x, padT, bw - 1 * dpr, bh);
+    // oil/first-phase holdup
+    ctx.fillStyle = '#3fbf6f';
+    ctx.fillRect(x, padT + bh - hA, bw - 1 * dpr, hA);
+    // water column (bottom, inside the oil bar)
+    ctx.fillStyle = '#3a7bd5';
+    ctx.fillRect(x, padT + bh - hW, bw - 1 * dpr, hW);
+    if (slug) {
+      ctx.strokeStyle = '#ff6b6b';
+      ctx.lineWidth = 2 * dpr;
+      ctx.strokeRect(x, padT, bw - 1 * dpr, bh);
+    }
+  });
+
+  // axis labels every ~10 cells
+  ctx.fillStyle = dark ? '#9aa7b8' : '#5b6b7d';
+  ctx.font = `${10 * dpr}px sans-serif`;
+  const step = Math.max(1, Math.round(n / 10));
+  for (let i = 0; i < n; i += step) {
+    const c = cells[i];
+    if (!c) continue;
+    ctx.fillText(String(c.index ?? i), padL + i * bw, cv.height - padB + 14 * dpr);
+  }
+  $('slugReadout').textContent =
+    `t=${fr.t} · vm=${fr.vm} · dp=${fr.dp} · 帧 ${s.idx + 1}/${s.frames.length}`;
+}
+
+function slugStep() {
+  const s = state.slug;
+  if (!s.frames.length) return;
+  s.idx = (s.idx + 1) % s.frames.length;
+  $('slugFrame').value = String(s.idx);
+  renderSlugFrame();
+}
+
+function startSlugPlayback() {
+  const s = state.slug;
+  if (!s.frames.length) return;
+  stopSlugPlayback();
+  s.playing = true;
+  $('slugPlayBtn').textContent = '‖ 暂停';
+  const speed = Number($('slugSpeed').value) || 1;
+  s.timer = setInterval(slugStep, 400 / speed);
+}
+
+$('slugPlayBtn').addEventListener('click', () => {
+  if (state.slug.playing) stopSlugPlayback();
+  else startSlugPlayback();
+});
+$('slugSpeed').addEventListener('change', () => {
+  if (state.slug.playing) startSlugPlayback();
+});
+$('slugFrame').addEventListener('input', (e) => {
+  stopSlugPlayback();
+  state.slug.idx = Number(e.target.value);
+  renderSlugFrame();
+});
+
+async function runSlug() {
+  let path = $('slugCasePath').value.trim();
+  if (!path) {
+    // fall back to the kernel-verified twoFluidTerrainSlug template
+    try {
+      const tpls = await invoke('case_templates');
+      const t = (tpls || []).find((x) => x.id === 'twoFluidTerrainSlug');
+      if (t) {
+        path = t.path;
+        $('slugCasePath').value = path;
+      }
+    } catch (_) { /* keep empty -> error below */ }
+  }
+  if (!path) {
+    setStatus('请填写 twofluid 段塞算例路径（或从模板库载入）。', 'error');
+    return;
+  }
+  stopSlugPlayback();
+  await startJob('slug', path, true);
+}
+$('runSlugBtn').addEventListener('click', runSlug);
+
+function onSlugDone(fullOutput) {
+  const frames = parseTwoFluidFrames(fullOutput);
+  if (!frames.length) {
+    setStatus('段塞输出解析失败（日志无 t/vm/dp 帧行）。', 'error');
+    return;
+  }
+  const s = state.slug;
+  s.frames = frames;
+  s.idx = 0;
+  const slider = $('slugFrame');
+  slider.max = String(frames.length - 1);
+  slider.value = '0';
+  slider.disabled = false;
+  $('slugPlayBtn').disabled = false;
+  const last = frames.at(-1);
+  const withSlug = last.cells.filter((c) => c.s > 0).length;
+  renderSlugFrame();
+  startSlugPlayback();
+  setStatus(
+    `段塞完成：${frames.length} 帧（t ${frames[0].t} → ${last.t} s），` +
+    `末帧段塞单元 ${withSlug}/${last.cells.length}。`,
+    'ok',
+  );
+}
+
+// ---------------------------------------------------------------------------
+// parameter sweep (steady, one run_case_text per value)
+// ---------------------------------------------------------------------------
+
+function sweepTargetOptions() {
+  const param = $('sweepParam').value;
+  if (param === 'sourceRate') {
+    return state.model.sources.map((s) => s.name);
+  }
+  return state.model.pipes.map((p) => p.name);
+}
+
+function renderSweepTargets(keep = true) {
+  const sel = $('sweepTarget');
+  const prev = keep ? sel.value : null;
+  const opts = sweepTargetOptions();
+  sel.innerHTML = opts.map((o) => `<option value="${o}">${o}</option>`).join('');
+  if (prev && opts.includes(prev)) sel.value = prev;
+}
+
+$('sweepParam').addEventListener('change', () => renderSweepTargets(false));
+
+async function runSweep() {
+  if (state.sweep.running) {
+    setStatus('扫描进行中，请等待完成。', 'error');
+    return;
+  }
+  if (state.job.running) {
+    setStatus('已有求解作业在运行，请先停止。', 'error');
+    return;
+  }
+  if (isPartialFidelity(state.loadedTemplate)) {
+    setStatus('当前模板为黑油/PVT 偏保真算例：编辑器模型无法完整复刻其字典，扫描已禁用。', 'error');
+    return;
+  }
+  const param = $('sweepParam').value;
+  const target = $('sweepTarget').value;
+  const values = $('sweepValues').value
+    .split(',')
+    .map((s) => Number(s.trim()))
+    .filter((v) => Number.isFinite(v));
+  if (!target) {
+    setStatus('扫描作用对象为空：请先建好模型（源或管段）。', 'error');
+    return;
+  }
+  if (!values.length) {
+    setStatus('取值列表为空或非数值。', 'error');
+    return;
+  }
+
+  state.sweep = { rows: [], running: true, out: state.sweep.out };
+  $('sweepStatus').textContent = `扫描中：0/${values.length}…`;
+  const maxRef = Math.max(...values, 0);
+  for (let i = 0; i < values.length; i += 1) {
+    const v = values[i];
+    // clone the model, apply the parameter, serialize -> the sweep always runs
+    // exactly what the editor model represents
+    const m = JSON.parse(JSON.stringify(state.model));
+    if (param === 'sourceRate') {
+      for (const s of m.sources) if (s.name === target) s.rate = v;
+    } else {
+      for (const p of m.pipes) if (p.name === target) {
+        if (param === 'pipeDiameter') p.diameter = v;
+        else p.length = v;
+      }
+    }
+    const text = networkToCaseText(m);
+    let row;
+    try {
+      const sum = await invoke('run_case_text', { caseText: text, exePath: engines.steady });
+      const pipes = sum.pipes || [];
+      const nodes = sum.nodes || [];
+      const maxDp = pipes.length ? Math.max(...pipes.map((p) => Math.abs(p.dp || 0))) : 0;
+      row = {
+        value: v,
+        converged: !!sum.converged,
+        iterations: sum.iterations || 0,
+        residual: sum.residual || 0,
+        q: pipes.length ? pipes[pipes.length - 1].q : NaN,
+        maxDp,
+        pipes,
+        nodes,
+        error: null,
+      };
+    } catch (e) {
+      row = { value: v, converged: false, iterations: 0, residual: NaN, q: NaN, maxDp: NaN, pipes: [], nodes: [], error: String(e) };
+    }
+    state.sweep.rows.push(row);
+    $('sweepStatus').textContent =
+      `扫描中：${i + 1}/${values.length}（value=${row.value} ` +
+      `${row.error ? `失败: ${row.error}` : row.converged ? 'converged' : '未收敛'}）`;
+  }
+  state.sweep.running = false;
+  renderSweepResults(maxRef);
+}
+
+function renderSweepResults(valueMax) {
+  const u = state.units;
+  const rows = state.sweep.rows;
+  const tbody = $('sweepTable').querySelector('tbody');
+  tbody.innerHTML = rows.map((r) =>
+    `<tr>` +
+    `<td>${Number(r.value.toPrecision(6))}</td>` +
+    `<td>${r.error ? `<span style="color:var(--bad)">错误</span>` : r.converged ? `<span style="color:var(--good)">✓</span>` : '未收敛'}</td>` +
+    `<td>${r.iterations}</td>` +
+    `<td>${Number.isFinite(r.residual) ? r.residual.toExponential(2) : '—'}</td>` +
+    `<td>${Number.isFinite(r.q) ? fmtDisplay(r.q, 'rate', u, 4) : '—'}</td>` +
+    `<td>${Number.isFinite(r.maxDp) ? fmtDisplay(r.maxDp, 'pressure', u, 4) : '—'}</td>` +
+    `</tr>`,
+  ).join('') || '<tr><td>—</td></tr>';
+
+  // output-series select: last-pipe Q / each pipe Q / each node p
+  const first = rows.find((r) => !r.error && (r.pipes.length || r.nodes.length));
+  const opts = [];
+  if (first) {
+    for (const p of first.pipes) opts.push(`Q:${p.name}`, `dp:${p.name}`);
+    for (const n of first.nodes) opts.push(`p:${n.name}`);
+  }
+  const sel = $('sweepOut');
+  const prev = state.sweep.out;
+  sel.innerHTML = opts.map((o) => `<option value="${o}">${o}</option>`).join('');
+  if (prev && opts.includes(prev)) { sel.value = prev; state.sweep.out = prev; }
+  else if (opts.length) state.sweep.out = opts[0];
+
+  const pick = (r, key) => {
+    const [kind, name] = state.sweep.out.split(':');
+    if (kind === 'Q') return r.pipes.find((p) => p.name === name)?.q;
+    if (kind === 'dp') return r.pipes.find((p) => p.name === name)?.dp;
+    return r.nodes.find((n) => n.name === name)?.pressure;
+  };
+  const series = rows.filter((r) => !r.error).map((r) => ({ t: r.value, v: pick(r) ?? NaN }));
+  const valid = series.filter((s) => Number.isFinite(s.v));
+  if (valid.length < 2 || !Number.isFinite(valueMax) || valueMax === 0) {
+    $('sweepChart').innerHTML = '<p class="empty">数据不足，无法绘制响应曲线。</p>';
+    return;
+  }
+  const vLo = Math.min(...values.filter(Number.isFinite), 0);
+  const yLo = Math.min(...valid.map((s) => s.v));
+  const yHi = Math.max(...valid.map((s) => s.v));
+  const W = 560;
+  const H = 140;
+  const pts = valid.map((s) => {
+    const x = 40 + ((s.t - vLo) / (valueMax - vLo || 1)) * (W - 60);
+    const y = H - 20 - ((s.v - yLo) / (yHi - yLo || 1)) * (H - 50);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(' ');
+  $('sweepChart').innerHTML =
+    `<svg class="chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">` +
+    `<line x1="40" y1="${H - 20}" x2="${W - 10}" y2="${H - 20}" stroke="var(--line)"/>` +
+    `<polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="2"/>` +
+    `</svg>` +
+    `<p class="hint">${state.sweep.out} 随取值变化 · 值域 ${yLo.toPrecision(4)}..${yHi.toPrecision(4)}</p>`;
+}
+
+$('sweepRunBtn').addEventListener('click', runSweep);
+$('sweepOut').addEventListener('change', (e) => {
+  state.sweep.out = e.target.value;
+  const maxRef = Math.max(...state.sweep.rows.map((r) => r.value), 0);
+  renderSweepResults(maxRef);
+});
+
+// ---------------------------------------------------------------------------
+// built-in template library (kernel-verified CTest cases)
+// ---------------------------------------------------------------------------
+
+async function loadTemplate(entry) {
+  let text;
+  try {
+    text = await invoke('read_text_file', { path: entry.path });
+  } catch (e) {
+    setStatus(`读取模板失败: ${e}`, 'error');
+    return;
+  }
+  const target = templateTarget(entry.id);
+  state.loadedTemplate = entry.id;
+  if (target.kind === 'slug') {
+    $('slugCasePath').value = entry.path;
+    switchTab('slug');
+    setStatus(`已载入模板「${entry.name}」：点「▶ 运行段塞」开始动画。`, 'ok');
+    return;
+  }
+  if (target.kind === 'coupled') {
+    $('coupledCasePath').value = entry.path;
+    switchTab('coupled');
+    setStatus(`已载入模板「${entry.name}」：点「▶ 运行耦合」求解。`, 'ok');
+    return;
+  }
+  freshModel(text);
+  state.loadedTemplate = entry.id;
+  state.rawDictText = text;
+  syncDictText();
+  switchTab('canvas');
+  const fid = isPartialFidelity(entry.id)
+    ? '（黑油/PVT 模板：运行与渲染完全可用；拖拽编辑与参数扫描对其禁用，避免静默丢物理。）'
+    : '';
+  setStatus(`已载入模板「${entry.name}」${fid}`, 'ok');
+}
+
+async function renderTemplateMenu() {
+  const menu = $('templateMenu');
+  menu.innerHTML = '';
+  let tpls = [];
+  try {
+    tpls = await invoke('case_templates') || [];
+  } catch (e) {
+    const b = document.createElement('button');
+    b.textContent = `模板加载失败: ${e}`;
+    b.disabled = true;
+    menu.appendChild(b);
+    return;
+  }
+  for (const t of tpls) {
+    const b = document.createElement('button');
+    b.textContent = (isPartialFidelity(t.id) ? '◇ ' : '◆ ') + t.name;
+    b.title = t.path;
+    b.addEventListener('click', () => loadTemplate(t));
+    menu.appendChild(b);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // charts (bottom curves tab)
@@ -1126,6 +1764,7 @@ function applyTheme(theme) {
   state.theme = theme;
   document.documentElement.dataset.theme = theme;
   $('tbTheme').textContent = theme === 'dark' ? '主题：深' : '主题：浅';
+  if (state.slug.frames.length) renderSlugFrame();
 }
 
 $('tbUnits').addEventListener('click', () => {
@@ -1263,6 +1902,7 @@ function afterModelChange(syncDict = true) {
   renderProps();
   renderCanvas();
   renderCharts();
+  renderSweepTargets();
 }
 
 // ---------------------------------------------------------------------------
@@ -1273,38 +1913,44 @@ caseText.value = DEFAULT_CASE;
 $('exePath').value = engines.steady;
 $('transientExePath').value = engines.transient;
 $('coupledExePath').value = engines.coupled;
+$('twofluidExePath').value = engines.twofluid;
 $('coupledCasePath').value = engines.coupledCase;
 
 (async () => {
   try {
     const paths = await invoke('default_engines');
-    if (Array.isArray(paths) && paths.length === 4 && paths[0] && paths[1]) {
+    if (Array.isArray(paths) && paths.length === 5 && paths[0] && paths[1]) {
       engines.steady = paths[0];
       engines.transient = paths[1];
       engines.coupled = paths[2];
       engines.coupledCase = paths[3];
+      engines.twofluid = paths[4];
       $('exePath').value = paths[0];
       $('transientExePath').value = paths[1];
       $('coupledExePath').value = paths[2];
       $('coupledCasePath').value = paths[3];
+      $('twofluidExePath').value = paths[4];
     }
   } catch (_) {
     /* keep developer defaults */
   }
+  renderTemplateMenu();
 })();
 
-['exePath', 'transientExePath', 'coupledExePath', 'coupledCasePath'].forEach((id) => {
+['exePath', 'transientExePath', 'coupledExePath', 'twofluidExePath', 'coupledCasePath'].forEach((id) => {
   $(id).addEventListener('change', (e) => {
     const v = e.target.value.trim();
     if (id === 'exePath') engines.steady = v;
     if (id === 'transientExePath') engines.transient = v;
     if (id === 'coupledExePath') engines.coupled = v;
+    if (id === 'twofluidExePath') engines.twofluid = v;
     if (id === 'coupledCasePath') engines.coupledCase = v;
   });
 });
 
 freshModel(DEFAULT_CASE);
 applyUnits(UNIT_SYSTEMS.SI);
+renderSweepTargets(false);
 renderCharts();
 renderConvergence();
-setStatus('就绪。左侧项目树选择元素，工具栏运行稳态/瞬态/耦合求解。');
+setStatus('就绪。左侧项目树选择元素，工具栏运行稳态/瞬态/耦合求解；文件菜单载入算例模板。');

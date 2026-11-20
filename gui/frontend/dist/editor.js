@@ -216,10 +216,18 @@ export function networkToCaseText(model) {
   }
   lines.push('}', '', 'pipes', '{');
   for (const p of model.pipes) {
-    lines.push(
-      `    ${p.name} { from ${p.from}; to ${p.to}; length ${fmt(p.length)}; ` +
-        `diameter ${fmt(p.diameter)}; roughness ${fmt(p.roughness)}; elevation ${fmt(p.elevation)}; }`,
-    );
+    // inline equipment (valve / pump curve) only when present (0 = absent),
+    // so a plain pipe serializes byte-identically to the M5 output
+    let fields =
+      `from ${p.from}; to ${p.to}; length ${fmt(p.length)}; ` +
+      `diameter ${fmt(p.diameter)}; roughness ${fmt(p.roughness)}; elevation ${fmt(p.elevation)};`;
+    if (p.valve) fields += ` valve ${fmt(p.valve)};`;
+    if (p.pumpHead) fields += ` pumpHead ${fmt(p.pumpHead)};`;
+    if (p.pumpRate) fields += ` pumpRate ${fmt(p.pumpRate)};`;
+    if (p.pumpShutoffHead) fields += ` pumpShutoffHead ${fmt(p.pumpShutoffHead)};`;
+    if (p.pumpStages) fields += ` pumpStages ${fmt(p.pumpStages)};`;
+    if (p.pumpSpeed) fields += ` pumpSpeed ${fmt(p.pumpSpeed)};`;
+    lines.push(`    ${p.name} { ${fields} }`);
   }
   lines.push('}', '', 'sources', '{');
   for (const s of model.sources) {

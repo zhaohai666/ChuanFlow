@@ -376,3 +376,43 @@ textarea { flex: 1; min-height: 160px; resize: none; }
 .conv-panel { flex: 1; overflow: auto; padding: 8px 12px; color: var(--muted); font: 12px/1.7 "SFMono-Regular", Consolas, monospace; }
 .conv-panel b { color: var(--text); }
 .conv-panel p { margin: 3px 0; }
+
+/* ======== M8: equipment glyphs, slug player, sweep, 3D controls ======== */
+
+.menu-group {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  padding: 4px 12px 2px;
+  text-transform: uppercase;
+}
+#templateMenu button { font-size: 12px; }
+
+.canvas-toolbar .sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--line);
+  margin: 0 4px;
+}
+.canvas-toolbar label.chk { gap: 4px; }
+.canvas-toolbar input[type='range'] { width: 90px; }
+
+/* equipment glyphs drawn by renderCanvas */
+.dev-valve polygon { fill: var(--coupled); stroke: var(--text); stroke-width: 0.8; }
+.dev-valve line { stroke: var(--text); stroke-width: 1.2; }
+.dev-pump circle { fill: var(--accent); stroke: var(--text); stroke-width: 0.8; }
+.dev-pump polygon { fill: var(--panel); stroke: var(--text); stroke-width: 0.8; }
+
+.player-bar { border-top: 1px dashed var(--line); }
+.player-bar .readout { font-size: 12px; min-width: 200px; text-align: right; }
+.player-bar input[type='range'] { flex: 1; }
+.player-bar input.grow { flex: 1; width: auto; }
+
+.sweep-grid {
+  display: grid;
+  grid-template-columns: minmax(280px, 5fr) minmax(260px, 4fr);
+  gap: 14px;
+  padding: 10px 14px;
+  overflow: auto;
+}
+.sweep-grid h3 { margin: 0 0 6px; font-size: 13px; display: flex; align-items: center; gap: 8px; }

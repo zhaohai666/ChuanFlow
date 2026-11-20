@@ -9,9 +9,10 @@
 #
 # Usage:  gui/package_app.sh            (expects ../build to hold the engines)
 # Output: gui/dist/ChuanFlow GUI.app    (ad-hoc signed, x86_64)
-# Bundle: steady + transient + coupled-1d3d engines in Resources/bin, the
-#         coupling template case in Resources/cases (default_engines finds
-#         all four relative to the running binary).
+# Bundle: steady + transient + coupled-1d3d + two-fluid engines in Resources/bin,
+#         the coupled template case and the six editor template dictionaries in
+#         Resources/cases (case_templates / default_engines find all of them
+#         relative to the running binary).
 set -eu
 
 cd "$(dirname "$0")"
@@ -27,10 +28,15 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/bin" "$APP/Contents/Reso
 cp target/release/chflow-gui "$APP/Contents/MacOS/chflow-gui"
 cp "$ROOT"/build/src/1d/apps/chflow-1d-steady \
    "$ROOT"/build/src/1d/apps/chflow-1d-transient \
+   "$ROOT"/build/src/1d/apps/chflow-1d-twofluid \
    "$ROOT"/build/src/coupling/apps/chflow-coupled-1d3d \
    "$APP/Contents/Resources/bin/"
 cp "$ROOT"/tests/cases/coupled1d3d/case.dict \
    "$APP/Contents/Resources/cases/coupled1d3d.dict"
+for tpl in steadyNetwork steadyEquipmentValve steadyEquipmentPump \
+           steadyNetworkMultiphase transientBlowdown twoFluidTerrainSlug; do
+    cp "$ROOT/tests/cases/$tpl/case.dict" "$APP/Contents/Resources/cases/$tpl.dict"
+done
 
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -82,3 +88,6 @@ echo "== packaged: $APP =="
 "$APP/Contents/Resources/bin/chflow-coupled-1d3d" \
     "$APP/Contents/Resources/cases/coupled1d3d.dict" >/dev/null && \
     echo "== bundled coupled solver smoke run: ok =="
+"$APP/Contents/Resources/bin/chflow-1d-twofluid" \
+    "$APP/Contents/Resources/cases/twoFluidTerrainSlug.dict" >/dev/null && \
+    echo "== bundled two-fluid slug smoke run: ok =="

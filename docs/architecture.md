@@ -5151,6 +5151,24 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界。** 3D 视图是 x–y 投影的块网格场渲染（z 向 1 格的 duct 型块；任意 3D 旋转/剖切/矢量图待后续增量）；项目树「组件库」只含 steadyNetwork 内核真实支持的元素类型（节点/管段/源），井筒/分离器/压缩机等设备图标在对应内核进 GUI 前不出现假图标；段塞动画、批量参数扫描、算例模板库未做。
 
+### 5.134 M8 工作台五项能力：3D 旋转/剖切/矢量 + 设备图标 + 段塞动画 + 参数扫描 + 算例模板库
+
+> **状态（2026-11-20）**：M7 边界五项全部落地，全部接真实内核与真实命令。Rust 23/23 + node 39/39 + CTest gui.* 3/3；7 个模板算例在内核上逐个实跑验证通过（模板即 CTest 回归算例，构造性可信）。
+
+**3D 视图旋转/剖切/矢量图（`renderField` 重写）。** 绕块质心的 yaw/pitch 旋转 + 正交投影（`projectPoint`：yaw 绕 z 轴旋转、pitch 把 z 投入屏幕 y），可见性集合内重算包围盒缩放；剖切面（轴 x/y/z + 分数滑条）按单元质心坐标保留低侧单元、隐藏面外单元后再算包围盒；矢量图开关在单元质心画 `cellU` 速度箭头（随视图 yaw/pitch 同步旋转方向、按最大模归一长度、stride 抽稀 ≤400 支），主题感知颜色（Canvas 2D 不解析 CSS 变量，深/浅主题取显式色值）。
+
+**设备组件图标（内核真支持的键，非假图标）。** 审计 `network.cpp` 管段键：`valve`（laminar 阀律）与 `pumpHead/pumpRate/pumpShutoffHead/pumpStages/pumpSpeed`（亲和律闭环）真实存在 → 画布管段中点绘制蝶阀（双三角 bowtie，橙）与离心泵（圆 + 沿管向三角，蓝）SVG 图形，`<title>` 悬浮显示完整设备参数，点图形即选中所在管段；canvas 工具条加「加阀门 / 加泵 / 移除设备」按钮（作用选中管段）；属性面板管段分支显示六个设备字段的编辑框（0 = 无）。`PipeDef`/序列化/`extractCaseDetails`/`networkToCaseText` 全链路支持设备键（非零才输出，无设备逐字节同 M5 输出），含无损往返 Rust 测试。
+
+**段塞动画。** 新 tab 跑 `chflow-1d-twofluid`（`startJob('slug')`，引擎路径由 `default_engines` 第五路径解析）：`parseTwoFluidFrames` 按帧解析（`t/vm/dp` 帧头 + `cell i alpha water vsl vsg [T] [p] [s]` 逐名尾键，case 特性键集变化容错），播放器逐帧渲染管段持率剖面（绿 = alpha、蓝 = water、红框 = 段塞单元 s>0），播放/暂停/1x-8x 速度/帧滑条；算例路径缺省自动取模板库的 `twoFluidTerrainSlug`（121 帧验证算例）。
+
+**批量参数扫描。** 新 tab：扫描参数（源注入率 / 管段直径 / 管段长度）+ 作用对象（从当前模型动态生成）+ 取值列表 → 逐值克隆模型、代入参数、`networkToCaseText` 序列化、`run_case_text` 稳态求解；结果表（收敛/迭代/残差/出口 Q/最大 dp）+ 响应曲线（输出量可选 Q:/dp:/p: 任意管段与节点）。扫描诚实声明基于编辑器模型序列化字典；黑油/PVT 偏保真模板（编辑器无法完整复刻其字典）显式禁用扫描，不静默丢物理。
+
+**算例模板库。** 文件菜单动态渲染 `case_templates` 命令返回的 7 个模板——全部是 CTest 回归套件已验证的算例文件（packaged `Resources/cases/<id>.dict` 优先、开发树 `tests/cases/<id>/` 回落），模板即构造性可信而非手拟猜测：稳态管网 / 节流阀 / 离心泵 / 黑油多相 / 瞬态放空 / 地形段塞 / 1D↔3D 耦合；按 `templateTarget` 分流——dict 类载入编辑器（raw dict 为运行权属）、slug/coupled 类预填对应 tab 路径并切页；黑油模板标 ◇ 提示偏保真边界。
+
+**打包更新。** `package_app.sh` 随包第四求解器 `chflow-1d-twofluid` + 6 个模板 dict 进 `Resources/cases`，冒烟三连（steady / coupled / twofluid 模板算例）。
+
+**边界。** 3D 剖切为轴对齐平面保留低侧（任意斜面/6 面盒剖切待增量）；矢量图为均匀抽稀（按模着色/流线待增量）；扫描为逐值串行稳态（并行与瞬态扫描待增量）；设备族仅覆盖阀/离心泵（气举阀与有杆泵需 PVT/日程接线，暂不进 GUI）；段塞动画渲染持率剖面（速度廓线/压力剖面叠加待增量）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

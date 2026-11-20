@@ -41,8 +41,14 @@ import {
   classifyLogLine,
   parseSteadyOutput,
   parseTransientOutput,
+  parseTwoFluidFrames,
   extractCaseDetails,
 } from '../frontend/dist/workspace.js';
+import {
+  TEMPLATE_IDS,
+  templateTarget,
+  isPartialFidelity,
+} from '../frontend/dist/templates.js';
 
 const SAMPLE = `// 三节点串联管网
 solver { type steadyNetwork; }
@@ -479,4 +485,85 @@ test('workspace: extractCaseDetails 时间块与单行管段', () => {
   assert.deepEqual(d.fluid, { rho: 930, mu: 0.042 });
   assert.deepEqual(d.time, { dt: 0.02, endTime: 3, reportEvery: 5 });
   assert.equal(d.pipes.P.length, 42);
+});
+
+
+// ---------------------------------------------------------------------------
+// M8：设备组件（阀/泵）字段进出字典
+// ---------------------------------------------------------------------------
+
+test('editor: 阀/泵键写入序列化并忠实提取', () => {
+  let m = buildModel();
+  const pid = m.pipes[0].id;
+  m = setPipeFields(m, pid, {
+    pumpHead: 25, pumpRate: 3.0e-4, pumpShutoffHead: 40,
+  });
+  const pid2 = m.pipes[1] ? m.pipes[1].id : null;
+  if (!pid2) {
+    const r = validateCaseText(networkToCaseText(m));
+    assert.equal(r.valid, true);
+  }
+  const text = networkToCaseText(m);
+  assert.ok(text.includes('pumpHead 25'), text);
+  assert.ok(text.includes('pumpRate 0.0003'));
+  assert.ok(text.includes('pumpShutoffHead 40'));
+  assert.ok(!text.includes('valve'), '未设置时不得输出 valve 键');
+  const d = extractCaseDetails(text);
+  assert.equal(d.pipes.P1.pumpHead, 25);
+  assert.equal(d.pipes.P1.valve, 0);
+});
+
+test('editor: 阀键序列化与提取', () => {
+  let m = buildModel();
+  m = setPipeFields(m, m.pipes[0].id, { valve: 0.012 });
+  const text = networkToCaseText(m);
+  assert.ok(text.includes('valve 0.012'));
+  assert.ok(!text.includes('pumpHead'), '未设置时不得输出 pumpHead 键');
+  const d = extractCaseDetails(text);
+  assert.equal(d.pipes.P1.valve, 0.012);
+  assert.equal(d.pipes.P1.pumpHead, 0);
+});
+
+// ---------------------------------------------------------------------------
+// M8：twoFluid 帧解析（段塞动画数据源）
+// ---------------------------------------------------------------------------
+
+const SLUG_SAMPLE = `[chflow] twoFluid: 50 sections, dt=0.01 endTime=120
+[chflow] t 0 vm 0 dp -23779.94
+[chflow] cell 0 alpha 0.55 water 0 vsl 0 vsg 0 s 0
+[chflow] cell 1 alpha 0.55 water 0 vsl 0 vsg 0 s 0
+[chflow] t 1 vm 0 dp -23779.94
+[chflow] cell 0 alpha 0.61 water 0 vsl 0 vsg 0 s 0
+[chflow] cell 1 alpha 0.55 water 0 vsl 0 vsg 0 s 1
+[chflow] t 2 vm 0.3 dp -23800
+[chflow] cell 0 alpha 0.7 water 0 vsl 0.2 vsg 0.1 T 300 p 1e6 s 0
+[chflow] cell 1 alpha 0.5 water 0.1 vsl 0.15 vsg 0.15 T 301 p 1.1e6 s 2
+`;
+
+test('workspace: parseTwoFluidFrames 帧与逐格键值', () => {
+  const fr = parseTwoFluidFrames(SLUG_SAMPLE);
+  assert.equal(fr.length, 3);
+  assert.equal(fr[0].t, 0);
+  assert.equal(fr[0].vm, 0);
+  assert.equal(fr[1].cells.length, 2);
+  assert.equal(fr[1].cells[1].alpha, 0.55);
+  assert.equal(fr[1].cells[1].s, 1);
+  // tail keys vary by case features (T/p appear only when thermal/EOS on)
+  assert.equal(fr[2].cells[0].T, 300);
+  assert.equal(fr[2].cells[1].p, 1.1e6);
+  assert.equal(fr[2].cells[1].s, 2);
+  assert.equal(parseTwoFluidFrames('no frames here').length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// M8：模板库元数据
+// ---------------------------------------------------------------------------
+
+test('templates: 模板目标页与保真度标注', () => {
+  assert.equal(TEMPLATE_IDS.length, 7);
+  assert.deepEqual(templateTarget('twoFluidTerrainSlug'), { tab: 'slug', kind: 'slug' });
+  assert.deepEqual(templateTarget('coupled1d3d'), { tab: 'coupled', kind: 'coupled' });
+  assert.deepEqual(templateTarget('steadyEquipmentPump'), { tab: 'canvas', kind: 'dict' });
+  assert.equal(isPartialFidelity('steadyNetworkMultiphase'), true);
+  assert.equal(isPartialFidelity('steadyEquipmentValve'), false);
 });

@@ -19,6 +19,9 @@
           <button id="menuOpenProject">打开工程…</button>
           <button id="menuSaveProject">保存工程</button>
           <hr />
+          <div class="menu-group">算例模板库（内核验证算例）</div>
+          <div id="templateMenu"></div>
+          <hr />
           <button id="menuExportDict">导出 case 字典（切到字典页）</button>
         </div>
       </div>
@@ -86,6 +89,8 @@
           <button data-tab="canvas" class="tab active">管网拓扑</button>
           <button data-tab="field" class="tab">3D 场视图</button>
           <button data-tab="coupled" class="tab">耦合视图</button>
+          <button data-tab="slug" class="tab">段塞动画</button>
+          <button data-tab="sweep" class="tab">参数扫描</button>
           <button data-tab="dict" class="tab">case 字典</button>
         </div>
 
@@ -96,6 +101,11 @@
               <span class="hint">点空白加节点 · 点节点再点节点连线 · 拖动移动 · Delete 删除</span>
               <button id="addSourceBtn">给选中节点加源</button>
               <button id="deleteBtn">删除选中</button>
+              <span class="sep"></span>
+              <span class="hint">设备（作用选中管段）：</span>
+              <button id="addValveBtn" title="给选中管段加节流阀（valve K）">加阀门</button>
+              <button id="addPumpBtn" title="给选中管段加离心泵（pumpHead/pumpRate）">加泵</button>
+              <button id="removeDeviceBtn" title="移除选中管段的内嵌设备">移除设备</button>
               <label>线云图
                 <select id="colorMode">
                   <option value="none">无（单相绿）</option>
@@ -122,6 +132,25 @@
                 </select>
               </label>
               <button id="loadVtuBtn">载入并渲染</button>
+              <span class="sep"></span>
+              <label>旋转 yaw
+                <input id="viewYaw" type="range" min="-180" max="180" value="0" step="1" />
+              </label>
+              <label>pitch
+                <input id="viewPitch" type="range" min="-80" max="80" value="0" step="1" />
+              </label>
+              <label>剖切轴
+                <select id="clipAxis">
+                  <option value="none">无</option>
+                  <option value="x">x</option>
+                  <option value="y">y</option>
+                  <option value="z">z</option>
+                </select>
+              </label>
+              <label>剖切位置
+                <input id="clipFrac" type="range" min="0" max="1" value="0.5" step="0.01" />
+              </label>
+              <label class="chk"><input id="showVectors" type="checkbox" /> 矢量图</label>
             </div>
             <canvas id="fieldCanvas" class="field-canvas"></canvas>
             <div class="field-legend">
@@ -158,6 +187,64 @@
             </div>
           </section>
 
+          <!-- 段塞动画（chflow-1d-twofluid 地形段塞时间线） -->
+          <section id="tab-slug" class="tab-page">
+            <div class="canvas-toolbar">
+              <label class="grow">段塞算例（twofluid 字典）
+                <input id="slugCasePath" type="text" spellcheck="false"
+                       placeholder="twoFluidTerrainSlug 模板或自拟 twofluid 算例" />
+              </label>
+              <button id="runSlugBtn" class="primary">▶ 运行段塞</button>
+            </div>
+            <div class="canvas-toolbar player-bar">
+              <button id="slugPlayBtn" disabled>▶ 播放</button>
+              <label>速度
+                <select id="slugSpeed">
+                  <option value="1">1x</option>
+                  <option value="2">2x</option>
+                  <option value="4" selected>4x</option>
+                  <option value="8">8x</option>
+                </select>
+              </label>
+              <input id="slugFrame" class="grow" type="range" min="0" max="0" value="0" step="1" disabled />
+              <b id="slugReadout" class="readout">—</b>
+            </div>
+            <canvas id="slugCanvas" class="field-canvas"></canvas>
+            <p class="hint" id="slugInfo">持率剖面动画：绿 = 第一相体积分数 alpha，红框 = 段塞单元（s &gt; 0），蓝 = 水（water）。</p>
+          </section>
+
+          <!-- 参数扫描（稳态逐值求解） -->
+          <section id="tab-sweep" class="tab-page">
+            <div class="canvas-toolbar">
+              <label>扫描参数
+                <select id="sweepParam">
+                  <option value="sourceRate">源注入率</option>
+                  <option value="pipeDiameter">管段直径</option>
+                  <option value="pipeLength">管段长度</option>
+                </select>
+              </label>
+              <label>作用对象
+                <select id="sweepTarget"></select>
+              </label>
+              <label class="grow">取值列表（逗号分隔，SI 单位）
+                <input id="sweepValues" type="text" spellcheck="false" placeholder="如 1e-6, 2e-6, 3e-6" />
+              </label>
+              <button id="sweepRunBtn" class="primary">▶ 运行扫描</button>
+            </div>
+            <pre id="sweepStatus" class="status">扫描基于当前编辑器模型序列化的字典逐值求解（编辑器未建模的字典键不参与）。</pre>
+            <div class="sweep-grid">
+              <table id="sweepTable" class="data-table"><thead><tr>
+                <th>取值</th><th>收敛</th><th>迭代</th><th>残差</th><th>出口 Q</th><th>最大 dp</th>
+              </tr></thead><tbody></tbody></table>
+              <div>
+                <h3>响应曲线
+                  <select id="sweepOut"></select>
+                </h3>
+                <div id="sweepChart" class="chart-box"></div>
+              </div>
+            </div>
+          </section>
+
           <!-- case 字典 -->
           <section id="tab-dict" class="tab-page">
             <div class="dict-grid">
@@ -173,6 +260,8 @@
                   <input id="transientExePath" type="text" spellcheck="false" /></label>
                 <label class="field"><span>耦合求解器</span>
                   <input id="coupledExePath" type="text" spellcheck="false" /></label>
+                <label class="field"><span>双流体段塞求解器</span>
+                  <input id="twofluidExePath" type="text" spellcheck="false" /></label>
                 <div class="actions">
                   <button id="applyDictBtn" class="primary">应用字典到模型</button>
                   <button id="runDictBtn">运行字典</button>

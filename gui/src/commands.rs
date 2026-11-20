@@ -48,6 +48,23 @@ pub struct PipeDef {
     pub diameter: f64,
     pub roughness: f64,
     pub elevation: f64,
+    /// Inline equipment the steadyNetwork kernel reads off the same pipe
+    /// (`network.cpp::loadNetwork`): `valve` is the valve admittance K
+    /// (0 = no valve) and the pump family is the affinity-law curve. 0 keys
+    /// stay absent from the serialization so a plain pipe round-trips
+    /// byte-identically.
+    #[serde(default)]
+    pub valve: f64,
+    #[serde(default)]
+    pub pump_head: f64,
+    #[serde(default)]
+    pub pump_rate: f64,
+    #[serde(default)]
+    pub pump_shutoff_head: f64,
+    #[serde(default)]
+    pub pump_stages: f64,
+    #[serde(default)]
+    pub pump_speed: f64,
 }
 
 impl Default for PipeDef {
@@ -60,6 +77,12 @@ impl Default for PipeDef {
             diameter: 0.05,
             roughness: 0.0,
             elevation: 0.0,
+            valve: 0.0,
+            pump_head: 0.0,
+            pump_rate: 0.0,
+            pump_shutoff_head: 0.0,
+            pump_stages: 0.0,
+            pump_speed: 0.0,
         }
     }
 }
@@ -294,6 +317,12 @@ pub fn parse_case_text(text: &str) -> Result<NetworkCase, String> {
                         diameter: num("diameter", d.diameter),
                         roughness: num("roughness", d.roughness),
                         elevation: num("elevation", d.elevation),
+                        valve: num("valve", 0.0),
+                        pump_head: num("pumpHead", 0.0),
+                        pump_rate: num("pumpRate", 0.0),
+                        pump_shutoff_head: num("pumpShutoffHead", 0.0),
+                        pump_stages: num("pumpStages", 0.0),
+                        pump_speed: num("pumpSpeed", 0.0),
                     });
                 }
                 "sources" => {
@@ -434,11 +463,32 @@ pub fn serialize_network_case(case: &NetworkCase) -> String {
     }
     out.push_str("}\n\npipes\n{\n");
     for p in &case.pipes {
-        out.push_str(&format!(
-            "    {} {{ from {}; to {}; length {}; diameter {}; roughness {}; elevation {}; }}\n",
-            p.name, p.from, p.to,
-            fmt_num(p.length), fmt_num(p.diameter), fmt_num(p.roughness), fmt_num(p.elevation),
-        ));
+        // inline equipment keys are emitted only when present (0 = absent),
+        // so a plain pipe round-trips byte-identically through the parser
+        let mut fields = format!(
+            "from {}; to {}; length {}; diameter {}; roughness {}; elevation {};",
+            p.from, p.to,
+            fmt_num(p.length), fmt_num(p.diameter), fmt_num(p.roughness), fmt_num(p.elevation)
+        );
+        if p.valve != 0.0 {
+            fields.push_str(&format!(" valve {};", fmt_num(p.valve)));
+        }
+        if p.pump_head != 0.0 {
+            fields.push_str(&format!(" pumpHead {};", fmt_num(p.pump_head)));
+        }
+        if p.pump_rate != 0.0 {
+            fields.push_str(&format!(" pumpRate {};", fmt_num(p.pump_rate)));
+        }
+        if p.pump_shutoff_head != 0.0 {
+            fields.push_str(&format!(" pumpShutoffHead {};", fmt_num(p.pump_shutoff_head)));
+        }
+        if p.pump_stages != 0.0 {
+            fields.push_str(&format!(" pumpStages {};", fmt_num(p.pump_stages)));
+        }
+        if p.pump_speed != 0.0 {
+            fields.push_str(&format!(" pumpSpeed {};", fmt_num(p.pump_speed)));
+        }
+        out.push_str(&format!("    {} {{ {} }}\n", p.name, fields));
     }
     out.push_str("}\n\nsources\n{\n");
     for s in &case.sources {
@@ -935,16 +985,17 @@ pub fn write_text_file(path: String, content: String) -> Result<(), String> {
 /// of the Finder-launched CWD being `/`) and falls back to the developer tree
 /// relative to this source file. Pure path resolution - no processes are
 /// spawned - so it is unit-testable.
-pub fn resolve_default_engines() -> (String, String, String, String) {
+pub fn resolve_default_engines() -> (String, String, String, String, String) {
     let steady_name = "chflow-1d-steady";
     let transient_name = "chflow-1d-transient";
     let coupled_name = "chflow-coupled-1d3d";
+    let twofluid_name = "chflow-1d-twofluid";
     let template_rel = "tests/cases/coupled1d3d/case.dict";
 
     // packaged layout: <...>/ChuanFlow GUI.app/Contents/MacOS/chflow-gui
     //              -> <...>/ChuanFlow GUI.app/Contents/Resources/bin/<exe>
     //              -> <...>/ChuanFlow GUI.app/Contents/Resources/cases/<case>
-    let packaged: Option<(PathBuf, PathBuf, PathBuf, PathBuf)> =
+    let packaged: Option<(PathBuf, PathBuf, PathBuf, PathBuf, PathBuf)> =
         std::env::current_exe().ok().and_then(|exe| {
             for ancestor in exe.ancestors().skip(1) {
                 // the Contents directory: its parent is the .app bundle
@@ -954,13 +1005,14 @@ pub fn resolve_default_engines() -> (String, String, String, String) {
                     let steady = bin.join(steady_name);
                     let transient = bin.join(transient_name);
                     let coupled = bin.join(coupled_name);
+                    let twofluid = bin.join(twofluid_name);
                     if steady.exists() && transient.exists() {
                         let template = if cases.join("coupled1d3d.dict").exists() {
                             cases.join("coupled1d3d.dict")
                         } else {
                             coupled.clone()
                         };
-                        return Some((steady, transient, coupled, template));
+                        return Some((steady, transient, coupled, template, twofluid));
                     }
                     break;
                 }
@@ -968,12 +1020,13 @@ pub fn resolve_default_engines() -> (String, String, String, String) {
             None
         });
 
-    if let Some((steady, transient, coupled, template)) = packaged {
+    if let Some((steady, transient, coupled, template, twofluid)) = packaged {
         return (
             steady.to_string_lossy().into_owned(),
             transient.to_string_lossy().into_owned(),
             coupled.to_string_lossy().into_owned(),
             template.to_string_lossy().into_owned(),
+            twofluid.to_string_lossy().into_owned(),
         );
     }
 
@@ -987,16 +1040,79 @@ pub fn resolve_default_engines() -> (String, String, String, String) {
         dev.join("src/1d/apps").join(transient_name).to_string_lossy().into_owned(),
         dev.join("src/coupling/apps").join(coupled_name).to_string_lossy().into_owned(),
         dev.parent().unwrap().join(template_rel).to_string_lossy().into_owned(),
+        dev.join("src/1d/apps").join(twofluid_name).to_string_lossy().into_owned(),
     )
 }
 
 /// Frontend hook: the default engine paths for this installation
 /// (packaged Resources/bin first, developer tree second):
-/// [steady, transient, coupled-1d3d, coupled template case].
+/// [steady, transient, coupled-1d3d, coupled template case, two-fluid].
 #[tauri::command]
 pub fn default_engines() -> Vec<String> {
-    let (steady, transient, coupled, template) = resolve_default_engines();
-    vec![steady, transient, coupled, template]
+    let (steady, transient, coupled, template, twofluid) = resolve_default_engines();
+    vec![steady, transient, coupled, template, twofluid]
+}
+
+/// One built-in case template: a kernel-verified case dictionary shipped with
+/// the app (Resources/cases/<id>.dict) or the developer tree
+/// (tests/cases/<id>/case.dict). Loading one loads a case the engine has
+/// already been verified against byte-for-byte.
+#[derive(Serialize)]
+pub struct TemplateEntry {
+    pub id: String,
+    pub name: String,
+    pub path: String,
+}
+
+/// The template library. Every id names a case that is part of the CTest
+/// regression suite, so a template is by construction a case the kernel
+/// accepts and produces checked physics for.
+pub fn resolve_case_templates() -> Vec<TemplateEntry> {
+    const TEMPLATES: &[(&str, &str)] = &[
+        ("steadyNetwork", "稳态集输管网（基础）"),
+        ("steadyEquipmentValve", "稳态节流阀（ laminar 阀律）"),
+        ("steadyEquipmentPump", "稳态离心泵（亲和律闭环）"),
+        ("steadyNetworkMultiphase", "稳态黑油多相集输（Beggs-Brill）"),
+        ("transientBlowdown", "瞬态放空（罐排空 2x2 解析）"),
+        ("twoFluidTerrainSlug", "地形段塞（捕集-行进-卸载弛豫振荡）"),
+        ("coupled1d3d", "1D↔3D 耦合（网络嵌 SIMPLE 块）"),
+    ];
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    let dev_cases = root.join("tests/cases");
+    let mut out = Vec::new();
+    for (id, name) in TEMPLATES {
+        let dev_path = if *id == "coupled1d3d" {
+            dev_cases.join("coupled1d3d/case.dict")
+        } else {
+            dev_cases.join(id).join("case.dict")
+        };
+        // packaged path wins when it exists (the .app carries the same dicts)
+        let path = std::env::current_exe().ok().and_then(|exe| {
+            exe.ancestors()
+                .find(|a| a.file_name().map(|n| n == "Contents").unwrap_or(false))
+                .map(|contents| {
+                    contents
+                        .join("Resources/cases")
+                        .join(format!("{id}.dict"))
+                })
+        });
+        let chosen = match path {
+            Some(p) if p.exists() => p,
+            _ => dev_path,
+        };
+        out.push(TemplateEntry {
+            id: (*id).to_string(),
+            name: (*name).to_string(),
+            path: chosen.to_string_lossy().into_owned(),
+        });
+    }
+    out
+}
+
+/// Frontend hook: the built-in template library entries.
+#[tauri::command]
+pub fn case_templates() -> Vec<TemplateEntry> {
+    resolve_case_templates()
 }
 
 /// Spawn an engine executable with a case file and parse its stdout.
@@ -1109,7 +1225,7 @@ mod tests {
 
     #[test]
     fn resolve_default_engines_returns_existing_paths() {
-        let (steady, transient, coupled, template) = resolve_default_engines();
+        let (steady, transient, coupled, template, twofluid) = resolve_default_engines();
         // At least one of the two layouts must resolve: the packaged
         // Resources/bin (only inside a bundle) or the developer tree
         // (always present after a CMake build in CI/dev).
@@ -1121,11 +1237,33 @@ mod tests {
             assert!(Path::new(&steady).exists(), "dev fallback {steady} must exist");
             assert!(Path::new(&transient).exists(), "dev fallback {transient} must exist");
             assert!(Path::new(&coupled).exists(), "dev fallback {coupled} must exist");
+            assert!(Path::new(&twofluid).exists(), "dev fallback {twofluid} must exist");
             assert!(
                 Path::new(&template).exists() && template.ends_with("coupled1d3d/case.dict"),
                 "coupling template {template} must exist"
             );
         }
+    }
+
+    #[test]
+    fn case_templates_resolve_to_existing_verified_cases() {
+        let templates = resolve_case_templates();
+        assert_eq!(templates.len(), 7);
+        for t in &templates {
+            assert!(
+                Path::new(&t.path).exists(),
+                "template {} ({}) must resolve: {}",
+                t.id,
+                t.name,
+                t.path
+            );
+        }
+        let ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
+        assert!(ids.contains(&"twoFluidTerrainSlug"));
+        assert!(ids.contains(&"coupled1d3d"));
+        // the slug template must end at the verified case file
+        let slug = templates.iter().find(|t| t.id == "twoFluidTerrainSlug").unwrap();
+        assert!(slug.path.ends_with("twoFluidTerrainSlug/case.dict") || slug.path.ends_with("twoFluidTerrainSlug.dict"));
     }
 
     // -- job registry -------------------------------------------------------
@@ -1436,6 +1574,31 @@ random banner text
         let text = serialize_network_case(&case);
         let back = parse_case_text(&text).expect("serialized text re-parses");
         assert_eq!(back, case, "round-trip must preserve every field");
+    }
+
+    #[test]
+    fn serialize_network_case_round_trip_with_inline_equipment() {
+        // valve + pump keys the steadyNetwork kernel reads must survive a
+        // parse -> serialize -> parse round trip, and a plain pipe must stay
+        // free of device tokens
+        let text = "nodes\n{\n A { pressure 1e5; }\n B { pressure 1e5; }\n}\npipes\n{\n P1 { from A; to B; length 1000; diameter 0.05; pumpHead 25; pumpRate 3e-4; pumpShutoffHead 40; }\n P2 { from A; to B; length 800; diameter 0.05; valve 0.012; }\n}\n";
+        let case = parse_case_text(text).expect("equipment case parses");
+        assert_eq!(case.pipes[0].pump_head, 25.0);
+        assert_eq!(case.pipes[0].pump_rate, 3.0e-4);
+        assert_eq!(case.pipes[0].pump_shutoff_head, 40.0);
+        assert_eq!(case.pipes[0].valve, 0.0);
+        assert_eq!(case.pipes[1].valve, 0.012);
+        assert_eq!(case.pipes[1].pump_head, 0.0);
+        let back = parse_case_text(&serialize_network_case(&case)).expect("re-parse");
+        assert_eq!(back, case, "设备键必须无损往返");
+        let plain = parse_case_text(
+            "nodes\n{\n A {};\n}\npipes\n{\n P { from A; to A; }\n}\n",
+        )
+        .unwrap();
+        assert!(
+            !serialize_network_case(&plain).contains("valve"),
+            "无设备管段不得输出 valve 键"
+        );
     }
 
     #[test]

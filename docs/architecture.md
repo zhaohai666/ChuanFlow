@@ -5199,6 +5199,44 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界。** PETSc 版为 demo 级对照 app（图-Laplacian 系统，非管网方程组接线）；GPU（Kokkos CUDA/HIP）仍需 GPU 机器（README M6 边界不变）；PETSc 通过 `PETSC_DIR` 手工前缀发现（3.23+ 不再装 CMake config），系统级安装走 find_package 不受影响。
 
+### 5.137 瞬态批量 what-if（U10）：原始字典精确参数化 + 并行真实引擎 + 多工况叠画
+
+> **状态（2026-11-20）**：对标清单 U10/G3 的稳态→瞬态扩展落地。Rust 27/27 + node 47/47（本节相关纯函数）+ gui.* 3/3；真实引擎两个关阀日程变体跑出不同罐压。 code b4d461c。
+
+**按原始字典参数化（诚实边界）。** 稳态扫描从编辑器模型序列化 case（§5.134）；瞬态 what-if 改为对 `#caseText` 的**原始字典文本**做单点精确替换——罐体 `volume/bulkModulus`、`valveClose/valveOpen` 日程、源 `schedule` 这些模型无法重建的声明全部保留。`applyWhatIfOverrides(caseText, param, target, value)`（`editor.js` 纯函数）用花括号扫描定位 section → entry → 嵌套块（`valveClose{}` / `schedule.close{}`），正则只替换目标键的数值并逐字节拼回其余文本；13 个参数覆盖关阀开始/结束、关闭 K、开阀开始/结束、源注入率与关/开日程、time 的 dt/endTime/reportEvery；非法值、缺目标、缺键、注释里的同名字块均大声拒收。测试含「改后改回逐字节等于原文」。
+
+**并行批量命令。** `run_transient_texts(texts, exe_path) -> Vec<TransientRunRow>`（`commands.rs`，Tauri handler 注册）复用 §5.135 的 `run_case_texts` worker pool 形态（scoped threads、AtomicUsize 取列、Mutex 按输入下标回填、每 run 唯一临时字典），逐行调既有 `run_transient_text` 并解析 `TransientSeries`；fake exe 用 case 的 endTime 回显最后采样时刻直接验证行序，坏行单独携带错误不污染其他行。
+
+**GUI 与结果。** sweep tab 增引擎切换（稳态/瞬态）：瞬态参数下拉由 `TRANSIENT_WHAT_IF_PARAMS` 动态生成，作用对象按 section 从模型管段或 raw dict 的 schedule 源列表解析，全局 time 参数免选目标；结果表给每个变体的样本数/终压/终 Q/峰值压力/末时刻，输出下拉 `p:<node>`/`Q:<pipe>`，响应图改为**多工况时间序列叠画**（每色一个取值）——这正是 PIPESIM/OLGA Scenario 对比表的最小可用形态（U1 的完整工况树仍另格）。顺手修掉 §5.134 稳态结果图里 `values` 未定义的 `ReferenceError`。
+
+**验证。** 真实 `tests/cases/transientValve/case.dict`（CTest 回归算例）在 `run_transient_texts_real_engine_what_if` 中以 `valveClose.start = 2 / 5` 两臂实跑，均收敛且末态罐压相差 >1 Pa；与 fake exe 的行序/坏行测试共 2/2 绿。
+
+**边界。** 参数化限于 case 字典中已声明的键（不支持新增未声明的日程）；时间相关 what-if 用单条 case 的多个变体，而非同一 job 内热切换；稳态黑油偏保真模板仍禁用扫描（§5.134 边界不变）。
+
+### 5.138 3D 流线与矢量按模着色（U7）：单元速度场积分 + 同色标
+
+> **状态（2026-11-20）**：Fluent 形态后处理补齐两项。node 47/47（流线 + what-if + 设备族全量），真实 VTU 几何冒烟见 §5.139。 code b4d461c。
+
+**流线纯函数。** `traceStreamlines(points, cells, cellU, seeds, opts)`（`workspace.js`）：先算单元质心与包围盒，把质心装进均匀网格桶（`gridN=12`），Euler 步取最近单元速度（归一化方向 × 0.2 倍最小网格距），逐层桶搜索把最近邻从 O(N) 降到近似 O(1)；出界一格余量、零速、步数预算（120）、回到种子附近（闭合回流）四种终止；输出点数组附 `seedCell` 索引供着色。测试：均匀场严格直线（y/z 逐点守恒）、旋转场切向且半径有界（细步长）、零速返回空、4000 单元 × 24 种子在渲染预算内。
+
+**GUI 接线。** 3D 场视图工具条新增「流线」开关；种子从可见单元质心按 stride 抽样（≤64 条），几何按 VTU 对象缓存——旋转/剖切视图不重算流线；流线颜色和矢量箭头颜色都取 `rainbowColor(|U|_cell, |U|min, |U|max)`，与 `|U|` 场色标同一映射，底部 `fieldInfo` 显式报出该色标范围；矢量仍按幅值自适应抽稀 ≤400 支（§5.135），现在热点颜色和长度都由模驱动。
+
+**边界。** Euler 积分非 RK4，闭合涡有随步长增长的径向漂移（测试用细步长，GUI 默认取性能档）；流线以单元质心速度代表整格，不做面插值；矢量色标在 `fieldMode='p'` 时与压力色图不同（前者 |U|、后者 p，info 文案明示）。
+
+### 5.139 Report definitions（U8）：真实 VTU 面/体积分 + 监控历史 + CSV
+
+> **状态（2026-11-20）**：Fluent report definitions / surface reports 的最小可用形态落地。node 49/49；三份真实内核 VTU 数值冒烟（详见下文）。 code b4d461c。
+
+**几何基础。** `parseVtu` 解析内核 ASCII VTU 的嵌套 `faces` 数组（每单元 `[nFaces, nPts, ids…, …]`，缺则 `cellFaces=null`），`areaVector`（Newell 法向）+ `cellVolumes`（散度定理 `Σ|S·(xf−C)|/3`）从面环算真实体积——不依赖硬编码网格尺寸。
+
+**求值器。** `evaluateReports(vtu, defs)` 支持场 `p/|U|/Ux/Uy/Uz` 与操作 `volumeIntegral / volumeAverage / max / min / flux / surfaceAverage`：体积分/平均按单元体积加权；面通量与面平均按**面质心投影**定位平面（`frac` 在面投影区间上插值），以 `|S·n|` 为权重，面通量用 `U·n`，面平均用所选标量；缺 faces 时返回 NaN + error 而非静默猜测。`reportsToCsv` 把场更新历史序列化为 CSV。
+
+**GUI 与接线。** 收敛监控 tab 增 report definitions 面板：场/操作/法向三分量/位置滑条 + 「＋ 定义 / ✕ 移除 / 导出 CSV」；每次载入新 VTU 记录一点历史（同场旋转不重复），面板显示当前值与历史折线；CSV 经 `write_text_file` 落到 `/tmp/chflow_gui_reports_<uid>.csv` 并回报路径。默认定义压力体积平均与 x 面通量。
+
+**数值冒烟（真实内核 VTU，非手拟）。** `out_p1_slab.vtu` 40 格总体积 0.010000（闭式）；`out_dpm_channel.vtu` 1000 格总体积 0.020000，x=max 面通量 0.001996 ≈ 入口流量 0.002（物理锚）；`out_vof_droplet.vtu` 6400 格总体积 0.100000，封闭域 x 面通量 6.5e-14 ≈ 0。三项均由 `parseVtu → cellVolumes → evaluateReports` 全链计算。
+
+**边界。** 面通量用单元中心速度乘面投影面积（不是面插值通量），真实面通量需内核输出面场；面平均按靠近目标平面一层面加权，多层厚网格的 `frac` 分辨率为一层单元；report 历史按 VTU 载入事件记录，不是求解器迭代历史（后者属 U8 完整形态，仍需内核 report 数据）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

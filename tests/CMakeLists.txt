@@ -2218,3 +2218,10 @@ if(CHFLOW_GUI_CARGO AND CHFLOW_GUI_NODE)
     # first offline resolution walks the full cached dependency tree
     set_tests_properties(gui.unit gui.build PROPERTIES TIMEOUT 900)
 endif()
+
+# Per-batch verification hooks (parallel development); missing hooks are no-ops.
+include(${CMAKE_CURRENT_SOURCE_DIR}/verify_1dsteady.cmake OPTIONAL)
+include(${CMAKE_CURRENT_SOURCE_DIR}/verify_1dtransient.cmake OPTIONAL)
+include(${CMAKE_CURRENT_SOURCE_DIR}/verify_3dturb.cmake OPTIONAL)
+include(${CMAKE_CURRENT_SOURCE_DIR}/verify_3dphys.cmake OPTIONAL)
+include(${CMAKE_CURRENT_SOURCE_DIR}/verify_3dmesh.cmake OPTIONAL)

@@ -47,6 +47,11 @@ target_link_libraries(chflow-openfoam-mesh PRIVATE cf3d)
 add_executable(chflow-3d-backend backendApp.cpp)
 target_link_libraries(chflow-3d-backend PRIVATE cf3d)
 
+# Per-batch app hooks (parallel development); missing hooks are no-ops.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake_apps_3dturb.cmake OPTIONAL)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake_apps_3dphys.cmake OPTIONAL)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake_apps_3dmesh.cmake OPTIONAL)
+
 # README M3 / A11: real MPI distributed linear solve (halo transport + CSR
 # CG with Allreduce dot products). Built only when an MPI C++ toolchain is
 # available; cf3d / cf_common stay MPI-free and the default (serial) build is

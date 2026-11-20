@@ -1,3 +1,9 @@
+# Per-batch source hooks (parallel development): each hook may set its own
+# <NAME>_SRCS list; missing hooks are no-ops.
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake_src_3dturb.cmake OPTIONAL)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake_src_3dphys.cmake OPTIONAL)
+include(${CMAKE_CURRENT_SOURCE_DIR}/cmake_src_3dmesh.cmake OPTIONAL)
+
 add_library(cf3d STATIC
     src/mesh/polyMesh.cpp
     src/mesh/blockMesh.cpp
@@ -35,6 +41,9 @@ add_library(cf3d STATIC
     src/multiphase/vof.cpp
     src/multiphase/plic.cpp
     src/multiphase/plicAdvect.cpp
+    ${CF3D_TURB_SRCS}
+    ${CF3D_PHYS_SRCS}
+    ${CF3D_MESH_SRCS}
 )
 
 target_include_directories(cf3d PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)

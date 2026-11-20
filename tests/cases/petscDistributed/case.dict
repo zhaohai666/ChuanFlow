@@ -1,0 +1,41 @@
+// A11 / PETSc 大规模分布式对照：与 mpiLinearSolver 同一系统形态，但规模放大
+// 到 32 x 32 x 16 = 16384 格（对照算例 §5.122 是 256 格）。
+//
+// 两个分布式求解器在同一个图-Laplacian + b = A*xExact 上交叉：
+//   chflow-mpi-linear-solver  自研 CSR 分区（坐标中位数 Decomposition）+ 对角
+//                             预条件 CG，matvec = MPI_Sendrecv halo + 本地 CSR
+//   chflow-3d-petsc-distributed  PETSc 自身 MPI 机器（MatCreateAIJ + KSPCG），
+//                             PETSc 默认连续块分区——刻意与自研分区不同，
+//                             交叉的是两条真正独立的分布式路径
+// rank 0 各自 dump 六列 (cell, xDist/xPetsc, xSerial, xExact, cx, cy, cz)，
+// checker 逐列交叉比对解析解、串行 CG 与两套分布式解。
+block
+{
+    min   (0 0 0);
+    max   (1 1 0.5);
+    cells (32 32 16);
+}
+
+mpi
+{
+    ranks (1 2 4);
+}
+
+linearSolver
+{
+    tol   1e-11;
+    maxIter 2000;
+    shift 1.0;
+    exactCoeffs (1 2 3 -1 0.5 0 0 0 0 0);
+}
+
+verify
+{
+    maxDiffTol      1e-6;
+    analyticDiffTol 1e-6;
+}
+
+output
+{
+    dump solution.dat;
+}

@@ -59,4 +59,22 @@ if(MPI_CXX_FOUND)
     target_include_directories(chflow-mpi-linear-solver PRIVATE
         ${MPI_CXX_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(chflow-mpi-linear-solver PRIVATE cf3d cf_common MPI::MPI_CXX)
+
+    # A11 cross-check: the SAME graph-Laplacian system solved by PETSc's own
+    # MPI machinery (MatCreateAIJ + KSPCG) under a deliberately different
+    # partition, dumped in the same six-column format so one checker compares
+    # both distributed solvers. Only built when a real PETSc was found.
+    if(CHFLOW_WITH_PETSC AND PETSc_LIBRARIES)
+        add_executable(chflow-3d-petsc-distributed petscDistributedApp.cpp)
+        target_compile_definitions(chflow-3d-petsc-distributed PRIVATE CF_HAVE_MPI)
+        target_include_directories(chflow-3d-petsc-distributed PRIVATE
+            ${MPI_CXX_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
+        if(PETSc_INCLUDE_DIRS)
+            target_include_directories(chflow-3d-petsc-distributed PRIVATE ${PETSc_INCLUDE_DIRS})
+        elseif(PETSC_INCLUDE_DIRS)
+            target_include_directories(chflow-3d-petsc-distributed PRIVATE ${PETSC_INCLUDE_DIRS})
+        endif()
+        target_link_libraries(chflow-3d-petsc-distributed PRIVATE
+            cf3d cf_common MPI::MPI_CXX ${PETSc_LIBRARIES})
+    endif()
 endif()

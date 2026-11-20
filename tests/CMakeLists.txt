@@ -1974,6 +1974,26 @@ if(MPI_CXX_FOUND AND TARGET chflow-mpi-linear-solver)
             ${CMAKE_CURRENT_SOURCE_DIR}/cases/mpiLinearSolver/case.dict)
 endif()
 
+# A11 / §5.133 cross-check: PETSc's own MPI machinery (MatCreateAIJ + KSPCG,
+# PETSc's contiguous-block partition) against the homegrown distributed CSR CG
+# (coordinate-median partition) on the same 16384-cell graph-Laplacian system.
+# The checker runs BOTH apps at ranks 1/2/4, re-derives the analytic solution
+# from the case polynomial and the per-cell dump centres, and additionally
+# requires the two distributed solutions to agree cell by cell. Registered
+# only when both MPI targets exist (i.e. a real PETSc was found and built).
+if(MPI_CXX_FOUND
+        AND TARGET chflow-3d-petsc-distributed
+        AND TARGET chflow-mpi-linear-solver)
+    add_test(
+        NAME verify.petscDistributed
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_petsc_distributed.py
+            ${MPIEXEC_EXECUTABLE}
+            $<TARGET_FILE:chflow-3d-petsc-distributed>
+            $<TARGET_FILE:chflow-mpi-linear-solver>
+            ${CMAKE_CURRENT_SOURCE_DIR}/cases/petscDistributed/case.dict)
+endif()
+
 if(CHFLOW_PYTHON_BINDINGS)
     add_test(
         NAME python.bindings

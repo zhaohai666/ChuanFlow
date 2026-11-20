@@ -60,6 +60,43 @@ if(CHFLOW_WITH_PETSC)
             # framework on this host); static linking must supply them.
             set(PETSc_LIBRARIES "${PETSC_DIR}/lib/libpetsc.a;-framework Accelerate")
             set(PETSc_VERSION "manual-prefix")
+            # An MPI-enabled PETSc keeps its MPI toolchain in
+            # lib/petsc/conf/petscvariables (MPI_INCLUDE / MPICC_SHOW). PETSc's
+            # own headers include <mpi.h> and the archive references MPI_*
+            # symbols, so consumers need the MPI include dir and link flags as
+            # well; a serial build (--with-mpi=0) leaves both empty and this
+            # block is then a no-op.
+            set(_cf_petsc_vars "${PETSC_DIR}/lib/petsc/conf/petscvariables")
+            if(EXISTS "${_cf_petsc_vars}")
+                file(STRINGS "${_cf_petsc_vars}" _cf_mpi_inc
+                    REGEX "^MPI_INCLUDE[ ]*=")
+                if(_cf_mpi_inc)
+                    string(REGEX REPLACE "^MPI_INCLUDE[ ]*=[ ]*" ""
+                        _cf_mpi_inc "${_cf_mpi_inc}")
+                    string(STRIP "${_cf_mpi_inc}" _cf_mpi_inc)
+                    if(_cf_mpi_inc)
+                        # petscvariables stores flag form ("-I<dir>"); the
+                        # include directories themselves are needed here.
+                        string(REGEX REPLACE "^-I" "" _cf_mpi_inc "${_cf_mpi_inc}")
+                        list(APPEND PETSc_INCLUDE_DIRS "${_cf_mpi_inc}")
+                    endif()
+                endif()
+                file(STRINGS "${_cf_petsc_vars}" _cf_mpi_show
+                    REGEX "^MPICC_SHOW[ ]*=")
+                if(_cf_mpi_show)
+                    string(REGEX REPLACE "^MPICC_SHOW[ ]*=[ ]*" ""
+                        _cf_mpi_show "${_cf_mpi_show}")
+                    string(STRIP "${_cf_mpi_show}" _cf_mpi_show)
+                    separate_arguments(_cf_mpi_show UNIX_COMMAND "${_cf_mpi_show}")
+                    foreach(_f ${_cf_mpi_show})
+                        if(_f MATCHES "^-L" OR _f MATCHES "^-l")
+                            list(APPEND PETSc_LIBRARIES "${_f}")
+                        endif()
+                    endforeach()
+                endif()
+                unset(_cf_mpi_inc)
+                unset(_cf_mpi_show)
+            endif()
         endif()
     endif()
     if(PETSc_FOUND)

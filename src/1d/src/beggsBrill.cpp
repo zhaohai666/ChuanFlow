@@ -112,6 +112,91 @@ double dunsRosHoldup(double vsl, double vsg, double lambda,
     return std::min(std::max(hl, 0.0), 1.0);
 }
 
+// 5.155 (G4 family): the OLGAS-steady liquid holdup - a transcription of the
+// PUBLISHED MECHANISTIC SKELETON of the steady OLGA family (the Taitel-Dukler
+// regime-dispatched steady mechanistic holdup, Taitel & Dukler, AIChE J. 22:47,
+// 1976, in the lineage of the unified steady models), NOT the proprietary
+// OLGA/PIPESIM model. PROVENANCE WARNING: this skeleton has NOT been
+// re-validated against OLGA-steady or PIPESIM output. The regression checker
+// re-derives the SAME formula, so it proves the code matches the
+// transcription, not the transcription matches OLGA. Treat numbers from this
+// law as engineering estimates, exactly as 5.143 declares for Duns-Ros.
+// The dispatch reads the Beggs-Brill map's OWN verdict (flowPattern is refused
+// alongside any alternative law, so regime == regimeFromMap here) and replaces
+// only the horizontal + inclination holdup block:
+//   - intermittent (the map's plug/slug band): the section-average is the
+//     slug-body content weighted by the distance to the Taitel-Dukler
+//     intermittent -> dispersed locus, HL = beta*HLS + (1-beta)*HLTB with the
+//     DECLARED simplifications HLS = 1 (the slug body is a full liquid column;
+//     the dynamic 1 - rhoL/rhoS correction is dropped) and HLTB = lambda (the
+//     train between slugs carries its liquid at the no-slip content). beta is
+//     read off the published locus U*GS = 3.1 sqrt(101 - 50 U*SL) on the
+//     dimensionless velocities U*G = U_GS sqrt(rho_G / (g D (rhoL - rhoG)))
+//     (and liquid analogue): deep in the band (low gas) beta -> 1, at the
+//     locus beta -> 0, and the locus pinches to zero gas velocity at
+//     U*SL = 2.02, beyond which the blend is fully dispersed-weighted;
+//   - segregated (stratified): the no-slip circular-segment geometry of the
+//     horizontal bore (the interface LEVEL whose segment area equals lambda,
+//     inverted from the closed-form segment area) taken as the holdup proxy,
+//     times the DECLARED inclination gravity factor (1 + sin theta): uphill
+//     backs liquid up, downhill drains it;
+//   - distributed (dispersed bubble / mist): homogeneous no-slip plus the
+//     Zuber-Findlay / Zuber-Hill drift correction, HL = 1 - vsg/(C0 vm) with
+//     the published bubbly distribution parameter C0 = 1.2 and zero drift
+//     velocity (declared engineering transcription), floored at lambda;
+//   - the map's transition band blends segregated and intermittent with the
+//     map's own published weight, mirroring Beggs-Brill's blend structure.
+double segmentAreaFraction(double level)
+{
+    // area fraction below the depth level*D of a circular bore (closed form)
+    const double x = std::min(std::max(level, 0.0), 1.0);
+    const double c = 1.0 - 2.0 * x;
+    return (std::acos(c) - c * std::sqrt(std::max(4.0 * x * (1.0 - x), 0.0)))
+           / M_PI;
+}
+
+double olgasSteadyHoldup(double vsl, double vsg, double lambda, double rhoL,
+                         double rhoG, double d, double sinTheta, int regime,
+                         double transitionWeight)
+{
+    if (!(vsg > 0.0)) return 1.0; // no gas: the column is all liquid
+    if (!(vsl > 0.0)) return 0.0; // no liquid: nothing to hold
+    const double vm = vsl + vsg;
+    const double drho = std::max(rhoL - rhoG, 1e-6);
+
+    // segregated: invert the horizontal segment geometry for the level whose
+    // area fraction equals lambda (f is monotone, 60 bisections land inside
+    // any double the march can read)
+    double lo = 0.0, hi = 1.0;
+    for (int it = 0; it < 60; ++it)
+    {
+        const double mid = 0.5 * (lo + hi);
+        if (segmentAreaFraction(mid) < lambda) lo = mid;
+        else hi = mid;
+    }
+    const double hlSeg = std::clamp(0.5 * (lo + hi) * (1.0 + sinTheta),
+                                    0.0, 1.0);
+
+    // intermittent: Taitel-Dukler slug-content weight against the locus
+    const double ugs = vsg * std::sqrt(rhoG / (kGravity * d * drho));
+    const double usl = vsl * std::sqrt(rhoL / (kGravity * d * drho));
+    const double ugsb = 3.1 * std::sqrt(std::max(101.0 - 50.0 * usl, 0.0));
+    const double beta = ugsb > 0.0
+        ? std::clamp(1.0 - ugs / ugsb, 0.0, 1.0)
+        : 0.0;
+    const double hlInt = std::clamp(beta + (1.0 - beta) * lambda, 0.0, 1.0);
+
+    // distributed: Zuber-Hill family drift correction on the no-slip mix
+    const double hlDist = std::clamp(1.0 - vsg / (1.2 * vm), lambda, 1.0);
+
+    double hl;
+    if (regime == 0) hl = hlSeg;
+    else if (regime == 3) hl = hlDist;
+    else if (regime == 2) hl = hlInt;
+    else hl = transitionWeight * hlSeg + (1.0 - transitionWeight) * hlInt;
+    return std::min(std::max(hl, 0.0), 1.0);
+}
+
 } // namespace
 
 // 5.144 (G6): the one thermal segment step, defined here so the black-oil
@@ -260,10 +345,24 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
         hl = hagedornBrownHoldup(in.vsl, in.vsg, lambda, in.rhoL, in.muL,
                                  in.sigma, in.diameter, in.pPa);
     }
-    else
+    else if (in.correlation == 2)
     {
         hl = dunsRosHoldup(in.vsl, in.vsg, lambda, in.rhoL, in.muL,
                            in.sigma, in.diameter);
+    }
+    else
+    {
+        // 5.155 (G4 family): the OLGAS-steady public mechanistic skeleton
+        // REPLACES the horizontal + inclination block and nothing else: the
+        // map, the friction multiplier, the elevation and Ek terms and the
+        // march read the same numbers, and the map's own verdict (never a
+        // forced regime - flowPattern is refused alongside any alternative
+        // law) dispatches the branch. The liquid viscosity and surface
+        // tension do not enter this law; the inclination physics is the
+        // branch-local gravity term declared in olgasSteadyHoldup above.
+        hl = olgasSteadyHoldup(in.vsl, in.vsg, lambda, in.rhoL, in.rhoG,
+                               in.diameter, std::sin(theta), regime,
+                               pat.transitionWeight);
     }
     hl = std::min(std::max(hl, 0.0), 1.0);
     out.holdup = hl;
@@ -375,6 +474,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
         in.correlation = correlation;
 
         BeggsBrillOut g;
+        double staticRhoM = 0.0; // only the dead-line branch fills this
         if (vsl + vsg > 1e-9)
         {
             g = beggsBrillDpDs(in);
@@ -385,6 +485,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
             const double vT = st.bo + wor;
             const double rhoM = (st.rhoOil * st.bo + fluid.waterDensity * wor)
                               / vT;
+            staticRhoM = rhoM;
             BeggsBrillOut s;
             s.dpPerMeter = kGravity * sinTheta * rhoM;
             s.holdup = st.bo / vT;
@@ -395,6 +496,19 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
             s.fTp = 0;
             g = s;
         }
+        // 5.158 / 5.159: the per-segment readout profile, pushed before the
+        // pressure and temperature of the segment are stepped. Pure report:
+        // nothing on the march's own numbers reads it back.
+        out.segPressure.push_back(p);
+        out.segHoldup.push_back(g.holdup);
+        out.segLambda.push_back(g.lambdaL);
+        out.segVm.push_back(vsl + vsg);
+        out.segRhoM.push_back(vsl + vsg > 1e-9
+                                  ? rhoL * g.lambdaL
+                                        + st.rhoGas * (1.0 - g.lambdaL)
+                                  : staticRhoM);
+        out.segRegime.push_back(g.regime);
+        out.segTemperature.push_back(t);
         lastVm = vsl + vsg;
         lastFTp = g.fTp;
         lastRegime = g.regime;

@@ -58,6 +58,42 @@ int main(int argc, char** argv)
                   ", well ", num(c.well.length), " m x ", num(c.well.diameter),
                   " m, wellhead ", num(c.wellheadPressure), " Pa");
 
+        if (!c.laterals.empty())
+        {
+            // 5.157 (P5): multi-lateral completion. The lateral lines announce
+            // the switch, so the main ipr{} above is not silently unused: the
+            // junction rates come from the laterals, the main bore is the lift.
+            std::string names;
+            for (const LateralSpec& lat : c.laterals)
+            {
+                if (!names.empty()) names += " ";
+                names += lat.name;
+            }
+            log::info("nodal: laterals ", c.laterals.size(), " (", names,
+                      "): the main bore lifts the summed lateral flow, the "
+                      "main ipr does not feed the junction");
+
+            const MultiLateralResult r = solveNodalLaterals(
+                c.fluid, c.well, c.wellheadPressure, c.laterals, c.controls);
+
+            log::info("column p ", num(r.main.staticBottomPressure),
+                      " (the rate-0 static column)");
+            for (const LateralResult& lr : r.laterals)
+                log::info("lateral ", lr.name, " q ", num(lr.rate),
+                          " pwf ", num(lr.bottomHolePressure), " holdup ",
+                          num(lr.holdup), " regime ", regimeName(lr.regime),
+                          " flows ", lr.flows ? "true" : "false");
+            log::info("well q ", num(r.main.rate), " pwf ",
+                      num(r.main.bottomHolePressure), " pth ",
+                      num(c.wellheadPressure));
+            log::info("well holdup ", num(r.main.holdup), " regime ",
+                      regimeName(r.main.regime));
+            log::info("nodal solved: iterations=", r.iterations,
+                      " flows=", r.main.flows ? "true" : "false",
+                      r.converged ? " (converged)" : " (NOT converged)");
+            return r.converged ? 0 : 1;
+        }
+
         const NodalResult r = solveNodalAnalysis(
             c.ipr, c.fluid, c.well, c.wellheadPressure, c.controls);
 

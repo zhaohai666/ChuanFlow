@@ -12,6 +12,8 @@ add_library(cf1d STATIC
     src/jetPump.cpp
     src/progressiveCavityPump.cpp
     src/plungerGasLift.cpp
+    src/separator.cpp
+    src/compressor.cpp
     src/twoFluid.cpp
     src/nodal.cpp
     ${CF1D_STEADY_SRCS}

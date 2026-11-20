@@ -1,5 +1,8 @@
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include "cf/1d/BeggsBrill.h"
 #include "cf/common/Dictionary.h"
 
@@ -89,6 +92,58 @@ NodalResult solveNodalAnalysis(const IpR& ipr, const pvt::BlackOilFluid& fluid,
                                const WellLift& well, double wellheadPressure,
                                const NodalControls& ctl = {});
 
+/// 5.157 (P5): one lateral of a multi-lateral well. A lateral carries its own
+/// IPR (any of the three closed forms, independently of the main bore and of
+/// its siblings) and its own VLP bore (the same Beggs-Brill family as the
+/// main wellbore). Its top opens into the main bore's bottom hole, so the
+/// junction pressure - the main bore's flowing bottom-hole pressure - is the
+/// lateral's wellhead back-pressure.
+struct LateralSpec
+{
+    std::string name;
+    IpR ipr;
+    WellLift well;
+};
+
+/// 5.157: one lateral's operating point at the solved junction pressure.
+struct LateralResult
+{
+    std::string name;
+    double rate = 0;                 // sm3/s stock-tank oil
+    double bottomHolePressure = 0;   // Pa, the lateral's own bottom hole
+    double staticBottomPressure = 0; // Pa, its rate-0 column at the junction
+    double holdup = 0;
+    int regime = -1;
+    bool flows = false;
+    bool converged = false;
+};
+
+/// 5.157: the multi-lateral nodal solve. `main` carries the total rate
+/// Q = sum(q_i) and the junction (main bottom-hole) pressure; `laterals`
+/// holds one entry per declared lateral, in declaration order.
+struct MultiLateralResult
+{
+    NodalResult main;
+    std::vector<LateralResult> laterals;
+    int iterations = 0;
+    bool converged = false;
+};
+
+/// Multi-lateral nodal analysis (the Pipesim multi-lateral completion): the
+/// junction pressure p_j is the fixed point of
+///   F(p_j) = p_j - p_vlp_main( sum_i q_i(p_j) ),
+/// where q_i(p_j) is lateral i's own IPR x VLP operating point at back-pressure
+/// p_j (solveNodalAnalysis on the lateral's bore). Each q_i falls with p_j and
+/// the main VLP rises with the total, so F rises and the bracket has exactly
+/// one root; the solve is the same expanding-bracket + Illinois secant family
+/// as the single-well nodal and the network pipe law. A lateral whose
+/// reservoir cannot lift its own column against p_j contributes rate 0.
+MultiLateralResult solveNodalLaterals(const pvt::BlackOilFluid& fluid,
+                                      const WellLift& mainWell,
+                                      double wellheadPressure,
+                                      const std::vector<LateralSpec>& laterals,
+                                      const NodalControls& ctl = {});
+
 /// One nodal-analysis case parsed from a dictionary:
 ///   fluid { blackoil { gasGravity 0.65; oilDensity 850; gor 90;
 ///                      waterCut 0; temperature 340; surfaceTension 0.03; } }
@@ -98,6 +153,11 @@ NodalResult solveNodalAnalysis(const IpR& ipr, const pvt::BlackOilFluid& fluid,
 ///   well { length 2400; diameter 0.062; roughness 1e-5; elevation 2200; }
 ///   wellheadPressure 2.5e6;
 ///   solve { maxIter 100; tol 1e-9; }
+///   laterals { L1 { ipr { ... } well { ... } } L2 { ... } }  // 5.157, optional
+/// When laterals{} is declared the case is a multi-lateral completion: the
+/// main bore is a pure lift conduit, the total rate is the sum of the lateral
+/// rates and the main ipr{} no longer feeds the solve (the header still
+/// reports it, and the lateral lines announce the switch).
 struct NodalCase
 {
     pvt::BlackOilFluid fluid;
@@ -105,6 +165,7 @@ struct NodalCase
     WellLift well;
     double wellheadPressure = 0;
     NodalControls controls;
+    std::vector<LateralSpec> laterals; // 5.157: empty = the single-well case
 };
 
 NodalCase loadNodalCaseFromDict(const Dictionary& caseDict);

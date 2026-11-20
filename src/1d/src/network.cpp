@@ -16,6 +16,7 @@
 #include "cf/pvt/Components.h"
 #include "cf/pvt/ComponentData.h"
 #include "cf/pvt/Flash.h"
+#include "cf/pvt/HydrateEquilibrium.h"
 #include "cf/pvt/PengRobinson.h"
 #include "cf/pvt/PvtCase.h"
 #include "cf/pvt/SurfaceTension.h"
@@ -525,6 +526,20 @@ double pumpHeadOf(const NetworkPipe& p, double q)
         h *= std::exp(-a1 * r);
     }
     return std::max(h, 0.0);
+}
+
+/// P10 (5.156): the pressure ratio a pipe's compressor reads at rate q. The
+/// curve is the same quadratic family as pumpHeadOf, read in ratio instead
+/// of metres of head. A pipe without a compressor returns 1, so every
+/// existing number is bit-identical to the path before this increment.
+double compressorRatioOf(const NetworkPipe& p, double q)
+{
+    if (!(p.compressorRatio > 0.0)) return 1.0;
+    const double shutoff = p.compressorShutoffRatio > 0.0
+                             ? p.compressorShutoffRatio
+                             : p.compressorRatio;
+    const double x = q / p.compressorRatedRate;
+    return shutoff - (shutoff - p.compressorRatio) * x * x;
 }
 
 /// The Reynolds number a rheology is reported with.
@@ -1115,10 +1130,14 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
     // Beggs-Brill regime law to select. addPipe owns both scope rules.
     if (p.correlation != 0 && !hasBlackOil)
         cfFatal("network: pipe '" + p.name + "' declares correlation "
-                + std::string(p.correlation == 1 ? "hagedornBrown" : "dunsRos")
+                + std::string(p.correlation == 1
+                                  ? "hagedornBrown"
+                                  : p.correlation == 2
+                                        ? "dunsRos"
+                                        : "olgasSteady")
                 + " on a single-phase network: the alternative holdup laws "
-                  "(5.143) replace the liquid holdup of the two-phase march; "
-                  "this pipe has no two-phase holdup to reprice");
+                  "(5.143, 5.155) replace the liquid holdup of the two-phase "
+                  "march; this pipe has no two-phase holdup to reprice");
     if (p.correlation != 0 && p.flowPattern >= 0)
         cfFatal("network: pipe '" + p.name + "' declares both flowPattern "
                 "and correlation: flowPattern selects which Beggs-Brill "
@@ -1888,6 +1907,16 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     out.frictionFactor = m.fTpOutlet;
     out.choked = choked || !m.ok;
     out.dpFriction = dp; // gravity is inside the BB gradient
+    // 5.158 / 5.159: the final march's per-segment readout profile, copied
+    // after every hydraulic number above is set. The slug and risk reports
+    // read it back; nothing on this function's answers does.
+    out.marchSegPressure = m.segPressure;
+    out.marchSegHoldup = m.segHoldup;
+    out.marchSegLambda = m.segLambda;
+    out.marchSegVm = m.segVm;
+    out.marchSegRhoM = m.segRhoM;
+    out.marchSegRegime = m.segRegime;
+    out.marchSegTemperature = m.segTemperature;
 
     // conductance dQ/d(dpTotal). One-sided difference probing DEEPER into
     // the live branch: a central difference straddles the static-head knee
@@ -1928,6 +1957,172 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     }
     out.conductance = c;
     return true;
+}
+
+// 5.158 (P18): the slug-START forecast. March segment i covers the arc
+// interval [i ds, (i+1) ds) of the flow direction (ds = length / n, n the
+// segments the final march actually ran). A DIP is a strict downhill ->
+// uphill change between adjacent trajectory segments; the liquid the march's
+// holdup profile carries down the upstream run is pooled on the uphill run
+// downstream of the dip,
+//   poolVolume = sum_i HL_i A overlap_i,  criterion = poolVolume / (A L_up),
+// and the verdict is slug-start when the upstream run's own march segment is
+// SEGREGATED (the stratified flow that actually drains to the dip; the
+// transition band is not a statement that liquid reaches it) and the pooled
+// level reaches the declared fill threshold. A pure report: the march never
+// reads any of this back.
+SlugReadout slugReadoutOf(const NetworkPipe& pipe, const PipeFlowResult& flow)
+{
+    SlugReadout r;
+    r.pipeName = pipe.name;
+    if (!pipe.slugDeclared || pipe.slugTrajectory.size() < 2) return r;
+    const int n = static_cast<int>(flow.marchSegHoldup.size());
+    if (n < 1 || !(pipe.length > 0.0) || !(pipe.diameter > 0.0)) return r;
+    const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
+    const double ds = pipe.length / static_cast<double>(n);
+    r.fillThreshold = pipe.slugFillThreshold;
+
+    // cumulative arc positions of the trajectory
+    std::vector<double> s0(pipe.slugTrajectory.size() + 1, 0.0);
+    for (std::size_t k = 0; k < pipe.slugTrajectory.size(); ++k)
+        s0[k + 1] = s0[k] + pipe.slugTrajectory[k].length;
+
+    for (std::size_t k = 0; k + 1 < pipe.slugTrajectory.size(); ++k)
+    {
+        const double aUp = pipe.slugTrajectory[k].angleDeg;
+        const double aDn = pipe.slugTrajectory[k + 1].angleDeg;
+        if (!(aUp < 0.0 && aDn > 0.0)) continue; // strict - -> +
+        SlugDipReadout d;
+        d.s = s0[k + 1];
+        // the march segment holding the upstream run's midpoint: its regime
+        // says whether the liquid actually drains down to the dip
+        const double smid = 0.5 * (s0[k] + s0[k + 1]);
+        int im = static_cast<int>(smid / ds);
+        if (im < 0) im = 0;
+        if (im > n - 1) im = n - 1;
+        d.regime = flow.marchSegRegime[static_cast<std::size_t>(im)];
+        d.regimeOk = d.regime == 0;
+        // pool the holdup profile over the uphill run's arc interval
+        const double upLo = s0[k + 1];
+        const double upHi = s0[k + 2];
+        double vol = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double segLo = i * ds;
+            const double segHi = (i + 1) * ds;
+            const double ov = std::min(upHi, segHi) - std::max(upLo, segLo);
+            if (ov > 0.0)
+                vol += flow.marchSegHoldup[static_cast<std::size_t>(i)]
+                     * area * ov;
+        }
+        d.volume = vol;
+        d.criterion = vol / (area * pipe.slugTrajectory[k + 1].length);
+        d.slugStart = d.regimeOk && d.criterion >= r.fillThreshold;
+        r.dips.push_back(d);
+    }
+    return r;
+}
+
+// 5.159 (P22): the erosion / hydrate / corrosion readout, priced entirely
+// from the march's own per-segment profile. Erosion is the API RP 14E form
+// Ve = C / sqrt(rho_m): C is quoted in the published field-unit convention
+// (ft/s at lb/ft3), so the SI mixture density is converted with the exact
+// 1 lb/ft3 = 16.0184634 kg/m3 and the ft/s result with 0.3048. The hydrate
+// line is the declared Clausius-Clapeyron dissociation temperature at each
+// segment's pressure against the segment's temperature (the march's own when
+// the pipe carries thermal physics, the fluid's isothermal one otherwise);
+// the subcooling Teq - T is graded against the declared K bands. Corrosion
+// prices the declared CO2 / H2S mole fractions at the HIGHEST march pressure
+// against the declared Pa bands, sour at the published 0.5 psia = 3447 Pa
+// H2S partial-pressure line. Every number is a report, not a charge.
+RiskReadout riskReadoutOf(const NetworkPipe& pipe,
+                          const pvt::BlackOilFluid& fluid,
+                          const PipeFlowResult& flow)
+{
+    RiskReadout r;
+    r.pipeName = pipe.name;
+    if (!pipe.riskDeclared) return r;
+    const int n = static_cast<int>(flow.marchSegPressure.size());
+    if (n < 1) return r;
+
+    // erosion: the worst vm / Ve segment
+    r.erosionOn = true;
+    {
+        double best = -1.0;
+        int over = 0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double rhoLb = flow.marchSegRhoM[static_cast<std::size_t>(i)]
+                               / 16.0184634;
+            const double velim = rhoLb > 0.0
+                ? 0.3048 * pipe.erosionC / std::sqrt(rhoLb)
+                : 0.0;
+            const double ratio = velim > 0.0
+                ? flow.marchSegVm[static_cast<std::size_t>(i)] / velim
+                : 0.0;
+            if (ratio > 1.0) ++over;
+            if (ratio > best)
+            {
+                best = ratio;
+                r.erosionSeg = i;
+                r.erosionVm = flow.marchSegVm[static_cast<std::size_t>(i)];
+                r.erosionVelim = velim;
+                r.erosionRatio = ratio;
+            }
+        }
+        r.erosionOverCount = over;
+    }
+
+    // hydrate: the worst segment -- the one with the LARGEST subcooling
+    // Teq - T, since formation needs the stream BELOW the dissociation
+    // temperature and the margin grows with Teq - T
+    if (pipe.hydrateDeclared)
+    {
+        r.hydrateOn = true;
+        double worst = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double p = flow.marchSegPressure[static_cast<std::size_t>(i)];
+            const double teq = pvt::hydrateEquilibriumTemperature(
+                p, pipe.hydrateTref, pipe.hydratePRef, pipe.hydrateDH);
+            const double t = pipe.thermalOn()
+                ? flow.marchSegTemperature[static_cast<std::size_t>(i)]
+                : fluid.temperature;
+            const double dts = teq - t;
+            if (i == 0 || dts > worst)
+            {
+                worst = dts;
+                r.hydrateSeg = i;
+                r.hydrateP = p;
+                r.hydrateT = t;
+                r.hydrateTeq = teq;
+                r.hydrateSubcool = dts;
+            }
+        }
+        r.hydrateGrade = r.hydrateSubcool < 0.0
+                             ? 0
+                             : (r.hydrateSubcool < pipe.hydrateLowK
+                                    ? 1
+                                    : (r.hydrateSubcool < pipe.hydrateMediumK
+                                           ? 2
+                                           : 3));
+    }
+
+    // corrosion: partial pressures at the highest march pressure
+    if (pipe.co2Fraction > 0.0 || pipe.h2sFraction > 0.0)
+    {
+        r.corrosionOn = true;
+        double pMax = flow.marchSegPressure[0];
+        for (int i = 1; i < n; ++i)
+            pMax = std::max(pMax, flow.marchSegPressure[static_cast<std::size_t>(i)]);
+        r.co2Partial = pipe.co2Fraction * pMax;
+        r.h2sPartial = pipe.h2sFraction * pMax;
+        r.co2Band = r.co2Partial < pipe.co2LowPa
+                        ? 0
+                        : (r.co2Partial < pipe.co2HighPa ? 1 : 2);
+        r.sour = r.h2sPartial >= 3447.0; // 0.5 psia, the published sweet/sour line
+    }
+    return r;
 }
 
 // D10/D7 (§5.121): the opaque live-flash state owned by a PvtFluid. Kept out
@@ -2072,10 +2267,17 @@ struct PvtMarchOut
     double temperature = 0;
 };
 
+/// pStart (5.156, P10): the pressure the march BEGINS at when a compressor
+/// sits at the upstream end of the line -- pUp * PR(|q|), decided by the
+/// caller inside the rate solve so the curve rides with the secant. The mass
+/// rate stays booked at the REAL pUp density (the machine takes what the node
+/// holds), which is the declared simplification of this increment. 0 = no
+/// machine: the march starts at pUp and every existing number is bit for bit.
 PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
                          double qIn, double pUp, double sinFlow, int nSeg,
                          std::vector<PvtFlashStation>* stations = nullptr,
-                         const SteadyThermal* thermal = nullptr)
+                         const SteadyThermal* thermal = nullptr,
+                         double pStart = 0.0)
 {
     if (pipeIsAnnulus(pipe))
         cfFatal("pvtMarch: pipe '" + pipe.name + "' declares an annulus: the "
@@ -2093,7 +2295,7 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         cfFatal("pvtMarch: SteadyThermal segmentU needs exactly one entry "
                 "per march segment");
     PvtMarchOut m;
-    double p = pUp;
+    double p = pStart > 0.0 ? pStart : pUp;
     double t = thermal ? thermal->temperatureIn : 0.0;
     for (int i = 0; i < nSeg; ++i)
     {
@@ -2148,16 +2350,28 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
 /// stays bounded, so the law is monotone with a single root: a plain
 /// expanding bracket finds it, unlike the U-shaped two-phase gradient.
 double pvtRateForDrop(const NetworkPipe& pipe, const PvtFluid& fluid,
-                      double pUp, double pLow, double sinFlow, bool& choked)
+                      double pUp, double pLow, double sinFlow, bool& choked,
+                      bool boostUp = false)
 {
     choked = false;
     const double pFloor = std::max(0.02 * pUp, 1000.0);
+    // 5.156 (P10): with a compressor at the `from` end the machine's boost
+    // rides inside the rate solve, where the curve can read the trial rate.
+    // Forward flow (boostUp) starts the march at pUp * PR(q); reverse flow
+    // lands on pLow * PR(q) -- the same statement, pFrom * PR, seen from the
+    // end the flow enters. A bare pipe reads PR == 1 and both ends stay the
+    // numbers they were, bit for bit.
     auto g = [&](double q)
     {
-        const PvtMarchOut m = marchPvtPipe(pipe, fluid, q, pUp, sinFlow, 24);
+        const double pr = compressorRatioOf(pipe, q);
+        const double start = boostUp ? pUp * pr : 0.0;
+        const double target = boostUp ? pLow : pLow * pr;
+        const PvtMarchOut m =
+            marchPvtPipe(pipe, fluid, q, pUp, sinFlow, 24, nullptr, nullptr,
+                         start);
         // floor-crossing marches return the floor shortfall: continuous
         // with the unchoked branch and correctly scaled for the secant
-        return m.ok ? m.pOutlet - pLow : pFloor - pLow;
+        return m.ok ? m.pOutlet - target : pFloor - target;
     };
 
     const double qSeed = std::max(1e-3 * 0.25 * M_PI * pipe.diameter
@@ -2312,15 +2526,22 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
         || fluid.pressure.size() < 2)
         return true;
 
-    const bool forward = dp >= 0.0; // flow from -> to when pFrom is higher
-    const double pUp = std::max(pFrom, pTo);
-    const double pLow = std::min(pFrom, pTo);
+    // 5.156 (P10): a compressor at the `from` end decides the direction at
+    // its shutoff boost -- the line runs the way the machine pushes when it
+    // is asked for nothing. A bare pipe multiplies pFrom by 1.0 and reads
+    // exactly the old test, and pUp/pLow keep the max/min they always were.
+    const double pr0 = compressorRatioOf(pipe, 0.0);
+    const bool forward = pFrom * pr0 >= pTo;
+    const bool boostUp = pipe.compressorRatio > 0.0 && forward;
+    const double pUp = forward ? pFrom : pTo;
+    const double pLow = forward ? pTo : pFrom;
     const double sinFlow =
         (forward ? 1.0 : -1.0) * pipe.elevation / pipe.length;
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
 
     bool choked = false;
-    const double q = pvtRateForDrop(pipe, fluid, pUp, pLow, sinFlow, choked);
+    const double q =
+        pvtRateForDrop(pipe, fluid, pUp, pLow, sinFlow, choked, boostUp);
 
     // 5.144 (G6): the PASSIVE thermal march, same story as the black-oil
     // path - the rate solve above never saw a temperature and the accepted
@@ -2345,9 +2566,12 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
     }
     // D10/D7: the accepted march is replayed once with station capture so a
     // checker can read the per-station rho/mu/sigma the march actually used.
+    // 5.156: with a compressor at the entry end the replay starts at the
+    // boosted pressure, the same start the rate solve landed on.
     const PvtMarchOut m = marchPvtPipe(
         pipe, fluid, q, pUp, sinFlow, 24,
-        fluid.liveFlash ? &out.pvtFlashStations : nullptr, pth);
+        fluid.liveFlash ? &out.pvtFlashStations : nullptr, pth,
+        boostUp ? pUp * compressorRatioOf(pipe, q) : 0.0);
     out.sigmaOutlet = m.sigmaOutlet;
     out.temperature = m.temperature;
     out.flowRate = (forward ? 1.0 : -1.0) * q;
@@ -2360,6 +2584,28 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
                 * out.velocity / 2.0;
     out.dpPump = -fluid.density(pUp) * kGravity * pumpHeadOf(pipe, q);
 
+    // 5.156 (P10): the compressor's own statement, read from the hydraulic
+    // state it was priced with -- never fed back into it (§5.144's passive
+    // convention). The head is the declared enthalpy integral at the curve's
+    // ratio, the mass rate is the one the march booked at the REAL entry-end
+    // density, and T1 is the stream's declared table temperature. Zeros /
+    // ratio 1 on every pipe without a machine, so no existing readout moves.
+    if (pipe.compressorRatio > 0.0)
+    {
+        const double pr = compressorRatioOf(pipe, q);
+        const double ex =
+            (pipe.compressorKappa - 1.0) / pipe.compressorKappa;
+        const double head = pipe.compressorZ * pipe.compressorGasConstant
+                          * fluid.temperature / ex
+                          * (std::pow(pr, ex) - 1.0);
+        out.compressorRatio = pr;
+        out.compressorBoost = pFrom * (pr - 1.0);
+        out.compressorPower = fluid.density(pUp) * q * head
+                            / pipe.compressorEfficiency;
+        out.compressorTemperatureOut =
+            fluid.temperature * std::pow(pr, ex / pipe.compressorEfficiency);
+    }
+
     // conductance dQ/d(dpTotal). One-sided difference probing DEEPER into
     // the live branch: below the static head the law is flat at zero flow
     // (same knee as the two-phase law), and a central difference straddling
@@ -2371,20 +2617,24 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
     {
         bool ch2 = false;
         const double qDeep = pvtRateForDrop(
-            pipe, fluid, pUp, std::max(pLow - h, 1.0), sinFlow, ch2);
+            pipe, fluid, pUp, std::max(pLow - h, 1.0), sinFlow, ch2, boostUp);
         c = (qDeep - q) / h;
     }
     if (!(c > 0.0))
     {
-        const PvtMarchOut dead =
-            marchPvtPipe(pipe, fluid, 0.0, pUp, sinFlow, 24);
-        const double deficit = pLow - dead.pOutlet; // missing pressure
+        // 5.156: the dead march and the knee probe carry the machine's
+        // zero-rate boost so the Jacobian reads the same law the rate solve
+        // solved. A bare pipe's boost is 1.0 and this is the old code.
+        const PvtMarchOut dead = marchPvtPipe(
+            pipe, fluid, 0.0, pUp, sinFlow, 24, nullptr, nullptr,
+            boostUp ? pUp * pr0 : 0.0);
+        const double deficit = (boostUp ? pLow : pLow * pr0) - dead.pOutlet;
         if (deficit > 0.0)
         {
             bool ch2 = false;
             const double probeLow = std::max(dead.pOutlet - 0.01 * pUp, 1.0);
             const double qProbe = pvtRateForDrop(
-                pipe, fluid, pUp, probeLow, sinFlow, ch2);
+                pipe, fluid, pUp, probeLow, sinFlow, ch2, boostUp);
             c = qProbe / std::max(pLow - probeLow, 1.0);
         }
         if (!(c > 0.0)) c = 1e-6; // keep the network Jacobian nonsingular
@@ -2719,10 +2969,12 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             if (cw == "beggsBrill") p.correlation = 0;
             else if (cw == "hagedornBrown") p.correlation = 1;
             else if (cw == "dunsRos") p.correlation = 2;
+            else if (cw == "olgasSteady") p.correlation = 3;
             else
                 cfFatal("steadyNetwork: pipe '" + name + "' unknown "
                         "correlation '" + cw + "': the published holdup laws "
-                        "are beggsBrill, hagedornBrown and dunsRos");
+                        "are beggsBrill, hagedornBrown, dunsRos and "
+                        "olgasSteady");
         }
         // 5.144 (G6): the passive steady temperature march. Every key is
         // optional; all absent is the isothermal march, bit for bit. The
@@ -2838,6 +3090,90 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                         "kelvin per metre and c_p is joules per kilogram "
                         "kelvin");
         }
+        // Compressor (5.156, P10): a steady pressure booster on the line.
+        // `pressureRatio` is the switch; the curve reads the rate through
+        // compressorRatioOf and the machine's thermodynamics (kappa, R_spec,
+        // Z, efficiency) price its power and discharge-temperature readouts.
+        // The pvt-table fill only, like the 5.89 valve: the boost is a
+        // pressure-level statement and the readouts need the stream's own
+        // rho(p) march and a declared inlet temperature.
+        p.compressorRatio = pd.getScalarOr("pressureRatio", 0.0);
+        p.compressorShutoffRatio = pd.getScalarOr("shutoffRatio", 0.0);
+        p.compressorRatedRate = pd.getScalarOr("ratedRate", 0.0);
+        p.compressorEfficiency = pd.getScalarOr("polytropicEfficiency", 1.0);
+        p.compressorKappa = pd.getScalarOr("kappa", 0.0);
+        p.compressorGasConstant = pd.getScalarOr("specificGasConstant", 0.0);
+        p.compressorZ = pd.getScalarOr("compressibility", 1.0);
+        if (p.compressorRatio < 0)
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' has a negative pressureRatio: a pressure ratio is at "
+                      "least 1 (absent means no machine)");
+        if (p.compressorRatio == 0
+            && (pd.has("shutoffRatio") || pd.has("ratedRate")
+                || pd.has("polytropicEfficiency") || pd.has("kappa")
+                || pd.has("specificGasConstant") || pd.has("compressibility")))
+            cfFatal("steadyNetwork: pipe '" + name
+                    + "' declares a compressor parameter without "
+                      "pressureRatio: the ratio is what switches the machine "
+                      "on, and the rest would be read by nothing");
+        if (p.compressorRatio > 0)
+        {
+            if (!(p.compressorRatio > 1.0))
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' has pressureRatio at or below unity: a machine "
+                          "there is a restriction, not a compressor");
+            if (p.compressorShutoffRatio > 0
+                && p.compressorShutoffRatio < p.compressorRatio)
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' has a compressor curve that rises with rate "
+                          "(shutoffRatio < pressureRatio)");
+            if (!(p.compressorRatedRate > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' compressor curve needs a positive ratedRate: the "
+                          "rated point is where pressureRatio is quoted");
+            if (!(p.compressorEfficiency > 0.0 && p.compressorEfficiency <= 1.0))
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' compressor polytropicEfficiency must lie in "
+                          "(0,1]: it divides gas power into shaft power and "
+                          "sets the discharge-temperature exponent");
+            if (!(p.compressorKappa > 1.0))
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' compressor kappa (cp/cv) must exceed 1: the "
+                          "exponent (k-1)/k is what turns a ratio into a head");
+            if (!(p.compressorGasConstant > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' compressor needs a positive specificGasConstant: "
+                          "the head is priced on R_spec T1");
+            if (!(p.compressorZ > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' compressor compressibility must be positive: it "
+                          "is a declared constant of the suction state");
+            if (!net.hasPvtFluid)
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' is a compressor on a network without a "
+                          "tabulated fill: the boost is a pressure-level "
+                          "statement priced on the rho(p) march, and the "
+                          "readouts need the stream's declared temperature");
+            if (p.valveK > 0 || p.pumpHead > 0 || p.liftDomePressure > 0
+                || p.rodPlungerDiameter > 0 || p.coupledResistance > 0)
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' carries a compressor and another inline element: "
+                          "this increment prices one machine per line");
+            if (thermalDeclared)
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' declares thermal keys with a compressor: the "
+                          "machine owns the temperature readout on this line, "
+                          "the wall march would claim it too");
+            if (!(net.pvtFluid.temperature > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' compressor needs the pvt table's declared "
+                          "temperature: the head and the discharge "
+                          "temperature are priced on T1");
+            if (!(p.length > 0.0) || !(p.diameter > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' is a compressor on a line with no bore to march: "
+                          "the boost feeds the pipe law, not a bare node pair");
+        }
         p.ductHeight = pd.getScalarOr("ductHeight", 0.0);
         if (p.ductHeight < 0)
             cfFatal("steadyNetwork: pipe '" + name
@@ -2933,6 +3269,171 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             p.flowIndex = 0;
             p.consistency = 0;
             p.yieldStress = 0;
+        }
+        // 5.158 (P18) / 5.159 (P22): the opt-in slug-start forecast and the
+        // erosion / hydrate / corrosion risk report. Both are pure readouts
+        // of the march's own per-segment profile; the parser owns the
+        // grammar and the SHAPE of the declaration. Unknown keys inside the
+        // sub-blocks are refused by whitelist, because Dictionary does not
+        // reject what nobody reads.
+        if (pd.has("trajectory"))
+            cfFatal("steadyNetwork: pipe '" + name + "' declares trajectory "
+                    "at the pipe level: the terrain trajectory belongs inside "
+                    "slugPrediction{}");
+        if (pd.has("slugPrediction"))
+        {
+            const Dictionary& sp = pd.getDict("slugPrediction");
+            for (const std::string& k : sp.keys())
+                if (k != "trajectory" && k != "fillThreshold")
+                    cfFatal("steadyNetwork: pipe '" + name + "' slugPrediction "
+                            "declares unknown key '" + k + "': the slug "
+                            "forecast reads trajectory and fillThreshold");
+            if (!net.hasBlackOil)
+                cfFatal("steadyNetwork: pipe '" + name + "' declares "
+                        "slugPrediction on a network without a black-oil "
+                        "march: the forecast pools the march's own holdup "
+                        "profile and a single-phase pipe has none");
+            p.slugDeclared = true;
+            if (sp.has("fillThreshold"))
+            {
+                p.slugFillThreshold = sp.getScalar("fillThreshold");
+                if (!(p.slugFillThreshold > 0.0))
+                    cfFatal("steadyNetwork: pipe '" + name + "' slugPrediction "
+                            "fillThreshold must be positive: it is the pooled "
+                            "liquid level as a fraction of the uphill run");
+            }
+            if (!sp.has("trajectory"))
+                cfFatal("steadyNetwork: pipe '" + name + "' slugPrediction "
+                        "without a trajectory{}: the dips are where the "
+                        "forecast pools liquid");
+            const Dictionary& td = sp.getDict("trajectory");
+            const std::vector<std::string>& segs = td.keys();
+            if (segs.size() < 2)
+                cfFatal("steadyNetwork: pipe '" + name + "' slugPrediction "
+                        "trajectory needs at least two named segments: one "
+                        "inclination is the pipe's own slope, not a terrain");
+            double sumL = 0.0, sumZ = 0.0;
+            for (const std::string& sk : segs)
+            {
+                const Dictionary& sd = td.getDict(sk);
+                for (const std::string& k2 : sd.keys())
+                    if (k2 != "length" && k2 != "angleDeg")
+                        cfFatal("steadyNetwork: pipe '" + name + "' trajectory "
+                                "segment '" + sk + "' declares unknown key '"
+                                + k2 + "': a segment is length and angleDeg");
+                TerrainTrajectorySegment seg;
+                seg.length = sd.getScalar("length");
+                seg.angleDeg = sd.getScalar("angleDeg");
+                if (!(seg.length > 0.0))
+                    cfFatal("steadyNetwork: pipe '" + name + "' trajectory "
+                            "segment '" + sk + "' needs a positive length");
+                if (!(seg.angleDeg >= -90.0 && seg.angleDeg <= 90.0))
+                    cfFatal("steadyNetwork: pipe '" + name + "' trajectory "
+                            "segment '" + sk + "' angleDeg outside [-90, 90]: "
+                              "the inclination is an angle from horizontal");
+                sumL += seg.length;
+                sumZ += seg.length * std::sin(seg.angleDeg * M_PI / 180.0);
+                p.slugTrajectory.push_back(seg);
+            }
+            if (std::fabs(sumL - p.length)
+                > 1e-9 * std::max(std::fabs(p.length), 1.0))
+                cfFatal("steadyNetwork: pipe '" + name + "' slugPrediction "
+                        "trajectory lengths sum to " + std::to_string(sumL)
+                        + " m but the pipe is " + std::to_string(p.length)
+                        + " m: the trajectory lays the pipe's own arc out");
+            if (std::fabs(sumZ - p.elevation)
+                > 1e-9 * std::max(std::fabs(p.elevation), 1.0))
+                cfFatal("steadyNetwork: pipe '" + name + "' slugPrediction "
+                        "trajectory rises to " + std::to_string(sumZ)
+                        + " m but the pipe's elevation is "
+                        + std::to_string(p.elevation)
+                        + " m: the trajectory must end where the pipe does");
+        }
+        if (pd.has("riskReport"))
+        {
+            const Dictionary& rr = pd.getDict("riskReport");
+            static const char* kRiskKeys[] = {
+                "erosionC", "hydrateTref", "hydratePRef", "hydrateDH",
+                "hydrateLowK", "hydrateMediumK", "co2Fraction",
+                "h2sFraction", "co2LowPa", "co2HighPa"};
+            for (const std::string& k : rr.keys())
+            {
+                bool known = false;
+                for (const char* w : kRiskKeys)
+                    if (k == w) { known = true; break; }
+                if (!known)
+                    cfFatal("steadyNetwork: pipe '" + name + "' riskReport "
+                            "declares unknown key '" + k + "': the risk report "
+                            "reads erosionC, the hydrate line, the sour-gas "
+                            "fractions and their bands");
+            }
+            if (!net.hasBlackOil)
+                cfFatal("steadyNetwork: pipe '" + name + "' declares "
+                        "riskReport on a network without a black-oil march: "
+                        "the risks are priced on the march's own per-segment "
+                        "profile and a single-phase pipe has none");
+            p.riskDeclared = true;
+            if (rr.has("erosionC"))
+            {
+                p.erosionC = rr.getScalar("erosionC");
+                if (!(p.erosionC > 0.0))
+                    cfFatal("steadyNetwork: pipe '" + name + "' riskReport "
+                            "erosionC must be positive: the API RP 14E C "
+                            "factor divides the velocity limit");
+            }
+            const bool hT = rr.has("hydrateTref");
+            const bool hP = rr.has("hydratePRef");
+            const bool hD = rr.has("hydrateDH");
+            if (hT || hP || hD)
+            {
+                if (!(hT && hP && hD))
+                    cfFatal("steadyNetwork: pipe '" + name + "' declares a "
+                            "partial hydrate line: hydrateTref, hydratePRef "
+                            "and hydrateDH are one dissociation curve and "
+                            "must be declared together"
+                            + std::string(hT ? "" : " (missing hydrateTref)")
+                            + std::string(hP ? "" : " (missing hydratePRef)")
+                            + std::string(hD ? "" : " (missing hydrateDH)"));
+                p.hydrateDeclared = true;
+                p.hydrateTref = rr.getScalar("hydrateTref");
+                p.hydratePRef = rr.getScalar("hydratePRef");
+                p.hydrateDH = rr.getScalar("hydrateDH");
+                if (!(p.hydrateTref > 0.0 && p.hydratePRef > 0.0
+                      && p.hydrateDH > 0.0))
+                    cfFatal("steadyNetwork: pipe '" + name + "' hydrate line "
+                            "needs positive Tref (K), pRef (Pa) and dH "
+                            "(J/mol): the dissociation curve is anchored at "
+                            "them");
+            }
+            if (rr.has("hydrateLowK"))
+                p.hydrateLowK = rr.getScalar("hydrateLowK");
+            if (rr.has("hydrateMediumK"))
+                p.hydrateMediumK = rr.getScalar("hydrateMediumK");
+            if (!(p.hydrateLowK > 0.0 && p.hydrateMediumK > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name + "' riskReport "
+                        "hydrate bands must be positive kelvin subcoolings");
+            if (!(p.hydrateLowK < p.hydrateMediumK))
+                cfFatal("steadyNetwork: pipe '" + name + "' hydrate band "
+                        "hydrateLowK >= hydrateMediumK: the bands must rise "
+                        "with the subcooling");
+            if (rr.has("co2Fraction"))
+                p.co2Fraction = rr.getScalar("co2Fraction");
+            if (rr.has("h2sFraction"))
+                p.h2sFraction = rr.getScalar("h2sFraction");
+            if (!(p.co2Fraction >= 0.0 && p.co2Fraction <= 1.0)
+                || !(p.h2sFraction >= 0.0 && p.h2sFraction <= 1.0))
+                cfFatal("steadyNetwork: pipe '" + name + "' riskReport "
+                        "sour-gas fraction outside [0,1]: co2Fraction and "
+                        "h2sFraction are mole fractions");
+            if (rr.has("co2LowPa")) p.co2LowPa = rr.getScalar("co2LowPa");
+            if (rr.has("co2HighPa")) p.co2HighPa = rr.getScalar("co2HighPa");
+            if (!(p.co2LowPa > 0.0 && p.co2HighPa > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name + "' riskReport CO2 "
+                        "bands must be positive pressures (Pa)");
+            if (!(p.co2LowPa < p.co2HighPa))
+                cfFatal("steadyNetwork: pipe '" + name + "' CO2 band "
+                        "co2LowPa >= co2HighPa: the bands must rise with the "
+                        "partial pressure");
         }
         net.addPipe(p);
     }

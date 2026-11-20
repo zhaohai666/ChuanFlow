@@ -5418,6 +5418,95 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 **决定。** 标定/历史拟合闭环已由 D9 系列的 CLI + Python 脚本覆盖：§5.100（参数向量 → 管网可写字段 → 结构化观测 → 自写 Nelder-Mead 的绑定读回闭环）、§5.104（稳态解析梯度：隐函数定理复用 conductance 雅可比，一个梯度一次前向求解）、§5.117（瞬态离散伴随 + checkpointing）、§5.118（两流体伴随）。GUI 侧的 U10 参数扫描页（§5.135）已提供「目标量 × 取值列表 → 并行批量运行 → 结果表」的单向扫描，等价于标定工作台的采样器；反问题求解（梯度、伴随、优化器选型）留在脚本层，因其迭代策略需要人在环中判断，做成 GUI 表单反而封死探索空间。
 
 **边界。** 若后续要在 GUI 落地标定，入口应是 U10 扫描结果表 → 残差列 → 脚本回显，而不是新造求解器；本条目仅记录「GUI 暂不提供」的决定与依据，防止对标清单把 U11 误记为缺口。
+
+### 5.155 OLGAS-steady 稳态持液率定律（P3 收口）
+
+> **状态（2026-11-20）**：P3 收口——稳态黑油 march 的第 4 条持液率定律。管块新词 `correlation olgasSteady;`（枚举值 3）进 `NetworkPipe`，`beggsBrillDpDs` 的 `correlation == 3` 分派替换持液率块；`verify.steadyOlga` 全绿；未声明路径逐位不变（删声明孪生与 §5.143 标准多相算例 stdout 逐字节一致）。
+
+**OLGAS-steady——公开机理骨架的转录（出处告警）。** 词面指向 PIPESIM 的 OLGA-steady 稳态持液率，内核转录的是其**公开机理骨架**：Taitel & Dukler 统一稳态机理模型谱系（AIChE J. 22:47, 1976）按流型分派的持液率，**不是**专有 OLGA/PIPESIM 模型本身。与 Duns-Ros 同级的诚实声明：**没有**对商业版输出复核过——checker 复算的是同一条式子，它证明代码等于转录，不证明转录等于 OLGA；olgasSteady 数字按工程估计使用。
+
+**四支按图的裁决分派。** 定律读 `beggsBrillPattern` 自己的裁决（flowPattern 与 olgasSteady 同管拒收，所以分派 regime 恒等于图的裁决），σ 与 μL 不进式子：分层流取圆管水平几何——闭式圆缺面积分数 `f(x) = (acos(1−2x) − (1−2x)√(4x(1−x)))/π` 经 60 步二分反解出面积分数等于 λ 的液位，乘倾角重力因子 `(1+sinθ)`（上坡憋液、下坡排液）后钳 `[0,1]`，声明简化：液位即持液率代理；间歇流按段塞体内容加权 `HL = β·HLS + (1−β)·HLTB`，声明简化 `HLS = 1`（段塞体为满液柱，丢弃动态修正 `1−ρL/ρS`）、`HLTB = λ`（段塞间列车载液按无滑移内容），β 读发表轨迹 `U*GS = 3.1√(101−50·U*SL)` 上的无量纲速度 `U*G = U_GS·√(ρG/(gD(ρL−ρG)))`（液相类比）：深带内（低气速）β→1、到轨迹 β→0，轨迹在 `U*SL = 2.02` 夹到零气速；分散流为均相无滑移加 Zuber–Findlay/Hill 漂移修正 `HL = 1 − vsg/(1.2·vm)`，泡状流分布参数 C0 = 1.2 取发表值、漂移速度取 0（声明工程简化），下限钳 λ；过渡带按图自己的公布权重 `w = (L3−Nfr)/(L3−L2)` 混合分层与间歇两支，镜像 BB 的 blend 结构。退化支同其余定律：vsg≤0→1、vsl≤0→0。
+
+**只替换持液率块。** 与 §5.143 完全同构：流型图照常评估并上报，摩擦倍率 S(y=λ/HL²)、提升项（ρS 随 HL 走）、Ek 加速项与 24 段 march 读的还是同一批数；变的是 HL，进而变 ρS、y 与 dp。网络锚点（steadyOlga = steadyNetworkMultiphase 孪生，三管全声明 olgasSteady）：P1 HL 0.508→0.992、dp 603→767 kPa；P2 0.527→0.997、514→800 kPa；P3 0.495→0.993、176→156 kPa——间歇支 β≈1 的满液柱把提升项推高，而 P3 的摩擦倍率随 y 走低、dp 反而下降，物理双向移动。
+
+**语法与拒收。** correlation 词表第四词（`beggsBrill|hagedornBrown|dunsRos|olgasSteady`）；未知词大声拒收，消息列全四词。作用域与 §5.143 同一套：`correlation != 0` 需黑油两相 march（单相网络拒收，消息按枚举值点名定律）；与 `flowPattern` 同管冲突拒收；transient 行与 nodal 井块各有一条通用键拒收（它们没有 BB 持液率块可替换）。
+
+**回归（`tests/check_steady_olgas.py`，55 条判据）。** 显式默认孪生逐字节 + 删声明孪生与 §5.143 入库算例逐字节；三根网络管的出口态由 Python 从 case.dict 独立重推 24 段 march（PVT、图、定律、摩擦全链；率按割边源汇总从字典推得，不吃求解器读数），出口 HL/λ 到 1e-8、dp 到 1e-5+落点残差、落压到 1e-6；L1..L4 仍是公布边界、oRegime 仍是图的裁决（无 FORCED 足迹）；与 BB 孪生比 HL/dp 确实移动；五根单管锚点把图的裁决送进四个区各练一支（含上坡分层锚验证 (1+sinθ) 因子确实憋液；上坡近静压头拐点处反演 march 的落点残差较大，该锚落压容差明示放宽到 1e-5 且 dp 判据精确扣除落点残差，BB 孪生在该低流量上坡配置本就低于求解器收敛膝，改与同定律水平孪生对比）；分层支另以 `f(HL) = λ` 闭式复核、分散支以 `HL = 1−(1−λ)/1.2` 闭式复核（不经二分镜像）；5 条拒收（未知词 `olgas`、单相网络、flowPattern 冲突、transient 行、nodal VLP 井）。
+
+**边界。** 声明简化全部点名：液位即持液率代理、HLS=1 丢动态修正、漂移速度 0、C0 固定 1.2；倾角物理只有分层支的 `(1+sinθ)` 因子，间歇/分散支不读 sinθ（过渡带经分层支间接读）；定律不读 σ/μL，§5.76 流变学照旧只定价摩擦项；转录未对 OLGA-steady/PIPESIM 输出复核，数字作工程估计。
+
+### 5.156 分离器/压缩机管网设备点元（P10 收口）
+
+> **状态（2026-11-20）**：P10 收口——分离器与压缩机做成 1D 稳态设备：`src/1d/include/cf/1d/Separator.h` + `src/1d/src/separator.cpp`、`src/1d/include/cf/1d/Compressor.h` + `src/1d/src/compressor.cpp` 两个独立内核走 §5.140 的 G9 点元路径（`pointElementsApp` 新块 `separators{}`/`compressors{}`，不进 Newton 回路）；压缩机的曲线模式另走 §5.89/§5.90 的管块开关键路径（`pipes{}` 的 `pressureRatio` 开关，pvt 表 march 专属）。`verify.steadyEquipment2` 全绿；未声明路径逐位不变（g9PointElements、steadyNetwork、steadyEquipmentValve/Pump/Network、network.unit 全数通过）。
+
+**分离器（点元）。** 单级闪蒸分配：进料以标罐油率 `feedRate`（sm3/s）给定，流体声明与 pvt 网络 fluid 块同口径（gasGravity/oilDensity/gor/waterCut/waterDensity），在 `(pressure, temperature)` 处复用 `pvt::evaluateBlackOil` 级联（级温覆盖流体声明温度）。分配逐组分守恒：ρ_gas,std 由既有质量不变量差 `blackOilMassPerOilSm3(gor=1) − blackOilMassPerOilSm3(gor=0)` 恢复；闪蒸气 `glib = gor − rs`；液出流 = 油 `q·ρo` + 溶气 `q·rs·ρg` + 水 `q·wor·ρw`；不完美机器把 `(1−efficiency)` 的凝析液质量夹带入气管；两出口同压 `p − dP`。`closure` 作为残差打印（构造上 ≤1e-9 量级）。
+
+**压缩机（点元，两模式互斥）。** 模式 A 曲线：`PR(q) = shutoffRatio − (shutoffRatio − pressureRatio)·(|q|/ratedRate)²`，与 `pumpHeadOf` 同族、读压比而非米头。模式 B 声明多变头：`PR = (1 + H(k−1)/(k·Z·R_spec·T1))^(k/(k−1))`，焓积分 `H = Z·R_spec·T1·(k/(k−1))·(PR^((k−1)/k) − 1)` 用声明 k 定价（非真实气体偏差函数，声明口径）。两模式同出四读数：`p2 = p1·PR`、`ṁ = p1·q/(Z·R_spec·T1)`、`W0 = ṁ·H`（闭式锚）、`W = W0/η`、`T2 = T1·PR^((k−1)/(k·η))`——§5.144 的被动温度约定，不反馈水力。
+
+**管网接线（仅曲线模式）。** 机器对管路的唯一有效声明：march 看到的 `from` 端压力是 `pFrom·PR(|q|)`。方向按关死点 boost（零率）判定：`pFrom·PR(0) ≥ pTo` 为正流——march 自 `pUp·PR(q)` 起步，质量率仍用真实 `pUp` 密度（本增量的声明简化）；否则为回流——落点抬到 `pLow·PR(q)`。PR 随试率骑在 `pvtRateForDrop` 的 Illinois 割线内部，电导探针与死侧探针自动继承同一定律。`PipeFlowResult` 加四读数 `cmpRatio/cmpBoost/cmpPower/cmpT2`（boost = `pFrom(PR−1)`，功率按 march 自记的质量率与表声明温度定价），无机器的管一行新 token 都不多。
+
+**语法与拒收。** 分离器拒收：`feedRate ≤ 0`（无出流）、非正 p/T、`efficiency ∉ [0,1]`、`dP < 0`、流体参数非法（委托 pvt 层消息）。压缩机点元拒收：两模式同声明或都不声明、`η ∉ (0,1]`、`kappa ≤ 1`、`R_spec ≤ 0`、`Z ≤ 0`、非正吸入态或率、曲线 shutoff < rated、曲线无 ratedRate、率越过 PR=1 点、`pressureRatio ≤ 1`。管网键组：`pressureRatio`（开关）+ `shutoffRatio`/`ratedRate`/`polytropicEfficiency`/`kappa`/`specificGasConstant`/`compressibility`（默认 = 开关值/无/1/无/无/1）；拒收：负 ratio、参数无开关、ratio ≤ 1、shutoff < rated、ratedRate/η/kappa/R_spec/Z 缺失或越界、与 valve/pumpHead/lift/rod/coupled 同管（一管一机）、与 thermal 键同管（温度读数权属单一）、常数属性网络、pvt 表未声明温度、零长管。
+
+**回归（`tests/check_steady_equipment2.py`，60 条判据）。** 分离器四臂（理想/夹带/死油/第二流体）从 case 文本独立重推 Standing/VB/DAK 全链（移植自 `check_pvt_separator.py`）、逐组分质量守恒与闭合 ≤1e-9·feed、eff=1 vs 0.9 方向性；压缩机四臂重推闭式锚、head 模式往返 H→PR→H、η=1 vs 0.9 方向性、曲线额定/半率点；网络三线——裸孪生 T（9→5 MPa 回流）、boost 反转线 K（同一节点对正向流）、恒比不足线 R（仍回流、落点抬升）——由 Python 独立重跑 24 段 Churchill march 与 Illinois 割线（boost 在同一函数内），Q 到 1e-6、读数到 1e-9/1e-6、含落点残差；28 条拒收边界覆盖两套语法全部声明包络。
+
+**边界。** 声明简化全部点名：分离器单级单 (p,T)，闪蒸气与液同压、无闪蒸罐位差，夹带是质量分裂不是液滴谱，水按黑油层约定不可压；压缩机焓积分用声明 k、Z 为声明常数、T2 被动不反馈水力；管网压缩机只定价曲线模式（head 模式是点元语法）、方向按关死点 boost 判定、质量率按真实上游端密度记账（boost 不改节点体积率对应的密度）、功率/T2 按 pvt 表声明温度定价。
+
+### 5.157 lateral 多分支井筒（P5 收口）
+
+**能力。** `nodal{}` 算例可声明 `laterals { L1 { ipr{} well{} } L2 { ... } }`：每个 lateral 自带一条 IPR（linear/Vogel/Jones 三闭式任一，分支之间与主井筒 ipr{} 之间**不要求同型**，异构直接 honour）和一条独立的 VLP 井筒（与主井筒同族：Beggs-Brill march，§5.85 流型图机器定价持液率与流型；`flowPattern`/`correlation`/thermal/lift/rod 键与主井筒同一套拒收消息，仅加 `lateral '<名>'` 前缀）。lateral 的顶端汇入主井筒井底——junction 压力就是主井筒的流动井底流压，也就是每条 lateral 的井口回压。对标矩阵 P5（多分支井筒）就此收口：多段串接管链（§5.145）与分支管网（`network{}`，M2）先例在前，本增量补的是"一个节点、多条独立 IPR×VLP 汇入"的完井形态。
+
+**求解。** junction 压力 p_j 是残差 `F(p_j) = p_j − p_vlp_main(Σ q_i(p_j))` 的根，其中 `q_i(p_j)` 是 lateral i 在回压 p_j 下自己的 IPR×VLP 工作点（复用 `solveNodalAnalysis`，零新求根机器）。每个 q_i 随回压下降、主 VLP 随总流量上升，F 单调升——括根唯一：下端取井口压力（march 只降压，p_vlp_main ≥ p_wh 故 F(p_wh) ≤ 0），上端取 `max(2·p_wh, 1.05·静液柱, 1.05·max p_r)`（回压越过最大油藏压力后所有分支死、总流量 0、F = p_j − 静液柱 > 0），扩张 + Illinois secant 与单井 nodal、管网管 law 同族。收敛后在最终 junction 处逐分支重读工作点，主井筒总产量 `Q = Σ q_i` **按构造精确守恒**；主井筒持液率/流型按 Q 从 junction march 到井口读出。顶不起自己静液柱的分支如实贡献 0（flows=false，井底取该分支在 junction 回压下的静液柱——单井死井判据逐分支应用）。
+
+**报告。** 未声明 laterals 时输出逐字节不变（硬规则）。声明时头部之后追加一行 `nodal: laterals N (名...)` 点名切换（主 ipr{} 不再喂 junction，不静默丢弃），随后每分支一行 `lateral <名> q <率> pwf <压> holdup <持液率> regime <流型> flows <真假>`，主井筒仍走原有 `well q/pwf/pth` 与 `well holdup/regime` 行（q 为总产量、pwf 为 junction），`nodal solved` 的 iterations 报 junction 外层迭代数。
+
+**语法与拒收。** `laterals{}` 存在但零分支拒收（"declares no lateral"——单井算例的正确写法是不写该块）；分支缺 ipr{} 或 well{} 拒收；分支井筒 length/diameter 非正拒收；分支 ipr form 非法或 reservoirPressure/容量非正拒收；主井筒无 well{}（即无 VLP）沿用既有 "case has no well{} block" 消息。
+
+**回归（`tests/check_nodal_lateral.py`，59 条判据）。** 四算例（`nodalLateral/case2` 双 Vogel 分支、`case3` 三分支、`caseHetero` linear+jones+vogel 异构、`caseDead` 死分支）——主 VLP、每分支 IPR×VLP 交叉、junction 不动点全部由 Python 从 case 文本独立重推（Standing/VB/DAK + §5.85 流型图 + 24 段 march + 闭式 IPR + 扩张括根/Illinois secant 全链移植）；断言每条活分支的 IPR 恒等式（1e-5）、Python 交叉复现分支 q/pwf（1e-4/1e-5）、junction 落在独立重推的主 VLP 上（5e-6）、`Σq_i = Q` 打印精度守恒、case2 全量 Python junction 迭代收敛到打印总产量与 junction 压力（1e-4）、加第三条分支抬总量抬 junction 并**压低**原两分支（分配非比例、分支竞争）、死分支 q=0 且井底=其静液柱、golden 总产量锚 1e-9、未声明孪生（nodalVogel）无 lateral 行、八条拒收边界（空 laterals{}、分支缺 ipr/well、flowPattern/correlation/零长/非法 form 带分支前缀、主井筒消息无前缀逐字节）。
+
+**边界。** 主井筒 ipr{} 在声明 laterals 时不参与 junction 求解（Q 全部来自分支；头部仍报该曲线并由 lateral 行显式点名，非静默丢弃）；junction 是单点汇——分支汇入位置沿主井筒的分布、分支间摩阻交互不在本增量；各分支独立 march 到同一 junction 压力，忽略汇入处的局部压损与分流干扰；解析闭式解（线性 VLP 族）未实现，统一走迭代不动点。
+
+### 5.158 稳态段塞起始预测（P18 收口）
+
+**能力。** 黑油管网的管可声明 `slugPrediction{}` 子块：`trajectory{}`（具名段，每段 `length`+`angleDeg`，把管的倾角沿弧长铺开——§5.91 地形先例的只读报告版）与可选 `fillThreshold`（默认 1.0）。预测的是**段塞起始**：地形低点处积液回填上坡段，液位达到阈值且上游来流为分层（segregated）流型时判 SLUG-START。`BeggsBrillMarchOut` 与 `PipeFlowResult` 新增逐段剖面向量（入口压力/持液率/无滑移含液率/混合速度/无滑移混合密度/流型/march 温度），由 march 循环每段无条件 push——纯读数，水力机器从不回读，未声明时一个字节都不多。对标矩阵 P18（段塞起始预测）就此收口。
+
+**求解。** march 段 i 覆盖弧区间 [i·ds, (i+1)·ds)（ds=length/n，n 为最终 march 实跑段数，方向为流向即高压端起）。低点 = 相邻轨迹段角度的严格 −→+ 转折；低点上游下坡段中点所在 march 段的流型须为 segregated（分层流才真的把液排到低点；transition 混合带不构成"液到达低点"的陈述，判据点名此简化）；低点下游上坡弧区间 [s_d, s_d+L_up] 与 march 段求交，积存体积 `poolVolume = Σ HL_i·A·overlap_i`，判据 `criterion = poolVolume/(A·L_up)`（上坡段平均液位分数）；verdict = 流型合格 且 criterion ≥ fillThreshold。全部读的是 §5.85/§5.143 march 自己的持液率与流型剖面，零新水力。
+
+**报告。** 每个低点一行 `slug <管> dip <k> s <弧长> vol <积存体积> criterion <液位> regime <上游流型词> SLUG-START|NO-SLUG`，每管一行 `slug <管> dips <N>`；存在任一声明管时全局一行 `slug risk pipes <有起始判定的管名...>` 或 `slug risk pipes none`。未声明 slugPrediction 的管与既有全部算例逐字节不变。
+
+**语法与拒收。** 子块走白名单遍历（Dictionary 不拒未知键，白名单必须自己点名）：`slugPrediction{}` 只认 trajectory/fillThreshold，未知键点名拒收；`trajectory{}` 具名段 ≥2、每段只认 length/angleDeg、length>0、angleDeg∈[−90,90]、Σlength 与管长、Σlength·sin(angleDeg) 与 elevation 在 1e-9 相对容差内必须闭合（轨迹 lay 的是管自己的弧）；fillThreshold 声明则 >0；管级 `trajectory` 键拒收（点名它属于 slugPrediction{}）；非黑油网络（常数属性/pvt 表）声明 slugPrediction 拒收——剖面来自黑油 march，单相管没有它。
+
+**回归（`tests/check_steady_risk_slug.py`，与 §5.159 合计 64 条判据）。** V 形地形算例 `cases/steadyRiskSlug/`（P1 带声明、P2 无声明对照）：march 剖面由 Python 从 case 文本独立重推（Standing/VB/DAK + §5.85 流型图 + 24 段 march 全链移植自 `check_steady_thermal.py`，扩展到逐段 hl/lam/rhom/regime/vm），低点 s/积存体积/判据/流型词/verdict 到 1e-6；剥离声明块后与去掉 slug/risk 行的全输出逐字节相等、multiphase 锚算例无 slug/risk token；fillThreshold 抬过液位翻为 NO-SLUG 且全局行读 none。
+
+**边界。** 声明简化点名：水力仍按管声明的单一 lumped 坡度定价（march 不因轨迹弯折而分段变角——轨迹是报告几何，§5.91 先例的延伸）；积存用 march 稳态持液率剖面，不做瞬态回填动力学、不模拟段塞生成后的运动；上游流型只读上游段中点所在 march 段；弧坐标按流向（高压端起）解释。
+
+### 5.159 稳态腐蚀/冲蚀/水合物风险提示（P22 收口）
+
+**能力。** 黑油管网的管可声明 `riskReport{}` 子块，从 march 自己的逐段剖面（§5.158 新增的剖面向量）给三类风险读数：API RP 14E 冲蚀流速限、声明的甲烷水合物 Clausius-Clapeyron 解离线（§5.122 家族同式）、CO2/H2S 分压腐蚀档。全部是**提示不是约束**——不扣管壁、不改水力、不加源项。对标矩阵 P22（腐蚀/冲蚀/水合物风险提示）就此收口。
+
+**求解。** 冲蚀：每段 `Ve = 0.3048·C/√(ρ_m/16.0184634)`（C 按发表的 ft/s·(lb/ft³)^0.5 约定引用，SI 混合密度以精确 16.0184634 kg/m³ 换算、结果以 0.3048 m/ft 换算），ratio = vm/Ve，报最大 ratio 段与 ratio>1 的段计数。水合物（hydrateTref/hydratePRef/hydrateDH 三键齐才启用）：`Teq(p_i) = 1/(1/Tref − (R/dH)·ln(p_i/pRef))`，段温取 §5.144 march 温度（管带热物理时）否则流体等温温度，过冷度 dTsub = Teq − T，**最坏段 = dTsub 最大**（液相生成的条件是低于解离温度，裕量随 dTsub 增大），分级 <0 NONE、<hydrateLowK LOW、<hydrateMediumK MEDIUM、else HIGH。腐蚀（co2Fraction 或 h2sFraction>0 才打印）：分压 = 声明摩尔分数 × march 最高压力，CO2 档 <co2LowPa LOW、<co2HighPa MEDIUM、else HIGH；H2S 分压 ≥3447 Pa（0.5 psia 发表甜/酸线）判 SOUR。
+
+**报告。** 每管至多三行：`risk <管> erosion seg <i> vm .. velim .. ratio .. OVER|OK over <n>`、`risk <管> hydrate seg <i> p .. T .. Teq .. dTsub .. NONE|LOW|MEDIUM|HIGH`、`risk <管> corrosion co2p .. band LOW|MEDIUM|HIGH h2sp .. SOUR|SWEET`。未声明 riskReport 的管与既有全部算例逐字节不变。
+
+**语法与拒收。** 白名单键：erosionC/hydrateTref/hydratePRef/hydrateDH/hydrateLowK/hydrateMediumK/co2Fraction/h2sFraction/co2LowPa/co2HighPa，未知键点名拒收；非黑油网络拒收；erosionC>0；水合物三键必须同声明（缺谁点名谁）且同为正；hydrateLowK/hydrateMediumK>0 且 low<medium；co2/h2s 摩尔分数 ∈[0,1]；co2LowPa/co2HighPa>0 且 low<high。
+
+**回归（同上 checker）。** 14E 限/最大 ratio 段/over 计数、Teq/dTsub/分级、分压/CO2 档/SOUR 全部由 Python 从剖面独立重推到 1e-6；等温变体 dTsub<0 判 NONE；热变体（P1 加 wallHeatTransfer/wallTemperature/heatCapacity）的水合物线落在 march 温度上：dTsub 从 −50.9 K 翻到 +11.1 K、grade NONE→HIGH，而水力/slug/erosion/corrosion 行逐字节不变（§5.144 被动性在报告层的延伸）；17 条拒收边界覆盖两套语法全部声明包络。
+
+**边界。** 声明简化点名：14E 是筛查判据（C 因子由用户声明，非砂产/磨损模型）；水合物线是用户声明常数的甲烷型 Clausius-Clapeyron（组成效应、抑制动力学与诱导期不在本增量）；腐蚀分压按声明的气相摩尔分数对全流压力直接定价（不是闪蒸后平衡气相分数），无壁厚减薄账本；三类读数都不反馈水力。
+
+### 5.160 稳态管径优选与气举预算分配（P21 收口）
+
+**能力。** 稳态管网 app（`chflow-1d-steady`）新增两个顶层可选块，全部是 app 层报告、零库改动、零内核物理：`diameterOptimization{}` 对声明管集做候选直径的笛卡尔积穷举优选（每个组合重跑一遍 `solveSteadyNetwork`）；`gasLiftAllocation{}` 把声明的注入气预算（Sm3/s）离散分配到声明井上、最大化总油量（复用 §5.155 nodal 机器采样 q_i(g_i)，离散 DP 求解）。对标矩阵 P21（稳态管网优化）就此收口。
+
+**求解。** 管径：组合按 nCand 进制枚举（0 号管最慢位、末管最快位），可行 = 网络收敛且 constraints{} 全部节点压力界满足（含边界）；目标 minTotalDp = 全管 Σ dpTotal、nodePressure = p(objectiveNode)（sense min/max，内部一律化为最小化）、minCost = 声明成本模型（costPerMeter：v·Σ L_i·(d_i/d_min)²，d_min 为最小候选、面积比；costTable：与候选等长的逐档每米成本，cost = Σ L_i·c(d_i)）；严格 `<` 比较，并列取先枚举次序。气举：井口回压取基础网络解的节点压力；注入气 g_i 井底并入产出流，有效 GOR' = gor + g_i/q_i，q_i 是该 GOR' 下 nodal 工作点的不动点（初值 q_i(0)，|Δq| ≤ 1e-10·q 收敛，上限 60 次）；预算均分 resolution 档，逐井采样网格 q_i(k)；多选背包 DP `dp[i][b] = max_k dp[i-1][b-k] + q_i[k]`（整数档精确花完预算，并列取靠前井），回溯得每井档位。
+
+**报告。** 两块都不声明时输出逐字节不变（硬规则）；声明时新行全部追加在 `steady solved` 之后。diameterOptimization：`diameterOpt combos <N> feasible <M>`，最优 `diameterOpt best <管> <径>... objective <值> [cost <值>]`（无可行读 `diameterOpt best NONE`），第 2 名起 `diameterOpt runner <k> ...`（共 reportTop 名含 best；cost 列仅声明成本模型时出现）。gasLiftAllocation：`gasLift wells <n> budget <值> step <值>`，每井 `gasLift well <名> gas <值> q <值> gain <值> marginal <值>`（marginal 为 q 曲线在分配点的中心差分、边界单侧），`gasLift total q <值> gain <值>` 与 `gasLift slopeSpread <max−min marginal>`。
+
+**语法与拒收。** 两块都走白名单遍历（Dictionary 不拒未知键，白名单必须自己点名）。diameterOptimization：pipes 非空且都在网络；candidates 非空、全正、严格升序（重复/乱序拒收）；objective ∈ {minTotalDp, nodePressure, minCost}（未知词拒收），nodePressure 必需 objectiveNode（须在网络）、objectiveSense ∈ {min, max}；maxCombinations（默认 4096、≥1，溢出安全累乘超上限拒收）、reportTop（默认 3、≥0）；costPerMeter 与 costTable 互斥（costTable 须与候选等长、逐档非负），minCost 必需其一；constraints{} 子块必需 node（须在网络）且至少一个界，min ≤ max。gasLiftAllocation：budget > 0；resolution 为 [1,64] 整数（默认 8）；wells{} 非空、子块只认 node/ipr/well、node 须在网络；非黑油网络拒收（lift 气按黑油 GOR 定价）；g=0 不流的井拒收。
+
+**回归（`tests/check_steady_optimize.py`，57 条判据）。** `cases/steadyOptimize/` 两算例：diameter.dict 严格对称双固定压井（W1/W2→M→Outlet，P1/P2 同长同高、等压源、M 点小流量抽吸保残差尺度非零且不动对称性），candidates 0.05/0.06/0.075，M 点 maxPressure 夹在 p(0.05,0.06) 与 p(0.06,0.06) 之间——可行集恰为三组合、最优是 (0.05,0.06)/(0.06,0.05) 的精确并列、由枚举次序定胜负；checker 把 9 个组合全部 subprocess 重跑并独立重选可行过滤/排序/并列/cost（1e-9），另 5 个目标/约束变体（去约束、nodePressure max/min、minCost 两成本模型）各自重选；diameterBase.dict 为剥离块逐字节对照孪生，steadyNetwork 锚算例无优化 token。gasLift.dict 黑油双井（budget 0.12、4 档，DP 给强井 W1 三档、弱井 W2 一档——W2 分配点边际反而更高，证明 DP 不是贪心边际均衡）：整条 nodal 链（Standing/VB/DAK + §5.85 流型图 + 24 段 march + 静液柱零流分支 + 扩张括根/Illinois secant + Vogel 反闭式 + gas/GOR 不动点 + 多选背包 DP）移植 Python 重推，q 到 1e-6、gain 到 1e-9、marginal 到 1e-3、slopeSpread 到 1e-2、预算精确花完、单档搬移不改进交换判据；29 条拒收边界覆盖两套语法全部声明包络。
+
+**边界。** 声明简化点名：两块都是报告层——优选结果不回写算例、不改任何水力数字；管径是穷举非梯度（maxCombinations 防组合爆炸，成本为声明的每米线性模型而非采购价格曲线）；气举把注入气当纯 GOR 加成（不单列气相、无压缩热/节流温变、无气举阀分配），回压取基础解节点压力——分配对管网的产量反馈不闭合（单向报告），不动点为简单迭代非 Newton。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |
@@ -5953,5 +6042,49 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
   逐步 h 的隐式 Euler 行复现（最差 8.53e-10，全管层流）、固定 march
   （`cfl` 缺席）500 步闭式复现且与自适应末态不同、四个 regime 全访问、
   `cfl 0` / `dtMin 0` / `dtMax < dtMin` 三条拒收；
+- `tests/check_steady_olgas.py`（CTest `verify.steadyOlga`，§5.155）：
+  **55** 条判据——olgasSteady 声明删除孪生与 §5.143 标准多相算例逐字节、
+  三根网络管出口态由 24 段 march 从字典独立重推（HL/λ 到 1e-8）、五根单管
+  锚点把流型图裁决送进四个区各练一支（分层/分散支另闭式复核）、与 BB 孪生
+  比 HL/dp 移动、五条拒收边界（未知词、单相、flowPattern 冲突、transient、
+  nodal）；
+- `tests/check_steady_equipment2.py`（CTest `verify.steadyEquipment2`，§5.156）：
+  **60** 条判据——分离器四臂闪蒸分配由 Python 从 case 文本独立重推 Standing/VB/
+  DAK 全链且逐组分质量守恒闭合 ≤1e-9·feed、压缩机四臂重推闭式锚
+  W = m Z R_spec T1 (k/(k-1)) (PR^((k-1)/k) − 1) 与 head 往返、eff/η 的
+  1 vs 0.9 方向性、网络三线（裸孪生回流、boost 反转、恒比不足）由 24 段
+  Churchill march 与 Illinois 割线独立重跑（Q 到 1e-6、含落点残差）、
+  28 条拒收边界覆盖两套语法全部声明包络；
+- `tests/check_nodal_lateral.py`（CTest `verify.nodalLateral`，§5.157）：
+  **59** 条判据——双/三/异构 IPR/死分支四个 lateral 多分支算例，主 VLP、
+  每分支 IPR×VLP 交叉与 junction 不动点由 Python 从 case 文本独立重推
+  （Standing/VB/DAK + 流型图 + 24 段 march + 闭式 IPR + Illinois secant
+  全链）、`Σq_i = Q` 按构造守恒、加分支抬总量并压低原分支（分配非比例）、
+  死分支井底=其静液柱、golden 总产量锚 1e-9、未声明孪生无 lateral 行、
+  八条拒收边界（空 laterals{}、分支缺 ipr/well、flowPattern/correlation/
+  零长/非法 form、主井筒消息逐字节无前缀）；
+- `tests/check_steady_risk_slug.py`（CTest `verify.steadyRiskSlug`，§5.158+§5.159）：
+  **64** 条判据——V 形地形算例 `cases/steadyRiskSlug/`（P1 声明
+  slugPrediction{}/riskReport{} 全键、P2 无声明对照）+ 热变体
+  `caseThermal.dict`；march 逐段剖面（hl/lam/rhom/regime/vm/p/T）由 Python
+  从 case 文本独立重推（Standing/VB/DAK + 流型图 + 24 段 march 全链移植自
+  `check_steady_thermal.py`），低点 s/积存体积/判据/流型词/SLUG-START
+  verdict、14E 限/最坏段/over 计数、Teq/dTsub/分级、分压/CO2 档/SOUR 到
+  1e-6；剥离声明块后逐字节不变（multiphase 锚无 slug/risk token）；
+  fillThreshold 抬过液位翻 NO-SLUG 且全局行读 none；热变体只移水合物线
+  （dTsub −50.9→+11.1、NONE→HIGH），水力/slug/erosion/corrosion 逐字节；
+  17 条拒收边界（管级 trajectory、未知键、非黑油、段数/闭合/角度/阈值、
+  水合物三键点名缺失、降序 band、越界分数）；
+- `tests/check_steady_optimize.py`（CTest `verify.steadyOptimize`，§5.160）：
+  **57** 条判据——`cases/steadyOptimize/` 两算例：diameter.dict（严格对称双
+  固定压井 P1/P2→M→Outlet，9 组合全由 subprocess 独立重跑选优：可行过滤、
+  并列取先枚举次序、cost 模型、runner 排序到 1e-9，另 5 个目标/约束变体
+  各自重选）；gasLift.dict（黑油双井，DP 给强井 3 档弱井 1 档——弱井边际
+  反而更高，证明 DP 非贪心）：整条 nodal 链（Standing/VB/DAK + 流型图 +
+  24 段 march + 静液柱分支 + 扩张括根/Illinois secant + Vogel 反闭式 +
+  gas/GOR 不动点 + 多选背包 DP）移植 Python 重推，q 1e-6、gain 1e-9、
+  marginal 1e-3、预算精确花完、单档搬移不改进；剥离块逐字节不变
+  （diameterBase.dict 对照孪生、steadyNetwork 锚无优化 token）；
+  29 条拒收边界（两套语法全部声明包络）；
 - 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`
 

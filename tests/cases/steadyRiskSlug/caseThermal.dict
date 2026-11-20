@@ -1,0 +1,76 @@
+// 5.159 (P22) thermal variant of case.dict: P1 carries PASSIVE wall-cooled
+// thermal physics, so the hydrate line is priced on the MARCH temperature
+// profile, not the isothermal fluid temperature. The cold wall (278 K, below
+// the declared dissociation line) drives the outlet subcooling positive and
+// the grade up from NONE; every hydraulic line stays byte-identical to the
+// isothermal case, which is the passivity proof.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.75;
+        oilDensity     850;
+        gor            300;
+        waterCut       0;
+        temperature    340;
+        surfaceTension 0.025;
+    }
+}
+
+nodes
+{
+    W {};
+    M {};
+    Outlet { pressure 4.0e6; }
+}
+
+pipes
+{
+    P1
+    {
+        from W;
+        to M;
+        length 6000;
+        diameter 0.3;
+        roughness 4.6e-5;
+        elevation 0;
+        wallHeatTransfer 5;   // W/(m K) overall coefficient per unit length
+        wallTemperature 278;  // K, cold: below the hydrate line at 4 MPa
+        heatCapacity 2000;    // J/(kg K)
+        slugPrediction
+        {
+            fillThreshold 0.5;
+            trajectory
+            {
+                D1 { length 3000; angleDeg -3; }
+                D2 { length 3000; angleDeg 3; }
+            }
+        }
+        riskReport
+        {
+            erosionC     100;
+            hydrateTref  285.25;
+            hydratePRef  3.0e6;
+            hydrateDH    5.1868e4;
+            hydrateLowK    3;
+            hydrateMediumK 8;
+            co2Fraction  0.02;
+            h2sFraction  0.001;
+            co2LowPa     1.0e4;
+            co2HighPa    1.0e5;
+        }
+    }
+    P2 { from M; to Outlet; length 3000; diameter 0.3; roughness 4.6e-5;
+         elevation 0; }
+}
+
+sources
+{
+    well { node W; rate 0.001; }
+}
+
+solve
+{
+    maxIter 100;
+    tol     1e-10;
+}

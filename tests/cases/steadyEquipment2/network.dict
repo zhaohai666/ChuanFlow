@@ -1,0 +1,55 @@
+// P10 (5.156): the compressor as a network device key on the tabulated-PVT
+// march. Three lines, every end a fixed-pressure node, so each line's rate
+// is its own two-point problem the checker re-derives from the table alone:
+//
+//   T  bare twin of K: 5 MPa vs 9 MPa runs BACKWARDS (C -> A).
+//   K  curve compressor at the A end: the shutoff boost 5*2.4 = 12 MPa
+//      out-pushes the 9 MPa sink and the line runs FORWARDS (A -> C) --
+//      the direction the bare twin cannot take.
+//   R  constant-ratio machine (shutoff == rated) with the boost NOT enough
+//      to flip it: 5*2 = 10 MPa vs the 13 MPa sink, so the line still runs
+//      backwards, but the reverse rate now has to land on the boosted
+//      10 MPa, not on the bare 5 MPa.
+//
+// The pvt table is a coarse isothermal-gas-like fill; the checker marches
+// the same 24 segments, the same Churchill friction and the same clamped
+// linear rho(p)/mu(p) lookups. verified by tests/check_steady_equipment2.py
+// (ctest verify.steadyEquipment2).
+fluid
+{
+    pvt
+    {
+        pressure (1.0e5 5.0e6 9.0e6 1.3e7);
+        rho (5.0 200.0 360.0 520.0);
+        mu (1.0e-5 1.4e-5 1.8e-5 2.2e-5);
+        temperature 300.0;
+    }
+}
+
+nodes
+{
+    A { pressure 5.0e6; }
+    C { pressure 9.0e6; }
+    Y { pressure 1.3e7; }
+}
+
+pipes
+{
+    T { from A; to C; length 1000.0; diameter 0.1; roughness 0.0; }
+    K
+    {
+        from A; to C; length 1000.0; diameter 0.1; roughness 0.0;
+        pressureRatio 2.0; shutoffRatio 2.4; ratedRate 0.05;
+        polytropicEfficiency 0.9; kappa 1.3;
+        specificGasConstant 518.28; compressibility 0.95;
+    }
+    R
+    {
+        from A; to Y; length 1000.0; diameter 0.1; roughness 0.0;
+        pressureRatio 2.0; ratedRate 0.05;
+        polytropicEfficiency 0.8; kappa 1.3;
+        specificGasConstant 518.28;
+    }
+}
+
+solve { maxIter 100; tol 1e-12; }

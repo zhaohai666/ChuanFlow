@@ -1,0 +1,78 @@
+// 5.157 (P5): multi-lateral nodal analysis, two laterals. The main bore is
+// the lift conduit (its own VLP from the junction up to the wellhead); each
+// lateral carries its own Vogel IPR and its own Beggs-Brill bore, and its top
+// opens into the main bore's bottom hole. The junction pressure is the fixed
+// point p_j = p_vlp_main(sum q_i(p_j)); the main ipr{} below is declared for
+// the case grammar and the header, it does not feed the junction. Physics
+// checks live in tests/check_nodal_lateral.py.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.65;
+        oilDensity     850;
+        gor            90;    // sm3/sm3
+        waterCut       0;
+        temperature    340;   // K, isothermal
+        surfaceTension 0.03;  // N/m
+    }
+}
+
+ipr
+{
+    form              vogel;
+    reservoirPressure 2.2e7;  // Pa (the main bore is a lift conduit: unused)
+    maxRate           0.006;  // sm3/s
+}
+
+well
+{
+    length    2400;    // m, measured depth of the main bore
+    diameter  0.062;   // m
+    roughness 4.6e-5;  // m
+    elevation 2200;    // m, wellhead above the junction
+}
+
+laterals
+{
+    L1
+    {
+        ipr
+        {
+            form              vogel;
+            reservoirPressure 2.6e7;
+            maxRate           0.004;
+        }
+        well
+        {
+            length    500;
+            diameter  0.05;
+            roughness 4.6e-5;
+            elevation 400;
+        }
+    }
+    L2
+    {
+        ipr
+        {
+            form              vogel;
+            reservoirPressure 2.4e7;
+            maxRate           0.003;
+        }
+        well
+        {
+            length    600;
+            diameter  0.05;
+            roughness 4.6e-5;
+            elevation 500;
+        }
+    }
+}
+
+wellheadPressure 2.5e6;  // Pa, the separator holds the tubing head
+
+solve
+{
+    maxIter 100;
+    tol     1e-9;
+}

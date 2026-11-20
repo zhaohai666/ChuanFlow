@@ -4,9 +4,11 @@
 #include <sstream>
 #include <string>
 
+#include "cf/1d/Compressor.h"
 #include "cf/1d/JetPump.h"
 #include "cf/1d/PlungerGasLift.h"
 #include "cf/1d/ProgressiveCavityPump.h"
+#include "cf/1d/Separator.h"
 #include "cf/common/Dictionary.h"
 #include "cf/common/Log.h"
 
@@ -46,10 +48,13 @@ int main(int argc, char** argv)
         const Dictionary& jps = *section(caseDict, "jetPumps");
         const Dictionary& pcps = *section(caseDict, "pcpPumps");
         const Dictionary& pgls = *section(caseDict, "plungerGasLifts");
+        const Dictionary& seps = *section(caseDict, "separators");
+        const Dictionary& cmps = *section(caseDict, "compressors");
 
         log::info("point elements: ", jps.keys().size(), " jet pumps, ",
                   pcps.keys().size(), " pcp pumps, ", pgls.keys().size(),
-                  " plunger gas lifts");
+                  " plunger gas lifts, ", seps.keys().size(), " separators, ",
+                  cmps.keys().size(), " compressors");
 
         for (const std::string& name : jps.keys())
         {
@@ -168,6 +173,57 @@ int main(int argc, char** argv)
                               num(plungerGasLiftWindowOpenAt(pgl, t) ? 1.0 : 0.0));
                 }
             }
+        }
+
+        for (const std::string& name : seps.keys())
+        {
+            const Dictionary& d = seps.getDict(name);
+            const Dictionary& bd = d.getDict("fluid").getDict("blackoil");
+            pvt::BlackOilFluid fluid;
+            fluid.gasGravity = bd.getScalarOr("gasGravity", fluid.gasGravity);
+            fluid.oilDensityStd = bd.getScalarOr("oilDensity", fluid.oilDensityStd);
+            fluid.gorStd = bd.getScalarOr("gor", fluid.gorStd);
+            fluid.waterCut = bd.getScalarOr("waterCut", fluid.waterCut);
+            fluid.waterDensity = bd.getScalarOr("waterDensity", fluid.waterDensity);
+
+            const SeparatorSolution s = separatorSolve(
+                fluid, d.getScalar("feedRate"), d.getScalar("pressure"),
+                d.getScalar("temperature"), d.getScalarOr("efficiency", 1.0),
+                d.getScalarOr("dP", 0.0));
+            log::info("sep ", name, " p ", num(s.pressure), " T ",
+                      num(s.temperature), " eff ", num(s.efficiency),
+                      " pout ", num(s.outletPressure), " rs ", num(s.rs),
+                      " glib ", num(s.gasLiberated), " bo ", num(s.bo),
+                      " bg ", num(s.bg), " z ", num(s.z), " rhogs ",
+                      num(s.rhoGasStd), " mf ", num(s.feedMassRate), " mli ",
+                      num(s.liquidMassRateIdeal), " ment ",
+                      num(s.entrainedMassRate), " ml ", num(s.liquidMassRate),
+                      " mg ", num(s.gasMassRate), " closure ", num(s.closure));
+        }
+
+        for (const std::string& name : cmps.keys())
+        {
+            const Dictionary& d = cmps.getDict(name);
+            Compressor c;
+            c.pressureRatio = d.getScalarOr("pressureRatio", 0.0);
+            c.shutoffRatio = d.getScalarOr("shutoffRatio", c.pressureRatio);
+            c.ratedRate = d.getScalarOr("ratedRate", 0.0);
+            c.polytropicHead = d.getScalarOr("polytropicHead", 0.0);
+            c.polytropicEfficiency = d.getScalarOr("polytropicEfficiency", 1.0);
+            c.kappa = d.getScalarOr("kappa", 0.0);
+            c.specificGasConstant = d.getScalarOr("specificGasConstant", 0.0);
+            c.compressibility = d.getScalarOr("compressibility", 1.0);
+
+            const CompressorSolution s = compressorSolve(
+                c, d.getScalar("suctionPressure"),
+                d.getScalar("suctionTemperature"), d.getScalar("rate"));
+            log::info("cmp ", name, " mode ", s.mode == 0 ? "curve" : "head",
+                      " q ", num(s.rate), " p1 ", num(s.pressureIn), " t1 ",
+                      num(s.temperatureIn), " pr ", num(s.ratio), " p2 ",
+                      num(s.pressureOut), " m ", num(s.massRate), " h ",
+                      num(s.head), " w0 ", num(s.powerIdeal), " w ",
+                      num(s.powerShaft), " t2 ", num(s.temperatureOut),
+                      " eta ", num(c.polytropicEfficiency));
         }
 
         log::info("point elements solved");

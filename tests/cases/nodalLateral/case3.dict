@@ -1,0 +1,91 @@
+// 5.157 (P5): multi-lateral nodal analysis, three laterals. The twin of
+// case2 with a third branch L3 added: the junction drops to carry the larger
+// total, and every lateral re-reads its own IPR x VLP crossing against the
+// new back-pressure (the allocation is not proportional by construction).
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.65;
+        oilDensity     850;
+        gor            90;    // sm3/sm3
+        waterCut       0;
+        temperature    340;   // K, isothermal
+        surfaceTension 0.03;  // N/m
+    }
+}
+
+ipr
+{
+    form              vogel;
+    reservoirPressure 2.2e7;  // Pa (the main bore is a lift conduit: unused)
+    maxRate           0.006;  // sm3/s
+}
+
+well
+{
+    length    2400;    // m, measured depth of the main bore
+    diameter  0.062;   // m
+    roughness 4.6e-5;  // m
+    elevation 2200;    // m, wellhead above the junction
+}
+
+laterals
+{
+    L1
+    {
+        ipr
+        {
+            form              vogel;
+            reservoirPressure 2.6e7;
+            maxRate           0.004;
+        }
+        well
+        {
+            length    500;
+            diameter  0.05;
+            roughness 4.6e-5;
+            elevation 400;
+        }
+    }
+    L2
+    {
+        ipr
+        {
+            form              vogel;
+            reservoirPressure 2.4e7;
+            maxRate           0.003;
+        }
+        well
+        {
+            length    600;
+            diameter  0.05;
+            roughness 4.6e-5;
+            elevation 500;
+        }
+    }
+    L3
+    {
+        ipr
+        {
+            form              vogel;
+            reservoirPressure 2.5e7;
+            maxRate           0.002;
+        }
+        well
+        {
+            length    450;
+            diameter  0.045;
+            roughness 4.6e-5;
+            elevation 350;
+        }
+    }
+}
+
+wellheadPressure 2.5e6;  // Pa, the separator holds the tubing head
+
+solve
+{
+    maxIter 100;
+    tol     1e-9;
+}

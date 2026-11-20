@@ -62,14 +62,16 @@ struct BeggsBrillIn
     // flow-pattern map above: 0 (the default) is Beggs-Brill's own horizontal
     // + inclination holdup, exactly what 5.85 priced, bit for bit. 1 selects
     // the Hagedorn-Brown holdup as restated by Whitson, Brule & Stephenson
-    // (JPT 2017, Appendix E) and 2 the Duns-Ros (API DL Bulletin 34) holdup
-    // region skeleton; BOTH replace ONLY the horizontal + inclination holdup
-    // block in beggsBrillDpDs, leaving the flow-pattern map, the friction
-    // multiplier S(y), the elevation and acceleration terms and the march
-    // itself untouched. A non-zero value therefore moves the holdup and,
-    // through it, the slippage density in the elevation and Ek terms and the
-    // friction multiplier on y = lambda/HL^2, but nothing else. See
-    // beggsBrill.cpp for the two laws and the Duns-Ros provenance caveat.
+    // (JPT 2017, Appendix E), 2 the Duns-Ros (API DL Bulletin 34) holdup
+    // region skeleton and 3 (5.155) the OLGAS-steady public mechanistic
+    // skeleton, a Taitel-Dukler regime-dispatched steady holdup; ALL replace
+    // ONLY the horizontal + inclination holdup block in beggsBrillDpDs,
+    // leaving the flow-pattern map, the friction multiplier S(y), the
+    // elevation and acceleration terms and the march itself untouched. A
+    // non-zero value therefore moves the holdup and, through it, the
+    // slippage density in the elevation and Ek terms and the friction
+    // multiplier on y = lambda/HL^2, but nothing else. See beggsBrill.cpp
+    // for the laws and the Duns-Ros / OLGAS-steady provenance caveats.
     int correlation = 0;
 };
 
@@ -154,6 +156,19 @@ struct BeggsBrillMarchOut
     // 0 when no SteadyThermal was handed to the march - every existing
     // caller reads nothing here and gets the isothermal march, bit for bit.
     double temperature = 0;
+    // 5.158 (P18) / 5.159 (P22): the per-segment march profile, pushed for
+    // every segment the march actually ran (fewer than `segments` entries
+    // when the pressure floor stopped it early). The slug-start and risk
+    // reports read these; the hydraulics never do, so they are a pure
+    // readout that cannot move any pressure, rate or holdup number.
+    std::vector<double> segPressure;    // Pa, the segment's inlet pressure
+    std::vector<double> segHoldup;      // liquid volume fraction HL
+    std::vector<double> segLambda;      // no-slip liquid content
+    std::vector<double> segVm;          // m/s, in-situ mixture velocity
+    std::vector<double> segRhoM;        // kg/m3, no-slip mixture density
+    std::vector<int> segRegime;         // the regime the gradient priced with
+    std::vector<double> segTemperature; // K at the segment inlet; 0 entries
+                                        // when no thermal march was declared
 };
 
 /// 5.144 (G6): the passive temperature march of a steady pipe. The whole

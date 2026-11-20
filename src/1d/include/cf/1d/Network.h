@@ -72,6 +72,19 @@ struct PvtFluid
     std::shared_ptr<LiveFlashState> liveFlash;
 };
 
+/// 5.158 (P18): one named segment of a DECLARED terrain trajectory. The
+/// trajectory is the pipe's inclination laid out along its arc: segment k
+/// covers the arc interval [sum of the earlier lengths, + its own length)
+/// at angleDeg from horizontal (positive uphill). It is a REPORTING
+/// geometry only -- the Beggs-Brill march keeps pricing the whole pipe at
+/// the single declared `elevation` slope -- so the trajectory can describe
+/// the dips the lumped slope hides without moving a hydraulic number.
+struct TerrainTrajectorySegment
+{
+    double length = 0;   // m of arc along the pipe (> 0)
+    double angleDeg = 0; // from horizontal, positive = uphill, in [-90, 90]
+};
+
 struct NetworkPipe
 {
     std::string name;
@@ -166,7 +179,8 @@ struct NetworkPipe
     // 5.143 (G4): WHICH published holdup law prices a two-phase pipe. 0 =
     // beggsBrill (the shipped law, bit for bit), 1 = hagedornBrown (Whitson
     // et al. 2017 restatement), 2 = dunsRos (API Bulletin 34 region
-    // skeleton - see the provenance caveat in beggsBrill.cpp). The law
+    // skeleton), 3 = olgasSteady (5.155, the OLGAS-steady public mechanistic
+    // skeleton - see the provenance caveats in beggsBrill.cpp). The law
     // replaces ONLY the holdup block of the gradient; the flow-pattern map
     // stays evaluated and reported, and flowPattern (which selects one of
     // Beggs-Brill's own regime laws) is refused alongside a non-zero value.
@@ -265,6 +279,67 @@ struct NetworkPipe
     double rodLength = 0;          // m, pump setting depth L
     double rodYoungModulus = 0;    // Pa, rod string E
     double rodDensity = 0;         // kg/m3, rod string density
+
+    // Compressor (5.156, P10): this pipe's line carries a steady pressure
+    // booster at its `from` end. `compressorRatio` (the key `pressureRatio`)
+    // > 0 switches it on; the ratio falls with the square of the rate through
+    // the same quadratic family as pumpHeadOf (see compressorRatioOf), and
+    // the effective statement to the pipe law is that the from-end pressure
+    // the march sees is pFrom * PR(|q|). Direction is decided at the
+    // zero-rate (shutoff) boost, so a machine can push a line against a
+    // node-to-node gradient the bare pipe would run backwards under. It runs
+    // on the tabulated-PVT fill only, like the lift valve: the boost is a
+    // pressure-level statement and the readouts (power, discharge
+    // temperature) need the stream's declared inlet temperature. The
+    // thermodynamics are PASSIVE (§5.144's convention): the machine's kappa,
+    // R_spec, Z and efficiency price its power and T2 readouts from the
+    // hydraulic state, never into it. A head-mode catalog entry
+    // (polytropicHead) is the point element's grammar (Compressor.h), not a
+    // pipe key: on a line the curve is what the network needs.
+    double compressorRatio = 0;         // PR at ratedRate (> 1); the switch
+    double compressorShutoffRatio = 0;  // PR at zero rate (defaults to ratio)
+    double compressorRatedRate = 0;     // m3/s where pressureRatio is quoted
+    double compressorEfficiency = 1;    // polytropic eta, in (0,1]
+    double compressorKappa = 0;         // cp/cv, > 1
+    double compressorGasConstant = 0;   // R_spec, J/(kg K)
+    double compressorZ = 1;             // declared constant compressibility
+
+    // 5.158 (P18): the slug-START forecast. A declared trajectory lays the
+    // pipe's dips out along its arc; at every dip (a strict downhill -> uphill
+    // angle change) the liquid the march's own holdup profile says is flowing
+    // down the upstream run is pooled on the uphill run downstream of the
+    // dip, and the pooled level against the declared fill threshold, together
+    // with the upstream segment's flow pattern, is the verdict. Pure report:
+    // the march never reads any of this back. Absent, every field below is
+    // inert and no line is printed.
+    bool slugDeclared = false;
+    std::vector<TerrainTrajectorySegment> slugTrajectory;
+    double slugFillThreshold = 1.0; // pooled level / uphill length, >= this
+                                    // at a segregated upstream -> slug start
+
+    // 5.159 (P22): the erosion / hydrate / corrosion risk report, priced
+    // from the march's own per-segment profile. Erosion: the API RP 14E
+    // velocity limit Ve = C / sqrt(rho_m) in field units (C in the published
+    // 100 ft/s-(lb/ft3)^0.5 convention, rho_m converted kg/m3 -> lb/ft3),
+    // read at the segment of worst vm/Ve. Hydrate: the declared methane-
+    // hydrate Clausius-Clapeyron line (Tref/pRef/dH, §5.122 family) priced
+    // at each segment's march pressure, subcooling Teq - T read at the worst
+    // segment (T is the march temperature when the pipe carries thermal
+    // physics, else the fluid's isothermal temperature). Corrosion: CO2/H2S
+    // partial pressures at the highest march pressure against the declared
+    // bands. Every one is a report, not a charge. Absent, inert.
+    bool riskDeclared = false;
+    double erosionC = 100.0;            // API RP 14E C factor (> 0)
+    bool hydrateDeclared = false;       // all three hydrate keys present
+    double hydrateTref = 0;             // K, dissociation reference temperature
+    double hydratePRef = 0;             // Pa, dissociation pressure at Tref
+    double hydrateDH = 0;               // J/mol, molar dissociation enthalpy
+    double hydrateLowK = 3;             // K subcooling bands: < low NONE..LOW,
+    double hydrateMediumK = 8;          //   < medium LOW..MEDIUM, else HIGH
+    double co2Fraction = 0;             // gas-phase CO2 mole fraction [0,1]
+    double h2sFraction = 0;             // gas-phase H2S mole fraction [0,1]
+    double co2LowPa = 1e4;              // CO2 partial-pressure bands (Pa)
+    double co2HighPa = 1e5;
 
     // Power-law rheology (Metzner & Reed 1955): when `flowIndex` > 0 the
     // pipe's fluid is tau = K gdot^n instead of Newtonian, and the single
@@ -478,6 +553,50 @@ struct RodPumpReadout
     double hydraulicPower = 0;   // work per cycle x strokes per second, W
 };
 
+/// 5.158 (P18): one terrain dip's slug-start readout (see slugReadoutOf).
+struct SlugDipReadout
+{
+    double s = 0;           // m, arc position of the dip
+    double volume = 0;      // m3, liquid pooled on the uphill run
+    double criterion = 0;   // volume / (A * uphill length), a level fraction
+    int regime = -1;        // march regime at the upstream run's midpoint
+    bool regimeOk = false;  // the upstream run is segregated
+    bool slugStart = false; // regimeOk and criterion >= the fill threshold
+};
+
+struct SlugReadout
+{
+    std::string pipeName;
+    double fillThreshold = 1.0;
+    std::vector<SlugDipReadout> dips; // in arc order
+};
+
+/// 5.159 (P22): the erosion / hydrate / corrosion readout of one pipe (see
+/// riskReadoutOf). Each `*On` says that section has a line to print; the
+/// seg/p/T numbers are read at the WORST march segment of that section.
+struct RiskReadout
+{
+    std::string pipeName;
+    bool erosionOn = false;
+    int erosionSeg = -1;
+    double erosionVm = 0;     // m/s at the worst segment
+    double erosionVelim = 0;  // API RP 14E Ve, m/s
+    double erosionRatio = 0;  // vm / Ve
+    int erosionOverCount = 0; // segments with ratio > 1
+    bool hydrateOn = false;
+    int hydrateSeg = -1;
+    double hydrateP = 0;      // Pa at the worst segment
+    double hydrateT = 0;      // K at the worst segment
+    double hydrateTeq = 0;    // K, dissociation temperature at hydrateP
+    double hydrateSubcool = 0; // Teq - T, K (negative = no risk)
+    int hydrateGrade = 0;     // 0 NONE, 1 LOW, 2 MEDIUM, 3 HIGH
+    bool corrosionOn = false;
+    double co2Partial = 0;    // Pa at the highest march pressure
+    double h2sPartial = 0;    // Pa
+    int co2Band = 0;          // 0 LOW, 1 MEDIUM, 2 HIGH
+    bool sour = false;        // H2S partial pressure >= 0.5 psia (3447 Pa)
+};
+
 struct PipeFlowResult
 {
     std::string name;
@@ -542,6 +661,28 @@ struct PipeFlowResult
     // tension at the outlet station (0 on every other path).
     std::vector<PvtFlashStation> pvtFlashStations;
     double sigmaOutlet = 0;
+    // 5.156 (P10): the compressor readout on a pvt-table pipe carrying a
+    // pressureRatio. Ratio 1 and zeros on every other path, so no existing
+    // line gains a token. `compressorBoost` is the absolute pressure the
+    // machine adds at its `from` end, pFrom (PR - 1); `compressorPower` is
+    // the shaft power m H / eta at the curve's ratio and the march's own
+    // mass rate; `compressorTemperatureOut` is the passive discharge
+    // temperature T1 PR^((k-1)/(k eta)).
+    double compressorRatio = 1;
+    double compressorBoost = 0;
+    double compressorPower = 0;
+    double compressorTemperatureOut = 0;
+    // 5.158 / 5.159: the final march's per-segment profile, copied from the
+    // black-oil march's readout vectors (empty on every single-phase / pvt /
+    // constant-property path). The slug and risk reports read these; nothing
+    // that prices a hydraulic number does.
+    std::vector<double> marchSegPressure;
+    std::vector<double> marchSegHoldup;
+    std::vector<double> marchSegLambda;
+    std::vector<double> marchSegVm;
+    std::vector<double> marchSegRhoM;
+    std::vector<int> marchSegRegime;
+    std::vector<double> marchSegTemperature;
 };
 
 struct SteadyNetworkResult
@@ -606,6 +747,18 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
                            const pvt::BlackOilFluid& fluid, double pFrom,
                            double pTo, PipeFlowResult& out,
                            const std::function<double(double)>* sigmaOfP = nullptr);
+
+/// 5.158 (P18): the slug-start forecast of one pipe. Reads the pipe's
+/// declared trajectory and fill threshold, and the final march's per-segment
+/// profile from `flow.marchSeg*`. Empty result on every undeclared pipe.
+SlugReadout slugReadoutOf(const NetworkPipe& pipe, const PipeFlowResult& flow);
+
+/// 5.159 (P22): the erosion / hydrate / corrosion readout of one pipe.
+/// Reads the pipe's declared risk fields and the final march's per-segment
+/// profile from `flow.marchSeg*`. Empty result on every undeclared pipe.
+RiskReadout riskReadoutOf(const NetworkPipe& pipe,
+                          const pvt::BlackOilFluid& fluid,
+                          const PipeFlowResult& flow);
 
 /// Case dictionary grammar (see tests/cases/steadyNetwork/case.dict):
 ///   fluid { rho 850; mu 0.1; }

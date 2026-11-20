@@ -1,0 +1,79 @@
+// 5.158 (P18) + 5.159 (P22): a steady black-oil gathering line over a
+// V-shaped terrain. P1 declares a slugPrediction trajectory (one dip: 3000 m
+// downhill at -3 deg into 3000 m uphill at +3 deg, net elevation 0) and a
+// full riskReport (API RP 14E erosion, a methane-hydrate Clausius-Clapeyron
+// line, CO2/H2S corrosion bands); P2 carries the same flow with NO
+// declaration and is the byte-identity control. The rate sits in the
+// segregated (stratified) band upstream of the dip, where the forecast
+// pools liquid: the verdict is SLUG-START. Physics checks live in
+// tests/check_steady_risk_slug.py.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.75;
+        oilDensity     850;
+        gor            300;   // sm3/sm3 - gas-rich, so the 0.001 m3/s rate
+                              // is stratified at the dip's upstream midpoint
+        waterCut       0;
+        temperature    340;   // K, isothermal
+        surfaceTension 0.025; // N/m
+    }
+}
+
+nodes
+{
+    W {};
+    M {};
+    Outlet { pressure 4.0e6; }
+}
+
+pipes
+{
+    //  W --(down 3 deg, then up 3 deg: one dip at s = 3000 m)--> M
+    P1
+    {
+        from W;
+        to M;
+        length 6000;
+        diameter 0.3;
+        roughness 4.6e-5;
+        elevation 0;
+        slugPrediction
+        {
+            fillThreshold 0.5;
+            trajectory
+            {
+                D1 { length 3000; angleDeg -3; }
+                D2 { length 3000; angleDeg 3; }
+            }
+        }
+        riskReport
+        {
+            erosionC     100;
+            hydrateTref  285.25;   // K, methane hydrate reference point
+            hydratePRef  3.0e6;    // Pa at Tref
+            hydrateDH    5.1868e4; // J/mol dissociation enthalpy
+            hydrateLowK    3;
+            hydrateMediumK 8;
+            co2Fraction  0.02;
+            h2sFraction  0.001;
+            co2LowPa     1.0e4;
+            co2HighPa    1.0e5;
+        }
+    }
+    //  M ------------------> terminal, undeclared control pipe
+    P2 { from M; to Outlet; length 3000; diameter 0.3; roughness 4.6e-5;
+         elevation 0; }
+}
+
+sources
+{
+    well { node W; rate 0.001; }
+}
+
+solve
+{
+    maxIter 100;
+    tol     1e-10;
+}

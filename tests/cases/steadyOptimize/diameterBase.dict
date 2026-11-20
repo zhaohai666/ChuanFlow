@@ -1,0 +1,39 @@
+// 5.160 (P21): the base network of the diameter-optimization case with NO
+// declaration block - the byte-identity twin. Two strictly symmetric
+// fixed-pressure wells feed a manifold through P1/P2 (identical length,
+// elevation and roughness), one line to the terminal. The declared twin
+// adds only a diameterOptimization{} block; stripping it must leave every
+// base byte exact. Physics checks live in tests/check_steady_optimize.py.
+fluid
+{
+    rho 850;
+    mu  0.1;
+}
+
+nodes
+{
+    W1 { pressure 2.0e6; }
+    W2 { pressure 2.0e6; }
+    M {};
+    Outlet { pressure 1.0e6; }
+}
+
+pipes
+{
+    P1 { from W1; to M; length 1200; diameter 0.05; roughness 0; elevation 6; }
+    P2 { from W2; to M; length 1200; diameter 0.05; roughness 0; elevation 6; }
+    P3 { from M;  to Outlet; length 900; diameter 0.05; roughness 0; elevation 0; }
+}
+
+// a small manifold draw keeps the relative residual scale non-zero and,
+// injected at M itself, leaves the P1/P2 mirror symmetry exact
+sources
+{
+    draw { node M; rate 1.0e-5; }
+}
+
+solve
+{
+    maxIter 100;
+    tol     1e-12;
+}

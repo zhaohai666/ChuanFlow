@@ -1,0 +1,70 @@
+// 5.160 (P21): the gas-lift budget allocation case. A two-well black-oil
+// gathering network; the base solve fixes each well node's pressure, and
+// gasLiftAllocation{} treats those as the nodal wellhead back-pressures.
+// W1 is the deeper, stronger well (higher maxRate, longer bore), W2 the
+// shallower one: the DP must split the budget between them, and the
+// checker re-derives every q_i(g) point, the DP optimum and the marginal
+// slopes independently. See tests/check_steady_optimize.py.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.75;
+        oilDensity     850;
+        gor            200;     // sm3/sm3 producing
+        waterCut       0.2;
+        temperature    340;     // K, isothermal
+        surfaceTension 0.03;    // N/m
+    }
+}
+
+nodes
+{
+    W1 {};
+    W2 {};
+    M {};
+    Outlet { pressure 3.0e6; }
+}
+
+pipes
+{
+    P1 { from W1; to M; length 2000; diameter 0.15; roughness 4.6e-5;
+         elevation 0; }
+    P2 { from W2; to M; length 2000; diameter 0.15; roughness 4.6e-5;
+         elevation 0; }
+    P3 { from M;  to Outlet; length 3000; diameter 0.15; roughness 4.6e-5;
+         elevation 0; }
+}
+
+sources
+{
+    s1 { node W1; rate 0.0005; }
+    s2 { node W2; rate 0.0005; }
+}
+
+solve
+{
+    maxIter 100;
+    tol     1e-10;
+}
+
+gasLiftAllocation
+{
+    budget 0.12;
+    resolution 4;
+    wells
+    {
+        W1
+        {
+            node W1;
+            ipr { form vogel; reservoirPressure 2.5e7; maxRate 0.004; }
+            well { length 2400; diameter 0.0762; roughness 5e-5; elevation 2200; }
+        }
+        W2
+        {
+            node W2;
+            ipr { form vogel; reservoirPressure 2.3e7; maxRate 0.003; }
+            well { length 2000; diameter 0.0762; roughness 5e-5; elevation 1800; }
+        }
+    }
+}

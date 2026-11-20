@@ -34,6 +34,22 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/nodalDeadOil/case.dict
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/nodalDeadWell/case.dict)
 
+# 5.157 (P5): lateral multi-branch bores. Two-, three- and heterogeneous-IPR
+# completions and a dead branch; the checker re-derives the main VLP, every
+# lateral IPR x VLP crossing at the junction pressure and the junction fixed
+# point in Python, asserts sum(q_i) == Q, the allocation response, the flow
+# pattern verdicts, the golden totals and eight loud refusals
+add_test(
+    NAME verify.nodalLateral
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_nodal_lateral.py
+        $<TARGET_FILE:chflow-1d-nodal>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/nodalLateral/case2.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/nodalLateral/case3.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/nodalLateral/caseHetero.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/nodalLateral/caseDead.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/nodalVogel/case.dict)
+
 add_executable(pvt_tests unit/pvtTests.cpp)
 target_link_libraries(pvt_tests PRIVATE cf_pvt)
 target_compile_definitions(pvt_tests PRIVATE
@@ -663,6 +679,23 @@ add_test(
         $<TARGET_FILE:chflow-1d-transient>
         $<TARGET_FILE:chflow-1d-nodal>)
 
+# 5.155 (G4 family): the OLGAS-steady mechanistic skeleton. The undeclared
+# twin of the standing olgasSteady case is byte-identical to the shipped
+# multiphase anchor; each marched pipe's outlet state is re-derived segment
+# by segment against the kernel's own march, and single-pipe anchors put the
+# map's verdict in every regime so each branch of the law is exercised and
+# cross-checked in closed form; the flow-pattern map stays evaluated and
+# reported; unknown words, the single-phase scope, the flowPattern clash and
+# the transient / nodal rows are refused.
+add_test(
+    NAME verify.steadyOlga
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_olgas.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyOlga/case.dict
+        $<TARGET_FILE:chflow-1d-transient>
+        $<TARGET_FILE:chflow-1d-nodal>)
+
 # 5.144 (G6): the passive steady thermal march. A Joule-Thomson or wall
 # declaration appends a ` T <K>` token and moves no other byte on the
 # standing case; the token is re-derived segment by segment on the
@@ -678,6 +711,38 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkMultiphase/case.dict
         $<TARGET_FILE:chflow-1d-transient>
         $<TARGET_FILE:chflow-1d-nodal>)
+
+# 5.158 (P18) + 5.159 (P22): the slug-start forecast and the erosion /
+# hydrate / corrosion risk report. Both are pure readouts of the march's
+# per-segment profile: stripping the slugPrediction{}/riskReport{} blocks
+# from the declared case leaves every other byte exact; the dip pooling and
+# verdict, the API RP 14E limit, the Clausius-Clapeyron hydrate line and
+# the CO2/H2S bands are re-derived independently from the case text, and
+# the thermal variant moves the hydrate subcooling on the march temperature
+# alone. Seventeen inert or impossible declaration shapes are refused.
+add_test(
+    NAME verify.steadyRiskSlug
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_risk_slug.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyRiskSlug/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyRiskSlug/caseThermal.dict)
+
+# 5.160 (P21): the steady diameter optimization and the gas-lift budget
+# allocation. Both blocks are pure app-layer reports: the diameter search
+# re-runs the network solve per combination (the checker re-runs it too and
+# re-picks the ranking, the tie-by-enumeration-order and the cost), the
+# allocation samples the nodal gas/GOR fixed point per grid step and solves
+# the multiple-choice knapsack (the checker restates the whole nodal chain
+# and the DP in Python). Stripping either block leaves every base byte
+# exact. Twenty-nine inert or impossible declaration shapes are refused.
+add_test(
+    NAME verify.steadyOptimize
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_optimize.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyOptimize/diameter.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyOptimize/gasLift.dict)
 
 # partitioned steady 1D<->3D coupling: the same duct solved in 3D replaces the
 # analytic law of edge X, so the checker compares the interface against the
@@ -1373,6 +1438,23 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/check_g9_point_elements.py
         $<TARGET_FILE:chflow-1d-point-elements>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/g9PointElements/case.dict)
+
+# 5.156 / P10 the separator and the compressor as steady equipment: the
+# separator's flash allocation is re-derived from the shipped Standing/VB/
+# DAK restatement with the per-component mass balance and entrainment, the
+# compressor's two catalog modes are checked against the closed anchor
+# W = m Z R_spec T1 (k/(k-1)) (PR^((k-1)/k) - 1) with the eta=1 vs eta=0.9
+# direction, and the network pipe key's boost rides inside the same 24-segment
+# Churchill march the checker re-runs itself. Every out-of-envelope
+# declaration on both grammars is refused loudly.
+add_test(
+    NAME verify.steadyEquipment2
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_equipment2.py
+        $<TARGET_FILE:chflow-1d-point-elements>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyEquipment2/point.dict
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyEquipment2/network.dict)
 
 # 5.74 / A2 gel strength and sub-threshold creep in the transient row: the
 # gel arm opens exactly on the latch recursion's predicted layer (22 layers

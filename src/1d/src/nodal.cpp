@@ -137,6 +137,96 @@ double wellboreInletForRate(const pvt::BlackOilFluid& fluid, const WellLift& wel
     return p;
 }
 
+/// Parse one ipr{} block. `who` prefixes the diagnostics: empty for the main
+/// bore's own curve (the single-well messages stay byte-identical), "lateral
+/// 'L1' " for a 5.157 lateral.
+void parseIpR(const Dictionary& id, const std::string& who, IpR& ipr)
+{
+    ipr.reservoirPressure = id.getScalar("reservoirPressure");
+    const std::string form = id.getWordOr("form", "vogel");
+    if (form == "linear")
+    {
+        ipr.form = IpR::Form::linear;
+        ipr.productivityIndex = id.getScalar("productivityIndex");
+    }
+    else if (form == "vogel")
+    {
+        ipr.form = IpR::Form::vogel;
+        ipr.maxRate = id.getScalar("maxRate");
+    }
+    else if (form == "jones")
+    {
+        ipr.form = IpR::Form::jones;
+        ipr.deliverability = id.getScalar("deliverability");
+        ipr.exponent = id.getScalarOr("exponent", 1.0);
+    }
+    else
+        cfFatal("nodal: " + who +
+                "ipr form must be linear, vogel or jones, not " + form);
+    if (!(ipr.reservoirPressure > 0) || !(ipr.rateMax() > 0))
+        cfFatal("nodal: " + who +
+                "ipr needs positive reservoirPressure and capacity");
+}
+
+/// Parse one well{} bore. Same `who` convention as parseIpR; with an empty
+/// prefix every refusal reads exactly the single-well wording it always had.
+void parseWell(const Dictionary& wd, const std::string& who, WellLift& well)
+{
+    well.length = wd.getScalar("length");
+    well.diameter = wd.getScalar("diameter");
+    well.roughness = wd.getScalarOr("roughness", 0.0);
+    well.elevation = wd.getScalarOr("elevation", 0.0);
+    // 5.88 (D4 increment 2): the writable flow-pattern dispatch is a network
+    // pipe declaration. This march keeps the map's own choice, and a key here
+    // would be silently dropped rather than honoured - so it is refused.
+    if (wd.has("flowPattern"))
+        cfFatal("nodal: " + who + "well declares flowPattern: the writable "
+                "flow-pattern dispatch (5.88) is a steady-network pipe "
+                "declaration; the VLP well marches with the flow-pattern "
+                "map's own choice");
+    // 5.143 (G4): same reason. The alternative holdup laws are a network
+    // pipe declaration; this march prices the Beggs-Brill law and a key
+    // here would be silently dropped rather than honoured.
+    if (wd.has("correlation"))
+        cfFatal("nodal: " + who + "well declares correlation: the alternative "
+                "holdup laws (5.143) are a steady-network pipe declaration; "
+                "the VLP well marches with the Beggs-Brill holdup law");
+    // 5.144 (G6): same reason. The passive temperature march is a network
+    // pipe declaration; the VLP march is isothermal and reads none of the
+    // thermal keys.
+    if (wd.has("jouleThomson") || wd.has("wallHeatTransfer")
+        || wd.has("wallHeatTransferSegments") || wd.has("wallModel")
+        || wd.has("wallTemperature") || wd.has("surfaceTemperature")
+        || wd.has("geothermalGradient") || wd.has("heatCapacity"))
+        cfFatal("nodal: " + who + "well declares a thermal parameter: the "
+                "steady temperature march (5.144) is a steady-network pipe "
+                "declaration; the VLP march is isothermal");
+    // 5.89 (D1 increment 3): same reason. A VLP well is marched with a gas rate
+    // it is handed; the valve that would have set that rate lives on the steady
+    // network, so the keys are refused rather than left unread.
+    if (wd.has("liftDomePressure") || wd.has("liftAreaRatio")
+        || wd.has("liftSpringPressure") || wd.has("liftDischargeCoeff")
+        || wd.has("liftKappa"))
+        cfFatal("nodal: " + who + "well declares a lift valve: the gas-lift "
+                "valve (5.89) is a steady-network injection-string element "
+                "priced on node pressures; the VLP march is handed its gas "
+                "rate and does not own a bellows to open");
+    // 5.90 (D1 increment 4): same reason. The rod pump takes its rate from the
+    // stroke and the barrel, which is the opposite of the VLP march asking the
+    // column what rate it will carry.
+    if (wd.has("rodPlungerDiameter") || wd.has("rodStrokeLength")
+        || wd.has("rodStrokesPerMinute") || wd.has("rodDiameter")
+        || wd.has("rodLength") || wd.has("rodYoungModulus")
+        || wd.has("rodDensity"))
+        cfFatal("nodal: " + who + "well declares a rod pump: the subsurface "
+                "rod pump (5.90) is a steady-network element whose rate is "
+                "its stroke times its barrel; the VLP march solves for the "
+                "rate the reservoir and the column agree on and does not own "
+                "a polished rod to pull a card against");
+    if (!(well.length > 0) || !(well.diameter > 0))
+        cfFatal("nodal: " + who + "well needs positive length and diameter");
+}
+
 } // namespace
 
 double vlpBottomHolePressure(const pvt::BlackOilFluid& fluid, const WellLift& well,
@@ -244,6 +334,142 @@ NodalResult solveNodalAnalysis(const IpR& ipr, const pvt::BlackOilFluid& fluid,
     return res;
 }
 
+MultiLateralResult solveNodalLaterals(const pvt::BlackOilFluid& fluid,
+                                      const WellLift& mainWell,
+                                      double wellheadPressure,
+                                      const std::vector<LateralSpec>& laterals,
+                                      const NodalControls& ctl)
+{
+    if (laterals.empty())
+        cfFatal("nodal: the multi-lateral solve needs at least one lateral");
+    if (!(wellheadPressure > 0))
+        cfFatal("nodal: wellheadPressure must be positive");
+    double pResMax = 0.0;
+    for (const LateralSpec& lat : laterals)
+    {
+        if (!(lat.ipr.reservoirPressure > 0) || !(lat.ipr.rateMax() > 0))
+            cfFatal("nodal: lateral '" + lat.name
+                    + "' ipr needs positive reservoirPressure and capacity");
+        if (!(lat.well.length > 0) || !(lat.well.diameter > 0))
+            cfFatal("nodal: lateral '" + lat.name
+                    + "' well needs positive length and diameter");
+        pResMax = std::max(pResMax, lat.ipr.reservoirPressure);
+    }
+
+    MultiLateralResult out;
+    out.main.staticBottomPressure =
+        wellboreInletForRate(fluid, mainWell, 0.0, wellheadPressure);
+
+    // q_i(p_j): lateral i's own IPR x VLP operating point at back-pressure p_j
+    // (the junction, i.e. the main bore's bottom hole). A lateral whose
+    // reservoir cannot lift its column against p_j contributes rate 0.
+    auto junctionRates = [&](double pJ)
+    {
+        double sum = 0.0;
+        for (const LateralSpec& lat : laterals)
+            sum += solveNodalAnalysis(lat.ipr, fluid, lat.well, pJ, ctl).rate;
+        return sum;
+    };
+    // F(p_j) = p_j - p_vlp_main(sum q_i(p_j)). Each q_i falls with the back-
+    // pressure and the main VLP rises with the rate it carries, so F rises:
+    // one root, bracketed and cut by the same Illinois secant family as the
+    // single-well nodal and the network pipe law.
+    auto f = [&](double pJ)
+    {
+        return pJ - wellboreInletForRate(fluid, mainWell, junctionRates(pJ),
+                                         wellheadPressure);
+    };
+
+    // the march only ever drops pressure, so p_vlp_main >= wellheadPressure
+    // and F(wellheadPressure) <= 0: the low end of the bracket is the wellhead
+    double pLo = wellheadPressure;
+    double fLo = f(pLo);
+    // at or above the largest reservoir pressure every lateral is dead, the
+    // total is 0 and F reads p_j - static > 0: the high end is within reach
+    double pHi = std::max({2.0 * pLo, 1.05 * out.main.staticBottomPressure,
+                           1.05 * pResMax}) + 1e4;
+    double fHi = f(pHi);
+    int expansions = 0;
+    while (fHi <= 0.0)
+    {
+        pLo = pHi;
+        fLo = fHi;
+        pHi *= 2.0;
+        fHi = f(pHi);
+        if (++expansions > 100)
+            cfFatal("nodal: the junction residual never turns positive - the "
+                    "laterals keep flowing at every back-pressure");
+    }
+
+    const double pScale = std::max({out.main.staticBottomPressure,
+                                    wellheadPressure, pResMax});
+    double p = pLo + (pHi - pLo) * fLo / (fLo - fHi);
+    bool converged = false;
+    for (int it = 0; it < ctl.maxIter; ++it)
+    {
+        const double fp = f(p);
+        out.iterations = it + 1;
+        if (std::abs(fp) < 1e-7 * pScale)
+        {
+            converged = true;
+            break;
+        }
+        if (fp > 0.0)
+        {
+            pHi = p;
+            fHi = fp;
+            fHi *= 0.5;
+        }
+        else
+        {
+            pLo = p;
+            fLo = fp;
+            fLo *= 0.5;
+        }
+        const double pNew = pLo + (pHi - pLo) * fLo / (fLo - fHi);
+        p = (pNew > pLo && pNew < pHi) ? pNew : 0.5 * (pLo + pHi);
+        if (std::abs(pHi - pLo) < ctl.tol * std::max(pHi, 1e-30))
+        {
+            converged = true;
+            break;
+        }
+    }
+
+    // the final readout at the converged junction: every lateral's operating
+    // point against p, the total by exact summation (mass conservation at the
+    // junction is a construction, not a tolerance), and the main column's
+    // state carrying that total up to the wellhead
+    double total = 0.0;
+    for (const LateralSpec& lat : laterals)
+    {
+        const NodalResult lr =
+            solveNodalAnalysis(lat.ipr, fluid, lat.well, p, ctl);
+        LateralResult rec;
+        rec.name = lat.name;
+        rec.rate = lr.rate;
+        rec.bottomHolePressure = lr.bottomHolePressure;
+        rec.staticBottomPressure = lr.staticBottomPressure;
+        rec.holdup = lr.holdup;
+        rec.regime = lr.regime;
+        rec.flows = lr.flows;
+        rec.converged = lr.converged;
+        total += lr.rate;
+        out.laterals.push_back(rec);
+    }
+    out.main.rate = total;
+    out.main.bottomHolePressure = p;
+    const BeggsBrillMarchOut m = marchBeggsBrillPipe(
+        fluid, total, p, mainWell.length, mainWell.diameter, mainWell.roughness,
+        mainWell.elevation / mainWell.length, 24);
+    out.main.holdup = m.holdupOutlet;
+    out.main.regime = m.regimeMax;
+    out.main.flows = total > 0.0;
+    out.main.iterations = out.iterations;
+    out.main.converged = converged;
+    out.converged = converged;
+    return out;
+}
+
 NodalCase loadNodalCaseFromDict(const Dictionary& caseDict)
 {
     NodalCase c;
@@ -262,83 +488,41 @@ NodalCase loadNodalCaseFromDict(const Dictionary& caseDict)
         cfFatal("nodal: blackoil needs positive oilDensity");
 
     if (!caseDict.has("ipr")) cfFatal("nodal: case has no ipr{} block");
-    const Dictionary& id = caseDict.getDict("ipr");
-    c.ipr.reservoirPressure = id.getScalar("reservoirPressure");
-    const std::string form = id.getWordOr("form", "vogel");
-    if (form == "linear")
-    {
-        c.ipr.form = IpR::Form::linear;
-        c.ipr.productivityIndex = id.getScalar("productivityIndex");
-    }
-    else if (form == "vogel")
-    {
-        c.ipr.form = IpR::Form::vogel;
-        c.ipr.maxRate = id.getScalar("maxRate");
-    }
-    else if (form == "jones")
-    {
-        c.ipr.form = IpR::Form::jones;
-        c.ipr.deliverability = id.getScalar("deliverability");
-        c.ipr.exponent = id.getScalarOr("exponent", 1.0);
-    }
-    else
-        cfFatal(std::string("nodal: ipr form must be linear, vogel or jones, not ")
-                + form);
-    if (!(c.ipr.reservoirPressure > 0) || !(c.ipr.rateMax() > 0))
-        cfFatal("nodal: ipr needs positive reservoirPressure and capacity");
+    parseIpR(caseDict.getDict("ipr"), "", c.ipr);
 
     if (!caseDict.has("well")) cfFatal("nodal: case has no well{} block");
-    const Dictionary& wd = caseDict.getDict("well");
-    c.well.length = wd.getScalar("length");
-    c.well.diameter = wd.getScalar("diameter");
-    c.well.roughness = wd.getScalarOr("roughness", 0.0);
-    c.well.elevation = wd.getScalarOr("elevation", 0.0);
-    // 5.88 (D4 increment 2): the writable flow-pattern dispatch is a network
-    // pipe declaration. This march keeps the map's own choice, and a key here
-    // would be silently dropped rather than honoured - so it is refused.
-    if (wd.has("flowPattern"))
-        cfFatal("nodal: well declares flowPattern: the writable flow-pattern "
-                "dispatch (5.88) is a steady-network pipe declaration; the VLP "
-                "well marches with the flow-pattern map's own choice");
-    // 5.143 (G4): same reason. The alternative holdup laws are a network
-    // pipe declaration; this march prices the Beggs-Brill law and a key
-    // here would be silently dropped rather than honoured.
-    if (wd.has("correlation"))
-        cfFatal("nodal: well declares correlation: the alternative holdup "
-                "laws (5.143) are a steady-network pipe declaration; the VLP "
-                "well marches with the Beggs-Brill holdup law");
-    // 5.144 (G6): same reason. The passive temperature march is a network
-    // pipe declaration; the VLP march is isothermal and reads none of the
-    // thermal keys.
-    if (wd.has("jouleThomson") || wd.has("wallHeatTransfer")
-        || wd.has("wallHeatTransferSegments") || wd.has("wallModel")
-        || wd.has("wallTemperature") || wd.has("surfaceTemperature")
-        || wd.has("geothermalGradient") || wd.has("heatCapacity"))
-        cfFatal("nodal: well declares a thermal parameter: the steady "
-                "temperature march (5.144) is a steady-network pipe "
-                "declaration; the VLP march is isothermal");
-    // 5.89 (D1 increment 3): same reason. A VLP well is marched with a gas rate
-    // it is handed; the valve that would have set that rate lives on the steady
-    // network, so the keys are refused rather than left unread.
-    if (wd.has("liftDomePressure") || wd.has("liftAreaRatio")
-        || wd.has("liftSpringPressure") || wd.has("liftDischargeCoeff")
-        || wd.has("liftKappa"))
-        cfFatal("nodal: well declares a lift valve: the gas-lift valve (5.89) "
-                "is a steady-network injection-string element priced on node "
-                "pressures; the VLP march is handed its gas rate and does not "
-                "own a bellows to open");
-    // 5.90 (D1 increment 4): same reason. The rod pump takes its rate from the
-    // stroke and the barrel, which is the opposite of the VLP march asking the
-    // column what rate it will carry.
-    if (wd.has("rodPlungerDiameter") || wd.has("rodStrokeLength")
-        || wd.has("rodStrokesPerMinute") || wd.has("rodDiameter")
-        || wd.has("rodLength") || wd.has("rodYoungModulus")
-        || wd.has("rodDensity"))
-        cfFatal("nodal: well declares a rod pump: the subsurface rod pump "
-                "(5.90) is a steady-network element whose rate is its stroke "
-                "times its barrel; the VLP march solves for the rate the "
-                "reservoir and the column agree on and does not own a polished "
-                "rod to pull a card against");
+    parseWell(caseDict.getDict("well"), "", c.well);
+
+    // 5.157 (P5): the multi-lateral completion. Each named child of laterals{}
+    // carries its own ipr{} and well{}; the main bore above keeps its VLP and
+    // becomes the lift conduit for the summed lateral flow. An empty laterals{}
+    // block is refused - a declared completion with zero branches is a typo,
+    // not a single-well case (that case simply omits the block). Heterogeneous
+    // IPR forms across the laterals (and against the main ipr{}) are honoured:
+    // each branch brings its own inflow physics.
+    if (caseDict.has("laterals"))
+    {
+        const Dictionary& ld = caseDict.getDict("laterals");
+        if (ld.keys().empty())
+            cfFatal("nodal: laterals{} declares no lateral: a multi-lateral "
+                    "case needs at least one named lateral block");
+        for (const std::string& name : ld.keys())
+        {
+            const Dictionary& sd = ld.getDict(name);
+            LateralSpec lat;
+            lat.name = name;
+            const std::string who = "lateral '" + name + "' ";
+            if (!sd.has("ipr"))
+                cfFatal("nodal: " + who + "has no ipr{} block: a lateral "
+                        "carries its own inflow curve");
+            parseIpR(sd.getDict("ipr"), who, lat.ipr);
+            if (!sd.has("well"))
+                cfFatal("nodal: " + who + "has no well{} block: a lateral "
+                        "carries its own VLP bore");
+            parseWell(sd.getDict("well"), who, lat.well);
+            c.laterals.push_back(std::move(lat));
+        }
+    }
 
     c.wellheadPressure = caseDict.getScalar("wellheadPressure");
     if (!(c.wellheadPressure > 0))

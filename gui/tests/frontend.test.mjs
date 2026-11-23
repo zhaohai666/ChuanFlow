@@ -36,6 +36,8 @@ import {
   upsertOutputVtk,
   upsertDictBlock,
   removeDictBlock,
+  ALL_DEVICE_FIELDS, E4_DEVICE_FAMILIES, deviceGlyphCommands,
+  deviceBlocksFromModel, pipeDeviceFieldsFrom,
 } from '../frontend/dist/editor.js';
 import {
   UNIT_SYSTEMS,
@@ -737,6 +739,131 @@ test('设备族：序列化往返 + 平管不泄漏 + details 解析', () => {
   assert.equal(p.liftDomePressure, 1.6e7);
   assert.equal(p.rodStrokesPerMinute, 6);
   assert.equal(p.pumpIntakePressure, 3.5e6);
+});
+
+// ---------------------------------------------------------------------------
+// E4 (§5.176): five new steady device families
+// ---------------------------------------------------------------------------
+
+function deviceModel(fam) {
+  let m = emptyModel();
+  const { model: m1, id: a } = addNode(m, 0, 0, 'A');
+  const { model: m2, id: b } = addNode(m1, 100, 100, 'B');
+  const m3 = addPipe(m2, a, b);
+  const patch = Object.fromEntries(fam.fields.map((k) => [k, fam.defaults[k]]));
+  return setPipeFields(m3, m3.pipes[0].id, patch);
+}
+
+const GLYPH_CLASS = {
+  jetPump: 'dev-jetpump',
+  pcp: 'dev-pcp',
+  plungerGasLift: 'dev-pgl',
+  separator: 'dev-separator',
+  compressor: 'dev-compressor',
+};
+
+test('E4 设备注册表：三同步覆盖全部字段且开关有合法默认值', () => {
+  const all = new Set(ALL_DEVICE_FIELDS);
+  assert.equal(E4_DEVICE_FAMILIES.length, 5);
+  for (const fam of E4_DEVICE_FAMILIES) {
+    for (const k of fam.fields) assert.ok(all.has(k), `${fam.id}.${k} 未在注册表`);
+    assert.ok(fam.defaults[fam.switch] > 0, `${fam.id} 开关默认值必须 > 0`);
+    for (const k of fam.fields) {
+      assert.ok(fam.defaults[k] !== undefined, `${fam.id}.${k} 缺默认值`);
+    }
+  }
+  const flat = pipeDeviceFieldsFrom({ pressureRatio: 2, jetNozzleArea: 1e-4 });
+  assert.equal(flat.pressureRatio, 2);
+  assert.equal(flat.jetNozzleArea, 1e-4);
+  assert.equal(flat.sepFeedRate, 0);
+});
+
+for (const fam of E4_DEVICE_FAMILIES) {
+  test(`E4 ${fam.label}: 字段序列化 -> details 回读 -> 再序列化字节恒等`, () => {
+    const m = deviceModel(fam);
+    const text = networkToCaseText(m);
+    for (const k of fam.fields) {
+      // 0 = absent 是既定语义：零值键不发出，非零键必须出现
+      assert.equal(text.includes(`${k} `), Boolean(fam.defaults[k]),
+        `${fam.id}.${k} 序列化与 0=absent 语义不一致`);
+    }
+    const r = validateCaseText(text);
+    assert.equal(r.valid, true, r.errors.join('; '));
+    const d = extractCaseDetails(text);
+    const p = d.pipes[Object.keys(d.pipes)[0]];
+    for (const k of fam.fields) {
+      assert.equal(p[k], fam.defaults[k], `${fam.id}.${k} 回读不一致: ${p[k]}`);
+    }
+    const rebuilt = {
+      ...m,
+      pipes: m.pipes.map((pp) => ({ ...pp, ...pipeDeviceFieldsFrom(p) })),
+    };
+    assert.equal(networkToCaseText(rebuilt), text, `${fam.id} 二次序列化不恒等`);
+  });
+}
+
+test('E4 平管不泄漏任何设备键或点元块', () => {
+  const text = networkToCaseText(emptyModel());
+  for (const k of ALL_DEVICE_FIELDS) assert.equal(text.includes(k), false, `泄漏 ${k}`);
+  for (const b of ['jetPumps', 'pcpPumps', 'plungerGasLifts', 'separators']) {
+    assert.equal(text.includes(b), false, `泄漏块 ${b}`);
+  }
+  assert.deepEqual(deviceBlocksFromModel(emptyModel()), '');
+});
+
+test('E4 点元块：四个内核块使用 pointElementsApp.cpp 真实键名', () => {
+  const specs = [
+    ['jetPump', 'jetPumps',
+      ['rho', 'nozzleArea', 'throatArea', 'motiveRate', 'suctionPressure', 'dischargePressure']],
+    ['pcp', 'pcpPumps',
+      ['rho', 'cavitiesPerRev', 'cavityVolume', 'rpm', 'slip', 'pressureRise']],
+    ['plungerGasLift', 'plungerGasLifts',
+      ['gasVolumePerCycle', 'cyclePeriod', 'openWindow', 'liftDomePressure', 'liftPortDiameter']],
+    ['separator', 'separators',
+      ['feedRate', 'pressure', 'temperature', 'blackoil', 'gasGravity', 'gor', 'waterCut']],
+  ];
+  for (const [id, block, keys] of specs) {
+    const fam = E4_DEVICE_FAMILIES.find((f) => f.id === id);
+    const text = networkToCaseText(deviceModel(fam));
+    assert.ok(text.includes(block), `${id} 缺 ${block} 块`);
+    for (const k of keys) assert.ok(text.includes(`${k} `), `${block} 缺内核键 ${k}`);
+  }
+  // 压缩机走 network.cpp 原生管键（§5.156），不另生独立块
+  const cmp = E4_DEVICE_FAMILIES.find((f) => f.id === 'compressor');
+  const cmpText = networkToCaseText(deviceModel(cmp));
+  assert.equal(cmpText.includes('compressors'), false);
+  assert.ok(cmpText.includes('pressureRatio 2'));
+});
+
+for (const fam of E4_DEVICE_FAMILIES) {
+  test(`E4 ${fam.label}: SVG glyph 命令生成`, () => {
+    const p = { id: 'p1', name: 'P1', ...fam.defaults };
+    const g = deviceGlyphCommands(p, 50, 50, 0, 0, 100, 100);
+    assert.ok(g, `${fam.id} 未生成 glyph`);
+    assert.equal(g.className, GLYPH_CLASS[fam.id]);
+    assert.ok(g.title.includes('P1'), `${fam.id} tooltip 缺管段名`);
+    assert.ok(g.commands.length >= 2, `${fam.id} glyph 命令过少`);
+    for (const c of g.commands) {
+      assert.ok(['path', 'circle', 'rect', 'polygon', 'line'].includes(c.type),
+        `${fam.id} 非法 SVG 命令 ${c.type}`);
+    }
+    assert.equal(deviceGlyphCommands({}, 50, 50, 0, 0, 100, 100), null);
+  });
+}
+
+test('E4 既有三设备 glyph 形状与优先级保持不变', () => {
+  const g1 = deviceGlyphCommands(
+    { id: 'p1', name: 'P1', liftDomePressure: 1.6e7 }, 50, 50, 0, 0, 100, 100);
+  assert.equal(g1.className, 'dev-gaslift');
+  assert.deepEqual(g1.commands.map((c) => c.type), ['path', 'circle']);
+  const g2 = deviceGlyphCommands(
+    { id: 'p2', name: 'P2', rodPlungerDiameter: 0.038 }, 50, 50, 0, 0, 100, 100);
+  assert.equal(g2.className, 'dev-rodpump');
+  assert.deepEqual(g2.commands.map((c) => c.type), ['rect', 'path']);
+  const g3 = deviceGlyphCommands(
+    { id: 'p3', name: 'P3', pumpHead: 25 }, 50, 50, 0, 0, 100, 100);
+  assert.equal(g3.className, 'dev-pump');
+  assert.deepEqual(g3.commands.map((c) => c.type), ['circle', 'polygon']);
 });
 
 // ---------------------------------------------------------------------------

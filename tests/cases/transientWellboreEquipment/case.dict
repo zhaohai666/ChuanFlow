@@ -1,0 +1,80 @@
+# E7a (§5.177): opt-in transient wellbore equipment -- three independent
+# one-pipe systems in one case, so each element's momentum row is re-derivable
+# on its own without a network solve in the checker.
+#
+#   * PA carries an SSSV. openK = 0, close ramps K 0 -> 2000 over [2, 3],
+#     then the row SEALS (Q = 0) over [3, 8); reopen ramps K 2000 -> 0 over
+#     [8, 9]. TANKA is fed at a constant rate, so the tank pressure rises
+#     through the sealed window and the flow jumps when it reopens.
+#   * PB carries a choke declared as an equivalent orifice:
+#     K = (A_pipe / (Cd * A_orifice))^2, a constant local loss all run.
+#   * PC carries a simplified ESP: a quadratic head curve at unit speed
+#     (affinity N^2), with the speed stepping 1 -> 1.4 at t = 3 and relaxing
+#     with a first-order lag tau = 1.5 s. TANKC is a fixed-pressure reservoir,
+#     so the flow rise is the head's observable witness.
+#
+# All three are declarative stand-ins; the case declares no valve/coupled
+# resistance on any of the three pipes (one local-loss account per pipe).
+fluid { rho 850; mu 0.1; }
+
+nodes
+{
+    TANKA { volume 5; bulkModulus 4.0e7; pressure 3.0e5; liquidFraction 0.8; }
+    OUTA  { fixedPressure 0; }
+    TANKB { volume 5; bulkModulus 4.0e7; pressure 5.0e5; liquidFraction 0.8; }
+    OUTB  { fixedPressure 0; }
+    TANKC { fixedPressure 3.0e5; }
+    OUTC  { fixedPressure 0; }
+}
+
+pipes
+{
+    PA { from TANKA; to OUTA; length 100; diameter 0.05; }
+    PB { from TANKB; to OUTB; length 100; diameter 0.05; }
+    PC { from TANKC; to OUTC; length 100; diameter 0.05; }
+}
+
+sources
+{
+    sA { node TANKA; rate 0.001; fraction 1; }
+}
+
+sssv
+{
+    S1
+    {
+        pipe PA;
+        openK 0;
+        closedK 2000;
+        close { start 2; end 3; }
+        reopen { start 8; end 9; }
+    }
+}
+
+choke
+{
+    C1
+    {
+        pipe PB;
+        diameter 0.02;
+        dischargeCoeff 0.62;
+    }
+}
+
+esp
+{
+    E1
+    {
+        pipe PC;
+        stages 4;
+        shutoffHead 30;
+        headAtRate 12;
+        rate 0.008;
+        speed0 1;
+        speedCmd 1.4;
+        speedCmdTime 3;
+        speedTau 1.5;
+    }
+}
+
+time { dt 0.02; endTime 20; reportEvery 1; }

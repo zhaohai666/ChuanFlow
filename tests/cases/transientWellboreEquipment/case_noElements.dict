@@ -1,0 +1,28 @@
+# Zero-declaration twin of case.dict: same fluid/nodes/pipes/sources/time, but
+# none of the E7a sssv{}/choke{}/esp{} blocks. The solve must take the exact
+# pre-E7a path: no element report lines and no extra loss or head on any pipe.
+fluid { rho 850; mu 0.1; }
+
+nodes
+{
+    TANKA { volume 5; bulkModulus 4.0e7; pressure 3.0e5; liquidFraction 0.8; }
+    OUTA  { fixedPressure 0; }
+    TANKB { volume 5; bulkModulus 4.0e7; pressure 5.0e5; liquidFraction 0.8; }
+    OUTB  { fixedPressure 0; }
+    TANKC { fixedPressure 3.0e5; }
+    OUTC  { fixedPressure 0; }
+}
+
+pipes
+{
+    PA { from TANKA; to OUTA; length 100; diameter 0.05; }
+    PB { from TANKB; to OUTB; length 100; diameter 0.05; }
+    PC { from TANKC; to OUTC; length 100; diameter 0.05; }
+}
+
+sources
+{
+    sA { node TANKA; rate 0.001; fraction 1; }
+}
+
+time { dt 0.02; endTime 20; reportEvery 1; }

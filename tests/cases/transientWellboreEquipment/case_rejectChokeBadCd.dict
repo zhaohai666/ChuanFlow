@@ -1,0 +1,6 @@
+# rejection: an orifice choke's discharge coefficient must be in (0,1]
+fluid { rho 850; mu 0.1; }
+nodes { T { volume 5; bulkModulus 4.0e7; pressure 3.0e5; } O { fixedPressure 0; } }
+pipes { P { from T; to O; length 100; diameter 0.05; } }
+choke { C1 { pipe P; diameter 0.02; dischargeCoeff 1.5; } }
+time { dt 0.02; endTime 1; reportEvery 1; }

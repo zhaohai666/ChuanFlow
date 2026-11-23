@@ -195,6 +195,60 @@ void requireNoValve(const std::string& name, double kOpen, double closeStart,
                   " it cannot carry a valve");
 }
 
+// ---- E7a (§5.177) wellbore-element physics, all closed-form in t -----------
+
+/// SSSV loss coefficient at time t: the same continuous ramps as a valve, so
+/// a sample straddling a close/open boundary never sees a K jump. The seal is
+/// what makes it a safety valve rather than a valve: once the close ramp ends,
+/// the row is Q = 0 until the reopen ramp starts (the element is a control
+/// declaration, not an actuator model).
+double sssvKAt(double openK, double closedK,
+               double cs, double ce, double os, double oe, double t)
+{
+    return valveKAt(openK, closedK, cs, ce, os, oe, t);
+}
+
+bool sssvSealed(double cs, double ce, double os, double t)
+{
+    return cs >= 0 && t >= ce && (os < 0 || t < os);
+}
+
+/// ESP shaft speed N/Nref at time t: before the command the initial speed
+/// holds; at the command instant a step to speedCmd is issued; for a positive
+/// lag the speed then relaxes with the exact integrating factor
+///   N(t) = Ncmd + (N0 - Ncmd) exp(-(t - tCmd)/tau),
+/// so a checker can reproduce it at any dt without marching. tau <= 0 is an
+/// instantaneous step (N = Ncmd once t >= tCmd).
+double espSpeedAt(double speed0, double speedCmd, double tCmd, double tau,
+                  double t)
+{
+    if (t < tCmd) return speed0;
+    if (!(tau > 0)) return speedCmd;
+    return speedCmd
+         + (speed0 - speedCmd) * std::exp(-(t - tCmd) / tau);
+}
+
+/// ESP head H (m) at rate q and speed N: affinity-scaled shutoff head
+/// N^2 H0 and the same quadratic fall-off to Hq at rate Qr as the steady
+/// pumpHeadOf (5.81), clipped at zero. Qr <= 0 means a flat N^2 H0 curve.
+/// dH/dq = -stages * 2 (H0 - Hq) q / Qr^2, folded into the row's diagonal.
+double espHeadAt(double stages, double h0, double hq, double qr,
+                 double q, double n)
+{
+    if (!(h0 > 0)) return 0.0;
+    const double n2 = n * n;
+    const double h = (qr > 0)
+        ? stages * (n2 * h0 - (h0 - hq) * q * q / (qr * qr))
+        : stages * n2 * h0;
+    return std::max(h, 0.0);
+}
+
+double espHeadSlope(double stages, double h0, double hq, double qr, double q)
+{
+    if (!(h0 > 0) || !(qr > 0)) return 0.0;
+    return -stages * 2.0 * (h0 - hq) * q / (qr * qr);
+}
+
 } // namespace
 
 void hydrateKineticsStep(double& liquidVolume, double& hydrateVolume,
@@ -397,6 +451,76 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
     }
     if (c.pipes.empty()) cfFatal("transient: case has no pipes");
 
+    // E7a: opt-in wellbore equipment, resolved onto pipes by name. The loader
+    // has validated the declarations; a programmatically built case still gets
+    // a loud refusal for an unknown or doubly-claimed target.
+    well_.assign(pipes_.size(), WellboreDyn{});
+    std::vector<int> claimed(pipes_.size(), 0); // 1 = base valve, 2 = element
+    for (std::size_t k = 0; k < pipes_.size(); ++k)
+        if (pipes_[k].geo.valveK > 0 || pipes_[k].closeStart >= 0
+            || pipes_[k].openStart >= 0 || pipes_[k].valveEventsOn)
+            claimed[k] = 1;
+    auto claim = [&](const std::string& pipe, const std::string& what) -> std::size_t
+    {
+        std::size_t idx = pipes_.size();
+        for (std::size_t k = 0; k < pipeNames_.size(); ++k)
+            if (pipeNames_[k] == pipe) { idx = k; break; }
+        if (idx == pipes_.size())
+            cfFatal("transient: " + what + " targets unknown pipe '" + pipe + "'");
+        if (claimed[idx] == 1)
+            cfFatal("transient: pipe '" + pipe + "' declares a base valve and a"
+                    " wellbore element: one local-loss account per pipe");
+        if (claimed[idx] == 2)
+            cfFatal("transient: pipe '" + pipe + "' declares two wellbore"
+                    " elements: one per pipe");
+        claimed[idx] = 2;
+        return idx;
+    };
+    for (const TransientSssvConfig& s : c.sssvs)
+    {
+        const std::size_t k = claim(s.pipeName, "sssv '" + s.name + "'");
+        WellboreDyn& w = well_[k];
+        w.kind = 1;
+        w.openK = s.openK; w.closedK = s.closedK;
+        w.closeStart = s.closeStart; w.closeEnd = s.closeEnd;
+        w.reopenStart = s.reopenStart; w.reopenEnd = s.reopenEnd;
+        w.lastK = sssvKAt(w.openK, w.closedK, w.closeStart, w.closeEnd,
+                          w.reopenStart, w.reopenEnd, 0.0);
+        w.lastSealed = sssvSealed(w.closeStart, w.closeEnd, w.reopenStart, 0.0);
+    }
+    for (const TransientChokeConfig& ch : c.chokes)
+    {
+        const std::size_t k = claim(ch.pipeName, "choke '" + ch.name + "'");
+        WellboreDyn& w = well_[k];
+        w.kind = 2;
+        if (ch.diameter > 0)
+        {
+            const double a = pipeArea(pipes_[k].geo.diameter);
+            const double ao = pipeArea(ch.diameter);
+            const double ratio = a / (ch.dischargeCoeff * ao);
+            w.extraK = ratio * ratio; // orifice: K = (A / (Cd Ao))^2
+        }
+        else
+        {
+            w.extraK = ch.k;
+        }
+        w.lastK = w.extraK;
+    }
+    for (const TransientEspConfig& e : c.esps)
+    {
+        const std::size_t k = claim(e.pipeName, "esp '" + e.name + "'");
+        WellboreDyn& w = well_[k];
+        w.kind = 3;
+        w.stages = e.stages; w.h0 = e.shutoffHead; w.hq = e.headAtRate;
+        w.qr = e.rate;
+        w.speed0 = e.speed0; w.speedCmd = e.speedCmd;
+        w.speedCmdTime = e.speedCmdTime; w.speedTau = e.speedTau;
+        w.lastSpeed = espSpeedAt(w.speed0, w.speedCmd, w.speedCmdTime,
+                                 w.speedTau, 0.0);
+        w.lastHead = espHeadAt(w.stages, w.h0, w.hq, w.qr,
+                               pipes_[k].qPrev, w.lastSpeed);
+    }
+
     // unknown map: free nodes get columns after the pipe-flow block
     p_.assign(nodes_.size(), 0.0);
     std::size_t nFree = 0;
@@ -445,12 +569,38 @@ double TransientNetwork::solveStep(double dt)
     // single-cycle ramps otherwise (the loader refuses declaring both).
     const double tNew = t_ + dt;
     std::vector<double> kv(nP);
+    // E7a: the three elements are evaluated at the same implicit new time as
+    // the valve. SSSV and choke are local loss coefficients and fold into kv;
+    // the SSSV's seal is a Q = 0 latch; the ESP speed is a time-only state and
+    // its head is quadratic in Q, so the head is recomputed from the iterate
+    // inside the Newton loop and only its slope enters the diagonal.
+    std::vector<char> sealed(nP, 0);
+    std::vector<double> espN(nP, 0.0);
     for (std::size_t k = 0; k < nP; ++k)
+    {
+        WellboreDyn& w = well_[k];
         kv[k] = pipes_[k].valveEventsOn
                     ? eventTableAt(pipes_[k].eventT, pipes_[k].eventK, tNew)
                     : valveKAt(pipes_[k].geo.valveK, pipes_[k].kClosed,
                                pipes_[k].closeStart, pipes_[k].closeEnd,
                                pipes_[k].openStart, pipes_[k].openEnd, tNew);
+        if (w.kind == 1)
+        {
+            kv[k] += sssvKAt(w.openK, w.closedK, w.closeStart, w.closeEnd,
+                             w.reopenStart, w.reopenEnd, tNew);
+            sealed[k] = sssvSealed(w.closeStart, w.closeEnd, w.reopenStart, tNew)
+                            ? 1 : 0;
+        }
+        else if (w.kind == 2)
+        {
+            kv[k] += w.extraK;
+        }
+        else if (w.kind == 3)
+        {
+            espN[k] = espSpeedAt(w.speed0, w.speedCmd, w.speedCmdTime,
+                                 w.speedTau, tNew);
+        }
+    }
 
     // source rate at the same implicit new time level; reset-then-sum so a
     // node with multiple scheduled sources sees their sum (not a carry-over).
@@ -494,6 +644,16 @@ double TransientNetwork::solveStep(double dt)
         for (std::size_t k = 0; k < nP; ++k)
         {
             PipeDyn& pd = pipes_[k];
+            // E7a: a sealed SSSV overrides every wall branch -- its row is
+            // Q = 0 with no loss law read, exactly like a held pipe but with
+            // no creep and no release until the declared reopen time.
+            if (sealed[k])
+            {
+                x[k] = 0;
+                r[k] = 0;
+                J[k][k] = 1.0;
+                continue;
+            }
             const double pF = pressureOf(pd.geo.from);
             const double pT = pressureOf(pd.geo.to);
             const double dp = pF - pT;
@@ -568,17 +728,31 @@ double TransientNetwork::solveStep(double dt)
             // here is what lets the chord stop carrying it; zero leaves the row
             // exactly the equation it was before.
             const double cc = pd.convective * std::abs(x[k]) * x[k];
-            r[k] = pd.inertia / dt * (x[k] - pd.qPrev) - dp + grav + fr + vd + cc;
+            // E7a: a declared ESP adds its head as a pressure rise along the
+            // flow direction and the curve's (negative) slope to the diagonal,
+            // so the implicit row stays well-posed at any q. Both are zero for
+            // an undeclared pipe, bit-for-bit the pre-E7a row.
+            const WellboreDyn& w = well_[k];
+            const double headPa = w.kind == 3
+                ? fluid_.rho * kGravity
+                  * espHeadAt(w.stages, w.h0, w.hq, w.qr, x[k], espN[k])
+                : 0.0;
+            const double headSlope = w.kind == 3
+                ? -fluid_.rho * kGravity
+                  * espHeadSlope(w.stages, w.h0, w.hq, w.qr, x[k])
+                : 0.0;
+            r[k] = pd.inertia / dt * (x[k] - pd.qPrev) - dp + grav + fr + vd + cc
+                 - headPa;
             J[k][k] = pd.inertia / dt + slope
                     + kv[k] * fluid_.rho * std::abs(x[k]) / (ar * ar)
-                    + 2.0 * pd.convective * std::abs(x[k]);
+                    + 2.0 * pd.convective * std::abs(x[k]) + headSlope;
             const NodeDyn& nf = nodes_[static_cast<std::size_t>(pd.geo.from)];
             const NodeDyn& nb = nodes_[static_cast<std::size_t>(pd.geo.to)];
             if (!nf.fixed) J[k][nP + static_cast<std::size_t>(nf.unk)] -= 1.0;
             if (!nb.fixed) J[k][nP + static_cast<std::size_t>(nb.unk)] += 1.0;
             const double scale = pd.inertia / dt * std::max(std::abs(x[k]), std::abs(pd.qPrev))
                                + std::abs(dp) + std::abs(fr) + std::abs(vd)
-                               + std::abs(cc) + 1.0;
+                               + std::abs(cc) + std::abs(headPa) + 1.0;
             maxRel = std::max(maxRel, std::abs(r[k]) / scale);
         }
 
@@ -610,6 +784,28 @@ double TransientNetwork::solveStep(double dt)
         for (std::size_t i = 0; i < nEq; ++i) negR[i] = -r[i];
         detail::solveDenseLinear(J, negR);
         for (std::size_t i = 0; i < nEq; ++i) x[i] += negR[i];
+    }
+
+    // E7a: freeze the values the solved step actually used, for the report
+    // lines the checker re-derives from the case text independently.
+    for (std::size_t k = 0; k < nP; ++k)
+    {
+        WellboreDyn& w = well_[k];
+        if (w.kind == 1)
+        {
+            w.lastK = sssvKAt(w.openK, w.closedK, w.closeStart, w.closeEnd,
+                              w.reopenStart, w.reopenEnd, tNew);
+            w.lastSealed = sealed[k] != 0;
+        }
+        else if (w.kind == 2)
+        {
+            w.lastK = w.extraK;
+        }
+        else if (w.kind == 3)
+        {
+            w.lastSpeed = espN[k];
+            w.lastHead = espHeadAt(w.stages, w.h0, w.hq, w.qr, x[k], w.lastSpeed);
+        }
     }
 
     xPending_ = std::move(x);
@@ -763,6 +959,41 @@ bool TransientNetwork::pipeHeld(label k) const
     if (k < 0 || static_cast<std::size_t>(k) >= pipes_.size())
         cfFatal("transient: no pipe at index " + std::to_string(k));
     return pipes_[static_cast<std::size_t>(k)].held;
+}
+
+int TransientNetwork::pipeWellboreKind(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= well_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return well_[static_cast<std::size_t>(k)].kind;
+}
+
+double TransientNetwork::pipeWellboreK(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= well_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return well_[static_cast<std::size_t>(k)].lastK;
+}
+
+bool TransientNetwork::pipeWellboreSealed(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= well_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return well_[static_cast<std::size_t>(k)].lastSealed;
+}
+
+double TransientNetwork::pipeEspSpeed(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= well_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return well_[static_cast<std::size_t>(k)].lastSpeed;
+}
+
+double TransientNetwork::pipeEspHead(label k) const
+{
+    if (k < 0 || static_cast<std::size_t>(k) >= well_.size())
+        cfFatal("transient: no pipe at index " + std::to_string(k));
+    return well_[static_cast<std::size_t>(k)].lastHead;
 }
 
 double TransientNetwork::pipeFlowIndex(label k) const
@@ -1082,9 +1313,10 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
             || pd.has("liftSpringPressure") || pd.has("liftDischargeCoeff")
             || pd.has("liftKappa"))
             cfFatal("transient: pipe '" + name + "' declares a lift valve: the "
-                    "gas-lift valve (5.89) is a steady-network injection-string "
-                    "element priced on node pressures; the transient row "
-                    "advances a momentum equation, it has no bellows to open");
+                    "steady gas-lift valve (5.89) data is priced on node "
+                    "pressures and is not a transient declaration; declare a "
+                    "transient artificial-lift element in the top-level esp{} "
+                    "block instead");
         if (pd.has("rodPlungerDiameter") || pd.has("rodStrokeLength")
             || pd.has("rodStrokesPerMinute") || pd.has("rodDiameter")
             || pd.has("rodLength") || pd.has("rodYoungModulus")
@@ -1285,6 +1517,154 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
             s.eventRate.push_back(r);
         }
         c.sourceSchedules.push_back(s);
+    }
+
+    // ---- E7a (§5.177): opt-in wellbore equipment ---------------------------
+    // Three top-level blocks keyed by element name. Each element targets one
+    // pipe by `pipe`; at most one element per pipe, none on a pipe with a base
+    // `valve` declaration or a `coupledResistance`. Every mistake is loud.
+    auto pipeExists = [&](const std::string& n) {
+        for (const TransientPipeConfig& p : c.pipes) if (p.name == n) return true;
+        return false;
+    };
+    auto hasBaseLoss = [&](const std::string& n) {
+        for (const TransientPipeConfig& p : c.pipes)
+            if (p.name == n)
+                return p.valveK > 0 || p.valveCloseStart >= 0
+                    || p.valveOpenStart >= 0 || p.valveEventsOn
+                    || p.coupledResistance > 0;
+        return false;
+    };
+    std::vector<std::string> claimed;
+    auto claimTarget = [&](const std::string& pipe, const std::string& what) {
+        if (!pipeExists(pipe))
+            cfFatal("transient: " + what + " targets unknown pipe '" + pipe + "'");
+        if (hasBaseLoss(pipe))
+            cfFatal("transient: pipe '" + pipe + "' declares a base valve or a"
+                    " coupled resistance and a wellbore element: one local-loss"
+                    " account per pipe");
+        for (const std::string& s : claimed)
+            if (s == pipe)
+                cfFatal("transient: pipe '" + pipe + "' is targeted by two"
+                        " wellbore elements: one per pipe");
+        claimed.push_back(pipe);
+    };
+
+    if (caseDict.has("sssv"))
+    {
+        const Dictionary& blk = caseDict.getDict("sssv");
+        for (const std::string& name : blk.keys())
+        {
+            const Dictionary& sd = blk.getDict(name);
+            TransientSssvConfig s;
+            s.name = name;
+            s.pipeName = sd.getWord("pipe");
+            claimTarget(s.pipeName, "sssv '" + name + "'");
+            s.openK = sd.getScalarOr("openK", 0.0);
+            s.closedK = sd.getScalarOr("closedK", 1.0e12);
+            if (sd.has("close"))
+            {
+                const Dictionary& cl = sd.getDict("close");
+                s.closeStart = cl.getScalar("start");
+                s.closeEnd = cl.getScalar("end");
+            }
+            if (sd.has("reopen"))
+            {
+                const Dictionary& op = sd.getDict("reopen");
+                s.reopenStart = op.getScalar("start");
+                s.reopenEnd = op.getScalar("end");
+            }
+            if (s.openK < 0 || s.closedK < 0)
+                cfFatal("transient: sssv '" + name + "' K must be >= 0");
+            if (s.closedK < s.openK)
+                cfFatal("transient: sssv '" + name + "' closedK must be >= openK");
+            if (s.closeStart < 0)
+                cfFatal("transient: sssv '" + name + "' needs a close block");
+            if (s.closeStart > s.closeEnd)
+                cfFatal("transient: sssv '" + name + "' close start must be <= end");
+            if (s.reopenStart >= 0)
+            {
+                if (s.reopenStart < s.closeEnd)
+                    cfFatal("transient: sssv '" + name + "' reopen must not start"
+                            " before close ends");
+                if (s.reopenStart > s.reopenEnd)
+                    cfFatal("transient: sssv '" + name + "' reopen start must be <= end");
+            }
+            c.sssvs.push_back(s);
+        }
+    }
+
+    if (caseDict.has("choke"))
+    {
+        const Dictionary& blk = caseDict.getDict("choke");
+        for (const std::string& name : blk.keys())
+        {
+            const Dictionary& cd = blk.getDict(name);
+            TransientChokeConfig ch;
+            ch.name = name;
+            ch.pipeName = cd.getWord("pipe");
+            claimTarget(ch.pipeName, "choke '" + name + "'");
+            const bool hasK = cd.has("k");
+            const bool hasD = cd.has("diameter");
+            if (hasK == hasD)
+                cfFatal("transient: choke '" + name + "' declares both k and"
+                        " diameter (or neither): one resistance law per choke");
+            if (hasK)
+            {
+                ch.k = cd.getScalar("k");
+                if (!(ch.k > 0))
+                    cfFatal("transient: choke '" + name + "' k must be positive");
+            }
+            else
+            {
+                ch.diameter = cd.getScalar("diameter");
+                ch.dischargeCoeff = cd.getScalarOr("dischargeCoeff", 0.62);
+                if (!(ch.diameter > 0))
+                    cfFatal("transient: choke '" + name + "' diameter must be positive");
+                if (!(ch.dischargeCoeff > 0 && ch.dischargeCoeff <= 1))
+                    cfFatal("transient: choke '" + name + "' dischargeCoeff must"
+                            " be in (0,1]");
+            }
+            c.chokes.push_back(ch);
+        }
+    }
+
+    if (caseDict.has("esp"))
+    {
+        const Dictionary& blk = caseDict.getDict("esp");
+        for (const std::string& name : blk.keys())
+        {
+            const Dictionary& ed = blk.getDict(name);
+            TransientEspConfig e;
+            e.name = name;
+            e.pipeName = ed.getWord("pipe");
+            claimTarget(e.pipeName, "esp '" + name + "'");
+            e.stages = ed.getScalarOr("stages", 1.0);
+            e.shutoffHead = ed.getScalarOr("shutoffHead", 0.0);
+            e.headAtRate = ed.getScalarOr("headAtRate", 0.0);
+            e.rate = ed.getScalarOr("rate", 0.0);
+            e.speed0 = ed.getScalarOr("speed0", 1.0);
+            e.speedCmd = ed.getScalarOr("speedCmd", 1.0);
+            e.speedCmdTime = ed.getScalarOr("speedCmdTime", 0.0);
+            e.speedTau = ed.getScalarOr("speedTau", 0.0);
+            if (!(e.stages > 0))
+                cfFatal("transient: esp '" + name + "' stages must be positive");
+            if (!(e.shutoffHead > 0))
+                cfFatal("transient: esp '" + name + "' needs a positive shutoffHead");
+            if (!(e.headAtRate >= 0 && e.headAtRate < e.shutoffHead))
+                cfFatal("transient: esp '" + name + "' headAtRate must be in"
+                        " [0, shutoffHead)");
+            if (e.headAtRate > 0 && !(e.rate > 0))
+                cfFatal("transient: esp '" + name + "' declares headAtRate"
+                        " without a positive rate");
+            if (!(e.speed0 > 0) || !(e.speedCmd > 0))
+                cfFatal("transient: esp '" + name + "' speeds must be positive");
+            if (e.speedCmdTime < 0)
+                cfFatal("transient: esp '" + name + "' speedCmdTime must be >= 0");
+            if (e.speedTau < 0)
+                cfFatal("transient: esp '" + name + "' speedTau must be >= 0");
+            c.esps.push_back(e);
+        }
     }
     return c;
 }

@@ -137,6 +137,67 @@ struct TransientSource
     double reopenStart = -1, reopenEnd = -1;
 };
 
+// ---- E7a (§5.177): opt-in transient wellbore equipment ---------------------
+//
+// HONEST BOUNDARIES (all three are declarative stand-ins, not actuator models):
+//  * SSSV is a CONTROLLED shutoff element. It is a declared K(t) step/ramp that
+//    ends in a sealed (Q = 0) momentum row, with a sealing latch after full
+//    close. There is no valve actuator, stroke, hydraulic timing or failure
+//    mode: the crew issues the close/reopen times, the element obeys them.
+//  * Choke is a DECLARATIVE throttle. It is one loss coefficient K in the same
+//    quadratic convention the row already uses for a valve, either declared
+//    directly or converted from an equivalent orifice diameter and discharge
+//    coefficient. No critical-flow branch, no multiphase slip, no erosion.
+//  * Artificial lift is a SIMPLIFIED ESP dynamic. A quadratic head curve at
+//    unit speed (affinity scaling H ~ N^2) plus a lumped first-order lag of the
+//    shaft speed toward a commanded setpoint. It is neither a motor model nor
+//    a pump pressure/velocity field: the lag is one state, the curve algebraic.
+// All three are opt-in. A case declaring none of them advances the exact
+// pre-E7a row, bit for bit. A pipe carries at most one wellbore element and
+// none of them may share a pipe with a base `valve` declaration.
+//
+// Each element is a top-level block keyed by element name, e.g.
+//   sssv  { S1 { pipe P1; openK 0; closedK 1e12; close { start 2; end 2; }
+//                 reopen { start 8; end 8; } } }
+//   choke { C1 { pipe P2; diameter 0.02; dischargeCoeff 0.62; } }
+//   esp   { E1 { pipe P3; stages 4; shutoffHead 60; headAtRate 25; rate 0.01;
+//                speed0 1; speedCmd 1.4; speedCmdTime 3; speedTau 1.5; } }
+
+struct TransientSssvConfig
+{
+    std::string name;         // element name (the dictionary key)
+    std::string pipeName;     // target pipe, resolved by name at load
+    double openK = 0;         // loss coefficient while open, >= 0
+    double closedK = 1e12;    // loss coefficient at full close, >= openK
+    double closeStart = -1;   // s, close ramp start (== end is an instant step)
+    double closeEnd = -1;     // s, close ramp end; from here the row is sealed
+    double reopenStart = -1;  // s, reopen ramp start (seal clears); -1 = never
+    double reopenEnd = -1;    // s, reopen ramp end
+};
+
+struct TransientChokeConfig
+{
+    std::string name;
+    std::string pipeName;
+    double k = 0;             // direct loss coefficient (valve K convention)
+    double diameter = 0;      // equivalent orifice diameter, m (alt. to k)
+    double dischargeCoeff = 0;// Cd in (0,1], required when diameter is declared
+};
+
+struct TransientEspConfig
+{
+    std::string name;
+    std::string pipeName;
+    double stages = 1;        // number of identical stages
+    double shutoffHead = 0;   // H0, m of head at zero rate, unit speed
+    double headAtRate = 0;    // Hq, m of head at rate `rate`, unit speed
+    double rate = 0;          // Qr, m3/s where headAtRate is quoted
+    double speed0 = 1;        // initial speed N/Nref, > 0
+    double speedCmd = 1;      // commanded speed after speedCmdTime, > 0
+    double speedCmdTime = 0;  // s, when the step command is issued, >= 0
+    double speedTau = 0;      // s, first-order lag; <= 0 = instantaneous step
+};
+
 struct TransientCase
 {
     FluidProperties fluid;
@@ -146,6 +207,10 @@ struct TransientCase
     // Opt-in multi-segment source schedules; each targets one node that no
     // `sources {}` entry also prices.
     std::vector<TransientSourceSchedule> sourceSchedules;
+    // E7a opt-in wellbore equipment; each targets one pipe.
+    std::vector<TransientSssvConfig> sssvs;
+    std::vector<TransientChokeConfig> chokes;
+    std::vector<TransientEspConfig> esps;
 };
 
 struct TransientSample
@@ -267,6 +332,22 @@ public:
     double pipeYieldThreshold(label k) const;
     bool pipeHeld(label k) const;
 
+    // ---- E7a: report the element a pipe carries and the values the last
+    // solved step actually used, so a checker can re-derive them independently.
+    // kind: 0 = none, 1 = SSSV, 2 = choke, 3 = ESP.
+    /// 0 = no wellbore element on pipe k, 1 = SSSV, 2 = choke, 3 = ESP.
+    int pipeWellboreKind(label k) const;
+    /// The extra local loss coefficient (valve K convention) the element
+    /// charged pipe k's last step: SSSV K(t) or the choke's K; 0 for ESP/none.
+    double pipeWellboreK(label k) const;
+    /// True when the SSSV on pipe k sealed the row (Q forced to 0) on the last
+    /// solved step. False for every other kind.
+    bool pipeWellboreSealed(label k) const;
+    /// The ESP shaft speed N/Nref and head H (m) pipe k's last step used.
+    /// Zero when pipe k carries no ESP.
+    double pipeEspSpeed(label k) const;
+    double pipeEspHead(label k) const;
+
     double time() const { return t_; }
     const std::vector<std::string>& nodeNames() const { return net_.nodeNames; }
     const std::vector<std::string>& pipeNames() const;
@@ -330,6 +411,26 @@ private:
         bool valveEventsOn = false;
         std::vector<double> eventT, eventK;
     };
+    // E7a: per-pipe wellbore element state. kind 0 leaves every field inert,
+    // so an undeclared case carries no extra term and reads no extra state.
+    struct WellboreDyn
+    {
+        int kind = 0; // 0 none, 1 SSSV, 2 choke, 3 ESP
+        // choke K (constant), added to the row's quadratic local loss
+        double extraK = 0;
+        // SSSV declarations (valveKAt / sssvSealed read these)
+        double openK = 0, closedK = 0;
+        double closeStart = -1, closeEnd = -1;
+        double reopenStart = -1, reopenEnd = -1;
+        // ESP declarations (quadratic head + first-order speed lag)
+        double stages = 1, h0 = 0, hq = 0, qr = 0;
+        double speed0 = 1, speedCmd = 1, speedCmdTime = 0, speedTau = 0;
+        // Values the last solved step actually used (also the report lines)
+        double lastK = 0;
+        bool lastSealed = false;
+        double lastSpeed = 1;
+        double lastHead = 0;
+    };
     struct NodeDyn
     {
         double volume = 0, bulk = 0;
@@ -344,6 +445,8 @@ private:
     OneDNetwork net_; // node names + resolved pipe endpoints (from/to)
     std::vector<std::string> pipeNames_;
     std::vector<PipeDyn> pipes_;
+    // E7a: one entry per pipe, parallel to pipes_ (kind 0 when undeclared).
+    std::vector<WellboreDyn> well_;
     std::vector<NodeDyn> nodes_;
 
     // Per-source schedule record, one entry per TransientSource in the case.
@@ -398,6 +501,17 @@ TransientSeries runTransient(const TransientCase& c, double dt,
 /// beside the keys it replaces is refused loudly.
 /// A pipe may instead carry `coupledResistance <R>` (Pa/(m3/s)), which hands
 /// its loss to a partner model - see cf::coupling::solveTransientCoupled1d3d.
+/// E7a adds three opt-in top-level blocks, each keyed by element name and each
+/// targeting one pipe by `pipe <name>`:
+///   sssv  { S1 { pipe P1; openK 0; closedK 1e12;
+///                close { start 2; end 2; } reopen { start 8; end 8; } } }
+///   choke { C1 { pipe P2; k 500; } }        // or `diameter ..; dischargeCoeff ..;`
+///   esp   { E1 { pipe P3; stages 4; shutoffHead 60; headAtRate 25; rate 0.01;
+///                speed0 1; speedCmd 1.4; speedCmdTime 3; speedTau 1.5; } }
+/// At most one element per pipe, none on a pipe carrying a base `valve` key or
+/// a `coupledResistance`; anything else is refused at load time. The three
+/// blocks are declarative stand-ins (see the honest-boundary note above), not
+/// actuator/motor models; undeclared cases are byte-identical to pre-E7a.
 TransientCase loadTransientFromDict(const Dictionary& caseDict);
 struct TransientTimeControls
 {

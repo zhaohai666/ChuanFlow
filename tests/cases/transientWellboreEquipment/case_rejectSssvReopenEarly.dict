@@ -1,0 +1,6 @@
+# rejection: SSSV reopen must not start before the close ramp ends
+fluid { rho 850; mu 0.1; }
+nodes { T { volume 5; bulkModulus 4.0e7; pressure 3.0e5; } O { fixedPressure 0; } }
+pipes { P { from T; to O; length 100; diameter 0.05; } }
+sssv { S1 { pipe P; openK 0; closedK 2000; close { start 0.2; end 0.4; } reopen { start 0.3; end 0.5; } } }
+time { dt 0.02; endTime 1; reportEvery 1; }

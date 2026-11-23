@@ -1,0 +1,6 @@
+# rejection: an ESP needs a positive shutoff head
+fluid { rho 850; mu 0.1; }
+nodes { T { volume 5; bulkModulus 4.0e7; pressure 3.0e5; } O { fixedPressure 0; } }
+pipes { P { from T; to O; length 100; diameter 0.05; } }
+esp { E1 { pipe P; stages 4; headAtRate 12; rate 0.008; } }
+time { dt 0.02; endTime 1; reportEvery 1; }

@@ -112,6 +112,29 @@ int main(int argc, char** argv)
             for (std::size_t k = 0; k < q.size(); ++k)
             {
                 log::info("pipe ", s.pipeNames()[k], " Q ", num(q[k]));
+                // E7a: report the wellbore element's last-used state, so a
+                // checker can re-derive it from the case text independently.
+                // A case declaring none prints nothing here (untouched exact).
+                const int wb = s.pipeWellboreKind(static_cast<label>(k));
+                if (wb == 1)
+                {
+                    log::info("pipe ", s.pipeNames()[k], " sssv K ",
+                              num(s.pipeWellboreK(static_cast<label>(k))),
+                              " sealed ",
+                              s.pipeWellboreSealed(static_cast<label>(k)) ? 1 : 0);
+                }
+                else if (wb == 2)
+                {
+                    log::info("pipe ", s.pipeNames()[k], " choke K ",
+                              num(s.pipeWellboreK(static_cast<label>(k))));
+                }
+                else if (wb == 3)
+                {
+                    log::info("pipe ", s.pipeNames()[k], " esp speed ",
+                              num(s.pipeEspSpeed(static_cast<label>(k))),
+                              " head ",
+                              num(s.pipeEspHead(static_cast<label>(k))));
+                }
                 // The momentum-flux account the row charges, printed only for
                 // a pipe whose case declares betaIn/betaOut (5.70): the value
                 // is convective * q|q|, the same account a coupled app prints

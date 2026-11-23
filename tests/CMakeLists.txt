@@ -1549,6 +1549,18 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientMultiSchedule/case.dict
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientMultiSchedule)
 
+# E7a (§5.177): transient wellbore equipment -- SSSV seal / choke orifice /
+# ESP affinity+lag, opt-in and reverse-solved from the marched trace by the
+# checker (the printed element lines are re-derived from the case text, never
+# trusted). Zero-declaration twin + 11 loud rejections.
+add_test(
+    NAME verify.transientWellboreEquipment
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_wellbore_equipment.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientWellboreEquipment/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientWellboreEquipment)
+
 # 5.53 the free node between them: the yield wall's static branch, a valve
 # timetable and a node pressure the solve has to find -- the cell 5.50 put in its
 # boundary 4 and 5.52 in its own boundary 2, which needed no kernel change, only

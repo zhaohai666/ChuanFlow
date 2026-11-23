@@ -11,7 +11,7 @@ import {
   emptyModel, addNode, moveNode, removeNode, setNodePressure, addPipe,
   removePipe, addSource, removeSource, setTime, hitTestNode,
   networkToCaseText, setPipeFields, updateSourceRate, setFluid,
-  clipKeepsByPlane, adaptiveVectorIndices,
+  clipKeepsByPlane, adaptiveVectorIndices, upsertOutputVtk,
   applyWhatIfOverrides, TRANSIENT_WHAT_IF_PARAMS, iprLinearVariant,
   applyScenarioOverrides,
 } from './editor.js';
@@ -69,6 +69,9 @@ const DEFAULT_NODAL_EXE =
   '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-nodal';
 const DEFAULT_PVT_EXE =
   '/Users/haizai/project/ChuanFlow/build/src/pvt/apps/chflow-pvt';
+const DEFAULT_3D_EXE =
+  '/Users/haizai/project/ChuanFlow/build/src/3d/apps/chflow-piso-foam';
+const THREE_D_VTU = '/tmp/chflow_gui_3d_field.vtu';
 const DEFAULT_COUPLED_CASE =
   '/Users/haizai/project/ChuanFlow/tests/cases/coupled1d3d/case.dict';
 const COUPLED_VTU = '/tmp/chflow_gui_coupled_block.vtu';
@@ -140,6 +143,21 @@ const state = {
   collapsedRight: false,
 };
 
+const ENGINES_STORE_KEY = 'chflow.engines.v1';
+const ENGINES_KEYS = [
+  'steady', 'transient', 'coupled', 'coupledCase', 'twofluid', 'nodal', 'pvt', 'threeD',
+];
+const ENGINE_INPUT_IDS = {
+  steady: 'exePath',
+  transient: 'transientExePath',
+  coupled: 'coupledExePath',
+  coupledCase: 'coupledCasePath',
+  twofluid: 'twofluidExePath',
+  nodal: 'nodalExePath',
+  pvt: 'pvtExePath',
+  threeD: 'threeDExePath',
+};
+
 const engines = {
   steady: DEFAULT_EXE,
   transient: DEFAULT_TRANSIENT_EXE,
@@ -148,7 +166,40 @@ const engines = {
   twofluid: DEFAULT_TWOFLUID_EXE,
   nodal: DEFAULT_NODAL_EXE,
   pvt: DEFAULT_PVT_EXE,
+  threeD: DEFAULT_3D_EXE,
 };
+
+// E9: restore engine paths persisted from a previous session (settings beat
+// hardcoded developer defaults; the backend resolve beats both below).
+(function restoreEngines() {
+  try {
+    const raw = localStorage.getItem(ENGINES_STORE_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    for (const k of ENGINES_KEYS) {
+      if (typeof saved[k] === 'string' && saved[k]) engines[k] = saved[k];
+    }
+  } catch (_) {
+    /* corrupted store -> fall back to defaults */
+  }
+})();
+
+function persistEngines() {
+  try {
+    const out = {};
+    for (const k of ENGINES_KEYS) out[k] = engines[k];
+    localStorage.setItem(ENGINES_STORE_KEY, JSON.stringify(out));
+  } catch (_) {
+    /* storage unavailable (e.g. file:// without quota) -> session-only */
+  }
+}
+
+function reflectEngines() {
+  for (const k of ENGINES_KEYS) {
+    const el = document.getElementById(ENGINE_INPUT_IDS[k]);
+    if (el) el.value = engines[k];
+  }
+}
 
 let uidTimer = Date.now() % 100000;
 function tmpPath(base) {
@@ -1059,6 +1110,7 @@ async function startJob(label, caseText_, isPath = false) {
     label === 'steady' ? engines.steady
     : label === 'transient' ? engines.transient
     : label === 'slug' ? engines.twofluid
+    : label === '3d' ? engines.threeD
     : engines.coupled;
   let casePath;
   if (label === 'coupled') {
@@ -1066,6 +1118,10 @@ async function startJob(label, caseText_, isPath = false) {
     if (!casePath) return;
   } else if (label === 'slug') {
     casePath = isPath ? caseText_ : await writeCaseFile(caseText_, label);
+  } else if (label === '3d') {
+    // E1: redirect the case's output{vtk} at a fixed path the field view
+    // loads after the run; other output keys survive the rewrite.
+    casePath = await writeCaseFile(upsertOutputVtk(caseText_, THREE_D_VTU), label);
   } else {
     casePath = await writeCaseFile(caseText_, label);
   }
@@ -1076,7 +1132,7 @@ async function startJob(label, caseText_, isPath = false) {
     setJobChip(true, label);
     appendLog(`[job ${id}] 启动 ${label}: ${exe} ${casePath}`);
     setStatus(`作业 ${label} 已启动。`);
-    switchTab(label === 'coupled' ? 'coupled' : label === 'slug' ? 'slug' : 'canvas');
+    switchTab(label === 'coupled' ? 'coupled' : label === 'slug' ? 'slug' : label === '3d' ? 'field' : 'canvas');
   } catch (e) {
     appendLog(`启动失败: ${e}`);
     setStatus(`启动失败: ${e}`, 'error');
@@ -1124,6 +1180,7 @@ setInterval(async () => {
       else if (label === 'transient') onTransientDone(full);
       else if (label === 'coupled') onCoupledDone(full);
       else if (label === 'slug') onSlugDone(full);
+      else if (label === '3d') on3DDone(full);
     } else {
       appendLog(`[job] ${label} 退出码 ${st.exit}`);
       setStatus(`${label} 求解失败（退出码 ${st.exit}），详见求解日志。`, 'error');
@@ -1197,6 +1254,14 @@ function onCoupledDone(fullOutput) {
   switchTab('field');
   loadVtu();
   setStatus('耦合求解完成，交界面已收敛，3D 场已载入。', 'ok');
+}
+
+/** E1: after a 3D run, load the fixed-path VTU into the field view. */
+function on3DDone() {
+  $('vtuPath').value = THREE_D_VTU;
+  switchTab('field');
+  loadVtu();
+  setStatus('3D 求解完成，场已载入 3D 视图。', 'ok');
 }
 
 function renderCoupled() {
@@ -2941,6 +3006,13 @@ async function loadTemplate(entry) {
     setStatus(`已载入模板「${entry.name}」：点「▶ 运行段塞」开始动画。`, 'ok');
     return;
   }
+  if (target.kind === '3d') {
+    $('caseText').value = text;
+    if (!$('threeDExePath').value.trim()) $('threeDExePath').value = engines.threeD;
+    switchTab('dict');
+    setStatus(`已载入模板「${entry.name}」：点「▶ 3D」提交 PISO 求解，完成后自动载入 3D 场视图。`, 'ok');
+    return;
+  }
   if (target.kind === 'coupled') {
     $('coupledCasePath').value = entry.path;
     switchTab('coupled');
@@ -3916,6 +3988,8 @@ $('tbRunTransient').addEventListener('click', () => {
   startJob('transient', text);
 });
 $('tbRunCoupled').addEventListener('click', () => $('runCoupledBtn').click());
+$('tbRun3d').addEventListener('click', () => startJob('3d', $('caseText').value));
+$('menuRun3d').addEventListener('click', () => startJob('3d', $('caseText').value));
 
 // ---------------------------------------------------------------------------
 // model change plumbing
@@ -3937,18 +4011,13 @@ function afterModelChange(syncDict = true) {
 // ---------------------------------------------------------------------------
 
 caseText.value = DEFAULT_CASE;
-$('exePath').value = engines.steady;
-$('transientExePath').value = engines.transient;
-$('coupledExePath').value = engines.coupled;
-$('twofluidExePath').value = engines.twofluid;
-$('nodalExePath').value = engines.nodal;
-$('pvtExePath').value = engines.pvt;
-$('coupledCasePath').value = engines.coupledCase;
+
+reflectEngines();
 
 (async () => {
   try {
     const paths = await invoke('default_engines');
-    if (Array.isArray(paths) && paths.length === 7 && paths[0] && paths[1]) {
+    if (Array.isArray(paths) && paths.length === 8 && paths[0] && paths[1]) {
       engines.steady = paths[0];
       engines.transient = paths[1];
       engines.coupled = paths[2];
@@ -3956,21 +4025,56 @@ $('coupledCasePath').value = engines.coupledCase;
       engines.twofluid = paths[4];
       engines.nodal = paths[5];
       engines.pvt = paths[6];
-      $('exePath').value = paths[0];
-      $('transientExePath').value = paths[1];
-      $('coupledExePath').value = paths[2];
-      $('coupledCasePath').value = paths[3];
-      $('twofluidExePath').value = paths[4];
-      $('nodalExePath').value = paths[5];
-      $('pvtExePath').value = paths[6];
+      if (paths[7]) engines.threeD = paths[7];
+      persistEngines();
+      reflectEngines();
+    } else {
+      console.warn('default_engines returned an unexpected payload', paths);
+      setStatus('引擎路径解析返回异常（保留设置或开发树默认值），可在 case 字典页手动核对求解器路径。');
     }
-  } catch (_) {
-    /* keep developer defaults */
+  } catch (err) {
+    // E9: never silently swallow this — the user must know the packaged
+    // layout did not resolve and the developer-tree fallback is in use.
+    console.warn('default_engines failed:', err);
+    setStatus('未解析到随包引擎路径，已回退到设置/开发树默认值；如求解失败请在 case 字典页核对路径。');
   }
   renderTemplateMenu();
+  reconcileRegimeBoundaries();
 })();
 
-['exePath', 'transientExePath', 'coupledExePath', 'twofluidExePath', 'nodalExePath', 'pvtExePath', 'coupledCasePath'].forEach((id) => {
+/**
+ * E5: reconcile the frontend's hardcoded Beggs-Brill boundary copy against
+ * the Rust port of the kernel formula (which itself is reconciled against
+ * the C++ engine report by a unit test). A mismatch means someone changed
+ * one side without the other — surface it instead of failing silently.
+ */
+async function reconcileRegimeBoundaries() {
+  const probes = [0.05, 0.2, 0.386561092748, 0.6, 0.9];
+  try {
+    const rows = await Promise.all(
+      probes.map((lam) => invoke('beggs_brill_boundaries', { lambda: lam })),
+    );
+    let bad = 0;
+    rows.forEach((r, i) => {
+      const lam = probes[i];
+      const pat = beggsBrillPattern(lam, 0);
+      const want = [pat.l1, pat.l2, pat.l3, pat.l4];
+      const got = Array.isArray(r) ? r : [r[0], r[1], r[2], r[3]];
+      got.forEach((v, k) => {
+        const scale = Math.abs(want[k]) || 1;
+        if (Math.abs(v - want[k]) > 1e-9 * scale) bad++;
+      });
+    });
+    if (bad) {
+      console.error(`regime boundary reconciliation failed on ${bad} values`);
+      setStatus('流型图边界与内核公式失配（E5 对账失败），请在 regimemap.js 与 beggsBrill.cpp 之间核对。', 'error');
+    }
+  } catch (_) {
+    /* backend without the command (older binary) -> skip quietly */
+  }
+}
+
+['exePath', 'transientExePath', 'coupledExePath', 'twofluidExePath', 'nodalExePath', 'pvtExePath', 'threeDExePath', 'coupledCasePath'].forEach((id) => {
   $(id).addEventListener('change', (e) => {
     const v = e.target.value.trim();
     if (id === 'exePath') engines.steady = v;
@@ -3979,7 +4083,9 @@ $('coupledCasePath').value = engines.coupledCase;
     if (id === 'twofluidExePath') engines.twofluid = v;
     if (id === 'nodalExePath') engines.nodal = v;
     if (id === 'pvtExePath') engines.pvt = v;
+    if (id === 'threeDExePath') engines.threeD = v;
     if (id === 'coupledCasePath') engines.coupledCase = v;
+    persistEngines();
   });
 });
 

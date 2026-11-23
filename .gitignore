@@ -1,4 +1,6 @@
 build/
+build-e3/
+build-e8/
 build-kokkos/
 build-petsc/
 build-python/

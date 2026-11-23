@@ -1156,13 +1156,37 @@ pub fn resolve_default_engines() -> (String, String, String, String, String, Str
     )
 }
 
+/// E1: resolve the default 3D solver (packaged Resources/bin first, developer
+/// tree second). piso-foam is the most general pressure-based 3D app and the
+/// startedChannel template (a verified PISO case) is verified against it.
+pub fn resolve_default_3d_engine() -> String {
+    let name = "chflow-piso-foam";
+    let packaged = std::env::current_exe().ok().and_then(|exe| {
+        exe.ancestors()
+            .find(|a| a.file_name().map(|n| n == "Contents").unwrap_or(false))
+            .map(|c| c.join("Resources/bin").join(name))
+            .filter(|p| p.exists())
+    });
+    match packaged {
+        Some(p) => p.to_string_lossy().into_owned(),
+        None => {
+            let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("build/src/3d/apps")
+                .join(name);
+            dev.to_string_lossy().into_owned()
+        }
+    }
+}
+
 /// Frontend hook: the default engine paths for this installation
 /// (packaged Resources/bin first, developer tree second):
-/// [steady, transient, coupled-1d3d, coupled template case, two-fluid, nodal, pvt].
+/// [steady, transient, coupled-1d3d, coupled template case, two-fluid, nodal, pvt, 3d piso].
 #[tauri::command]
 pub fn default_engines() -> Vec<String> {
     let (steady, transient, coupled, template, twofluid, nodal, pvt) = resolve_default_engines();
-    vec![steady, transient, coupled, template, twofluid, nodal, pvt]
+    vec![steady, transient, coupled, template, twofluid, nodal, pvt, resolve_default_3d_engine()]
 }
 
 /// One built-in case template: a kernel-verified case dictionary shipped with
@@ -1190,6 +1214,7 @@ pub fn resolve_case_templates() -> Vec<TemplateEntry> {
         ("coupled1d3d", "1D↔3D 耦合（网络嵌 SIMPLE 块）"),
         ("nodalVogel", "节点分析（Vogel IPR × Beggs-Brill 垂直举升）"),
         ("pvtFlash", "PVT 闪蒸（烃组分 + 黏度/表面张力）"),
+        ("startedChannel", "3D 通道启动（PISO，体积力驱动 + VTU 场）"),
     ];
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
     let dev_cases = root.join("tests/cases");
@@ -1221,6 +1246,26 @@ pub fn resolve_case_templates() -> Vec<TemplateEntry> {
         });
     }
     out
+}
+
+/// E5: the Beggs-Brill four regime boundaries, ported 1:1 from the kernel's
+/// single source of truth `beggsBrillPattern` (src/1d/src/beggsBrill.cpp,
+/// D4 / §5.85). The frontend's regimemap.js carries a hardcoded copy of these
+/// closed forms; this command lets it reconcile against the same formulas the
+/// Rust layer owns, and a unit test reconciles *this* against the C++ engine's
+/// printed L1..L4 report so a kernel-side formula change cannot drift silently.
+pub(crate) fn beggs_brill_boundaries_impl(lambda: f64) -> [f64; 4] {
+    [
+        316.0 * lambda.powf(0.302),
+        0.0009252 * lambda.powf(-2.4684),
+        0.1 * lambda.powf(-1.4516),
+        0.5 * lambda.powf(-6.738),
+    ]
+}
+
+#[tauri::command]
+pub fn beggs_brill_boundaries(lambda: f64) -> [f64; 4] {
+    beggs_brill_boundaries_impl(lambda)
 }
 
 /// Frontend hook: the built-in template library entries.
@@ -1783,7 +1828,7 @@ mod tests {
     #[test]
     fn case_templates_resolve_to_existing_verified_cases() {
         let templates = resolve_case_templates();
-        assert_eq!(templates.len(), 9);
+        assert_eq!(templates.len(), 10);
         for t in &templates {
             assert!(
                 Path::new(&t.path).exists(),
@@ -1798,9 +1843,75 @@ mod tests {
         assert!(ids.contains(&"coupled1d3d"));
         assert!(ids.contains(&"nodalVogel"));
         assert!(ids.contains(&"pvtFlash"));
+        assert!(ids.contains(&"startedChannel"));
         // the slug template must end at the verified case file
         let slug = templates.iter().find(|t| t.id == "twoFluidTerrainSlug").unwrap();
         assert!(slug.path.ends_with("twoFluidTerrainSlug/case.dict") || slug.path.ends_with("twoFluidTerrainSlug.dict"));
+    }
+
+    #[test]
+    fn resolve_default_3d_engine_points_at_piso() {
+        let p = resolve_default_3d_engine();
+        assert!(p.ends_with("chflow-piso-foam"), "got {p}");
+        // developer tree fallback must exist in this checkout; a packaged
+        // .app resolve wins when present, so only assert existence when the
+        // dev-tree path was chosen.
+        if p.contains("/build/src/3d/apps/") {
+            assert!(Path::new(&p).exists(), "dev 3D engine {p} must exist");
+        }
+    }
+
+    /// E5: the Rust port of the Beggs-Brill boundaries must agree with the
+    /// L1..L4 the C++ engine prints for every pipe of the shipped flow-pattern
+    /// case — this is the runtime reconciliation the frontend copy lacks.
+    #[test]
+    fn beggs_brill_boundaries_match_engine_report() {
+        let (steady, _t, _c, _tmpl, _tf, _n, _p) = resolve_default_engines();
+        if !Path::new(&steady).exists() {
+            return; // real-engine-if-available convention (packaged layout w/o 1D exe)
+        }
+        let case = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("tests/cases/steadyFlowPatternMap/case.dict");
+        if !case.exists() {
+            return;
+        }
+        let output = std::process::Command::new(&steady)
+            .arg(&case)
+            .output()
+            .expect("spawn chflow-1d-steady");
+        assert!(output.status.success());
+        let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+        let mut compared = 0usize;
+        for line in stdout.lines() {
+            // [chflow] pipe <id> ... lambda <l> Nfr <nfr> L1 <a> L2 <b> L3 <c> L4 <d> dp ...
+            let grab = |key: &str| -> Option<f64> {
+                let idx = line.find(&format!(" {key} "))? + key.len() + 2;
+                line[idx..]
+                    .split(|c: char| c == ' ')
+                    .next()
+                    .and_then(|w| w.parse::<f64>().ok())
+            };
+            let (Some(lam), Some(l1), Some(l2), Some(l3), Some(l4)) = (
+                grab("lambda"), grab("L1"), grab("L2"), grab("L3"), grab("L4"),
+            ) else {
+                continue;
+            };
+            let rust = beggs_brill_boundaries_impl(lam);
+            for (got, want) in [(l1, rust[0]), (l2, rust[1]), (l3, rust[2]), (l4, rust[3])] {
+                let scale = want.abs().max(1.0);
+                assert!(
+                    (got - want).abs() <= 1e-9 * scale,
+                    "pipe line '{line}': engine L={got} vs rust {want}"
+                );
+            }
+            compared += 1;
+        }
+        assert!(
+            compared >= 5,
+            "expected at least 5 regime report lines, got {compared}"
+        );
     }
 
     // -- job registry -------------------------------------------------------

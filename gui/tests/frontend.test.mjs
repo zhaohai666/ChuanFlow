@@ -28,6 +28,8 @@ import {
   TRANSIENT_WHAT_IF_PARAMS,
   iprLinearVariant,
   applyScenarioOverrides,
+  upsertOutputVtk,
+  upsertDictBlock,
 } from '../frontend/dist/editor.js';
 import {
   UNIT_SYSTEMS,
@@ -627,14 +629,42 @@ test('workspace: parseTwoFluidFrames 帧与逐格键值', () => {
 // ---------------------------------------------------------------------------
 
 test('templates: 模板目标页与保真度标注', () => {
-  assert.equal(TEMPLATE_IDS.length, 9);
+  assert.equal(TEMPLATE_IDS.length, 10);
   assert.deepEqual(templateTarget('twoFluidTerrainSlug'), { tab: 'slug', kind: 'slug' });
   assert.deepEqual(templateTarget('coupled1d3d'), { tab: 'coupled', kind: 'coupled' });
   assert.deepEqual(templateTarget('nodalVogel'), { tab: 'nodal', kind: 'nodal' });
   assert.deepEqual(templateTarget('pvtFlash'), { tab: 'pvt', kind: 'pvt' });
   assert.deepEqual(templateTarget('steadyEquipmentPump'), { tab: 'canvas', kind: 'dict' });
+  assert.deepEqual(templateTarget('startedChannel'), { tab: 'dict', kind: '3d' });
   assert.equal(isPartialFidelity('steadyNetworkMultiphase'), true);
   assert.equal(isPartialFidelity('steadyEquipmentValve'), false);
+});
+
+test('upsertOutputVtk: 替换既有 vtk 键 / 追加块 / 空块注入（E1）', () => {
+  // replace keeps sibling keys, only rewrites the vtk word
+  const withBlock = 'a\noutput\n{\n    vtk old.vtu;\n    fields (p U);\n}\n';
+  const replaced = upsertOutputVtk(withBlock, '/tmp/x.vtu');
+  assert.ok(replaced.includes('/tmp/x.vtu'));
+  assert.ok(replaced.includes('fields (p U)'));
+  assert.ok(!replaced.includes('old.vtu'));
+  // no output block -> append one
+  const appended = upsertOutputVtk('b\n', '/tmp/x.vtu');
+  assert.ok(appended.trimEnd().endsWith('}'));
+  assert.ok(appended.includes('vtk /tmp/x.vtu;'));
+  // empty output block -> inject a vtk word
+  const injected = upsertOutputVtk('output\n{\n}\n', '/tmp/x.vtu');
+  assert.ok(injected.includes('vtk /tmp/x.vtu;'));
+});
+
+test('upsertDictBlock: 整块替换 / 追加 / 未知名追加（E2）', () => {
+  const t = 'solver { type t; }\nhydrate\n{\n    curveA 1;\n    curveB 2;\n}\ntime { dt 1; }\n';
+  const replaced = upsertDictBlock(t, 'hydrate', ['curveA 9;', 'curveB 8;']);
+  assert.ok(replaced.includes('curveA 9;'));
+  assert.ok(!replaced.includes('curveA 1;'));
+  assert.ok(replaced.includes('time { dt 1; }'), 'sibling block must survive');
+  const appended = upsertDictBlock('a\n', 'inhibitor', ['kDepression 0.1;']);
+  assert.ok(appended.trimEnd().endsWith('}'));
+  assert.ok(appended.includes('inhibitor\n{'));
 });
 
 test('clipKeepsByPlane: 轴对齐等价旧语义 + 任意法向 + 退化', () => {

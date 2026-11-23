@@ -413,10 +413,12 @@
 ## 5. E 类 —— GUI 集成断链与流动保障真缺口（2026-11-23 审计）
 
 > **来源**：产品愿景对齐审计（一维稳态管网对标 Pipesim + 一维瞬态多相流动保障对标 OLGA + 三维有限体积 CFD 对标 Fluent + 1D↔3D 耦合）+ GUI 双路代码审计。**结论**：11 个页签无空壳（9 个直连真实引擎），内核层面对标矩阵已全收口（benchmark_alignment 1.1 ✅21/❌0、1.3 ✅17/❌0），但**产品层面存在两类新缺口**——(a) 内核能力 GUI 无入口（集成断链）；(b) 对标 OLGA 的部分场景内核也没有（真缺口）。同轮 GUI 布局缺陷（主页签窄窗竖排挤压、折叠侧 1fr 空白列）已当轮修复（commit 1023dd0）。
+>
+> **第一轮收口（2026-11-23，§5.170–§5.174）**：E5（流型图对账）、E8（PWHc 状态包）、E9（引擎路径可移植性）CLOSED；E3 内核多段事件表 CLOSED（GUI 时间轴编辑器仍 OPEN）；E1 PISO 单条 3D 通路接通、其余 3D app 入口仍 OPEN。新增 CTest `verify.transientMultiSchedule`（48 判据）与 `verify.pvtHydratePWHc`（125 判据）；GUI 前端 103/103、Rust 32/32 绿。
 
 ### E1. 3D 求解器 GUI 入口（产品层最大断链）
 
-- **当前状态**：`OPEN`
+- **当前状态**：`部分（§5.172，PISO 单条通路已接通：▶3D 按钮 + 模板 + 自动载 VTU；其余 20+ 3D app 入口仍 OPEN）`
 - **差距**：`src/3d/` 20+ 求解器 app（pisoFoam/simpleFoam/vof/compressible/cht/les/dpm/mpi/adaptiveRefine/ale/dynamicMesh6Dof…）在 GUI **零入口**：`startJob` 只有 steady/transient/twofluid/coupled 四分支（app.js L1058–1062）、`default_engines` 只返回 7 个路径、字典页求解器路径框只有 6 个。GUI 的 3D 通路 = 耦合块 VTU 被动查看这一条窄通道，而 GUI 首页自称"3D CFD 一体化工作台"。
 - **建议实施**：`commands.rs` 增 3D 引擎注册（resolve_default_engines 扩 3D 族）+ GUI 新页签或字典页扩 3D case 路径 + `start_job('3d')` 分支 + 完成后自动切 3D 场视图载 VTU（复用 prepareCoupledCase 的重定向模式）。
 - **成本估计**：~2 增量（Rust 命令层 0.5 + 前端 1 + 打包随包 0.5）
@@ -432,7 +434,7 @@
 
 ### E3. 多段日程编辑器（内核扩展 + GUI）
 
-- **当前状态**：`OPEN`
+- **当前状态**：`内核 CLOSED（§5.170，事件表 + 独立回归 48 判据）；GUI 时间轴编辑器 OPEN`
 - **差距**：内核 schedule 能力是一维**单周期** ramp——每阀/每源只有「关一次再开一次」（`valveClose{start;end;closedK}` / `valveOpen{start;end}` / `schedule{ openRate; close; open }`，transient.cpp:133-161）。无任意多段 step/ramp 日程表。O7「ESD what-if」实为多管同时关阀近似，无专用 ESD 联动。
 - **建议实施**：内核 schedule 块扩多段表（`events { {t0 t1 value} ... }`）+ GUI 时间轴编辑器；ESD = 多事件联动预设模板。
 - **成本估计**：~2 增量（内核 1 + GUI 1）
@@ -448,7 +450,7 @@
 
 ### E5. 流型图前端移植对账机制
 
-- **当前状态**：`OPEN`
+- **当前状态**：`CLOSED（§5.173，Rust 命令 + 内核报告对账单测 + 前端启动对账）`
 - **差距**：`regimemap.js` 硬编码 Beggs-Brill 四边界（L1..L4）复刻内核 `beggsBrill.cpp` 单一真值源（D4/§5.85），**无运行时对账机制**——内核公式日后修改，前端移植会静默失配。区域判定纯前端，改管径后不重跑内核校核。
 - **建议实施**：Python checker 导出边界表 JSON（或 Rust 命令直接调内核函数）供 GUI 启动时对账断言；叠加点判定改为回传内核。
 - **成本估计**：~0.5 增量
@@ -471,7 +473,7 @@
 
 ### E8. 水合物状态包 PWHc（可选升级）
 
-- **当前状态**：`OPEN`
+- **当前状态**：`CLOSED（§5.171，pvt 层声明式简化 vdW–Platteeuw + 125 判据；三套既有模型统一改写另议）`
 - **差距**：现三套水合物模型均非 van der Waals–Platteeuw：瞬态引擎 `dh/dt = k(1−h)` 常速率衰减（无平衡概念）、两流体 ln(p) 平衡线 + 动力学、PVT 层 Clausius–Clapeyron 双常数闭式（自述理想气体近似）。风险报告亚冷却度分级（§5.159）依赖的平衡曲线精度受此限制。
 - **建议实施**：pvt 层增 PWHc 状态包（guest 组分 + Langmuir 常数声明式输入，对齐 kij「声明输入、内核不夹带未核实表」惯例），三套模型统一读它。
 - **成本估计**：~2 增量
@@ -479,7 +481,7 @@
 
 ### E9. GUI 引擎路径可移植性
 
-- **当前状态**：`OPEN`
+- **当前状态**：`CLOSED（§5.174，localStorage 持久化 + 后端路径覆盖 + 失败显式提示）`
 - **差距**：app.js L61–74 六个求解器 exe + 耦合算例为硬编码 `/Users/haizai/...` 开发树绝对路径；`default_engines` 失败时静默保留默认值（app.js L3968），换机/换用户即断。
 - **建议实施**：default_engines 失败改为显式状态提示 + 设置面板持久化引擎路径（工程 JSON 或 localStorage）。
 - **成本估计**：~0.5 增量

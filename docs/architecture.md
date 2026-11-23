@@ -5609,6 +5609,50 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **诚实边界。** F7 是空间均匀单分散矩源内核（无相间动量耦合，破碎固定父代尺寸的文档化闭包）；F9 DO/S2S 限 1D 平板几何（P1 仍走完整 polyMesh，S2S 为透明介质平行板极限）；F10 是 0D 均相唯象两步机理（非基元机理库，熄火为集总热损临界而非火焰拉伸）；F11 的 6DOF 实装 2 自由度（其余固定零，网格运动限均匀刚体平移）；F13 限结构化 slab dyadic 加密与 linear/step 声明场。以上口径均已写入对应头文件注释。
 
+### 5.170 E3 · 多段日程事件表（valveSchedule / sourceSchedule）
+
+**差距**（E 类审计 §5，2026-11-23）：内核 schedule 只有单周期 ramp（每阀一次关再开、每源一次起停）。本增量扩为任意多段 piecewise-linear 事件表，opt-in 声明，未声明路径逐字节不变。
+
+**内核**。`Dictionary::parseBlockBody` 接受匿名块 `{ t ..; k ..; }` 为 keyless entry（生成 `{<n>` 键，词法器无法拼出同名具名键，故零碰撞且保序）；此前该 token 序列是 fatal，故无既有声明改变语义。`TransientPipeConfig::valveEventT/K` 与顶层 `TransientSourceSchedule`（node + eventT/eventRate）承载表；`eventTableAt()`（transient.cpp）二分上界后线性插值，区间内相邻相等 t 是 STEP（跳变在该瞬间取 AFTER 值），首事件前/末事件后保持端值；K 与 rate 均在隐式新时刻 t+dt 采样。加载期大声拒收：空表、t<0、K/rate<0、非有限、降序、阀表与 valveClose/valveOpen/`valve` 键混声明、源表节点不存在或与 `sources{}` 重复计价、耦合管带阀表。
+
+**回归（`tests/check_transient_multi_schedule.py`，CTest `verify.transientMultiSchedule`）。** `cases/transientMultiSchedule/case.dict` 单罐单管 20 s：阀表两关两开（t=8 为阶跃）、源表五点四段（升/平/降/再升）。checker 从 case 文本独立重读事件点，用自写 event_table 求 K(t)/rate(t)；再从打印 Q/p 序列**反解**隐式动量行（Churchill 摩擦 + 阀门二次项）得实际生效的 K、从节点连续行反解实际注入的 rate，逐帧对表（516 个良态帧，相对 <2e-4 / 5e-6）；物理锚：t=8 阶跃流量放大 >1000×、关闭窗 [6,8] Q~1e-7 而罐压上升、尾部 K/source 保持；13 条拒收。共 48 判据。
+
+**边界**。表值在 Newton 迭代内冻结于 t+dt（与既有单周期 ramp 同口径）；匿名块只用于事件表行，不引入通用 tuple 语法；ESD 多阀联动不在此增量命名范围（另立项 E7）；零声明不变由全量瞬态家族回归见证。
+
+### 5.171 E8 · PVT 水合物 PWHc 状态包（简化 vdW–Platteeuw）
+
+**差距**（E 类审计 §5）：既有三套水合物模型（瞬态常速率、两流体 ln(p) 平衡线、PVT Clausius–Clapeyron）均非 van der Waals–Platteeuw。本增量在 pvt 层增声明式 PWHc 闭包，遵循 kij「内核不夹带未核实表」惯例。
+
+**内核**。`HydratePWHc.h/.cpp`：Langmuir 占位 `theta_j = Σ_i C_ij f_i/(1+Σ_i C_ij f_i)`（C 以 1/MPa 声明、转 1/Pa；f_i 取 PR 闪蒸气侧逸度），线性化水化学势差 `Δμ_w = muRef + muSlopeA (T−Tref)`，平衡 `Δμ_w + R T Σ_j ν_j ln(1−θ_j) = 0`（ν_j = 笼/水分子比，sI 2/46+6/46、sII 16/136+8/136），从 referencePressure 起倍增括号到 1e10 Pa 上限后二分；无根大声拒收。pvtApp 在 `hydratePWHc{}` 块上接线，与 `hydrateEquilibrium{}` 互斥，打印逐温度 pEq/theta/单调标志；`cf_pvt` 增源文件。
+
+**回归（`tests/check_pvt_hydrate_pwhc.py`，CTest `verify.pvtHydratePWHc`）。** checker 独立实现 PR76 三次根 / lnφ / 连闪，重推每个打印的 pEq/theta 到 1e-8，CC 斜率 20% 物理界、θ 随 p 单调、p_eq 随 T 单调、单guest 闭式 twin、Langmuir→0 twin（锚点 θ→0、p_eq 右移数个数量级）、零声明闪蒸报告逐字节不变、9 条拒收。共 125 判据。
+
+**边界**。这是 Parrish–Prausnitz 风格**简化** vdW–Platteeuw：Δμ_w 是双常数线性化（非完整参考化学势热容积分）、Langmuir 常数全声明（无内嵌表）、 fugacity 取 PR 相态规则选出的相（声明简化）；只进 pvt 报告层，未把三套既有水合物模型统一改写（那需要另立增量，避免动默认路径）；`enthalpyOfDissociation` 只作 CC 斜率物理界、不进平衡求解。
+
+### 5.172 E1 · 3D 求解器 GUI 入口
+
+**差距**（E 类审计 §5，产品层最大断链）：`src/3d/` 20+ app 在 GUI 零入口。本增量接通 PISO 一条端到端通路作为 3D 族入口样板。
+
+**实现**。`commands.rs` 增 `resolve_default_3d_engine()`（随包 Resources/bin 优先、开发树 build/src/3d/apps 兜底），`default_engines()` 从 7 项扩为 8 项（末位 3D）；`case_templates()` 增 `startedChannel` 模板（已验证 PISO 通道启动算例，check_piso.py 解析级数解回归）；模板必须与 piso 引擎匹配——初版误用 SIMPLE 稳态的 `poiseuilleChannel`（无 `piso{}` 块）会在运行时大声拒收，已改正。前端 `app.js` 增 `startJob('3d')` 分支：`upsertOutputVtk()`（editor.js）把算例 output{vtk} 重定向到固定路径，跑完 `on3DDone()` 自动切 3D 场视图载入 VTU；菜单与工具条各加「▶ 3D」按钮，字典页加 3D 求解器路径框。Rust 单测 `resolve_default_3d_engine_points_at_piso` + `case_templates_resolve_to_existing_verified_cases`（10 项）/ 前端 `upsertOutputVtk` 三分支测试均绿。
+
+**边界**。本增量只接通 PISO 一款 3D app（`chflow-piso-foam`），其余 3D app（VOF/DPM/LES/CHT/ALE/MPI…）仍无 GUI 入口，按 E1 后续增量逐个接；3D 算例编辑仍走字典文本（无专用可视化建模器）；VTU 载入复用既有场视图，未新增体渲染。
+
+### 5.173 E5 · 流型图前端移植对账
+
+**差距**（E 类审计 §5）：`regimemap.js` 硬编码 Beggs–Brill 四边界，内核 `beggsBrill.cpp` 改公式前端会静默失配。本增量建运行时对账链。
+
+**实现**。`commands.rs` 增 `beggs_brill_boundaries(lambda) -> [L1,L2,L3,L4]`（Rust 移植内核闭式，与 `beggsBrillPattern` 同式），注册为 Tauri command；前端 `reconcileRegimeBoundaries()` 在启动时对 5 个 λ 探针比对前端 `beggsBrillPattern` 与 Rust 命令结果，失配显式报错状态栏。Rust 单测 `beggs_brill_boundaries_match_engine_report` 用内核 `steadyFlowPatternMap` 算例打印的 L1..L4 逐行对账（≥5 行，1e-9 相对），把「内核→Rust→前端」三端锁成一条可证链。
+
+**边界**。对账只在 GUI 启动与单测时跑，非每帧校验；旧二进制无该 command 时前端静默跳过（向后兼容）；流型区判定仍纯前端，未改为每次回传内核。
+
+### 5.174 E9 · GUI 引擎路径可移植性
+
+**差距**（E 类审计 §5）：求解器路径硬编码开发树绝对路径，`default_engines` 失败静默保留默认值，换机即断。本增量改为持久化 + 显式状态提示。
+
+**实现**。`app.js` 增 `ENGINES_STORE_KEY='chflow.engines.v1'` 与 8 键持久化（localStorage，设置页修改即 `persistEngines()`），启动顺序：localStorage → 后端 `default_engines`（覆盖并回写）→ 开发树默认；后端返回异常长度或 invoke 失败都显式 `setStatus` 提示（不再静默吞）；`reflectEngines()` 统一回填所有路径框（含新增 3D 框）。前端 103 测试全绿。
+
+**边界**。持久化用 localStorage（单浏览器单工程），未做工程 JSON 级共享；打包 .app 的随包路径解析仍依赖 `resolve_default_engines` 的既有逻辑；路径不存在时只在状态栏提示，未做启动期文件存在性校验。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

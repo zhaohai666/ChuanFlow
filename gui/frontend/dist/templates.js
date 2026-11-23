@@ -19,6 +19,7 @@ export const TEMPLATE_IDS = [
   'coupled1d3d',
   'nodalVogel',
   'pvtFlash',
+  'startedChannel',
 ];
 
 /** Which tab a template opens into and how it feeds the workspace. */
@@ -27,6 +28,7 @@ export function templateTarget(id) {
   if (id === 'coupled1d3d') return { tab: 'coupled', kind: 'coupled' };
   if (id === 'nodalVogel') return { tab: 'nodal', kind: 'nodal' };
   if (id === 'pvtFlash') return { tab: 'pvt', kind: 'pvt' };
+  if (id === 'startedChannel') return { tab: 'dict', kind: '3d' };
   if (id === 'transientBlowdown') return { tab: 'canvas', kind: 'dict' };
   return { tab: 'canvas', kind: 'dict' };
 }

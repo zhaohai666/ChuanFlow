@@ -13,6 +13,7 @@ pub fn run() {
             commands::run_transient_texts,
             commands::run_nodal_texts,
             commands::run_pvt_text,
+            commands::beggs_brill_boundaries,
             commands::start_case,
             commands::poll_job,
             commands::stop_job,

@@ -467,3 +467,121 @@ export function adaptiveVectorIndices(mags, maxArrows) {
   }
   return [...keep].sort((a, b) => a - b);
 }
+
+/**
+ * E1: point a case's `output{}` block at a fixed VTU path so the GUI can
+ * render the field after the run. If an output block exists, only the `vtk`
+ * word inside it is rewritten (other keys — e.g. a field list — survive);
+ * otherwise a minimal output block is appended. Comment lines are ignored
+ * during the scan, mirroring the engine's dictionary semantics closely
+ * enough for the app-authored cases this is used on.
+ */
+export function upsertOutputVtk(caseText, vtuPath) {
+  // find the last uncommented `output` block opener: the name and the `{`
+  // may sit on the same line or on consecutive lines (dict convention)
+  const lines = caseText.split('\n');
+  let openIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\/\/.*$/, '');
+    if (!/\boutput\b/.test(line)) continue;
+    if (line.includes('{')) {
+      openIdx = i;
+    } else {
+      for (let j = i + 1; j < lines.length; j++) {
+        const nxt = lines[j].replace(/\/\/.*$/, '').trim();
+        if (!nxt) continue;
+        if (nxt.includes('{')) openIdx = j;
+        break;
+      }
+    }
+  }
+  if (openIdx >= 0) {
+    // bracket-match to the block's closing brace
+    let depth = 0;
+    let endIdx = -1;
+    for (let i = openIdx; i < lines.length; i++) {
+      const code = lines[i].replace(/\/\/.*$/, '');
+      for (const ch of code) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+      }
+      if (depth <= 0 && i >= openIdx && code.includes('}')) {
+        endIdx = i;
+        break;
+      }
+    }
+    if (endIdx < 0) return caseText + `\noutput\n{\n    vtk ${vtuPath};\n}\n`;
+    const block = lines.slice(openIdx, endIdx + 1);
+    let replaced = false;
+    const rewritten = block.map((line) => {
+      if (replaced) return line;
+      const code = line.replace(/\/\/.*$/, '');
+      const m = code.match(/(\bvtk\s+)(\S+?)(\s*;)/);
+      if (m) {
+        replaced = true;
+        return line.replace(/(\bvtk\s+)(\S+?)(\s*;)/, `$1${vtuPath}$3`);
+      }
+      return line;
+    });
+    if (replaced) {
+      lines.splice(openIdx, endIdx - openIdx + 1, ...rewritten);
+      return lines.join('\n');
+    }
+    // output block without a vtk word: inject one after the opening line
+    lines.splice(openIdx + 1, 0, `    vtk ${vtuPath};`);
+    return lines.join('\n');
+  }
+  return caseText + `\noutput\n{\n    vtk ${vtuPath};\n}\n`;
+}
+
+/**
+ * E2: replace or append a top-level dictionary block. If a block with the
+ * same name exists (dict convention: the name and its `{` may share a line
+ * or sit on consecutive lines), the whole block is replaced; otherwise the
+ * block is appended at the end. Pure so node --test can verify the three
+ * paths (replace / append / name-with-inline-brace).
+ */
+export function upsertDictBlock(caseText, name, innerLines) {
+  const lines = caseText.split('\n');
+  const blockRe = new RegExp(`\\b${name}\\b`);
+  let openIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const code = lines[i].replace(/\/\/.*$/, '');
+    if (!blockRe.test(code)) continue;
+    if (code.includes('{')) {
+      openIdx = i;
+      break;
+    }
+    // the name may carry trailing words (e.g. `node X;`) before its own
+    // brace on the next line — only treat it as a block opener when the
+    // next non-empty line is exactly a `{` (top-level block convention)
+    for (let j = i + 1; j < lines.length; j++) {
+      const nxt = lines[j].replace(/\/\/.*$/, '').trim();
+      if (!nxt) continue;
+      if (nxt === '{') openIdx = j;
+      break;
+    }
+    if (openIdx >= 0) break;
+  }
+  const newBlock = [`${name}`, '{', ...innerLines.map((s) => `    ${s}`), '}'];
+  if (openIdx < 0) {
+    const sep = caseText.endsWith('\n') ? '' : '\n';
+    return caseText + sep + newBlock.join('\n') + '\n';
+  }
+  // bracket-match to the block's closing brace (start depth from the opener)
+  let depth = 0;
+  let endIdx = openIdx;
+  for (let i = openIdx; i < lines.length; i++) {
+    const code = lines[i].replace(/\/\/.*$/, '');
+    for (const ch of code) {
+      if (ch === '{') depth++;
+      else if (ch === '}') depth--;
+    }
+    if (depth <= 0) {
+      endIdx = i;
+      break;
+    }
+  }
+  lines.splice(openIdx - (lines[openIdx].trim() === '{' ? 1 : 0), endIdx - openIdx + 1 + (lines[openIdx].trim() === '{' ? 1 : 0), ...newBlock);
+  return lines.join('\n');
+}

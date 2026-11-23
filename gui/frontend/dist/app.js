@@ -29,7 +29,7 @@ import {
   parseNodalIpr, iprCurvePoints, vlpSampleJs,
   vorticityAndQ, isoSurfacePatches, fieldsToCsv, planeProfileCsv,
   slugSeriesKeys, slugBands,
-  buildMonitorTree, monitorSeriesValues, monitorEnvBand,
+  buildMonitorTree, monitorSeriesValues, monitorEnvBand, hydrateSeriesNote,
   compareSteadyRuns,
   scenarioRowsTransient, scenarioRowsSteady,
   pvtFlashCaseText, parsePvtOutput, pvtCurvesByT, parsePvtCaseDict, PVT_COMPONENTS,
@@ -3453,9 +3453,14 @@ function renderMonitorTree() {
   }
   const groups = syncMonitors(t);
   box.innerHTML = groups.map((g) => {
-    const items = g.items.map((it) => it.series.map((s) =>
-      `<label class="chk"><input type="checkbox" data-series="${s}" ` +
-      `${state.monitors.includes(s) ? 'checked' : ''}/> ${it.series.length > 1 ? s : it.label}</label>`).join(''));
+    const items = g.items.map((it) => it.series.map((s) => {
+      // E10: show the engine-specific hydrate semantics inline so the transient
+      // dh/dt=k(1-h) fraction is never read as the two-fluid ln(p) h.
+      const note = hydrateSeriesNote(s);
+      const tag = note ? ` <span class="model-note" title="${note}">常速率 h ⓘ</span>` : '';
+      return `<label class="chk"><input type="checkbox" data-series="${s}" ` +
+        `${state.monitors.includes(s) ? 'checked' : ''}/> ${it.series.length > 1 ? s : it.label}${tag}</label>`;
+    }).join(''));
     return `<div class="mgroup"><b>${g.label}</b>${items.join('')}</div>`;
   }).join('');
 }

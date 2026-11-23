@@ -185,6 +185,7 @@ input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); bo
 }
 .monitor-tree .mgroup { display: flex; flex-wrap: wrap; gap: 2px 10px; align-items: baseline; }
 .monitor-tree .mgroup b { color: var(--muted); font-size: 11px; margin-right: 4px; }
+.model-note { color: var(--muted); font-size: 10px; cursor: help; opacity: 0.85; }
 .strip {
   grid-row: 1 / span 2;
   width: 18px;

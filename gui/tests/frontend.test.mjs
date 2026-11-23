@@ -69,6 +69,8 @@ import {
   buildMonitorTree,
   monitorSeriesValues,
   monitorEnvBand,
+  hydrateSeriesNote,
+  SLUG_BAND_DEFS,
   compareSteadyRuns,
   scenarioRowsTransient,
   scenarioRowsSteady,
@@ -1042,6 +1044,26 @@ test('slugBands: 连续段合并 + 仅输出帧内存在的键', () => {
   const h = bands.find((b) => b.key === 'h');
   assert.deepEqual(h.runs, [{ from: 3, to: 4 }]);
   assert.equal(s.label, '段塞');
+});
+
+test('E10: hydrate 语义按引擎来源区分标注（常速率 vs ln p 平衡）', () => {
+  // transient 结果树的 hydrate 系列注明「1D 瞬态常速率」，不冒充两流体平衡 h
+  const note = hydrateSeriesNote('hydrate:A');
+  assert.ok(note && note.includes('常速率'));
+  assert.ok(note.includes('k(1'));
+  // 非 hydrate 量不标注；非字符串入参安全
+  assert.equal(hydrateSeriesNote('p:A'), null);
+  assert.equal(hydrateSeriesNote(undefined), null);
+  // buildMonitorTree 对声明了 hydrate 的节点带 note，未声明的不带
+  const withH = {
+    nodeNames: ['A'], pipeNames: [],
+    samples: [{ pressure: { A: 1 }, hydrate: { A: 0.2 } }],
+  };
+  assert.ok(buildMonitorTree(withH)[0].items[0].note.includes('常速率'));
+  assert.equal(buildMonitorTree(MON_T)[0].items[0].note, null); // MON_T hydrate 未声明
+  // twoFluid cell 行的 h 带「ln p 平衡」标签，避免与 transient h 混淆
+  const hBand = SLUG_BAND_DEFS.find((b) => b.key === 'h');
+  assert.ok(hBand.label.includes('ln p'));
 });
 
 // ---------------------------------------------------------------------------

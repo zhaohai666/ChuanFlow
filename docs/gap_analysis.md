@@ -491,10 +491,11 @@
 
 ### E10. 文档口径修正（即时可做）
 
-- **当前状态**：`OPEN`
+- **当前状态**：`CLOSED`（2026-11-23，见 §5.176）
 - **差距**：benchmark_alignment 中 P5「多分支井筒进 nodal ✅」（据 §5.157）与 G9「lateral 多分支进 nodal{} 仍为后续拓扑增量」两处口径不一致，二选一修正；§4.2 表「瞬态 hydrate = 常速率衰减」与两流体 hydrate 语义差异建议在 GUI 输出处区分标注。
-- **成本估计**：文档增量
-- **落点**：benchmark_alignment.md / architecture.md
+- **收口**：G9 改为「lateral 多分支已 CLOSED（§5.157，verify.nodalLateral 59 判据）」，与 P5 打 ✅ 对齐；§4.2 补四套 hydrate 语义的口径区分（1D 瞬态常速率 / twoFluid ln(p) 平衡线 / pvt Clausius–Clapeyron / PWHc vdW–Platteeuw），并落到 GUI：monitor 树 hydrate 系列标注「常速率 h ⓘ」来源提示（`hydrateSeriesNote()`），段塞色带 h 标签改「水合物 h(ln p 平衡)」，新增 1 条前端测试（112/112 绿）。
+- **成本估计**：文档增量（实测约 0.3 增量，含 GUI 标注与测试）
+- **落点**：benchmark_alignment.md / architecture.md / gui/frontend/dist/{workspace,app,style}.js·css / gui/tests/frontend.test.mjs
 
 > **优先级建议**（2026-11-23）：产品集成链 E1 > E2 > E4 > E9 > E5 > E3 > E10；内核真缺口 E6 > E7 > E8（E6/E7 立项前先拆分命名范围）。
 

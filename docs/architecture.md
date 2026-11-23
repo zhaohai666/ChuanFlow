@@ -294,10 +294,18 @@ surfaceTension;}` 即切换两相模式，`sources` 变为地面油产量（sm³
 - **持液率（drift-flux 段塞）输运**：对旧 α 做快照的显式上游差分
   `α_i^{n+1} = α_i + (Q·dt/V)(α_{i−1} − α_i)`，即一串全混釜（CSTR）级联——
   这个递推本身就是可复现的参考解，测试按 1e-9 对比；
-- **水合物动力学**：`h = V_h/(V_L + V_h)`，`dh/dt = k(1 − h)`
+- **水合物动力学（仅指 1D `chflow-1d-transient` 的常速率模型）**：
+  `h = V_h/(V_L + V_h)`，`dh/dt = k(1 − h)`
   ⇒ `dV_L/dt = −k·V_L`，用积分因子精确积分
   `V_L^{n+1} = V_L·e^{−k·dt}`、`V_h = V_total − V_L`（体积守恒的
-  液→水合物转移），因此**任意 dt 都无离散误差**；
+  液→水合物转移），因此**任意 dt 都无离散误差**。
+  **口径区分（E10 修正 2026-11-23）**：这是**瞬态 1D 引擎**的常速率衰减
+  （无平衡概念、k 为声明常数），与 1D 两流体引擎 `hydrate{}` 的 ln(p)
+  平衡线 + 动力学（§5.127/§5.141）、pvt 层 Clausius–Clapeyron（§5.127）、
+  以及声明式 vdW–Platteeuw PWHc 状态包（§5.171）是**四套不同语义**的模型；
+  GUI 的结果树/曲线按引擎来源区分标注（稳态报告无 hydrate、transient
+  报 `hydrate` 分数、twoFluid cell 行报 `h` + 可选 `Teq/dTsub`），
+  不可把各套的 `h` 当作同一物理量比较；
 - **应用** `chflow-1d-transient <case.dict>`：输出
   `t …` / `node <n> p … alpha … hydrate …` / `pipe <n> Q …`（12 位有效数字）。
 
@@ -5664,6 +5672,14 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 **回归（`gui/tests/frontend.test.mjs`，CTest `gui.frontend`）。** 新增 8 条 E2 测试：键表对齐、五块解析与空字典全关、渲染 + 内核守卫拒收（constant 缺速度 / αResidual 越界 / initial 越界 / 非有限数）、生成-替换-移除往返逐字节稳定、removeDictBlock 保留同名前缀键、slugtrack 事件解析（跳过 NONE/count、容忍无前缀）、purge 状态行 + COMPLETE 周期事件、`inhibitorEquilibrium` 跨块依赖拒收。前端合计 **111/111**。用真实内核输出对账：`transientSlugTracking/case.dict` 解析出 3 GEN / 1 MERGE / 2 OUT（含 L 字段），`transientPurgeWave/case.dict` 出两个 COMPLETE 周期（t=30 / 167.85 s）。
 
 **边界**。结构化面板只覆盖五个流保声明块，不含 wax/asphaltene/scale/sand/emulsion 等其它 opt-in 块（后续增量）；事件时间轴是报告行的展示层（不改内核事件判定），事件游标落在采样帧之间时按最近帧显示；`applyFlowAssurance` 的跨块校验只覆盖 inhibitor 依赖，gasCap 模式的 `gasR>0` 依赖仍由内核 loader 拒收（表单未读 fluid 块）。
+
+### 5.176 E10 · 文档口径修正与 hydrate 语义区分标注
+
+**差距**（E 类审计 §5，2026-11-23）：`benchmark_alignment.md` 的 P5「多分支井筒进 nodal ✅」（据 §5.157）与 G9「lateral 多分支进 nodal{} 仍为后续拓扑增量」两处口径互相矛盾；§4.2 把「瞬态 hydrate = 常速率衰减」一笔带过，未与两流体 `hydrate{}`、pvt 平衡曲线、PWHc 状态包区分，GUI 把各套 `h` 混在同名字段下易被误读为同一物理量。
+
+**修正**。(1) G9 口径改为「lateral 多分支已 CLOSED（§5.157，`verify.nodalLateral` 59 判据），P5 据此打 ✅」，与矩阵一致。(2) §4.2 补四套 hydrate 语义的对照说明：1D `chflow-1d-transient` 的常速率衰减 `dh/dt=k(1−h)`（无平衡概念、k 声明常数、任意 dt 无离散误差）；1D 两流体 `hydrate{}` 的 ln(p) 平衡线 + 动力学（§5.127/§5.141，报告带 `Teq`/`dTsub`）；pvt 层 Clausius–Clapeyron 平衡曲线（§5.127）；声明式 vdW–Platteeuw PWHc 状态包（§5.171)。(3) 落到 GUI 输出层：`workspace.js` 新增纯函数 `hydrateSeriesNote(seriesId)`，对 `hydrate:*` monitor 系列返回来源标注「1D 瞬态常速率 h=dh/dt=k(1−h)，非平衡线」，`buildMonitorTree` 对声明了 hydrate 的节点项附 `note`；`app.js` 的 monitor 树在该系列后渲染「常速率 h ⓘ」悬浮提示（`.model-note` 样式）；段塞色带 `SLUG_BAND_DEFS` 的 h 标签由「水合物」改为「水合物 h(ln p 平衡)」，明示它来自两流体平衡线而非瞬态常速率模型。
+
+**回归**。前端新增 1 条 E10 测试（来源标注内容、非 hydrate 系列与非法入参返回 null、buildMonitorTree 的 note 随声明有无、h 色带含「ln p」），合计 **112/112**。文档与标注均为展示层口径，不改任何内核数值路径；Rust 命令层与全量 CTest 不受影响（本增量只改 md / JS / CSS）。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 

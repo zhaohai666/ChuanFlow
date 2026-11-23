@@ -1113,14 +1113,21 @@ export function buildMonitorTree(t) {
   const has = (obj, name) => Number.isFinite((s0[obj] || {})[name]);
   const groups = [];
   const nodeItems = t.nodeNames
-    .map((n) => ({
-      label: n,
-      series: [
-        ...(has('pressure', n) ? [`p:${n}`] : []),
-        ...(has('alpha', n) ? [`alpha:${n}`] : []),
-        ...(has('hydrate', n) ? [`hydrate:${n}`] : []),
-      ],
-    }))
+    .map((n) => {
+      const hydrate = has('hydrate', n);
+      return {
+        label: n,
+        // E10: name the hydrate model by engine source; one note per node item
+        // covers all of this node's series (only the hydrate series is annotated
+        // by the UI via hydrateSeriesNote).
+        note: hydrate ? hydrateSeriesNote(`hydrate:${n}`) : null,
+        series: [
+          ...(has('pressure', n) ? [`p:${n}`] : []),
+          ...(has('alpha', n) ? [`alpha:${n}`] : []),
+          ...(hydrate ? [`hydrate:${n}`] : []),
+        ],
+      };
+    })
     .filter((it) => it.series.length);
   if (nodeItems.length) groups.push({ id: 'nodes', label: '节点', items: nodeItems });
   const pipeItems = t.pipeNames
@@ -1194,14 +1201,34 @@ export function slugSeriesKeys(frames) {
 
 /** Band definitions over the kernel's own per-cell flags: a cell belongs to
  *  the band when its declared value is > 0 (s = slug slip marker, h = hydrate,
- *  wax = wax deposition, sand = sand/bed load, inh = inhibitor present). */
+ *  wax = wax deposition, sand = sand/bed load, inh = inhibitor present).
+ *
+ *  E10 label caveat: the `h` here is the two-fluid cell hydrate fraction from
+ *  the ln(p) equilibrium line (§5.127/§5.141), NOT the 1D transient constant-
+ *  rate `dh/dt=k(1-h)` fraction shown in the monitor tree. The label says so. */
 export const SLUG_BAND_DEFS = [
   { key: 's', label: '段塞', color: '#ff6b6b' },
-  { key: 'h', label: '水合物', color: '#7db86a' },
+  { key: 'h', label: '水合物 h(ln p 平衡)', color: '#7db86a' },
   { key: 'wax', label: '蜡', color: '#c9a06a' },
   { key: 'sand', label: '砂', color: '#d9c26a' },
   { key: 'inh', label: '抑制剂', color: '#4bb3c4' },
 ];
+
+/**
+ * E10 (§4.2): GUI output must name the hydrate model by its engine source.
+ * There are four in-tree semantics for a quantity called "hydrate":
+ *   - 1D transient `hydrate` fraction: constant-rate dh/dt=k(1-h), no equilibrium;
+ *   - two-fluid cell `h`: ln(p) equilibrium line + kinetics (Teq/dTsub optional);
+ *   - pvt Clausius-Clapeyron equilibrium curve;
+ *   - pvt declarative vdW-Platteeuw PWHc state packet (§5.171).
+ * This helper returns a short annotation for a monitor series id so the tree
+ * and curve legend can show which one a plotted `hydrate:*` series belongs to.
+ * Non-hydrate series return null (no annotation needed).
+ */
+export function hydrateSeriesNote(seriesId) {
+  if (typeof seriesId !== 'string' || !seriesId.startsWith('hydrate:')) return null;
+  return '1D 瞬态常速率 h=dh/dt=k(1−h)，非平衡线';
+}
 
 /** Contiguous [from, to] cell-index runs per band key for one frame; only
  *  keys the frame actually carries produce entries. */

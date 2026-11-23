@@ -417,14 +417,16 @@
 > **第一轮收口（2026-11-23，§5.170–§5.174）**：E5（流型图对账）、E8（PWHc 状态包）、E9（引擎路径可移植性）CLOSED；E3 内核多段事件表 CLOSED（GUI 时间轴编辑器仍 OPEN）；E1 PISO 单条 3D 通路接通、其余 3D app 入口仍 OPEN。新增 CTest `verify.transientMultiSchedule`（48 判据）与 `verify.pvtHydratePWHc`（125 判据）；GUI 前端 103/103、Rust 32/32 绿。
 >
 > **第二轮收口（2026-11-23，§5.175）**：E2 CLOSED——段塞页新增五个流动保障声明块的结构化表单与 GEN/MERGE/OUT + 吹扫周期事件时间轴；前端 111/111（+8 条 E2 测试），内核事件解析用真实算例对账。
+>
+> **第三轮收口（2026-11-23，§5.176–§5.181，五 worktree 并行 + 主树）**：E4（五设备画布族 §5.177）、E6（清管 pigging §5.178）、E7 子项②（瞬态井筒元件族 §5.179）、E3 GUI 时间轴（§5.180）、E1 其余 3D 入口（§5.181）、E10（文档口径 §5.176）全部 CLOSED；E7 转 PARTIAL（子项①③ OPEN 需另立项）。新增 CTest `verify.transientPigging`（30 判据）与 `verify.transientWellboreEquipment`（42 判据）；前端 142/142、Rust 34/34。E 类清单至此仅余 E7 子项①③（Bendiksen 前缘闭合/双区制、可压泄压声学）
 
 ### E1. 3D 求解器 GUI 入口（产品层最大断链）
 
-- **当前状态**：`部分（§5.172，PISO 单条通路已接通：▶3D 按钮 + 模板 + 自动载 VTU；其余 20+ 3D app 入口仍 OPEN）`
+- **当前状态**：`CLOSED`（2026-11-23，§5.172 PISO 通路 + §5.181 3D 族注册表收尾）
 - **差距**：`src/3d/` 20+ 求解器 app（pisoFoam/simpleFoam/vof/compressible/cht/les/dpm/mpi/adaptiveRefine/ale/dynamicMesh6Dof…）在 GUI **零入口**：`startJob` 只有 steady/transient/twofluid/coupled 四分支（app.js L1058–1062）、`default_engines` 只返回 7 个路径、字典页求解器路径框只有 6 个。GUI 的 3D 通路 = 耦合块 VTU 被动查看这一条窄通道，而 GUI 首页自称"3D CFD 一体化工作台"。
 - **建议实施**：`commands.rs` 增 3D 引擎注册（resolve_default_engines 扩 3D 族）+ GUI 新页签或字典页扩 3D case 路径 + `start_job('3d')` 分支 + 完成后自动切 3D 场视图载 VTU（复用 prepareCoupledCase 的重定向模式）。
 - **成本估计**：~2 增量（Rust 命令层 0.5 + 前端 1 + 打包随包 0.5）
-- **落点**：待分配
+- **落点**：§5.181（THREE_D_FAMILY 11 成员注册 + 模板库 10→20 + 族选择器与路径持久化；10 个新成员真实二进制冒烟 rc=0 产 VTU；无 vtk 产出路径的 app 有意不接）
 
 ### E2. 瞬态流动保障结构化面板
 
@@ -436,19 +438,19 @@
 
 ### E3. 多段日程编辑器（内核扩展 + GUI）
 
-- **当前状态**：`内核 CLOSED（§5.170，事件表 + 独立回归 48 判据）；GUI 时间轴编辑器 OPEN`
+- **当前状态**：`CLOSED`（内核 §5.170 + GUI 时间轴编辑器 §5.180）
 - **差距**：内核 schedule 能力是一维**单周期** ramp——每阀/每源只有「关一次再开一次」（`valveClose{start;end;closedK}` / `valveOpen{start;end}` / `schedule{ openRate; close; open }`，transient.cpp:133-161）。无任意多段 step/ramp 日程表。O7「ESD what-if」实为多管同时关阀近似，无专用 ESD 联动。
 - **建议实施**：内核 schedule 块扩多段表（`events { {t0 t1 value} ... }`）+ GUI 时间轴编辑器；ESD = 多事件联动预设模板。
 - **成本估计**：~2 增量（内核 1 + GUI 1）
-- **落点**：待分配
+- **落点**：GUI → §5.180（scheduleEditor.js 纯函数 + 字典页 SVG 时间轴 + ESD 预设；13 条测试；三条生成路径真跑 chflow-1d-transient 1000 步 rc=0）
 
 ### E4. 稳态设备画布建模补齐
 
-- **当前状态**：`OPEN`
+- **当前状态**：`CLOSED`（2026-11-23，§5.177）
 - **差距**：内核齐全——射流泵（§5.115）、螺杆泵 PCP、柱塞气举（§5.140）、分离器、压缩机（gasLiftValve/rodPump/jetPump/progressiveCavityPump/plungerGasLift/separator/compressor 七个内核文件）——GUI 仅气举阀/有杆泵/ESP 有画布 glyph（P6–P8），其余五个设备无建模入口；`editor.js` 序列化无对应字段族。
 - **建议实施**：PipeDef 字段族扩展（parse/serialize/extractCaseDetails 三同步）+ SVG glyph + 属性面板编辑（复用 §5.135 设备族全开增量模式）。
 - **成本估计**：~1.5 增量
-- **落点**：待分配
+- **落点**：§5.177（editor.js 注册表三同步 / workspace.js 回读 60 键 / app.js 46 输入框 + 5 glyph / 14 条测试；真实引擎冒烟 5/5 + 4/4；前端 126/126）
 
 ### E5. 流型图前端移植对账机制
 
@@ -460,18 +462,18 @@
 
 ### E6. 清管 pigging 瞬态元件（内核级真缺口）
 
-- **当前状态**：`OPEN`
+- **当前状态**：`CLOSED`（2026-11-23，§5.178）
 - **差距**：全库（src/tests/docs）grep 零命中。清管是 OLGA 流动保障核心场景（清管器追踪、液塞前缘推举、清管器到达预测）。
 - **建议实施**：两流体引擎增 pig 追踪拉格朗日单元（复用 slugTracking 的前缘推进框架）+ 液塞堆积/卸出边界条件 + case/checker 立项。
 - **成本估计**：~2 增量
-- **落点**：待分配
+- **落点**：§5.178（`pigging{}` opt-in + piggingStep + 报告行；`verify.transientPigging` 30 判据，twin 逐字节 + 10 拒收；twoFluid 家族 37/37 未声明路径不变）
 
 ### E7. 段塞机理升级 + 瞬态井筒元件族（内核级真缺口，需立项拆分）
 
-- **当前状态**：`OPEN`（拆分为四个子项时逐个转独立条目）
+- **当前状态**：`PARTIAL`（2026-11-23 子项② CLOSED → §5.179；子项①③ 仍 `OPEN`）
 - **差距**：① 段塞闭合简化——两流体是 3 方程混合动量模型（非 4 方程双速度双压力），段塞生成靠持液率阈值检测、前缘速度是声明常量/gasCap 模型，**无 Bendiksen 类由局部流态解出的前缘闭合、无液膜/液塞双区制**（architecture §4.2 自认「机理型段塞追踪尚未实现」，全库无 sectioning）；② 瞬态引擎显式拒收人工举升设备（transient.cpp:1026-1029「gas-lift valve has no bellows」），无 ESP/气举/有杆泵动态、无 SSSV 安全阀、无节流嘴瞬态元件；③ 可压管线沿线 EOS 泄压瞬态声学不解析（两流体 EOS 模式动量仍 lumped）。
 - **成本估计**：4+ 增量
-- **落点**：待分配
+- **落点**：子项② → §5.179（`sssv{}`/`choke{}`/`esp{}` 三 opt-in 块 + `verify.transientWellboreEquipment` 42 判据 + 11 拒收 + 零声明 twin；原「no bellows」拒收解除）。子项①③ 需另立项
 
 ### E8. 水合物状态包 PWHc（可选升级）
 
@@ -606,3 +608,9 @@
 | 2026-11-20 | U8（report definitions + CSV） | §5.139 | b4d461c | node 49/49 + 三份真实 VTU 数值冒烟 | `parseVtu` 解析嵌套 faces；`areaVector`(Newell) + `cellVolumes`(散度定理) 真几何体积；`evaluateReports` 五标量场 × 六操作（体积分/平均、max/min、面通量按 U·n、面平均按 |S·n|，平面以面质心投影 frac 定位，缺 faces 返回 NaN+error）；`reportsToCsv` 历史序列化；GUI 收敛 tab 定义面板（场/操作/法向/位置 + 定义/移除/导出 CSV），新 VTU 记一点历史 + 折线；真实 VTU 冒烟：out_p1_slab 40 格体积 0.010000、out_dpm_channel 1000 格体积 0.020000 且 x 面通量 0.001996≈入口 0.002、out_vof_droplet 6400 格体积 0.100000 且封闭域通量 6.5e-14≈0。边界：面通量用单元中心速度非面插值、面平均一层分辨、历史按 VTU 载入非迭代 |
 | 2026-11-20 | M6/A11（PETSc 分布式对照） | §5.136 | 28f1c1d | verify.petscDistributed 2.94 s（16384 格 np=1/2/4） | PETSc 自身 MPI 机器 vs 自研分布式 CG 的真独立双路径交叉：chflow-3d-petsc-distributed（MatCreateAIJ(PETSC_DECIDE) + 逐行 dnnz/onnz 精确预分配 + KSPCG/PCJACOBI + MatGetOwnershipRange 连续块分区，刻意不同于自研坐标中位数 Decomposition；MPI_Gatherv 按秩重组全局解，rank 0 dump 同六列格式）；算例 32×32×16=16384 格（对照 §5.122 的 256 格）；check_petsc_distributed.py 双 app 交叉（解析解独立重推、rank 无关性、PETSc 解 vs 自研解逐 cell 一致 tol 1e-6、串行参考列一致；同名 dump 冲突以私有临时目录先读后删解决）；当轮修三个真实缺陷：np=1 时 MatCreateAIJ 物化 SEQAIJ 致 MatMPIAIJSetPreallocation 不传预分配计数（改 MatXAIJSetPreallocation 类型无关路由）、VecRestoreArrayRead 先于 MPI_Gatherv 悬垂 xp 致 dump 读失效内存 maxDiff 6.39（restore 挪后）、CMake manual-prefix 只链 libpetsc.a 缺 mpi.h/−lmpi（解析 petscvariables 的 MPI_INCLUDE/MPICC_SHOW 并入，顺序版为 no-op 行为不变）；实测 42 迭代 analyticDiff 7.06e-11 petscSerialDiff 5.36e-11，np=1/2/4 全一致。边界：demo 级对照 app 非管网方程组接线、GPU 仍需 GPU 硬件（M6 边界不变） |
 | 2026-11-23 | — （E 类立项审计） | — | 1023dd0 | node 101/101 | 产品愿景对齐审计 + GUI 双路代码审计：11 页签无空壳（9 个直连真实引擎），对标矩阵内核层全收口，但产品层存在集成断链（3D 求解器 GUI 零入口、瞬态流保声明块无结构化面板、设备族建模缺口、流型图前端移植无对账）与 OLGA 真缺口（pigging 零实现、段塞无双区制闭合、单周期 schedule、无瞬态举升/SSSV/节流嘴），立 E1–E10（见第 5 节）。同轮修复 GUI 布局缺陷：主页签窄窗竖排挤压（.tabbar 无 flex-wrap）、折叠侧 1fr 空白列、两处内联 padding 补丁，前端回归 101/101 绿 |
+| 2026-11-23 | E4（设备画布五族） | §5.177 | 5ef096f | node 126/126 + 冒烟 5/5、4/4 | editor.js DEVICE_FIELDS 注册表三同步（60 设备键真值源）+ extractCaseDetails 回读 + 46 属性输入框/5 glyph；压缩机走 network.cpp 真稳态管键、四点元设备发射真实顶层块（jetPumps/pcpPumps/plungerGasLifts/separators）可被 chflow-1d-point-elements 真跑；边界：Rust PipeDef 仍 21 键（新键 validate_case 忽略，JS 侧闭环） |
+| 2026-11-23 | E6（清管 pigging） | §5.178 | 7189aa8 | verify.transientPigging 30 判据；twoFluid 家族 37/37 | 两流体 `pigging{}` opt-in：1D 点对象 v=u0(1−β·clamp(H/C,0,1))、H+=η·∫α dx、ARRIVE 释放 outVol=H；逐帧独立重推 ≤4.8e-11 + 3 twin 逐字节（删块==零声明==enable-false）+ blockage-0 臂 + 10 拒收；边界：不写回 holdup 场、无旁通/密封失效/双区制、单 pig |
+| 2026-11-23 | E7a（瞬态井筒元件族） | §5.179 | d8c384a | verify.transientWellboreEquipment 42 判据 | `sssv{}`（K(t) 斜坡 + 密封 Q=0 行锁存）/ `choke{}`（K=(A/(Cd·A_o))²）/ `esp{}`（二次扬程 + affinity N² + 转速精确指数松弛）三 opt-in 块，每 pipe 至多一元件且不与 valve/coupledResistance 同管；checker 反解动量行 + 零声明 twin + 11 拒收；4 个既有瞬态 case 与旧基线逐字节一致；E7 子项①③（Bendiksen 前缘闭合/双区制、可压泄压声学）仍 OPEN |
+| 2026-11-23 | E10（文档口径修正） | §5.176 | ad8ce02 | node 112/112（合并后 126/126） | G9 lateral 口径与 P5 对齐（§5.157 已 CLOSED）；§4.2 四套 hydrate 语义区分（transient 常速率 / twoFluid ln(p) 平衡线 / pvt CC / PWHc）；GUI 落地 hydrateSeriesNote + monitor 树「常速率 h ⓘ」+ 段塞 h 色带「ln p 平衡」标注 |
+| 2026-11-23 | E3 GUI（日程时间轴编辑器） | §5.180 | 58349eb | node 139/139（合并后 142/142） | scheduleEditor.js 纯函数（parse/apply/esdPreset/timelineSvg，键名逐字对齐 transient.cpp loader：valve 日程在 pipes 条目内、source 顶层单块、值键 k/rate、相等 t 为 STEP）+ 字典页 SVG 时间轴 + ESD 联动预设；13 条测试；三条生成路径真跑 chflow-1d-transient 1000 步 rc=0，真跑暴露并修复 entry.body 嵌套偏移 bug（须从 open+1 起算） |
+| 2026-11-23 | E1 收尾（3D 引擎族注册表） | §5.181 | c8b7bcd | node 129/129 + rust 34/34（合并后 142/142） | THREE_D_FAMILY 11 成员（PISO/simpleFoam/VOF/可压缩/标量/DPM/P1/燃烧/LES/熔化/空化）注册 + resolve_three_d_family + three_d_engines 命令；模板库 10→20（engine↔template 双向配对护栏测试固化 §5.172 教训）；startJob('3d') 按模板族成员解析二进制；10 个新成员真实二进制冒烟 rc=0 产 VTU；无 vtk 产出路径 app（cht/ale/adaptiveRefine/dynamicMesh/mixturePbm/qmom/combustionDetailed）有意不接 |

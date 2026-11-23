@@ -5681,6 +5681,60 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **回归**。前端新增 1 条 E10 测试（来源标注内容、非 hydrate 系列与非法入参返回 null、buildMonitorTree 的 note 随声明有无、h 色带含「ln p」），合计 **112/112**。文档与标注均为展示层口径，不改任何内核数值路径；Rust 命令层与全量 CTest 不受影响（本增量只改 md / JS / CSS）。
 
+### 5.177 E4 · 稳态设备画布建模补齐（五设备族）
+
+**差距**（E 类审计 §5）：内核七设备齐全（§5.115 射流泵、PCP、§5.140 柱塞气举、分离器、§5.156 压缩机等），GUI 画布仅气举阀/有杆泵/ESP 有 glyph（P6–P8），其余五设备（jetPump / progressiveCavityPump / plungerGasLift / separator / compressor）无建模入口，序列化无对应字段族。
+
+**实现**。`editor.js` 新增 `DEVICE_FIELDS` / `ALL_DEVICE_FIELDS` / `DEVICE_FAMILIES` / `E4_DEVICE_FAMILIES` 注册表作为 parse/serialize/extractCaseDetails **三同步的唯一真值源**：`deviceBlocksFromModel()` 发射内核点元顶层块（`jetPumps{}` / `pcpPumps{}` / `plungerGasLifts{}` / `separators{}` 及内核真实键名），`deviceGlyphCommands()` 是纯 SVG 命令生成器（既有三设备形状与优先级逐位保留），serialize 改为按注册表循环。`workspace.js` 的 `extractCaseDetails` 按注册表回读全部 60 个设备键（原 21 + 新 39）。`app.js` 五个新 glyph 走纯命令渲染、46 个属性输入框按族分组、五个「加设备」按钮、「移除设备」清空全部设备键，`freshModel` 解析补齐全部设备字段。键名全部取自 `network.cpp` / `pointElementsApp.cpp` 与真实算例，未发明内核不认的键：压缩机直接用稳态管键 `pressureRatio/shutoffRatio/ratedRate/polytropicEfficiency/kappa/specificGasConstant/compressibility`（内核真求解）；四个点元设备的 GUI 管键带族前缀避免与气举阀开关撞车，但发射的点元块用内核原名，物理可被 `chflow-1d-point-elements` 真跑。
+
+**回归**。新增 14 条测试（注册表完整性、五设备 serialize→extract→再序列化**字节恒等**、平管零泄漏、四个点元块真实键名、glyph 命令、既有三设备回归）；真实引擎冒烟：`chflow-1d-steady` 五设备 5/5 收敛（压缩机 `cmpRatio 2.236 / cmpBoost 6.18e6 / cmpPower 9.28e5`），`chflow-1d-point-elements` 四片段 4/4 真物理求解（jetPump `m=4 r=0.264 resid 7e-12` 等）。合并 E10 后前端 **126/126**。
+
+**边界**。Rust `PipeDef` 仍只认识原 21 个设备键——新键经 `validate_case` 被忽略（不报错），Rust 侧不回写/保留，GUI 序列化与回读全在 JS 侧；PGL 的 `probeTimes`（checker 窗口探针）未做 GUI 字段；PGL 管键 `lift*` 加 `pgl` 前缀避开气举阀开关，点元块内用内核原名。
+
+### 5.178 E6 · 清管 pigging 瞬态元件（Lagrangian pig tracking）
+
+**差距**（E 类审计 §5）：全库 grep 零命中。清管是 OLGA 流动保障核心场景（清管器追踪、液塞前缘推举、到达预测）。
+
+**实现**。两流体引擎新增 `pigging{}` opt-in 块（`TwoFluid.h` +86 行）：`TwoFluidPigging` 声明 + `TwoFluidPigState` 状态 + `TwoFluidPigEvent` 事件三结构；`piggingStep()` 接在 `slugTrackStep()` 之后。声明键（enable/startX/endX/u0/blockage β/pushEfficiency η + 几何弧长校验，10 条加载期 cfFatal 拒收）。**离散律（可独立重推，不夹带经验表）**：pig 为 1D 点对象，`v = u0·(1 − β·clamp(H/C, 0, 1))`、`x += v·dt`、堆积 `H += η·∫α_L dx`（前缘扫掠液相）、到达 `endX` 时释放 `outVol = H` 并触发 ARRIVE。报告行 `pig t <t> x <x> v <v> holdupFront <H> outVol <V> event RUN|ARRIVE|NONE`，每帧状态行 + 事件行（app 侧 ARRIVE 游标）。
+
+**回归**。`verify.transientPigging`（Test #165）+ `check_transient_pigging.py` **30 判据**：逐帧 x/v/H 独立重推（最大误差 4.8e-11 / 5.0e-12 / 5.0e-12）、堆积增量 = η×报告场扫掠积分（9.7e-12）、H/x 单调、前缘增长使 pig 减速、ARRIVE 前 outVol=0、释放量 = 终态堆积量 = 增量之和、全场液相守恒；**三个 twin 逐字节**（删 pig 行 == 零声明 caseBase == enable-false caseDisabled）；blockage-0 臂 v 恒为 u0 且 10 s 精确到达；10 条大声拒收。twoFluid 家族 37/37 绿 ⇒ 未声明路径逐字节不变。实测主 case：t=13.45 s 到达 x=20 m，v≈1.0731，释放 7.4235 m³。
+
+**边界**。pig 不写回 holdup 场（`holdupFront` 是扫掠液体的诊断库存而非 α 再分布）；无旁通流、密封失效、弯管阻力；前缘即 pig 面（无液膜/液塞双区制、无相间滑移）；单 pig、无收发球筒/多 pig 编队。
+
+### 5.179 E7a · 瞬态井筒元件族（SSSV / choke / ESP）
+
+**差距**（E 类审计 §5 子项②）：瞬态引擎显式拒收人工举升设备（transient.cpp「gas-lift valve has no bellows」），无 ESP/气举/有杆泵动态、无 SSSV 安全阀、无节流嘴瞬态元件。
+
+**实现**。三个 opt-in 顶层声明块（逐 pipe 解析，每 pipe 至多一个元件，不得与既有 `valve` / `coupledResistance` 同管，加载期大声拒收）：
+- `sssv{}`（`pipe/openK/closedK/close{start;end;}/reopen{start;end;}`）：K(t) 连续斜坡 + **关断后密封**（`Q = 0` 行锁存，无 creep、无执行机构动力学），密封优先于所有壁面分支；
+- `choke{}`（`k` 直接声明，或 `diameter + dischargeCoeff` 换算 `K = (A_pipe/(Cd·A_o))²`）：孔口二次局部损失，与既有 valve 同一项；无临界流/多相滑移；
+- `esp{}`（`stages/shutoffHead/headAtRate/rate/speed0/speedCmd/speedCmdTime/speedTau`）：§5.81 同一二次扬程曲线 + affinity `H ∝ N²`，转速一阶松弛用**精确指数解**（任意 dt 可重推）；扬程作压力升进动量行、曲线斜率入对角保证隐式适定。此块同时解除原「no bellows」拒收（文案改指 `esp{}`）。
+
+**回归**。`verify.transientWellboreEquipment` + checker **42 判据**：不信任内核打印——从 case 文本独立重推 SSSV K(t)/密封、choke 孔口 K、ESP 指数转速与 affinity 扬程，并从打印 Q(t)/p(t)/Churchill 壁律**反解动量行**核对；零声明 twin（无元件报告行、无额外损失/扬程）+ 11 条拒收；4 个既有瞬态 case 与旧基线二进制输出**逐字节一致**；要求过滤集 `transientWellbore|transient.*Valve|transient.*Schedule` 11/11 绿。
+
+**边界**。E7 其余子项仍 OPEN：① Bendiksen 类前缘闭合 / 液膜-液塞双区制 sectioning（4 方程机理型段塞升级）、③ 可压管线沿线 EOS 泄压瞬态声学；气举阀 bellows 动态、GUI、文档（本轮由主树统一回填）不在 agent 范围。
+
+### 5.180 E3 · GUI 多段日程时间轴编辑器 + ESD 预设
+
+**差距**：§5.170 内核多段日程已 CLOSED，GUI 无编辑入口——`valveSchedule{}` / `sourceSchedule{}` 事件表只能手改字典。
+
+**实现**。新纯函数模块 `gui/frontend/dist/scheduleEditor.js`（351 行，无 DOM/Tauri，范式对齐 §5.175 的 flowAssurance.js）：`parseSchedules(caseText)` 解析两族事件表（valve 日程位于 pipes 条目**内部**、source 日程是**顶层单块**——键名与语义从 transient.cpp loader 逐字确认：值键 valve=`k`、source=`rate`，匿名事件块 `{ t ..; k|rate ..; }`，相邻相等 t 为 STEP 取 after 值，t 非降序 + 有限值 + k/rate≥0 守卫对齐内核 cfFatal）；`scheduleBlockLines()` 校验后生成精确字典行；`applySchedules()` 经 `upsertDictBlock`/`removeDictBlock` 原子替换（空事件表 = 整块删除）；`esdPreset()` 生成 ESD 联动——全部已声明阀日程「保持首表值至 esdTime 后 STEP 关断到 closedK」。UI 落在 case 字典页折叠面板（瞬态字典真源是 caseText）：SVG 时间轴（log10 值轴、STEP 自然画出竖直边）+ 事件行增删改 + 应用/载入/ESD 三按钮。
+
+**回归**。新增 13 条测试（解析 inline/多行、生成-应用-再解析往返、ESD 预设、timelineSvg STEP 竖直边、8 类守卫拒收含未知节点与 sources{} 冲突），前端 **139/139**（合并 E1 后 142/142）。三条生成路径（ESD 替换 / 恒等往返 / 移除）均通过真实 `chflow-1d-transient` 1000 步求解 rc=0——真实运行暴露并修复了一个纯 JS 往返测不出的嵌套偏移 bug（entry.body 相对全文基准须从 `entry.open+1` 起算）。
+
+**边界**。sourceSchedule 沿用内核「顶层单块」语义（每次一个 node）；ESD 预设只联动 valve 日程，不联动 sources（源关断需另声明 sourceSchedule）。
+
+### 5.181 E1 · 3D 引擎族注册表与模板（GUI 入口收尾）
+
+**差距**：§5.172 只接通 PISO 单通路，`src/3d` 其余 20+ 求解器 app 在 GUI 零入口，首页「3D CFD 一体化工作台」名不副实。
+
+**实现**。Rust 命令层（`gui/src/commands.rs`）：`THREE_D_FAMILY` 注册表 11 成员（key / 二进制 / 模板 / 中文标签）——PISO + simpleFoam / VOF / 可压缩 NS / 标量输运 / DPM / P1 辐射 / 一步燃烧 / LES / 熔化 / 空化，配套 `resolve_three_d_engine_named()` / `resolve_three_d_family()` 与 `three_d_engines` 命令；模板库经 `resolve_case_path` 复用从 10 扩到 20。前端：`templates.js` 携带 `THREE_D_FAMILY` 元数据与 engine-tagged 3d target（engine ↔ template 双向配对）；`app.js` 的 `startJob('3d')` 按所选模板的族成员解析二进制（不再写死 PISO，§5.172 的「模板必须匹配引擎」教训固化为护栏测试——SIMPLE 模板永不指向 PISO）；字典页增族选择器，每成员路径按 §5.175 的 `chflow.engines.v1` 持久化；on3DDone 的 VTU 自动载入复用不变。
+
+**回归**。Rust 新增 2 条族测试（键唯一、成员 ↔ 模板一一配对、二进制唯一）合计 **34/34**；前端新增 3 条合计 129/129（合并后 **142/142**）。全部 10 个新成员用主树真实二进制经 `upsertOutputVtk` 管线冒烟 rc=0 且产出 VTU。
+
+**边界**。无 `output{vtk}` 产出路径的 app 有意不接（cht / ale / adaptiveRefine / dynamicMesh / mixturePbm / qmom / combustionDetailed）——GUI 入口的验收标准是「跑通且产出可渲染场」，凑数接入只会产生空视图；vofDroplet 算例的 vtkInitial 旁路输出会写到进程 cwd（既有内核行为，GUI 经 resolve_case_path 定位不影响）。
+
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

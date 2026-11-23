@@ -5584,8 +5584,8 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 | CTest | checker | 判据数 | 覆盖 |
 |---|---|---|---|
 | `verify.lesSgs` | `tests/check_les_sgs.py` | 20 | SGS 闭式、WALE 剪切阻尼、关闭孪生、拒收 |
-| `verify.cavitationTransport` | `tests/check_cavitation_venturi.py` | 待回填 | ZGB 增长/收缩、喉部加速、不生长孪生、拒收 |
-| `verify.meltingFront` | `tests/check_melting_front.py` | 103 | 焓平衡、前沿推进、Darcy、无相变孪生、拒收 |
+| `verify.cavitationTransport` | `tests/check_cavitation_venturi.py` | 41 | ZGB 增长/收缩、喉部加速、不生长孪生、拒收 |
+| `verify.meltingFront` | `tests/check_melting_front.py` | 105 | 焓平衡、前沿推进、Darcy、无相变孪生、拒收 |
 
 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`。批次 C 只新增 opt-in 块与新应用；未声明路径的逐字节不变由各 checker 的孪生算例见证。
 

@@ -585,3 +585,50 @@ export function upsertDictBlock(caseText, name, innerLines) {
   lines.splice(openIdx - (lines[openIdx].trim() === '{' ? 1 : 0), endIdx - openIdx + 1 + (lines[openIdx].trim() === '{' ? 1 : 0), ...newBlock);
   return lines.join('\n');
 }
+
+/**
+ * E2: remove a top-level dictionary block entirely (the inverse of
+ * upsertDictBlock). Used when a flow-assurance declaration is switched off:
+ * the kernel treats an absent block as byte-identical to the pre-block path,
+ * so removing it (rather than emitting `enable false`) keeps the case clean.
+ * Anchors the name at line start (after whitespace) to avoid matching a key
+ * inside another block. Pure; returning the input unchanged when absent.
+ */
+export function removeDictBlock(caseText, name) {
+  const lines = caseText.split('\n');
+  const nameRe = new RegExp(`^\\s*${name}\\b`);
+  for (let i = 0; i < lines.length; i++) {
+    const code = lines[i].replace(/\/\/.*$/, '');
+    if (!nameRe.test(code)) continue;
+    const braceOnSame = code.includes('{');
+    let openIdx = -1;
+    if (braceOnSame) openIdx = i;
+    else {
+      for (let j = i + 1; j < lines.length; j++) {
+        const nxt = lines[j].replace(/\/\/.*$/, '').trim();
+        if (!nxt) continue;
+        if (nxt === '{') openIdx = j;
+        break;
+      }
+    }
+    if (openIdx < 0) continue;
+    let depth = 0;
+    let endIdx = openIdx;
+    for (let k = openIdx; k < lines.length; k++) {
+      const c = lines[k].replace(/\/\/.*$/, '');
+      for (const ch of c) {
+        if (ch === '{') depth++;
+        else if (ch === '}') depth--;
+      }
+      if (depth <= 0) { endIdx = k; break; }
+    }
+    const start = braceOnSame ? i : i;
+    lines.splice(start, endIdx - start + 1);
+    // drop a single blank line left where the block stood
+    if (lines[start] && !lines[start].trim() && lines[start - 1] && lines[start - 1].trim()) {
+      lines.splice(start, 1);
+    }
+    return lines.join('\n');
+  }
+  return caseText;
+}

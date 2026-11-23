@@ -484,3 +484,25 @@ textarea { flex: 1; min-height: 160px; resize: none; }
 .pvt-grid h3 { margin: 0 0 6px; font-size: 13px; }
 .pvt-grid .chart-box { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
 .pvt-grid .chart-box svg { width: 48%; min-width: 220px; height: 120px; }
+
+/* E2: structured flow-assurance declarations (slug tab) */
+.fa-panel { margin: 0 12px 6px; border: 1px solid var(--line); border-radius: 6px; }
+.fa-panel > summary { cursor: pointer; padding: 6px 10px; font-size: 12px; color: var(--muted); }
+.fa-panel > summary:hover { color: var(--text); }
+.fa-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 8px; padding: 6px 10px; }
+.fa-block { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; }
+.fa-block > .fa-head { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; margin-bottom: 4px; }
+.fa-block > .fa-head input { flex: 0 0 auto; }
+.fa-block > .fa-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+.fa-block > .fa-fields label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.fa-block > .fa-fields input, .fa-block > .fa-fields select { width: 100%; font-size: 11px; padding: 2px 4px; }
+.fa-block .fa-key { color: var(--muted); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fa-block.off > .fa-fields { opacity: 0.4; pointer-events: none; }
+.fa-timeline { margin: 4px 12px; }
+.fa-timeline-canvas { width: 100%; height: 42px; background: var(--canvas); border: 1px solid var(--line); border-radius: 4px; }
+.fa-legend { display: inline-flex; align-items: center; gap: 3px; font-size: 10px; color: var(--muted); margin-right: 8px; }
+.fa-legend i { width: 8px; height: 8px; display: inline-block; border-radius: 2px; }
+.fa-legend .fa-gen { background: #2e9e5b; }
+.fa-legend .fa-merge { background: #d48a1e; }
+.fa-legend .fa-out { background: #c0392b; }
+.fa-legend .fa-purge { background: #3a6ea5; }

@@ -5653,6 +5653,18 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界**。持久化用 localStorage（单浏览器单工程），未做工程 JSON 级共享；打包 .app 的随包路径解析仍依赖 `resolve_default_engines` 的既有逻辑；路径不存在时只在状态栏提示，未做启动期文件存在性校验。
 
+### 5.175 E2 · 瞬态流动保障结构化面板
+
+**差距**（E 类审计 §5，2026-11-23）：内核四个流动保障声明块齐全（`hydrate{}` §5.127、`inhibitor{}` §5.141、`inhibitorEquilibrium{}` §5.163、`slugTracking{}` §5.161、`purgeWave{}` §5.162），GUI 无任何结构化入口，只能手改字典；`parseTwoFluidFrames` 把内核的 `slugtrack` 事件行整段丢弃，段塞页只有持率剖面动画、无事件时间轴。
+
+**实现**。`gui/frontend/dist/flowAssurance.js`（新，纯函数无 DOM/Tauri）：`FA_BLOCKS` 五块的键表逐字对齐 twoFluid.cpp loader（含必填/可选与内核 cfFatal 守卫——`slugTracking` constant 模式需正 slugVelocity、gasCap 模式需正 gasCapTime 且 α 阈值 ∈(0,1)；`purgeWave` αResidual<continuityAlpha、gasCapTime>0、constant 模式需正 uWave、riserEnd>riserStart；`inhibitorEquilibrium.activityK>0` 且跨块依赖 `inhibitor{}`）。`parseFlowAssurance()` 从 case 文本解析五个块（支持同行/多行块）→ 表单模型；`flowAssuranceBlockLines()` 校验后渲染精确字典行；`applyFlowAssurance()` 用 `upsertDictBlock`/`removeDictBlock` 原子地替换/移除块（禁用即整块删除，回落内核逐字节不变的未声明路径）。`parseSlugEvents()`/`parsePurgePhases()` 从段塞/吹扫报告行重推 GEN/MERGE/OUT（含 L/out/duration）与吹扫相位/COMPLETE 周期事件。
+
+**UI 接线**。段塞动画页新增可折叠「流动保障声明」面板：五块各自的开关 + 字段输入（num/word 分型、word 用 select 限定枚举），「从 case 字典载入 / 应用到 case 字典 / 应用并运行段塞」三按钮；后者写临时字典文件并走 `startJob('slug', path, true)`（与段塞页既有的文件路径运行范式一致）。画布下方新增事件时间轴（GEN/MERGE/OUT 三色泳道 + 吹扫 COMPLETE 周期标记 + 随播放帧移动的游标），切换进段塞页时按真实画布宽度重绘（隐藏页 canvas 宽度为 0）。
+
+**回归（`gui/tests/frontend.test.mjs`，CTest `gui.frontend`）。** 新增 8 条 E2 测试：键表对齐、五块解析与空字典全关、渲染 + 内核守卫拒收（constant 缺速度 / αResidual 越界 / initial 越界 / 非有限数）、生成-替换-移除往返逐字节稳定、removeDictBlock 保留同名前缀键、slugtrack 事件解析（跳过 NONE/count、容忍无前缀）、purge 状态行 + COMPLETE 周期事件、`inhibitorEquilibrium` 跨块依赖拒收。前端合计 **111/111**。用真实内核输出对账：`transientSlugTracking/case.dict` 解析出 3 GEN / 1 MERGE / 2 OUT（含 L 字段），`transientPurgeWave/case.dict` 出两个 COMPLETE 周期（t=30 / 167.85 s）。
+
+**边界**。结构化面板只覆盖五个流保声明块，不含 wax/asphaltene/scale/sand/emulsion 等其它 opt-in 块（后续增量）；事件时间轴是报告行的展示层（不改内核事件判定），事件游标落在采样帧之间时按最近帧显示；`applyFlowAssurance` 的跨块校验只覆盖 inhibitor 依赖，gasCap 模式的 `gasR>0` 依赖仍由内核 loader 拒收（表单未读 fluid 块）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

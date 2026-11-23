@@ -246,6 +246,20 @@
               </label>
               <button id="runSlugBtn" class="primary">▶ 运行段塞</button>
             </div>
+            <!-- E2: structured flow-assurance declarations. The generated
+                 blocks are applied to the case dictionary (caseText); the
+                 "apply & run" button writes that dictionary to a temp file
+                 and submits it to the two-fluid engine. -->
+            <details class="fa-panel" id="faPanel">
+              <summary>流动保障声明（hydrate / inhibitor / slugTracking / purgeWave）</summary>
+              <div class="fa-grid" id="faGrid"></div>
+              <div class="canvas-toolbar">
+                <button id="faApplyBtn">应用到 case 字典</button>
+                <button id="faLoadBtn">从 case 字典载入</button>
+                <button id="faRunBtn" class="primary">应用并运行段塞</button>
+                <span class="hint" id="faHint">字段留空即用内核默认；勾选后生成对应声明块，取消勾选则从字典移除该块。</span>
+              </div>
+            </details>
             <div class="canvas-toolbar" id="slugSeries">
               <span class="hint">叠加量（运行后按内核 cell 行实际字段生成）：</span>
             </div>
@@ -267,6 +281,17 @@
               <span class="hint">等值带复用 F16 profileBands：按当前帧 alpha 逐段着色。</span>
             </div>
             <canvas id="slugCanvas" class="field-canvas"></canvas>
+            <div class="fa-timeline">
+              <div class="canvas-toolbar">
+                <span class="hint">事件时间轴：</span>
+                <span class="fa-legend"><i class="fa-gen"></i>GEN</span>
+                <span class="fa-legend"><i class="fa-merge"></i>MERGE</span>
+                <span class="fa-legend"><i class="fa-out"></i>OUT</span>
+                <span class="fa-legend"><i class="fa-purge"></i>吹扫相位</span>
+                <span class="hint" id="faEventCount">—</span>
+              </div>
+              <canvas id="faTimelineCanvas" class="fa-timeline-canvas"></canvas>
+            </div>
             <p class="hint" id="slugInfo">持率剖面动画：绿 = 第一相体积分数 alpha，红框 = 段塞单元（s &gt; 0），蓝 = 水（water）。</p>
           </section>
 

@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  FA_BLOCKS, FA_BLOCK_NAMES, emptyFlowAssurance, parseFlowAssurance,
+  applyFlowAssurance, flowAssuranceBlockLines, parseSlugEvents, parsePurgePhases,
+} from '../frontend/dist/flowAssurance.js';
+
+import {
   validateCaseText,
   toBarHeights,
   toLinePoints,
@@ -30,6 +35,7 @@ import {
   applyScenarioOverrides,
   upsertOutputVtk,
   upsertDictBlock,
+  removeDictBlock,
 } from '../frontend/dist/editor.js';
 import {
   UNIT_SYSTEMS,
@@ -1750,4 +1756,148 @@ test('F17 rollingWindow + monitorDrawCommands: 滚动窗口与曲线指令', () 
   const polys = commands.filter((c) => c.type === 'polyline');
   assert.equal(polys.length, 2);
   assert.ok(commands.some((c) => c.role === 'tick'));
+});
+
+// ---------------------------------------------------------------------------
+// E2: structured flow-assurance declarations (§5.175)
+// ---------------------------------------------------------------------------
+
+const FA_CASE = [
+  'fluid { rho 1000; mu 0.001; }',
+  'nodes { A { pressure 1e6; } B { fixedPressure 0; } }',
+  'time { dt 0.1; endTime 10; }',
+  '',
+].join('\n');
+
+test('E2 FA_BLOCKS: 五个声明块的键表与内核 loader 对齐', () => {
+  assert.deepEqual(FA_BLOCK_NAMES, [
+    'hydrate', 'inhibitor', 'inhibitorEquilibrium', 'slugTracking', 'purgeWave',
+  ]);
+  assert.ok(FA_BLOCKS.hydrate.fields.some((f) => f.key === 'latentHeat' && f.required));
+  assert.ok(FA_BLOCKS.inhibitor.fields.some((f) => f.key === 'kDepression'));
+  assert.ok(FA_BLOCKS.slugTracking.fields.some((f) => f.key === 'velocityMode'));
+  assert.ok(FA_BLOCKS.purgeWave.fields.some((f) => f.key === 'gasCapTime' && f.required));
+});
+
+test('E2 parseFlowAssurance: 从字典读出五个块，空字典全关', () => {
+  const empty = parseFlowAssurance(FA_CASE);
+  assert.ok(FA_BLOCK_NAMES.every((n) => !empty[n].enabled));
+  const withBlocks = FA_CASE + `
+hydrate { curveA 35.2; curveB -5684; growthRate 0.01; dissociationRate 0.01;
+  gasContent 122; latentHeat 4.2e8; initial 0.04; }
+inhibitor { kDepression 5; initial 0.3; }
+inhibitorEquilibrium { activityK 8; basis liquid; }
+slugTracking { enable true; alphaThreshold 0.45; minLength 0.5;
+  velocityMode constant; slugVelocity 1.5; }
+purgeWave { enable true; triggerFactor 1; continuityAlpha 0.5;
+  waveMode constant; uWave 2; gasCapTime 20; alphaResidual 0.05; maxCycles 0; }
+`;
+  const parsed = parseFlowAssurance(withBlocks);
+  assert.equal(parsed.hydrate.enabled, true);
+  assert.equal(parsed.hydrate.values.curveA, '35.2');
+  assert.equal(parsed.inhibitorEquilibrium.values.activityK, '8');
+  assert.equal(parsed.slugTracking.values.velocityMode, 'constant');
+  assert.equal(parsed.purgeWave.values.uWave, '2');
+});
+
+test('E2 flowAssuranceBlockLines: 渲染 + 内核守卫（拒收非法组合）', () => {
+  const lines = flowAssuranceBlockLines('slugTracking', {
+    enable: 'true', alphaThreshold: '0.45', minLength: '0.5',
+    velocityMode: 'constant', slugVelocity: '1.5',
+  });
+  assert.deepEqual(lines, [
+    'enable true;', 'alphaThreshold 0.45;', 'minLength 0.5;',
+    'velocityMode constant;', 'slugVelocity 1.5;',
+  ]);
+  // constant mode without slugVelocity is refused
+  assert.throws(() => flowAssuranceBlockLines('slugTracking', {
+    velocityMode: 'constant',
+  }), /slugVelocity/);
+  // purgeWave: alphaResidual must stay below continuityAlpha
+  assert.throws(() => flowAssuranceBlockLines('purgeWave', {
+    gasCapTime: '20', continuityAlpha: '0.3', alphaResidual: '0.5',
+  }), /alphaResidual/);
+  // hydrate.initial out of range is refused
+  assert.throws(() => flowAssuranceBlockLines('hydrate', {
+    curveA: '35', curveB: '-5000', growthRate: '0.01', dissociationRate: '0.01',
+    gasContent: '122', latentHeat: '4e8', initial: '1.4',
+  }), /initial/);
+  // non-finite number refused
+  assert.throws(() => flowAssuranceBlockLines('inhibitor', {
+    kDepression: 'NaN',
+  }), /有限数值/);
+});
+
+test('E2 applyFlowAssurance: 生成/替换/移除块，往返稳定', () => {
+  const form = emptyFlowAssurance();
+  form.slugTracking = {
+    enabled: true,
+    values: { enable: 'true', alphaThreshold: '0.45', velocityMode: 'constant', slugVelocity: '1.5' },
+  };
+  const added = applyFlowAssurance(FA_CASE, form);
+  assert.ok(added.includes('slugTracking'));
+  assert.ok(added.includes('slugVelocity 1.5;'));
+  assert.ok(added.includes('time { dt 0.1; endTime 10; }'), 'sibling block survives');
+  // re-parse and re-apply is byte-identical
+  const reparsed = parseFlowAssurance(added);
+  assert.equal(applyFlowAssurance(added, reparsed), added);
+  // switch off -> block removed entirely
+  reparsed.slugTracking.enabled = false;
+  const removed = applyFlowAssurance(added, reparsed);
+  assert.ok(!removed.includes('slugTracking'));
+  assert.ok(removed.includes('time { dt 0.1; endTime 10; }'));
+});
+
+test('E2 removeDictBlock: 移除顶层块，保留同名键的其它块', () => {
+  const t = 'hydrate { curveA 1; }\ntime { dt 1; hydrateLike 2; }\n';
+  const out = removeDictBlock(t, 'hydrate');
+  assert.ok(!out.includes('curveA'));
+  assert.ok(out.includes('hydrateLike 2;'), 'prefix-matching key in another block untouched');
+  assert.equal(removeDictBlock(t, 'absent'), t);
+});
+
+test('E2 parseSlugEvents: 从 slugtrack 报告行取 GEN/MERGE/OUT，跳过 NONE', () => {
+  const out = [
+    '[chflow] slugtrack 0 t 5.55 xR 0 xF 1 inv 0.46 uF 1.5 uR 0.73 event NONE',
+    '[chflow] slugtrack 0 t 5.55 xR 0 xF 1 inv 0.46 uF 1.5 uR 0.73 event GEN',
+    '[chflow] slugtrack 1 t 6.2 xR 3 xF 4 inv 0.5 uF 1.5 uR 0.8 event MERGE',
+    '[chflow] slugtrack 0 t 12.4 xR 18 xF 20 inv 0.4 uF 1.5 uR 0.9 event OUT out 0.8 duration 6.85',
+    '[chflow] slugtrack count 3',
+  ].join('\n');
+  const ev = parseSlugEvents(out);
+  assert.equal(ev.length, 3);
+  assert.deepEqual(ev.map((e) => e.kind), ['GEN', 'MERGE', 'OUT']);
+  assert.equal(ev[2].t, 12.4);
+  assert.equal(ev[2].out, 0.8);
+  assert.equal(ev[2].duration, 6.85);
+  assert.equal(parseSlugEvents('').length, 0);
+  // tolerate log lines without a [chflow] prefix
+  assert.equal(parseSlugEvents('slugtrack 0 t 1 event GEN').length, 1);
+});
+
+test('E2 parsePurgePhases: 状态行 + COMPLETE 周期事件都进时间轴', () => {
+  const out = [
+    '[chflow] purge t 0 phase NONE x_wave 0 u_wave 0 cap 0 pbase 0 head 0 cycles 0 out 0',
+    '[chflow] purge t 30 phase COMPLETE x_wave 60 u_wave 2 cap 1e5 pbase 4e4 head 3 cycles 1 out 54',
+    '[chflow] purge t 30 x_wave 60 head 3 cap 1e5 phase COMPLETE cycle 1 out 54 duration 29.95 period 0',
+    '[chflow] purge t 30 x_wave 60 head 3 cap 1e5 phase COMPLETE', // sub-row: skipped
+  ].join('\n');
+  const ph = parsePurgePhases(out);
+  assert.equal(ph.length, 3);
+  assert.deepEqual(ph.map((p) => p.kind), ['state', 'state', 'event']);
+  assert.equal(ph[2].cycle, 1);
+  assert.equal(ph[2].phase, 'COMPLETE');
+  assert.equal(ph[2].t, 30);
+  assert.equal(ph[0].phase, 'NONE');
+});
+
+test('E2 applyFlowAssurance: inhibitorEquilibrium 缺 inhibitor{} 时拒收', () => {
+  const form = emptyFlowAssurance();
+  form.inhibitorEquilibrium = { enabled: true, values: { activityK: '8' } };
+  assert.throws(() => applyFlowAssurance(FA_CASE, form), /inhibitor/);
+  // with inhibitor enabled in the same form it is accepted
+  form.inhibitor = { enabled: true, values: { kDepression: '5' } };
+  const out = applyFlowAssurance(FA_CASE, form);
+  assert.ok(out.includes('activityK 8;'));
+  assert.ok(out.includes('kDepression 5;'));
 });

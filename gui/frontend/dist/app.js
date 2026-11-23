@@ -53,6 +53,10 @@ import {
 import {
   createMonitorState, feedMonitor, monitorDrawCommands,
 } from './monitor.js';
+import {
+  FA_BLOCKS, FA_BLOCK_NAMES, parseFlowAssurance, applyFlowAssurance,
+  parseSlugEvents, parsePurgePhases,
+} from './flowAssurance.js';
 
 // ---------------------------------------------------------------------------
 // state
@@ -129,7 +133,12 @@ const state = {
     ],
     history: [], key: null,
   },
-  slug: { frames: [], idx: 0, playing: false, timer: null, series: ['p'], bands: false },
+  slug: {
+    frames: [], idx: 0, playing: false, timer: null, series: ['p'], bands: false,
+    // E2: slugTracking events + purgeWave phase timeline from the kernel log.
+    events: [], purge: [], tMin: 0, tMax: 1,
+  },
+  flowAssurance: null,
   regime: { diameter: 0.05, vsl: 0.1, vsg: 0.3 },
   tornado: { rows: [], running: false, data: null },
   paramSets: [],
@@ -260,6 +269,8 @@ function switchTab(tabId) {
   }
   if (tabId === 'field') renderField();
   if (tabId === 'slug' && state.slug.frames.length) renderSlugFrame();
+  // E2: the timeline canvas has zero clientWidth while hidden; redraw on entry.
+  if (tabId === 'slug') renderFlowAssuranceTimeline();
   if (tabId === 'regime') renderRegimeMap();
   if (tabId === 'paramsets') renderParamSets();
 }
@@ -1974,6 +1985,8 @@ function renderSlugFrame() {
   $('slugReadout').textContent =
     `t=${fr.t} · vm=${fr.vm} · dp=${fr.dp} · 帧 ${s.idx + 1}/${s.frames.length}` +
     (legend.length ? ` · 叠画 ${legend.map((l) => l.key).join('/')}` : '');
+  // E2: keep the flow-assurance event playhead in sync with the frame.
+  renderFlowAssuranceTimeline();
 }
 
 /** U3: rebuild the series checkboxes from the keys the frames actually carry. */
@@ -2056,6 +2069,193 @@ async function runSlug() {
 }
 $('runSlugBtn').addEventListener('click', runSlug);
 
+// ---------------------------------------------------------------------------
+// E2: structured flow-assurance declarations + event timeline
+// ---------------------------------------------------------------------------
+
+/** Build the five block editors once; each has an enable checkbox and per-key
+ * inputs typed from FA_BLOCKS (num -> number input, word -> select). */
+function buildFlowAssuranceGrid() {
+  const grid = $('faGrid');
+  if (!grid || grid.childElementCount) return;
+  for (const name of FA_BLOCK_NAMES) {
+    const spec = FA_BLOCKS[name];
+    const box = document.createElement('div');
+    box.className = 'fa-block';
+    box.dataset.block = name;
+    const head = document.createElement('div');
+    head.className = 'fa-head';
+    const chk = document.createElement('input');
+    chk.type = 'checkbox';
+    chk.id = `fa-${name}-on`;
+    const label = document.createElement('label');
+    label.htmlFor = chk.id;
+    label.textContent = spec.label;
+    head.append(chk, label);
+    box.append(head);
+    const fields = document.createElement('div');
+    fields.className = 'fa-fields';
+    for (const f of spec.fields) {
+      const wrap = document.createElement('label');
+      const key = document.createElement('span');
+      key.className = 'fa-key';
+      key.textContent = f.key;
+      key.title = f.hint || '';
+      let input;
+      if (f.kind === 'word' && f.options) {
+        input = document.createElement('select');
+        const blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = '—';
+        input.append(blank);
+        for (const opt of f.options) {
+          const o = document.createElement('option');
+          o.value = opt;
+          o.textContent = opt;
+          input.append(o);
+        }
+      } else {
+        input = document.createElement('input');
+        input.type = 'text';
+        input.spellcheck = false;
+      }
+      input.id = `fa-${name}-${f.key}`;
+      input.placeholder = f.required ? '必填' : '默认';
+      wrap.append(key, input);
+      fields.append(wrap);
+    }
+    box.append(fields);
+    chk.addEventListener('change', () => {
+      box.classList.toggle('off', !chk.checked);
+    });
+    box.classList.add('off');
+    grid.append(box);
+  }
+}
+
+/** Read the form model from the grid inputs. */
+function readFlowAssuranceForm() {
+  const form = {};
+  for (const name of FA_BLOCK_NAMES) {
+    const enabled = !!$(`fa-${name}-on`)?.checked;
+    const values = {};
+    for (const f of FA_BLOCKS[name].fields) {
+      const el = $(`fa-${name}-${f.key}`);
+      if (el && el.value.trim()) values[f.key] = el.value.trim();
+    }
+    form[name] = { enabled, values };
+  }
+  return form;
+}
+
+/** Populate the grid inputs from a parsed form model. */
+function renderFlowAssuranceForm(form) {
+  for (const name of FA_BLOCK_NAMES) {
+    const entry = form[name] || { enabled: false, values: {} };
+    const chk = $(`fa-${name}-on`);
+    if (!chk) continue;
+    chk.checked = entry.enabled;
+    const box = chk.closest('.fa-block');
+    if (box) box.classList.toggle('off', !entry.enabled);
+    for (const f of FA_BLOCKS[name].fields) {
+      const el = $(`fa-${name}-${f.key}`);
+      if (el) el.value = entry.values[f.key] ?? '';
+    }
+  }
+}
+
+/** Apply the current form to the case dictionary textarea. */
+function applyFlowAssuranceToCase() {
+  const form = readFlowAssuranceForm();
+  const text = $('caseText').value;
+  let next;
+  try {
+    next = applyFlowAssurance(text, form);
+  } catch (e) {
+    setStatus(`流动保障声明校验失败：${e.message}`, 'error');
+    return null;
+  }
+  $('caseText').value = next;
+  state.flowAssurance = form;
+  return next;
+}
+
+/** Apply the declarations, write the resulting dictionary to a temp file and
+ * run it through the two-fluid engine (the slug job takes a path). */
+async function applyAndRunSlug() {
+  const text = applyFlowAssuranceToCase();
+  if (text === null) return;
+  const path = `/tmp/chflow_gui_flow_assurance_${Date.now()}.dict`;
+  try {
+    await invoke('write_text_file', { path, content: text });
+    $('slugCasePath').value = path;
+    stopSlugPlayback();
+    await startJob('slug', path, true);
+    setStatus('已应用流动保障声明并提交段塞求解。', 'ok');
+  } catch (e) {
+    setStatus(`应用并运行段塞失败：${e}`, 'error');
+  }
+}
+
+/** Draw the event timeline onto the small canvas: one lane for slug events,
+ * one for purge phases; a playhead tracks the current frame. */
+function renderFlowAssuranceTimeline() {
+  const cv = $('faTimelineCanvas');
+  if (!cv) return;
+  const ctx = cv.getContext('2d');
+  const w = cv.width = Math.max(320, cv.clientWidth || 640);
+  const h = cv.height = 42;
+  const light = document.documentElement.dataset.theme !== 'dark';
+  ctx.clearRect(0, 0, w, h);
+  ctx.fillStyle = light ? '#fafbfc' : '#1b1e23';
+  ctx.fillRect(0, 0, w, h);
+  const s = state.slug;
+  const t0 = s.tMin, t1 = s.tMax;
+  const xOf = (t) => 8 + (w - 16) * ((t - t0) / Math.max(1e-9, t1 - t0));
+  // lanes: slug events (y 10), purge phases (y 28)
+  const colors = light
+    ? { GEN: '#2e9e5b', MERGE: '#d48a1e', OUT: '#c0392b', purge: '#3a6ea5' }
+    : { GEN: '#5fd08a', MERGE: '#f0b45c', OUT: '#ef6f63', purge: '#6fa3dc' };
+  for (const ev of s.events || []) {
+    if (!Number.isFinite(ev.t)) continue;
+    ctx.fillStyle = colors[ev.kind] || '#888';
+    ctx.fillRect(xOf(ev.t) - 2, 6, 4, 10);
+  }
+  for (const p of s.purge || []) {
+    if (!Number.isFinite(p.t)) continue;
+    ctx.fillStyle = colors.purge;
+    if (p.kind === 'event' && p.phase === 'COMPLETE') {
+      // completed cycle: a taller bar so the period is legible on the lane
+      ctx.fillRect(xOf(p.t) - 2, 24, 4, 12);
+    } else {
+      ctx.fillRect(xOf(p.t) - 1, 26, 2, 8);
+    }
+  }
+  // time axis baseline + playhead
+  ctx.strokeStyle = light ? '#d0d7de' : '#444b55';
+  ctx.beginPath();
+  ctx.moveTo(8, 21); ctx.lineTo(w - 8, 21);
+  ctx.stroke();
+  if (s.frames.length && Number.isFinite(s.frames[s.idx]?.t)) {
+    ctx.strokeStyle = light ? '#333' : '#eee';
+    ctx.beginPath();
+    const px = xOf(s.frames[s.idx].t);
+    ctx.moveTo(px, 2); ctx.lineTo(px, h - 2);
+    ctx.stroke();
+  }
+}
+
+buildFlowAssuranceGrid();
+$('faLoadBtn')?.addEventListener('click', () => {
+  renderFlowAssuranceForm(parseFlowAssurance($('caseText').value));
+  setStatus('已从 case 字典载入流动保障声明。');
+});
+$('faApplyBtn')?.addEventListener('click', () => {
+  if (applyFlowAssuranceToCase() !== null) setStatus('已应用流动保障声明到 case 字典。', 'ok');
+});
+$('faRunBtn')?.addEventListener('click', () => { applyAndRunSlug(); });
+// form initialization happens at startup, after caseText gets its default
+
 function onSlugDone(fullOutput) {
   const frames = parseTwoFluidFrames(fullOutput);
   if (!frames.length) {
@@ -2065,6 +2265,14 @@ function onSlugDone(fullOutput) {
   const s = state.slug;
   s.frames = frames;
   s.idx = 0;
+  // E2: parse the kernel's flow-assurance report rows for the event timeline.
+  s.events = parseSlugEvents(fullOutput);
+  s.purge = parsePurgePhases(fullOutput);
+  s.tMin = frames[0].t;
+  s.tMax = frames.at(-1).t;
+  $('faEventCount').textContent =
+    `${s.events.length} 个段塞事件 / ${s.purge.length} 个吹扫相位`;
+  renderFlowAssuranceTimeline();
   const slider = $('slugFrame');
   slider.max = String(frames.length - 1);
   slider.value = '0';
@@ -4011,6 +4219,10 @@ function afterModelChange(syncDict = true) {
 // ---------------------------------------------------------------------------
 
 caseText.value = DEFAULT_CASE;
+
+// E2: initialize the flow-assurance form from the case dictionary now that
+// it carries its default text (the grid was built earlier at module load).
+renderFlowAssuranceForm(parseFlowAssurance(caseText.value));
 
 reflectEngines();
 

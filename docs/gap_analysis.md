@@ -415,6 +415,8 @@
 > **来源**：产品愿景对齐审计（一维稳态管网对标 Pipesim + 一维瞬态多相流动保障对标 OLGA + 三维有限体积 CFD 对标 Fluent + 1D↔3D 耦合）+ GUI 双路代码审计。**结论**：11 个页签无空壳（9 个直连真实引擎），内核层面对标矩阵已全收口（benchmark_alignment 1.1 ✅21/❌0、1.3 ✅17/❌0），但**产品层面存在两类新缺口**——(a) 内核能力 GUI 无入口（集成断链）；(b) 对标 OLGA 的部分场景内核也没有（真缺口）。同轮 GUI 布局缺陷（主页签窄窗竖排挤压、折叠侧 1fr 空白列）已当轮修复（commit 1023dd0）。
 >
 > **第一轮收口（2026-11-23，§5.170–§5.174）**：E5（流型图对账）、E8（PWHc 状态包）、E9（引擎路径可移植性）CLOSED；E3 内核多段事件表 CLOSED（GUI 时间轴编辑器仍 OPEN）；E1 PISO 单条 3D 通路接通、其余 3D app 入口仍 OPEN。新增 CTest `verify.transientMultiSchedule`（48 判据）与 `verify.pvtHydratePWHc`（125 判据）；GUI 前端 103/103、Rust 32/32 绿。
+>
+> **第二轮收口（2026-11-23，§5.175）**：E2 CLOSED——段塞页新增五个流动保障声明块的结构化表单与 GEN/MERGE/OUT + 吹扫周期事件时间轴；前端 111/111（+8 条 E2 测试），内核事件解析用真实算例对账。
 
 ### E1. 3D 求解器 GUI 入口（产品层最大断链）
 
@@ -426,7 +428,7 @@
 
 ### E2. 瞬态流动保障结构化面板
 
-- **当前状态**：`OPEN`
+- **当前状态**：`CLOSED（§5.175，五块结构化表单 + 事件时间轴 + 8 条前端测试；前端 111/111）`
 - **差距**：内核齐全——`hydrate{}`（ln(p) 平衡线 + 一阶动力学 + 潜热，twoFluid.cpp:3068-3078）、`inhibitor{}`（Hammerschmidt 温降 + inhibitorEquilibrium 活度根，§5.141/§5.163）、`slugTracking{}`（拉格朗日前缘追踪 GEN/MERGE/OUT 事件，§5.161）、`purgeWave{}`（立管吹扫波，§5.162）——但 GUI 无任何结构化设置入口（grep gui/ 中 hydrate 只命中输出解析），只能手改 dict。
 - **建议实施**：段塞动画页/属性面板增四个声明块的结构化编辑（对齐 U10 what-if 的 applyWhatIfOverrides 精确替换模式），slugTracking 事件日志进段塞时间轴。
 - **成本估计**：~1.5 增量

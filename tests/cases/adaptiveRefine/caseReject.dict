@@ -1,0 +1,18 @@
+// F13 rejection case: a non-positive gradient threshold is meaningless
+// (it would mark even a perfectly uniform field), so the app must reject it
+// loudly with a nonzero exit code.
+block
+{
+    min  (0 0 0);
+    max  (1 1 0.1);
+    cells (8 8 1);
+}
+
+adapt
+{
+    gradientThreshold -1;
+    maxDepth 3;
+    field linear;
+    gradient (1 0 0);
+    offset 0;
+}

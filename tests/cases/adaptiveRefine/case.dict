@@ -1,0 +1,28 @@
+// F13 main case: an 8 x 8 x 1 block hex mesh with a scalar step at x = 0.55.
+// The gradient indicator is nonzero only on cells straddling the interface,
+// so refinement must localise there and stop at maxDepth. Per-cell output is
+// enabled so the checker can verify the refined cell set independently.
+block
+{
+    min  (0 0 0);
+    max  (1 1 0.1);
+    cells (8 8 1);
+    xmin { name left;   type wall; }
+    xmax { name right;  type wall; }
+    ymin { name bottom; type wall; }
+    ymax { name top;    type wall; }
+    zmin { name front;  type symmetry; }
+    zmax { name back;   type symmetry; }
+}
+
+adapt
+{
+    gradientThreshold 3;
+    maxDepth 3;
+    field step;
+    axis x;
+    interface 0.55;
+    low 0.0;
+    high 1.0;
+    dumpCells yes;
+}

@@ -524,3 +524,22 @@ textarea { flex: 1; min-height: 160px; resize: none; }
 .fa-legend .fa-merge { background: #d48a1e; }
 .fa-legend .fa-out { background: #c0392b; }
 .fa-legend .fa-purge { background: #3a6ea5; }
+
+/* E3: multi-segment schedule timeline editor (dict tab panel) */
+.sched-body { padding: 6px 10px; display: flex; flex-direction: column; gap: 8px; max-height: 340px; overflow: auto; }
+.sched-valve, .sched-source { border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; min-width: 0; }
+.sched-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 11px; margin-bottom: 4px; }
+.sched-head b { font-size: 11px; }
+.sched-head label { display: inline-flex; align-items: center; gap: 4px; }
+.sched-head input[type="text"] { font-size: 11px; padding: 2px 4px; width: 90px; }
+.sched-svg { background: var(--canvas); border: 1px solid var(--line); border-radius: 4px; }
+.sched-svg .sched-line { fill: none; stroke: #3a6ea5; stroke-width: 1.6; }
+.sched-svg .sched-dot { fill: #2e9e5b; }
+.sched-svg .sched-axis { stroke: var(--line); }
+.sched-evs { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
+.sched-evrow { display: grid; grid-template-columns: 110px 130px 24px; gap: 6px; align-items: center; }
+.sched-evrow input { font-size: 11px; padding: 2px 4px; width: 100%; }
+.sched-evhead { font-size: 10px; color: var(--muted); }
+.sched-evhead span { padding: 0 2px; }
+.sched-source.off .sched-evs { opacity: 0.4; pointer-events: none; }
+.sched-addrow { margin: 2px 0 0; }

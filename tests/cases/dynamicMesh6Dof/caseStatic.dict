@@ -1,0 +1,34 @@
+// Static twin: meshVelocity = 0 and bodyForce = 0 (and zero initial angle /
+// angular velocity). The moving-mesh/6DOF machinery must reduce exactly to
+// the fixed-mesh answer: uniform scalar unchanged, GCL residual zero, body at
+// rest (x = v = theta = omega = 0) for every step.
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (20 1 1);
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type symmetry; }
+    ymax  { name top;    type symmetry; }
+    zmin  { name front;  type empty;    }
+    zmax  { name back;   type empty;    }
+}
+
+dynamicMesh
+{
+    meshVelocity  (0 0 0);
+    fluidVelocity (0 0 0);
+    bodyForce     (0 0 0);
+    mass          2;
+    drag          1;
+    inertia       0.5;
+    rotDrag       0.1;
+    rotStiffness  4;
+    theta0        0;
+    omega0        0;
+    initialValue  7;
+    dt            0.01;
+    steps         20;
+    reportEvery   1;
+}

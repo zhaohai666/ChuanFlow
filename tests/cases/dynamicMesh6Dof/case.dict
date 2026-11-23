@@ -1,0 +1,37 @@
+// dynamicMesh6Dof: a 1D slab translated rigidly by U_mesh = (0.5,0,0) while a
+// passive scalar (uniform phi0 = 7) is transported with the relative face flux
+// phi_rel = (U - U_mesh).Sf and the GCL correction. A rigid body with mass 2,
+// linear drag 1 and force (10,0,0) accelerates towards v = F/k = 10, and a
+// rotational DOF (I=0.5, rotDrag=0.1, stiffness=4) performs a damped harmonic
+// oscillation. The checker verifies uniform-scalar invariance, tight GCL mass
+// balance, both closed-form body solutions and a static twin.
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (20 1 1);
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type symmetry; }
+    ymax  { name top;    type symmetry; }
+    zmin  { name front;  type empty;    }
+    zmax  { name back;   type empty;    }
+}
+
+dynamicMesh
+{
+    meshVelocity  (0.5 0 0);
+    fluidVelocity (0 0 0);
+    bodyForce     (10 0 0);
+    mass          2;
+    drag          1;
+    inertia       0.5;
+    rotDrag       0.1;
+    rotStiffness  4;
+    theta0        0.1;
+    omega0        0;
+    initialValue  7;
+    dt            0.01;
+    steps         200;
+    reportEvery   1;
+}

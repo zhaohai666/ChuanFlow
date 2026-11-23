@@ -146,9 +146,9 @@ input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); bo
     'left center right'
     'left bottom bottom';
 }
-.workspace.no-left { grid-template-columns: 1fr 1fr 290px; }
-.workspace.no-right { grid-template-columns: 250px 1fr 1fr; }
-.workspace.no-left.no-right { grid-template-columns: 1fr 1fr; }
+.workspace.no-left { grid-template-columns: 18px 1fr 290px; }
+.workspace.no-right { grid-template-columns: 250px 1fr 18px; }
+.workspace.no-left.no-right { grid-template-columns: 18px 1fr 18px; }
 
 .dock {
   background: var(--panel);
@@ -224,6 +224,7 @@ input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); bo
 .center { grid-area: center; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .tabbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 2px;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
@@ -237,6 +238,8 @@ input:focus, textarea:focus, select:focus { outline: 1px solid var(--accent); bo
   padding: 5px 14px;
   color: var(--muted);
   font-size: 12px;
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 .tabbar .tab.active {
   color: var(--text);
@@ -467,6 +470,7 @@ textarea { flex: 1; min-height: 160px; resize: none; }
 .scen-item .badge { font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }
 .scen-edit { border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
 .scen-results { padding: 0 14px 14px; }
+.pane-results-title { padding: 0 14px; margin: 0 0 6px; font-size: 13px; }
 .scen-results .chart-box, .scen-results > svg { margin-top: 8px; }
 .bad { color: var(--bad); }
 

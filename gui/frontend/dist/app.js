@@ -58,6 +58,9 @@ import {
   FA_BLOCKS, FA_BLOCK_NAMES, parseFlowAssurance, applyFlowAssurance,
   parseSlugEvents, parsePurgePhases,
 } from './flowAssurance.js';
+import {
+  parseSchedules, pipeNames, applySchedules, esdPreset, timelineSvg,
+} from './scheduleEditor.js';
 
 // ---------------------------------------------------------------------------
 // state
@@ -2257,6 +2260,169 @@ $('faApplyBtn')?.addEventListener('click', () => {
 });
 $('faRunBtn')?.addEventListener('click', () => { applyAndRunSlug(); });
 // form initialization happens at startup, after caseText gets its default
+
+// ---------------------------------------------------------------------------
+// E3: multi-segment schedule timeline editor (valveSchedule / sourceSchedule)
+// ---------------------------------------------------------------------------
+
+/** Form model for the schedule panel: valve tables keyed by pipe name (the
+ * kernel's own {t, k} rows), plus the top-level source schedule ({t, rate}
+ * rows targeting one node). Empty string cells are read as-is and rejected
+ * loudly by applySchedules' kernel-aligned guards. */
+let schedModel = { valves: {}, source: null };
+
+const escAttr = (v) => String(v).replace(/[&<>"']/g, (c) => (
+  { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function schedEventRowsHtml(events, key) {
+  return events.map((ev, i) => `
+      <div class="sched-evrow" data-i="${i}">
+        <input class="sched-t" type="text" spellcheck="false" value="${escAttr(ev.t)}" />
+        <input class="sched-v" type="text" spellcheck="false" value="${escAttr(ev[key])}" />
+        <button class="mini sched-del-ev" title="删除事件">×</button>
+      </div>`).join('');
+}
+
+/** Rebuild the panel body from schedModel (timelines are pure SVG strings). */
+function renderSchedulePanel() {
+  const body = $('schedBody');
+  if (!body) return;
+  const m = schedModel || { valves: {}, source: null };
+  const parts = [];
+  for (const [pipe, events] of Object.entries(m.valves)) {
+    parts.push(`
+      <div class="sched-valve" data-pipe="${escAttr(pipe)}">
+        <div class="sched-head">
+          <b>阀日程 · ${escAttr(pipe)}</b>
+          ${timelineSvg(events, 'k', 400, 80)}
+          <button class="mini sched-del-block" title="从模型移除，应用后从字典删除该管段的 valveSchedule 块">移除日程</button>
+        </div>
+        <div class="sched-evs">
+          <div class="sched-evrow sched-evhead"><span>t (s)</span><span>k</span><span></span></div>
+          ${schedEventRowsHtml(events, 'k')}
+          <button class="mini sched-add-ev">＋ 事件</button>
+        </div>
+      </div>`);
+  }
+  const src = m.source || { enabled: false, node: '', events: [] };
+  parts.push(`
+      <div class="sched-source${src.enabled ? '' : ' off'}">
+        <div class="sched-head">
+          <label class="chk"><input type="checkbox" class="sched-src-on"${src.enabled ? ' checked' : ''} /> sourceSchedule（顶层注入率事件表）</label>
+          <label>node <input class="sched-node" type="text" spellcheck="false" value="${escAttr(src.node)}" /></label>
+          ${timelineSvg(src.events, 'rate', 400, 80)}
+        </div>
+        <div class="sched-evs">
+          <div class="sched-evrow sched-evhead"><span>t (s)</span><span>rate</span><span></span></div>
+          ${schedEventRowsHtml(src.events, 'rate')}
+          <button class="mini sched-add-ev">＋ 事件</button>
+        </div>
+      </div>`);
+  const declared = new Set(Object.keys(m.valves));
+  const options = pipeNames($('caseText').value)
+    .filter((n) => !declared.has(n))
+    .map((n) => `<option value="${escAttr(n)}">${escAttr(n)}</option>`).join('');
+  parts.push(`
+      <div class="canvas-toolbar sched-addrow">
+        <label>给管段加阀日程
+          <select id="schedPipeSel">${options || '<option value="">（没有未声明日程的管段）</option>'}</select>
+        </label>
+        <button id="schedAddValveBtn" class="mini">＋ 添加阀日程</button>
+        <span class="hint">留空/非法数在应用时被守卫拒收；相等相邻 t 为 STEP 关断；首尾值保持。</span>
+      </div>`);
+  body.innerHTML = parts.join('');
+}
+
+/** Read the panel rows back into the schedule model. */
+function readScheduleForm() {
+  const valves = {};
+  for (const box of $('schedBody').querySelectorAll('.sched-valve')) {
+    valves[box.dataset.pipe] = [...box.querySelectorAll('.sched-evrow[data-i]')]
+      .map((row) => ({
+        t: row.querySelector('.sched-t').value.trim(),
+        k: row.querySelector('.sched-v').value.trim(),
+      }));
+  }
+  const src = $('schedBody').querySelector('.sched-source');
+  const source = src ? {
+    enabled: src.querySelector('.sched-src-on').checked,
+    node: src.querySelector('.sched-node').value.trim(),
+    events: [...src.querySelectorAll('.sched-evrow[data-i]')].map((row) => ({
+      t: row.querySelector('.sched-t').value.trim(),
+      rate: row.querySelector('.sched-v').value.trim(),
+    })),
+  } : null;
+  return { valves, source };
+}
+
+/** Apply the panel model to the case dictionary textarea. */
+function applySchedulesToCase() {
+  let next;
+  try {
+    next = applySchedules($('caseText').value, readScheduleForm());
+  } catch (e) {
+    setStatus(`日程事件表校验失败：${e.message}`, 'error');
+    return null;
+  }
+  $('caseText').value = next;
+  return next;
+}
+
+// structural edits read the current rows first, mutate the model, re-render
+$('schedBody').addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  if (btn.id === 'schedAddValveBtn') {
+    const sel = $('schedPipeSel');
+    if (!sel || !sel.value) return;
+    schedModel = readScheduleForm();
+    if (!schedModel.valves[sel.value]) schedModel.valves[sel.value] = [{ t: 0, k: 20 }];
+    renderSchedulePanel();
+    return;
+  }
+  const box = btn.closest('[data-pipe], .sched-source');
+  schedModel = readScheduleForm();
+  if (btn.classList.contains('sched-add-ev')) {
+    const ev = { t: '' };
+    ev[box.dataset.pipe !== undefined ? 'k' : 'rate'] = '';
+    if (box.dataset.pipe !== undefined) schedModel.valves[box.dataset.pipe].push(ev);
+    else schedModel.source.events.push(ev);
+    renderSchedulePanel();
+  } else if (btn.classList.contains('sched-del-ev')) {
+    const i = Number(btn.closest('.sched-evrow').dataset.i);
+    if (box.dataset.pipe !== undefined) schedModel.valves[box.dataset.pipe].splice(i, 1);
+    else schedModel.source.events.splice(i, 1);
+    renderSchedulePanel();
+  } else if (btn.classList.contains('sched-del-block')) {
+    delete schedModel.valves[box.dataset.pipe];
+    renderSchedulePanel();
+  }
+});
+
+$('schedBody').addEventListener('change', (e) => {
+  if (e.target.classList.contains('sched-src-on')) {
+    e.target.closest('.sched-source').classList.toggle('off', !e.target.checked);
+  }
+});
+
+$('schedLoadBtn')?.addEventListener('click', () => {
+  schedModel = parseSchedules($('caseText').value);
+  renderSchedulePanel();
+  setStatus('已从 case 字典载入多段日程事件表。');
+});
+$('schedApplyBtn')?.addEventListener('click', () => {
+  if (applySchedulesToCase() !== null) setStatus('已应用多段日程事件表到 case 字典。', 'ok');
+});
+$('schedEsdBtn')?.addEventListener('click', () => {
+  try {
+    schedModel = esdPreset(readScheduleForm(),
+      Number($('esdTime').value), Number($('esdClosedK').value));
+    renderSchedulePanel();
+    setStatus('已生成 ESD 预设（全部阀日程在给定时刻 STEP 关闭），点「应用到 case 字典」写入。', 'ok');
+  } catch (e) {
+    setStatus(`ESD 预设失败：${e.message}`, 'error');
+  }
+});
 
 function onSlugDone(fullOutput) {
   const frames = parseTwoFluidFrames(fullOutput);

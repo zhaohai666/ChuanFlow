@@ -523,6 +523,27 @@
                 <pre id="status" class="status">字典编辑：应用后模型/画布/项目树同步刷新。</pre>
               </div>
             </div>
+            <!-- E3: multi-segment schedule timeline editor. valveSchedule{}
+                 lives inside a pipes entry, sourceSchedule{} at the top level;
+                 both price K(t)/rate(t) piecewise-linearly with equal-t STEP
+                 pairs (kernel §5.170). -->
+            <details class="fa-panel" id="schedPanel">
+              <summary>多段日程时间轴编辑器（valveSchedule / sourceSchedule · ESD 预设）</summary>
+              <div id="schedBody" class="sched-body"></div>
+              <div class="canvas-toolbar">
+                <button id="schedApplyBtn">应用到 case 字典</button>
+                <button id="schedLoadBtn">从 case 字典载入</button>
+                <span class="sep"></span>
+                <label>ESD 时刻 (s)
+                  <input id="esdTime" type="text" spellcheck="false" value="5" style="width:64px" />
+                </label>
+                <label>closedK
+                  <input id="esdClosedK" type="text" spellcheck="false" value="1e12" style="width:84px" />
+                </label>
+                <button id="schedEsdBtn" class="primary">应用 ESD 预设</button>
+                <span class="hint" id="schedHint">相等相邻 t 为 STEP 关断；首尾值保持；事件表在 t+dt 采样。空事件表应用即从字典移除该块。</span>
+              </div>
+            </details>
           </section>
         </div>
       </div>

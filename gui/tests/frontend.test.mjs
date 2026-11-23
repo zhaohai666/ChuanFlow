@@ -2050,3 +2050,220 @@ test('E2 applyFlowAssurance: inhibitorEquilibrium 缺 inhibitor{} 时拒收', ()
   assert.ok(out.includes('activityK 8;'));
   assert.ok(out.includes('kDepression 5;'));
 });
+
+// ===========================================================================
+// E3: multi-segment schedule timeline editor (valveSchedule / sourceSchedule)
+// ===========================================================================
+
+import {
+  SCHEDULE_KINDS, parseSchedules, pipeNames, scheduleBlockLines,
+  applySchedules, esdPreset, timelineSvg,
+} from '../frontend/dist/scheduleEditor.js';
+
+const E3_CASE = `# transientMultiSchedule-style case (kernel tests/cases/transientMultiSchedule)
+fluid { rho 850; mu 0.1; }
+
+nodes
+{
+    TANK { volume 5; bulkModulus 4.0e7; pressure 5.0e5; liquidFraction 0.8; }
+    OUT  { fixedPressure 0; }
+}
+
+pipes
+{
+    LINE
+    {
+        from TANK; to OUT;
+        length 100; diameter 0.05;
+        valveSchedule
+        {
+            events
+            {
+                { t 0.0;  k 20.0; }
+                { t 6.0;  k 1.0e12; }
+                { t 8.0;  k 1.0e12; }
+                { t 8.0;  k 20.0; }   // step: equal times are a STEP
+                { t 18.0; k 20.0; }
+            }
+        }
+    }
+    BYPASS { from TANK; to OUT; length 80; diameter 0.08; }
+}
+
+sourceSchedule
+{
+    node TANK;
+    events
+    {
+        { t 0.0;  rate 0.0; }
+        { t 4.0;  rate 0.002; }
+        { t 12.0; rate 0.0; }
+    }
+}
+
+time { dt 0.02; endTime 20; reportEvery 1; }
+`;
+
+test('E3 SCHEDULE_KINDS: 内核精确键名（valve->k, source->rate, 块名）', () => {
+  assert.equal(SCHEDULE_KINDS.valve.valueKey, 'k');
+  assert.equal(SCHEDULE_KINDS.source.valueKey, 'rate');
+  assert.equal(SCHEDULE_KINDS.valve.block, 'valveSchedule');
+  assert.equal(SCHEDULE_KINDS.source.block, 'sourceSchedule');
+});
+
+test('E3 parseSchedules: 多行块解析（含相等 t 的 STEP 对与注释行）', () => {
+  const m = parseSchedules(E3_CASE);
+  assert.deepEqual(Object.keys(m.valves), ['LINE']);
+  const ev = m.valves.LINE;
+  assert.equal(ev.length, 5);
+  assert.deepEqual(ev[3], { t: 8.0, k: 20.0 });
+  assert.equal(ev[1].k, 1.0e12);
+  assert.ok(m.source);
+  assert.equal(m.source.node, 'TANK');
+  assert.deepEqual(m.source.events, [
+    { t: 0.0, rate: 0.0 }, { t: 4.0, rate: 0.002 }, { t: 12.0, rate: 0.0 },
+  ]);
+  // pipes without a schedule stay absent from the model
+  assert.equal(parseSchedules('pipes { P { from A; to B; } }\n').valves.P, undefined);
+  assert.equal(parseSchedules('nodes { A {} }\n').source, null);
+});
+
+test('E3 parseSchedules: inline 单行块与普通 pipe 同解析', () => {
+  const t = 'pipes { LINE { from A; to B; valveSchedule { events { { t 0; k 5; } { t 3; k 1e12; } } } } }\n'
+    + 'sourceSchedule { node A; events { { t 0; rate 1e-3; } } }\n';
+  const m = parseSchedules(t);
+  assert.deepEqual(m.valves.LINE, [{ t: 0, k: 5 }, { t: 3, k: 1e12 }]);
+  assert.equal(m.source.node, 'A');
+  assert.deepEqual(m.source.events, [{ t: 0, rate: 1e-3 }]);
+});
+
+test('E3 pipeNames: 列出 pipes{} 的全部管段名', () => {
+  assert.deepEqual(pipeNames(E3_CASE), ['LINE', 'BYPASS']);
+  assert.deepEqual(pipeNames('fluid { rho 1; }\n'), []);
+});
+
+test('E3 scheduleBlockLines: 精确字典行生成（valve 与 source）', () => {
+  assert.deepEqual(scheduleBlockLines('valve', [{ t: 0, k: 20 }, { t: 6, k: 1e12 }]), [
+    'events', '{', '{ t 0; k 20; }', '{ t 6; k 1000000000000; }', '}',
+  ]);
+  assert.deepEqual(scheduleBlockLines('source', [{ t: 0, rate: 0.002 }], 'TANK'), [
+    'node TANK;', 'events', '{', '{ t 0; rate 0.002; }', '}',
+  ]);
+  assert.throws(() => scheduleBlockLines('pump', []), /unknown kind/);
+});
+
+test('E3 applySchedules: 生成-应用-再解析往返（多行嵌套块）', () => {
+  const fresh = `fluid { rho 850; mu 0.1; }
+nodes { TANK { volume 5; } OUT { fixedPressure 0; } }
+pipes { LINE { from TANK; to OUT; length 100; diameter 0.05; } }
+time { dt 0.02; endTime 20; }
+`;
+  const events = [{ t: 0, k: 20 }, { t: 6, k: 1e12 }, { t: 8, k: 1e12 }, { t: 8, k: 20 }];
+  const applied = applySchedules(fresh, { valves: { LINE: events }, source: null });
+  assert.ok(applied.includes('valveSchedule'), 'block inserted into the pipe entry');
+  assert.ok(applied.includes('{ t 8; k 1000000000000; }'));
+  assert.ok(applied.includes('{ t 8; k 20; }'));
+  const m = parseSchedules(applied);
+  assert.deepEqual(m.valves.LINE, events);
+  assert.equal(m.source, null);
+  // idempotent second apply re-parses to the same table
+  const again = applySchedules(applied, { valves: { LINE: events }, source: null });
+  assert.deepEqual(parseSchedules(again).valves.LINE, events);
+});
+
+test('E3 applySchedules: sourceSchedule 顶层块应用与清除', () => {
+  const base = `nodes { TANK { volume 5; } OUT {} }
+pipes { LINE { from TANK; to OUT; } }
+`;
+  const withSrc = applySchedules(base, {
+    valves: {}, source: { node: 'TANK', events: [{ t: 0, rate: 0 }, { t: 4, rate: 0.002 }] },
+  });
+  assert.ok(withSrc.includes('sourceSchedule'));
+  assert.ok(withSrc.includes('node TANK;'));
+  assert.deepEqual(parseSchedules(withSrc).source.events, [
+    { t: 0, rate: 0 }, { t: 4, rate: 0.002 },
+  ]);
+  // clearing the source removes the block entirely
+  const cleared = applySchedules(withSrc, { valves: {}, source: null });
+  assert.ok(!cleared.includes('sourceSchedule'));
+  assert.ok(cleared.includes('TANK { volume 5;'), 'nodes block untouched');
+});
+
+test('E3 applySchedules: 空事件表移除管段的 valveSchedule 块', () => {
+  const stripped = applySchedules(E3_CASE, { valves: { LINE: [] }, source: null });
+  assert.ok(!stripped.includes('valveSchedule'));
+  assert.ok(stripped.includes('from TANK; to OUT;'), 'pipe entry survives');
+  assert.ok(parseSchedules(stripped).valves.LINE === undefined);
+});
+
+test('E3 applySchedules: ESD 预设往返（相等 t 的 STEP 关断）', () => {
+  const preset = esdPreset(parseSchedules(E3_CASE), 5, 1e12);
+  assert.deepEqual(preset.valves.LINE, [
+    { t: 0, k: 20 }, { t: 5, k: 20 }, { t: 5, k: 1e12 },
+  ]);
+  const applied = applySchedules(E3_CASE, preset);
+  const m = parseSchedules(applied);
+  assert.deepEqual(m.valves.LINE, preset.valves.LINE);
+  assert.equal(m.source.node, 'TANK', 'source schedule passes through untouched');
+});
+
+test('E3 esdPreset: 守卫拒收非有限/负的 esdTime 与 closedK', () => {
+  const m = parseSchedules(E3_CASE);
+  assert.throws(() => esdPreset(m, NaN), /ESD 时刻/);
+  assert.throws(() => esdPreset(m, -1), /ESD 时刻/);
+  assert.throws(() => esdPreset(m, 5, Infinity), /closedK/);
+  assert.throws(() => esdPreset(m, 5, -1), /closedK/);
+});
+
+test('E3 守卫拒收: t 非有限 / k 非有限 / 负值 / 乱序 / 空表', () => {
+  assert.throws(() => scheduleBlockLines('valve', [{ t: NaN, k: 1 }]), /t 必须是有限数值/);
+  assert.throws(() => scheduleBlockLines('valve', [{ t: 0, k: Infinity }]), /k 必须是有限数值/);
+  assert.throws(() => scheduleBlockLines('valve', [{ t: -1, k: 1 }]), /t 必须 >= 0/);
+  assert.throws(() => scheduleBlockLines('valve', [{ t: 0, k: -2 }]), /k 必须 >= 0/);
+  assert.throws(() => scheduleBlockLines('valve', [{ t: 5, k: 1 }, { t: 4, k: 2 }]), /升序/);
+  assert.throws(() => scheduleBlockLines('valve', []), /不能为空/);
+  assert.throws(() => scheduleBlockLines('source', [{ t: 0, rate: NaN }], 'A'), /rate 必须是有限数值/);
+  assert.throws(() => scheduleBlockLines('source', [{ t: 0, rate: -1 }], 'A'), /rate 必须 >= 0/);
+  assert.throws(() => scheduleBlockLines('source', [{ t: 2, rate: 1 }, { t: 1, rate: 1 }], 'A'), /升序/);
+  assert.throws(() => scheduleBlockLines('source', [], 'A'), /不能为空/);
+  // equal times stay legal (STEP)
+  assert.doesNotThrow(() => scheduleBlockLines('valve', [{ t: 8, k: 1e12 }, { t: 8, k: 20 }]));
+});
+
+test('E3 applySchedules: 内核对齐的互斥与节点守卫', () => {
+  // valveSchedule beside valveClose/valveOpen/valve is a kernel cfFatal
+  const both = 'pipes { LINE { from A; to B; valve 20; } }\nnodes { A {} B {} }\n';
+  assert.throws(() => applySchedules(both, { valves: { LINE: [{ t: 0, k: 1 }] }, source: null }),
+    /valve\/valveClose\/valveOpen/);
+  const close = 'pipes { LINE { from A; to B; valveClose { start 1; end 2; closedK 1e12; } } }\nnodes { A {} B {} }\n';
+  assert.throws(() => applySchedules(close, { valves: { LINE: [{ t: 0, k: 1 }] }, source: null }),
+    /valve\/valveClose\/valveOpen/);
+  // unknown sourceSchedule node
+  assert.throws(() => applySchedules(E3_CASE,
+    { valves: {}, source: { node: 'GHOST', events: [{ t: 0, rate: 1 }] } }), /未在 nodes/);
+  // node already priced by sources{}
+  const withSources = E3_CASE + 'sources { S1 { node TANK; rate 1e-3; } }\n';
+  assert.throws(() => applySchedules(withSources,
+    { valves: {}, source: { node: 'TANK', events: [{ t: 0, rate: 1 }] } }), /rate 账户/);
+  // valveSchedule on a pipe that does not exist
+  assert.throws(() => applySchedules(E3_CASE,
+    { valves: { GHOST: [{ t: 0, k: 1 }] }, source: null }), /没有管段/);
+  // missing node word on a source schedule
+  assert.throws(() => scheduleBlockLines('source', [{ t: 0, rate: 1 }], ''), /node/);
+});
+
+test('E3 timelineSvg: 折线覆盖全部事件点，STEP 画出竖直边', () => {
+  const ev = [{ t: 0, k: 20 }, { t: 6, k: 1e12 }, { t: 8, k: 1e12 }, { t: 8, k: 20 }];
+  const svg = timelineSvg(ev, 'k');
+  assert.ok(svg.startsWith('<svg'));
+  assert.ok(svg.includes('polyline'));
+  const points = svg.match(/<polyline[^>]*points="([^"]+)"/)[1].trim().split(/\s+/);
+  assert.equal(points.length, ev.length);
+  // equal-t pair (points 2,3) -> identical x, different y (vertical step edge)
+  const [xs, ys] = points[2].split(',').map(Number);
+  const [xe, ye] = points[3].split(',').map(Number);
+  assert.equal(xs, xe);
+  assert.notEqual(ys, ye);
+  assert.equal(svg.match(/<circle/g).length, ev.length);
+  assert.equal(timelineSvg([], 'k'), '');
+});

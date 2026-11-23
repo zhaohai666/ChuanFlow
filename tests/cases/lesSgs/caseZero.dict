@@ -1,0 +1,56 @@
+// Smagorinsky with Cs = 0: the sub-grid stress is switched off while the
+// resolved shear field is unchanged. nut must be exactly zero at t=0 but
+// strainMax must still equal the analytic |S| = rate = 2.
+block
+{
+    min   (0 0 0);
+    max   (1 0.5 0.1);
+    cells (4 8 1);
+
+    xmin  { name left;   type symmetry; }
+    xmax  { name right;  type symmetry; }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+nu 0.01;
+
+patches
+{
+    left   { UType zeroGradient; p 0; pType fixedValue; }
+    right  { UType zeroGradient; pType zeroGradient;    }
+    bottom { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top    { U (1 0 0); UType fixedValue; pType zeroGradient; }
+    front  { UType zeroGradient; pType zeroGradient; }
+    back   { UType zeroGradient; pType zeroGradient; }
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;
+    grad      linear;
+}
+
+les
+{
+    model smagorinsky;
+    Cs    0;
+}
+
+profile
+{
+    type linearShear;
+    rate 2;
+}
+
+piso
+{
+    dt          0.001;
+    endTime     0.005;
+    correctors  2;
+    reportEvery 1;
+}

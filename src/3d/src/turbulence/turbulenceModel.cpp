@@ -8,8 +8,10 @@
 
 #include "cf/common/Error.h"
 #include "cf/common/Log.h"
+#include "cf/turbulence/DesModel.h"
 #include "cf/turbulence/KEpsilon.h"
 #include "cf/turbulence/KOmegaSST.h"
+#include "cf/turbulence/TransitionModel.h"
 
 namespace cf
 {
@@ -46,6 +48,10 @@ TurbulenceConfig TurbulenceConfig::fromCase(const Dictionary& caseDict)
     cfg.intensity = td.getScalarOr("intensity", cfg.intensity);
     cfg.lengthScale = td.getScalarOr("lengthScale", cfg.lengthScale);
     cfg.relaxation = td.getScalarOr("relaxation", cfg.relaxation);
+    cfg.cDES = td.getScalarOr("C_DES", cfg.cDES);
+    cfg.reOnset = td.getScalarOr("reOnset", cfg.reOnset);
+    cfg.onsetWidth = td.getScalarOr("onsetWidth", cfg.onsetWidth);
+    cfg.gammaRate = td.getScalarOr("gammaRate", cfg.gammaRate);
     cfg.validate();
     return cfg;
 }
@@ -75,8 +81,20 @@ std::unique_ptr<RansModel> RansModel::create(const polyMesh& mesh,
         m->init();
         return m;
     }
+    if (cfg.model == "des")
+    {
+        auto m = std::make_unique<DesModel>(mesh, U, phi, nu, schemes, cfg);
+        m->init();
+        return m;
+    }
+    if (cfg.model == "gammaTransition")
+    {
+        auto m = std::make_unique<TransitionModel>(mesh, U, phi, nu, schemes, cfg);
+        m->init();
+        return m;
+    }
     cfFatal("turbulence: unknown model '" + cfg.model
-            + "' (laminar | kEpsilon | kOmegaSST)");
+            + "' (laminar | kEpsilon | kOmegaSST | des | gammaTransition)");
 }
 
 // ------------------------------------------------------------------

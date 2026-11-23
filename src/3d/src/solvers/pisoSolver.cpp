@@ -89,6 +89,9 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
         {
             const std::size_t u = static_cast<std::size_t>(c);
             rAU[u] = vol[u] / std::max(d[u], 1e-300);
+            // F12 cavitation: the pressure correction sees the mixture
+            // density through the response. Null for every other case.
+            if (ctl.cellInvRho) rAU[u] *= (*ctl.cellInvRho)[u];
         }
     }
 

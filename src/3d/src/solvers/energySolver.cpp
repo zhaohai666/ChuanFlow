@@ -58,8 +58,33 @@ EnergyProps EnergyProps::fromCase(const Dictionary& caseDict)
     p.initialMode = e.has("initialMode") ? e.getInt("initialMode") : 0;
     p.initialAmplitude = e.getScalarOr("initialAmplitude", p.initialAmplitude);
     p.initialAxis = e.getWordOr("initialAxis", p.initialAxis);
+    if (e.has("phaseChange")) p.phase = EnergyProps::PhaseChange::fromCase(e.getDict("phaseChange"));
     p.validate();
     return p;
+}
+
+EnergyProps::PhaseChange EnergyProps::PhaseChange::fromCase(const Dictionary& d)
+{
+    PhaseChange p;
+    p.enabled = true;
+    p.latent = d.getScalarOr("latentHeat", p.latent);
+    p.Tsolidus = d.getScalarOr("solidusT", p.Tsolidus);
+    p.Tliquidus = d.getScalarOr("liquidusT", p.Tliquidus);
+    p.mushyConstant = d.getScalarOr("mushyConstant", p.mushyConstant);
+    p.mushyEpsilon = d.getScalarOr("mushyEpsilon", p.mushyEpsilon);
+    p.validate();
+    return p;
+}
+
+void EnergyProps::PhaseChange::validate() const
+{
+    if (!enabled) return;
+    if (!(latent > 0)) cfFatal("energy phaseChange: latentHeat must be positive");
+    if (!(Tliquidus > Tsolidus))
+        cfFatal("energy phaseChange: liquidusT must exceed solidusT (the apparent "
+                "capacity needs a mushy interval; take it narrow for near-isothermal)");
+    if (!(mushyConstant > 0)) cfFatal("energy phaseChange: mushyConstant must be positive");
+    if (!(mushyEpsilon > 0)) cfFatal("energy phaseChange: mushyEpsilon must be positive");
 }
 
 void EnergyProps::validate() const
@@ -72,6 +97,7 @@ void EnergyProps::validate() const
     if (!(relaxation > 0 && relaxation <= 1))
         cfFatal("energy: relaxation must be in (0, 1]");
     if (initialMode < 0) cfFatal("energy: negative initialMode");
+    phase.validate();
 }
 
 EnergyModel::EnergyModel(const polyMesh& mesh, const surfaceScalarField& phi,
@@ -80,7 +106,8 @@ EnergyModel::EnergyModel(const polyMesh& mesh, const surfaceScalarField& phi,
                          const Field<scalar>* turbDiss, const EnergyWallLayer* wallLayer)
     : mesh_(mesh), phi_(phi), schemes_(schemes), props_(props), nu_(nu), nut_(nut),
       strainRate_(strainRate), eps_(turbDiss), t_(mesh, "T", props.initialT),
-      buoyancy_(static_cast<std::size_t>(mesh.nCells()), Vector::zero())
+      buoyancy_(static_cast<std::size_t>(mesh.nCells()), Vector::zero()),
+      fl_(static_cast<std::size_t>(mesh.nCells()), 0.0)
 {
     if (static_cast<label>(phi_.values().size()) != mesh_.nFaces())
         cfFatal("energy: flux size does not match the mesh");
@@ -100,6 +127,7 @@ EnergyModel::EnergyModel(const polyMesh& mesh, const surfaceScalarField& phi,
 
     hasBuoyancy_ = props_.beta != 0 && mag2(props_.gravity) > 0;
     refreshBuoyancy();
+    refreshLiquidFraction();
 }
 
 void EnergyModel::initialize()
@@ -219,6 +247,28 @@ void EnergyModel::correctEnergy(scalar dt)
         eqn.addRhs(c, 0, vol[static_cast<std::size_t>(c)] * src[static_cast<std::size_t>(c)]);
     }
 
+    // Voller-Prakash apparent heat capacity: the enthalpy of the mushy zone
+    // enters the transient term as V (L/cp) df_l/dT / dt on the diagonal,
+    // evaluated at the temperature the step started from.
+    if (props_.phase.enabled && dt > 0)
+    {
+        const scalar dfdT = 1.0 / (props_.phase.Tliquidus - props_.phase.Tsolidus);
+        for (label c = 0; c < nC; ++c)
+        {
+            const std::size_t u = static_cast<std::size_t>(c);
+            const scalar t = oldT[u];
+            if (t > props_.phase.Tsolidus && t < props_.phase.Tliquidus)
+            {
+                // diag*(T - oldT) is the linearised L df_l/dT dT/dt; the RHS
+                // compensation is what makes the old temperature the reference
+                // instead of zero (the same convention fvm::ddt uses).
+                const scalar coef = vol[u] * props_.phase.latent / props_.cp * dfdT / dt;
+                eqn.addDiag(c, 0, coef);
+                eqn.addRhs(c, 0, coef * t);
+            }
+        }
+    }
+
     const SolverReport rep = eqn.solve(fvMatrix::Controls{linearTol, linearMaxIter, 2});
     if (!rep.converged)
     {
@@ -239,6 +289,32 @@ void EnergyModel::correctEnergy(scalar dt)
         for (std::size_t u = 0; u < t.size(); ++u) t[u] = oldT[u] + rl * (x[u] - oldT[u]);
     }
     refreshBuoyancy();
+    refreshLiquidFraction();
+}
+
+void EnergyModel::refreshLiquidFraction()
+{
+    if (!props_.phase.enabled) return;
+    const auto& t = t_.internalField();
+    const scalar ts = props_.phase.Tsolidus;
+    const scalar tl = props_.phase.Tliquidus;
+    for (std::size_t u = 0; u < fl_.size(); ++u)
+    {
+        fl_[u] = std::min(std::max((t[u] - ts) / (tl - ts), 0.0), 1.0);
+    }
+}
+
+scalar EnergyModel::totalEnthalpy() const
+{
+    const auto& vol = mesh_.cellVolumes();
+    const auto& t = t_.internalField();
+    scalar h = 0;
+    for (std::size_t u = 0; u < fl_.size(); ++u)
+    {
+        h += vol[u] * props_.rho * (props_.cp * (t[u] - props_.tRef)
+                                    + props_.phase.latent * fl_[u]);
+    }
+    return h;
 }
 
 const Field<Vector>* EnergyModel::buoyancyForce() const

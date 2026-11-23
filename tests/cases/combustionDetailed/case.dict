@@ -1,0 +1,25 @@
+// F10 primary case: adiabatic two-step chain-branching ignition in a 0D
+// homogeneous reactor. Step 1 (F + R -> P + 2R) multiplies radicals, step 2
+// (R -> P) destroys them. With A1 exp(-E1/RT0) Yf0 > A2 exp(-E2/RT0) branching
+// wins, the radical seed grows, and q r1 drives a thermal runaway. The checker
+// re-integrates the three ODEs with its own fine RK4 and grades every sample.
+// For cooling = 0 the invariant T + q Yf = T0 + q Yf0 is exact.
+detailedChemistry
+{
+    A1 2000;
+    E1 60000;
+    A2 40;
+    E2 30000;
+    q 800;
+    T0 1200;
+    gasConstant 8.314462618;
+    Yf0 1;
+    Yr0 1e-4;
+    cooling 0;
+    Tenv 1200;
+    dt 0.01;
+    nSteps 600;
+    nSub 10;
+    ignitionRise 0.3;
+    tIgnMax 4;
+}

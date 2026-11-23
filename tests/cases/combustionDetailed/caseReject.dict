@@ -1,0 +1,22 @@
+// F10 rejection case: an otherwise valid ignition case with a negative
+// branching pre-exponential. The solver must refuse loudly (nonzero exit,
+// "A1" in the message) rather than producing a fake history.
+detailedChemistry
+{
+    A1 -2000;
+    E1 60000;
+    A2 40;
+    E2 30000;
+    q 800;
+    T0 1200;
+    gasConstant 8.314462618;
+    Yf0 1;
+    Yr0 1e-4;
+    cooling 0;
+    Tenv 1200;
+    dt 0.01;
+    nSteps 600;
+    nSub 10;
+    ignitionRise 0.3;
+    tIgnMax 4;
+}

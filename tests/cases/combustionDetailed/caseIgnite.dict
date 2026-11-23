@@ -1,0 +1,23 @@
+// F10 second ignition case: different Arrhenius constants, fuel load,
+// radical seed, heat release and output grid from case.dict. The checker must
+// reproduce its history and confirm ignition before the declared tIgnMax, so
+// the ignition delay cannot be a hardcoded string from the first case.
+detailedChemistry
+{
+    A1 1500;
+    E1 55000;
+    A2 30;
+    E2 28000;
+    q 900;
+    T0 1250;
+    gasConstant 8.314462618;
+    Yf0 0.9;
+    Yr0 2e-4;
+    cooling 0;
+    Tenv 1250;
+    dt 0.005;
+    nSteps 1000;
+    nSub 10;
+    ignitionRise 0.25;
+    tIgnMax 5;
+}

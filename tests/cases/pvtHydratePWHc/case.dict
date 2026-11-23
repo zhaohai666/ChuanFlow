@@ -1,0 +1,34 @@
+// E8: simplified van der Waals - Platteeuw hydrate equilibrium (pvt layer,
+// declared-input closure). Occupancy theta_j = sum_i C_ij f_i / (1 + sum_i C_ij
+// f_i) with the flashed PR gas fugacity; the driving force is linearised,
+// Delta_mu_w(T) = muRef + muSlopeA (T - Tref), and equilibrium is
+// Delta_mu_w(T) + R T sum_j nu_j ln(1 - theta_j) = 0 with the unit-cell cage
+// ratios sII 136 H2O: 16 small + 8 large cages. referencePressure only seeds
+// the search bracket; enthalpyOfDissociation is the declared Clausius-
+// Clapeyron physical bound on the resulting d ln p/dT slope. The checker
+// (tests/check_pvt_hydrate_pwhc.py) re-derives PR + vW-P independently in
+// Python and compares every printed number.
+temperature 280.0;
+pressures (2.0e6 4.0e6);
+
+composition
+{
+    methane 0.90;
+    propane 0.10;
+}
+
+solve { tol 1.0e-12; maxIter 500; }
+
+hydratePWHc
+{
+    guests ( methane propane );
+    structure sII;
+    langmuirmethane ( 2.0 1.0 );   // 1/MPa: small cage, large cage
+    langmuirpropane ( 0.01 1.8 );  // 1/MPa
+    muRef 600.0;                   // J/mol, Delta_mu_w at referenceTemperature
+    muSlopeA 33.5;                 // J/(mol K), linearised slope A_w
+    referenceTemperature 273.15;   // K anchor
+    referencePressure 2.6e6;       // Pa anchor, search seed only
+    enthalpyOfDissociation 6.5e4;  // J/mol, CC slope physical bound
+    temperatures ( 274.15 277.15 280.15 283.15 );
+}

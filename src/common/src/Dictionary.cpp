@@ -174,16 +174,35 @@ private:
         expectSemi();
     }
 
-    // Parses entries until the closing '}' of a block.
+    // Parses entries until the closing '}' of a block. An anonymous block
+    //    { t 0.0; k 0.0; }
+    // is a key-less entry (an event point, a table row): it is stored under a
+    // generated key '{<n>' that no lexer word can spell -- the lexer breaks a
+    // word at '{', so a named key can never collide with one. Declaration
+    // order is preserved in keys(), so a reader iterates the rows in the
+    // order they were written. Before anonymous blocks were accepted this
+    // token sequence was a fatal "expected block key", so no existing
+    // declaration parses differently.
     Dictionary parseBlockBody()
     {
         Dictionary block;
+        int anonymous = 0;
         for (;;)
         {
             Token key = lex_.next();
             if (key.type == TokType::eof) cfFatal("dictionary: unterminated block");
             if (key.type == TokType::semi) continue;  // stray ';' after a block
             if (key.type == TokType::rbrace) return block;
+            if (key.type == TokType::lbrace)
+            {
+                // the lbrace is already consumed: parse the body directly
+                Dictionary::Node node;
+                node.kind = Dictionary::Kind::block;
+                node.block = std::make_shared<Dictionary>(parseBlockBody());
+                block.insert("{" + std::to_string(anonymous++),
+                             std::move(node));
+                continue;
+            }
             if (key.type != TokType::word)
             {
                 cfFatal("dictionary: expected block key, got '" + key.text + "'");

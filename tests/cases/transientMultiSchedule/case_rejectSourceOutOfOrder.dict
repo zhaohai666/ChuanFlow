@@ -1,0 +1,48 @@
+# rejection variant of transientMultiSchedule: source events must be in ascending time order
+fluid { rho 850; mu 0.1; }
+
+nodes
+{
+    TANK { volume 5; bulkModulus 4.0e7; pressure 5.0e5; liquidFraction 0.8; }
+    OUT  { fixedPressure 0; }
+}
+
+pipes
+{
+    LINE
+    {
+        from TANK; to OUT;
+        length 100; diameter 0.05;
+        valveSchedule
+        {
+            events
+            {
+                { t 0.0;  k 20.0; }
+                { t 2.0;  k 20.0; }
+                { t 6.0;  k 1.0e12; }
+                { t 8.0;  k 1.0e12; }
+                { t 8.0;  k 20.0; }
+                { t 10.0; k 20.0; }
+                { t 14.0; k 1.0e12; }
+                { t 16.0; k 1.0e12; }
+                { t 18.0; k 20.0; }
+            }
+        }
+    }
+}
+
+sourceSchedule
+{
+    node TANK;
+    events
+    {
+        { t 0.0;  rate 0.0; }
+        { t 4.0;  rate 0.002; }
+        { t 12.0; rate 0.0; }
+        { t 9.0;  rate 0.002; }
+        { t 17.0; rate 0.001; }
+    }
+}
+
+
+time { dt 0.02; endTime 20; reportEvery 1; }

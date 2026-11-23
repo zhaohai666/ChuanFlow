@@ -12,6 +12,7 @@ add_library(cf_pvt STATIC
     src/waxSolubility.cpp
     src/thermalConductivity.cpp
     src/hydrateEquilibrium.cpp
+    src/hydratePWHc.cpp
     src/enthalpy.cpp
 )
 

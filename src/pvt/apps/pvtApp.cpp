@@ -9,6 +9,7 @@
 #include "cf/common/Log.h"
 #include "cf/pvt/ComponentData.h"
 #include "cf/pvt/Enthalpy.h"
+#include "cf/pvt/HydratePWHc.h"
 #include "cf/pvt/PvtCase.h"
 #include "cf/pvt/HydrateEquilibrium.h"
 #include "cf/pvt/PvtTable.h"
@@ -204,6 +205,95 @@ int main(int argc, char** argv)
                       " converged ", ph.converged ? 1 : 0,
                       " iterations ", ph.iterations,
                       " beta ", num(ph.flash.vaporFraction));
+        }
+
+        // E8: simplified van der Waals - Platteeuw hydrate equilibrium, gated
+        // on a `hydratePWHc{}` block and mutually exclusive with the
+        // Clausius-Clapeyron `hydrateEquilibrium{}` block. Every constant is
+        // declared in-case (Langmuir in 1/MPa, converted to 1/Pa here); the
+        // kernel holds no tabulated data.
+        if (caseDict.has("hydratePWHc"))
+        {
+            if (caseDict.has("hydrateEquilibrium"))
+                cfFatal("pvt: hydratePWHc and hydrateEquilibrium are mutually "
+                        "exclusive equilibrium closures; declare one only");
+            const Dictionary& hp = caseDict.getDict("hydratePWHc");
+
+            HydratePWHcSpec spec;
+            spec.structure = hp.getWord("structure");
+            if (spec.structure != "sI" && spec.structure != "sII")
+                cfFatal("pvt: hydratePWHc structure must be 'sI' or 'sII', got '"
+                        + spec.structure + "'");
+
+            spec.guests = hp.getWordList("guests");
+            if (spec.guests.empty())
+                cfFatal("pvt: hydratePWHc needs a non-empty guests ( ... ) list");
+            for (std::size_t g = 0; g < spec.guests.size(); ++g)
+            {
+                c.feed.index(spec.guests[g]); // fatal unless declared in composition
+                for (std::size_t h = 0; h < g; ++h)
+                    if (spec.guests[h] == spec.guests[g])
+                        cfFatal("pvt: hydratePWHc guest '" + spec.guests[g]
+                                + "' is declared twice");
+                // Declared as langmuir<Guest> ( ... ); one value per cage type
+                // (small, large), in 1/MPa.
+                const std::string key = "langmuir" + spec.guests[g];
+                if (!hp.has(key))
+                    cfFatal("pvt: hydratePWHc is missing the '" + key
+                            + "' Langmuir constants for guest '" + spec.guests[g] + "'");
+                const std::vector<double> cList = hp.getScalarList(key);
+                if (cList.size() != 2)
+                    cfFatal("pvt: hydratePWHc '" + key
+                            + "' needs exactly two values (small cage, large cage)");
+                for (const double cv : cList)
+                    if (!(cv > 0.0))
+                        cfFatal("pvt: hydratePWHc Langmuir constants must be "
+                                "positive (1/MPa), guest '" + spec.guests[g] + "'");
+                // 1/MPa -> 1/Pa: a value of C [1/MPa] equals C*1e-6 [1/Pa].
+                spec.langmuir.push_back({cList[0] * 1.0e-6, cList[1] * 1.0e-6});
+            }
+
+            spec.referenceTemperature = hp.getScalar("referenceTemperature");
+            spec.referencePressure = hp.getScalar("referencePressure");
+            spec.enthalpyOfDissociation = hp.getScalar("enthalpyOfDissociation");
+            spec.muRef = hp.getScalar("muRef");
+            spec.muSlopeA = hp.getScalar("muSlopeA");
+            if (!(spec.referenceTemperature > 0.0))
+                cfFatal("pvt: hydratePWHc needs a positive referenceTemperature");
+            if (!(spec.referencePressure > 0.0))
+                cfFatal("pvt: hydratePWHc needs a positive referencePressure");
+            if (!(spec.enthalpyOfDissociation > 0.0))
+                cfFatal("pvt: hydratePWHc needs a positive enthalpyOfDissociation");
+            if (!(spec.muRef > 0.0))
+                cfFatal("pvt: hydratePWHc needs a positive muRef");
+            if (!(spec.muSlopeA > 0.0))
+                cfFatal("pvt: hydratePWHc needs a positive muSlopeA");
+
+            const std::vector<double> temps = hp.getScalarList("temperatures");
+            if (temps.empty())
+                cfFatal("pvt: hydratePWHc needs a non-empty temperatures ( ... ) list");
+            for (const double T : temps)
+                if (!(T > 0.0))
+                    cfFatal("pvt: hydratePWHc temperatures must be positive");
+
+            const scalar nuSmall = hydratePWHcCagePerWater(spec.structure, 0);
+            const scalar nuLarge = hydratePWHcCagePerWater(spec.structure, 1);
+            log::info("pvt hydratePWHc structure ", spec.structure,
+                      " guests ", spec.guests.size(),
+                      " cagesSmall ", num(nuSmall), " cagesLarge ", num(nuLarge));
+
+            bool monotonic = true;
+            double previous = 0.0;
+            for (const double T : temps)
+            {
+                const HydratePWHcPoint pt = hydratePWHcEquilibrium(c.feed, T, spec);
+                if (previous > 0.0 && !(pt.pEq > previous)) monotonic = false;
+                previous = pt.pEq;
+                log::info("pvt hydratePWHc T ", num(T), " pEq ", num(pt.pEq),
+                          " thetaSmall ", num(pt.thetaSmall),
+                          " thetaLarge ", num(pt.thetaLarge));
+            }
+            log::info("pvt hydratePWHc curve monotonic ", monotonic ? 1 : 0);
         }
 
         // A coarse table shows interpolation and EOS agree; the regression

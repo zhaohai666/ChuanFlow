@@ -1,5 +1,6 @@
 #include "cf/1d/Transient.h"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 #include <string>
@@ -160,11 +161,35 @@ double sourceRateAt(double rate, double openRate,
     return valveKAt(0.0, openRate, start, end, reopenStart, reopenEnd, t);
 }
 
-/// A coupled pipe's loss is its partner's, so no local loss may share it.
-void requireNoValve(const std::string& name, double kOpen, double closeStart,
-                    double openStart)
+/// The value at time t of a piecewise-linear event table: times ascending,
+/// EQUAL ADJACENT TIMES ARE A STEP (the value jumps from the earlier point's
+/// to the later point's at that instant), before the first event the first
+/// value holds and after the last the last value holds. One helper for both
+/// the valve's K(t) and a source's rate(t): binary search the upper bound of
+/// t, then interpolate the segment it closes. At a step instant the AFTER
+/// value is taken -- the jump happens at the instant itself -- so a schedule
+/// evaluated at the implicit new time answers for the state the step runs
+/// in. The table is validated at load time (non-empty, t >= 0, ascending),
+/// so the search below has a front and a back to stand on.
+double eventTableAt(const std::vector<double>& ts,
+                    const std::vector<double>& vs, double t)
 {
-    if (kOpen > 0 || closeStart >= 0 || openStart >= 0)
+    if (t < ts.front()) return vs.front();
+    if (t >= ts.back()) return vs.back();
+    const std::size_t hi = static_cast<std::size_t>(
+        std::upper_bound(ts.begin(), ts.end(), t) - ts.begin());
+    const std::size_t lo = hi - 1;
+    const double span = ts[hi] - ts[lo];
+    if (!(span > 0)) return vs[hi]; // t landed exactly on a step: after value
+    return vs[lo] + (t - ts[lo]) / span * (vs[hi] - vs[lo]);
+}
+
+/// A coupled pipe's loss is its partner's, so no local loss may share it --
+/// neither the single-cycle ramps nor the multi-segment event table.
+void requireNoValve(const std::string& name, double kOpen, double closeStart,
+                    double openStart, bool eventsOn)
+{
+    if (kOpen > 0 || closeStart >= 0 || openStart >= 0 || eventsOn)
         cfFatal("transient: pipe '" + name
                 + "' is a coupled element: its loss is the partner model's, so"
                   " it cannot carry a valve");
@@ -227,11 +252,32 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         e.reopenEnd = s.reopenEnd;
         sourceEntries_.push_back(e);
         // The fraction is constant; the rate is re-summed every step() so the
-        // schedule can move it. Pre-fill with the constant-rate value for any
-        // caller that reads `nd.source` before the first step().
+        // schedule can move it. Pre-fill with the value the schedule holds at
+        // t = 0: the constant rate for an unscheduled source, 0 for a
+        // single-cycle schedule (off before its ramp), the table's own value
+        // for a multi-segment one.
         nodes_[e.nodeIndex].sourceFraction = e.fraction;
         nodes_[e.nodeIndex].source =
-            (e.start < 0) ? e.rate : 0.0;
+            e.eventsOn ? eventTableAt(e.eventT, e.eventRate, 0.0)
+                       : ((e.start < 0) ? e.rate : 0.0);
+    }
+
+    // The opt-in multi-segment source schedules: one SourceEntry each, the
+    // node resolved by name (the loader refuses a name that resolves to
+    // nothing and a node priced twice). fraction is 1: the table injects
+    // pure liquid, the same default a sources{} entry carries.
+    for (const TransientSourceSchedule& ss : c.sourceSchedules)
+    {
+        const label i = net_.nodeIndex(ss.nodeName);
+        SourceEntry e;
+        e.nodeIndex = static_cast<std::size_t>(i);
+        e.fraction = 1.0;
+        e.eventsOn = true;
+        e.eventT = ss.eventT;
+        e.eventRate = ss.eventRate;
+        sourceEntries_.push_back(e);
+        nodes_[e.nodeIndex].sourceFraction = e.fraction;
+        nodes_[e.nodeIndex].source = eventTableAt(e.eventT, e.eventRate, 0.0);
     }
 
     for (const TransientPipeConfig& pc : c.pipes)
@@ -289,7 +335,7 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
                     " resistance");
         if (pc.coupledResistance > 0)
             requireNoValve(pc.name, pc.valveK, pc.valveCloseStart,
-                           pc.valveOpenStart);
+                           pc.valveOpenStart, pc.valveEventsOn);
         // 5.70 / A3: the momentum-flux factors. beta is an area average of
         // v^2 / vbar^2, so it cannot sit below 1 (Cauchy-Schwarz); and on a
         // coupled pipe the account belongs to the interface -- it measures the
@@ -336,6 +382,11 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         d.kClosed = pc.valveKClosed;
         d.openStart = pc.valveOpenStart;
         d.openEnd = pc.valveOpenEnd;
+        // The opt-in multi-segment table rides on the dynamic state like the
+        // ramps do; declared or not, the step reads exactly one of the two.
+        d.valveEventsOn = pc.valveEventsOn;
+        d.eventT = pc.valveEventT;
+        d.eventK = pc.valveEventK;
         // 5.74 (A2): the gel/creep declarations ride on the dynamic state.
         d.gelStrength = pc.gelStrength;
         d.gelTime = pc.gelTime;
@@ -389,23 +440,29 @@ double TransientNetwork::solveStep(double dt)
     std::vector<std::vector<double>> J(nEq, std::vector<double>(nEq, 0.0));
 
     // valve K is evaluated at the implicit new time level t + dt and held
-    // constant during the Newton solve
+    // constant during the Newton solve. One of two schedules answers: the
+    // opt-in multi-segment table when the case declared one, the
+    // single-cycle ramps otherwise (the loader refuses declaring both).
     const double tNew = t_ + dt;
     std::vector<double> kv(nP);
     for (std::size_t k = 0; k < nP; ++k)
-        kv[k] = valveKAt(pipes_[k].geo.valveK, pipes_[k].kClosed,
-                         pipes_[k].closeStart, pipes_[k].closeEnd,
-                         pipes_[k].openStart, pipes_[k].openEnd, tNew);
+        kv[k] = pipes_[k].valveEventsOn
+                    ? eventTableAt(pipes_[k].eventT, pipes_[k].eventK, tNew)
+                    : valveKAt(pipes_[k].geo.valveK, pipes_[k].kClosed,
+                               pipes_[k].closeStart, pipes_[k].closeEnd,
+                               pipes_[k].openStart, pipes_[k].openEnd, tNew);
 
     // source rate at the same implicit new time level; reset-then-sum so a
     // node with multiple scheduled sources sees their sum (not a carry-over).
+    // Each entry reads its own kind of schedule: the multi-segment table or
+    // the single-cycle ramp, never both (the loader refuses the overlap).
     for (const SourceEntry& e : sourceEntries_)
         nodes_[e.nodeIndex].source = 0.0;
     for (const SourceEntry& e : sourceEntries_)
-        nodes_[e.nodeIndex].source += sourceRateAt(e.rate, e.openRate,
-                                                   e.start, e.end,
-                                                   e.reopenStart, e.reopenEnd,
-                                                   tNew);
+        nodes_[e.nodeIndex].source +=
+            e.eventsOn ? eventTableAt(e.eventT, e.eventRate, tNew)
+                       : sourceRateAt(e.rate, e.openRate, e.start, e.end,
+                                      e.reopenStart, e.reopenEnd, tNew);
 
     double maxRel = 0;
 
@@ -804,7 +861,8 @@ void TransientNetwork::setCoupledResistance(label k, double resistance)
         cfFatal("transient: coupled pipe '" + pipeNames_[k] + "' needs a"
                 " positive resistance, got " + std::to_string(resistance));
     const PipeDyn& pd = pipes_[static_cast<std::size_t>(k)];
-    requireNoValve(pipeNames_[k], pd.geo.valveK, pd.closeStart, pd.openStart);
+    requireNoValve(pipeNames_[k], pd.geo.valveK, pd.closeStart, pd.openStart,
+                   pd.valveEventsOn);
     pipes_[static_cast<std::size_t>(k)].geo.coupledResistance = resistance;
     // whatever was pending was solved with the old coefficient, so it is no
     // longer a state of the system and has to be re-solved
@@ -1062,6 +1120,53 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
             p.valveOpenStart = vo.getScalar("start");
             p.valveOpenEnd = vo.getScalar("end");
         }
+        // The opt-in multi-segment valve schedule: one table prices K(t) for
+        // the whole run, so the single-cycle keys (and the open-valve `valve`
+        // key the table would leave unread) cannot be declared beside it --
+        // two answers for one valve is not a schedule, it is a dispute.
+        if (pd.has("valveSchedule"))
+        {
+            if (pd.has("valveClose") || pd.has("valveOpen"))
+                cfFatal("transient: pipe '" + p.name + "' declares both"
+                        " valveSchedule and the single-cycle valveClose/"
+                        "valveOpen keys: one schedule prices the valve");
+            if (pd.has("valve"))
+                cfFatal("transient: pipe '" + p.name + "' declares both"
+                        " valveSchedule and an open-valve `valve` key: the"
+                        " event table prices K(t) itself, so the open value"
+                        " would be read by nothing");
+            const Dictionary& vs = pd.getDict("valveSchedule");
+            const Dictionary& ev = vs.getDict("events");
+            if (ev.size() == 0)
+                cfFatal("transient: pipe '" + p.name + "' declares an empty"
+                        " valveSchedule events table");
+            for (const std::string& ek : ev.keys())
+            {
+                const Dictionary& pt = ev.getDict(ek);
+                if (!pt.has("t") || !pt.has("k"))
+                    cfFatal("transient: pipe '" + p.name + "' valveSchedule"
+                            " event needs a `t` and a `k`");
+                const double t = pt.getScalar("t");
+                const double kk = pt.getScalar("k");
+                if (!std::isfinite(t) || !std::isfinite(kk))
+                    cfFatal("transient: pipe '" + p.name + "' valveSchedule"
+                            " event values must be finite numbers");
+                if (t < 0)
+                    cfFatal("transient: pipe '" + p.name + "' valveSchedule"
+                            " event time must be >= 0 (the march starts at"
+                            " t = 0)");
+                if (kk < 0)
+                    cfFatal("transient: pipe '" + p.name + "' valveSchedule"
+                            " event K must be >= 0");
+                if (!p.valveEventT.empty() && t < p.valveEventT.back())
+                    cfFatal("transient: pipe '" + p.name + "' valveSchedule"
+                            " events must be in ascending time order (equal"
+                              " times are a step)");
+                p.valveEventT.push_back(t);
+                p.valveEventK.push_back(kk);
+            }
+            p.valveEventsOn = true;
+        }
         if (p.valveK < 0 || p.valveKClosed < 0)
             cfFatal("transient: pipe '" + p.name + "' valve K must be >= 0");
         if (p.valveCloseStart > p.valveCloseEnd)
@@ -1129,6 +1234,57 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
                         + "' needs a `rate` or a `schedule` block");
             c.sources.push_back(s);
         }
+    }
+
+    // The opt-in multi-segment source schedule (top-level, targets one node
+    // by name): rate(t) through the event points, the same interpolation the
+    // valve table reads. The node must exist and must not also be priced by
+    // a sources{} entry -- two rate accounts on one node would sum into a
+    // schedule nobody declared.
+    if (caseDict.has("sourceSchedule"))
+    {
+        const Dictionary& ss = caseDict.getDict("sourceSchedule");
+        TransientSourceSchedule s;
+        s.nodeName = ss.getWord("node");
+        bool nodeKnown = false;
+        for (const TransientNodeConfig& n : c.nodes)
+            if (n.name == s.nodeName) { nodeKnown = true; break; }
+        if (!nodeKnown)
+            cfFatal("transient: sourceSchedule names node '" + s.nodeName
+                    + "' but no such node is declared");
+        for (const TransientSource& src : c.sources)
+            if (src.nodeName == s.nodeName)
+                cfFatal("transient: node '" + s.nodeName + "' is priced by"
+                        " both a sources{} entry and a sourceSchedule: one"
+                          " rate account per node");
+        const Dictionary& ev = ss.getDict("events");
+        if (ev.size() == 0)
+            cfFatal("transient: sourceSchedule for node '" + s.nodeName
+                    + "' declares an empty events table");
+        for (const std::string& ek : ev.keys())
+        {
+            const Dictionary& pt = ev.getDict(ek);
+            if (!pt.has("t") || !pt.has("rate"))
+                cfFatal("transient: sourceSchedule event needs a `t` and a"
+                        " `rate`");
+            const double t = pt.getScalar("t");
+            const double r = pt.getScalar("rate");
+            if (!std::isfinite(t) || !std::isfinite(r))
+                cfFatal("transient: sourceSchedule event values must be"
+                        " finite numbers");
+            if (t < 0)
+                cfFatal("transient: sourceSchedule event time must be >= 0"
+                        " (the march starts at t = 0)");
+            if (r < 0)
+                cfFatal("transient: sourceSchedule event rate must be >= 0:"
+                        " the table is an injection schedule");
+            if (!s.eventT.empty() && t < s.eventT.back())
+                cfFatal("transient: sourceSchedule events must be in"
+                        " ascending time order (equal times are a step)");
+            s.eventT.push_back(t);
+            s.eventRate.push_back(r);
+        }
+        c.sourceSchedules.push_back(s);
     }
     return c;
 }

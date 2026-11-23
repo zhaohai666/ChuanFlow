@@ -97,6 +97,29 @@ struct TransientPipeConfig
                                // regularisation: below the threshold the row
                                // creeps with mu_eff = mu + tau0/gamma_dot_c
                                // instead of holding Q = 0 exactly
+
+    // Multi-segment valve schedule (opt-in, `valveSchedule { events {...} }`):
+    // K(t) is the piecewise-linear interpolation through the event points
+    // (t, K), before the first event the first value holds, after the last
+    // the last value holds, and ADJACENT EQUAL-t EVENTS ARE A STEP (the value
+    // jumps from the earlier point's to the later point's at that instant).
+    // Non-empty = the table prices the valve and the single-cycle
+    // valveClose/valveOpen keys (and the open-valve `valve` key, which the
+    // table would leave unread) are refused at load time.
+    bool valveEventsOn = false;
+    std::vector<double> valveEventT; // s, ascending, duplicates = steps
+    std::vector<double> valveEventK; // loss coefficients, each >= 0
+};
+
+/// Multi-segment source schedule (opt-in, top-level
+/// `sourceSchedule { node <name>; events {...} }`): rate(t) through the event
+/// points, same interpolation and step semantics as the valve table. The
+/// targeted node must not also be priced by a `sources {}` entry.
+struct TransientSourceSchedule
+{
+    std::string nodeName;
+    std::vector<double> eventT;   // s, ascending, duplicates = steps
+    std::vector<double> eventRate; // m3/s at each point
 };
 
 struct TransientSource
@@ -120,6 +143,9 @@ struct TransientCase
     std::vector<TransientNodeConfig> nodes;
     std::vector<TransientPipeConfig> pipes;
     std::vector<TransientSource> sources;
+    // Opt-in multi-segment source schedules; each targets one node that no
+    // `sources {}` entry also prices.
+    std::vector<TransientSourceSchedule> sourceSchedules;
 };
 
 struct TransientSample
@@ -299,6 +325,10 @@ private:
         // negative start times disable the ramps
         double closeStart = -1, closeEnd = -1, kClosed = 0;
         double openStart = -1, openEnd = -1;
+        // The opt-in multi-segment table: non-empty means K(t) is read here
+        // and the linear-ramp fields above are inert (refused at load time).
+        bool valveEventsOn = false;
+        std::vector<double> eventT, eventK;
     };
     struct NodeDyn
     {
@@ -324,6 +354,11 @@ private:
         double rate = 0, openRate = 0, fraction = 1;
         double start = -1, end = -1;
         double reopenStart = -1, reopenEnd = -1;
+        // The opt-in multi-segment table: non-empty means rate(t) is read
+        // here and the linear-ramp fields above are inert (a node priced by
+        // a table and by a sources{} entry is refused at load time).
+        bool eventsOn = false;
+        std::vector<double> eventT, eventRate;
     };
     std::vector<SourceEntry> sourceEntries_;
     std::vector<double> p_;  // current node pressures (all nodes)
@@ -355,6 +390,12 @@ TransientSeries runTransient(const TransientCase& c, double dt,
 ///                valveOpen { start 10; end 14; } } }
 ///   sources { s1 { node TANK; rate 0.0; fraction 1; } }
 ///   time { dt 0.01; endTime 10; reportEvery 1; }
+/// A pipe may instead carry `valveSchedule { events { { t ..; k ..; } ... } }`
+/// -- a multi-segment K(t) table (linear between events, equal adjacent times
+/// a step, holds outside) that replaces the single-cycle keys; and the case
+/// may carry a top-level `sourceSchedule { node <n>; events { { t ..;
+/// rate ..; } } }` for a multi-segment rate(t) on one node. Declaring a table
+/// beside the keys it replaces is refused loudly.
 /// A pipe may instead carry `coupledResistance <R>` (Pa/(m3/s)), which hands
 /// its loss to a partner model - see cf::coupling::solveTransientCoupled1d3d.
 TransientCase loadTransientFromDict(const Dictionary& caseDict);

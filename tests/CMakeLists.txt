@@ -1536,6 +1536,19 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientYieldValveSchedule/case.dict)
 
+# E3: multi-segment valve/source event tables. The checker reverse-solves the
+# implicit momentum row for K(t+dt) and the node continuity row for rate(t+dt)
+# across the marched trace, verifies the equal-time STEP, the closed-window
+# choke, the trailing holds, and thirteen loud rejections. Zero-declaration
+# invariance is witnessed by the transient family regressions above.
+add_test(
+    NAME verify.transientMultiSchedule
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_multi_schedule.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientMultiSchedule/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientMultiSchedule)
+
 # 5.53 the free node between them: the yield wall's static branch, a valve
 # timetable and a node pressure the solve has to find -- the cell 5.50 put in its
 # boundary 4 and 5.52 in its own boundary 2, which needed no kernel change, only
@@ -2315,6 +2328,17 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_thermal_hydrate.py
         $<TARGET_FILE:chflow-pvt>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtThermalHydrate/case.dict)
+
+# E8: simplified van der Waals - Platteeuw hydrate equilibrium (declared-input
+# Langmuir constants + linearised Delta_mu_w). Checker re-derives PR flash and
+# the vW-P occupancy/bisection independently in Python (125 checks), with CC
+# slope bound, single-guest closed form, Langmuir->0 twin and nine rejections.
+add_test(
+    NAME verify.pvtHydratePWHc
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_hydrate_pwhc.py
+        $<TARGET_FILE:chflow-pvt>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtHydratePWHc/case.dict)
 
 # D13 increment 5: non-isothermal (PH) flash with declared cp(T) + PR da/dT
 # departure enthalpy. Checker independently transcribes PR76 and re-derives

@@ -500,6 +500,62 @@ struct TwoFluidPurgeEvent
     double period = 0;    // COMPLETE only: t - t_previousComplete (0 = first)
 };
 
+/// E6 (5.176): reduced 1D pigging (pipeline pig / scraper) transient element.
+///
+/// HONEST MODEL BOUNDARY. A pig is a single Lagrangian POINT object that
+/// rides beside the Eulerian holdup field. The physics is a closed, declared
+/// kinematic law -- NOT real multiphase pig mechanics:
+///   * the blockage fraction beta and the push efficiency eta are DECLARED
+///     constants (there is no bypass-flow, no seal-failure and no bend/
+///     elevation-resistance model);
+///   * the pig does NOT write back to the holdup field: the piled front
+///     volume `holdupFront` is a diagnosed swept-liquid inventory, not a
+///     redistribution of alpha (no local field <-> front exchange);
+///   * the front is at the pig's face (a moving piston); it is not a resolved
+///     two-region slug with a film, and inter-phase slip across it is absent;
+///   * one pig per run, no pig launching/retrieval stations or multi-pig trains.
+///
+/// Discrete law (all quantities re-derivable from the reported field):
+///   v_n = u0 (1 - beta clamp(H_{n-1}/C, 0, 1))  -- a growing front slows the
+///                                                  pig (blockage rises);
+///   x_n = min(x_{n-1} + v_n dt, endX);
+///   swept_n = integral of alpha over [x_{n-1}, x_n] at the step's final field;
+///   H_n = H_{n-1} + eta swept_n                 -- liquid piles up ahead;
+///   at x_n >= endX: outVol = H_n (ARRIVE), the front slug is released, and
+///                   the pig freezes (v = 0, event NONE afterwards).
+/// Field inventory is untouched, so the undeclared path is byte-identical and
+/// the declared run's whole report equals the undeclared twin once the `pig`
+/// lines are stripped.
+struct TwoFluidPigging
+{
+    double startX = 0;       // m, arc position where the pig is launched
+    double endX = 0;         // m, arrival arc (0 = chain end)
+    double pigVelocity = 0;  // m/s, declared base migration velocity u0 (> 0)
+    double blockage = 0;     // fraction [0,1): v = u0 (1 - beta H/C)
+    double pushEfficiency = 0; // fraction [0,1] of swept liquid piled ahead
+    double frontCapacity = 0;  // m, front volume C that fully chokes (beta) the pig
+};
+
+struct TwoFluidPigState
+{
+    bool launched = false;  // a pig exists (set at construction when enabled)
+    bool arrived = false;   // the pig reached endX and released its front
+    double x = 0;           // m, current arc position
+    double v = 0;           // m/s, velocity used by the last step
+    double holdupFront = 0; // m, swept liquid piled ahead (per m2 of bore)
+    double outVol = 0;      // m, cumulative front liquid released at arrival
+};
+
+struct TwoFluidPigEvent
+{
+    double t = 0;           // s, event time (ARRIVE)
+    int kind = 0;           // 1 ARRIVE
+    double x = 0;           // m, position at the event (endX)
+    double v = 0;           // m/s, the velocity that carried it to endX
+    double holdupFront = 0; // m, front volume released at arrival
+    double outVol = 0;      // m, cumulative released volume at the event
+};
+
 /// Terrain-induced slugging, increment 1 (D6): the low-point pooling map and
 /// its spill-fill initiation criterion. Like slug{} this is a statistics
 /// layer over the holdup the transport already solves and the elevation the
@@ -814,6 +870,10 @@ struct TwoFluidCase
     bool purgeWaveOn = false;    // distributed purge wave solved
                                  // (purgeWave{} present)
     TwoFluidPurgeWave purgeWave;
+    bool piggingOn = false;      // E6 (5.176): reduced pig tracking solved
+                                 // (pigging{} present); the undeclared path
+                                 // is byte-identical
+    TwoFluidPigging pigging;
     bool networkMode = false;    // branch-network member: the junction end
                                  // boundary is owned by the TwoFluidNetwork
                                  // (mutated every step), so the constructor
@@ -1020,6 +1080,16 @@ public:
     {
         return purgeJournal_;
     }
+    /// E6 (5.176): the live pig state (position, velocity, piled front,
+    /// released volume); zeroed/unlaunched unless pigging{} is declared.
+    /// See TwoFluidPigging for the model boundary and discrete law.
+    const TwoFluidPigState& pigState() const { return pigState_; }
+    /// E6 (5.176): the ARRIVE event journal (empty unless pigging{} is
+    /// declared and the pig reached its end arc).
+    const std::vector<TwoFluidPigEvent>& pigEvents() const
+    {
+        return pigJournal_;
+    }
     /// Slug tracking events (GEN/MERGE/OUT) in occurrence order, so the
     /// app can report every event even between two sampled frames.
     const std::vector<TwoFluidSlugTrackEvent>& slugTrackEvents() const
@@ -1190,6 +1260,10 @@ private:
     /// the distributed purge wave over the riser window (see
     /// TwoFluidPurgeWave). Writes the holdup field behind the front.
     void purgeWaveStep(double dt);
+    /// E6 (5.176): advance the Lagrangian pig over the step's final field:
+    /// pile the swept liquid ahead, slow on a growing front, release at the
+    /// end arc. Reads alpha_ only; the field is untouched.
+    void piggingStep(double dt);
     /// Maximal runs of sections with alpha >= alphaThreshold and length >=
     /// minLength, in flow order: the scan slugBodies() reports and the
     /// slug tracking generates from.
@@ -1318,6 +1392,8 @@ private:
     double purgeCycleOutStart_ = 0; // O3: outVol at the cycle's trigger
     double purgeCycleStartT_ = 0;   // O3: trigger time of the live cycle
     double purgeLastCompleteT_ = 0; // O3: previous COMPLETE (period clock)
+    TwoFluidPigState pigState_;   // E6: live reduced pig state
+    std::vector<TwoFluidPigEvent> pigJournal_; // E6: ARRIVE events
     std::vector<double> slip_;    // dynamic closure: vG - vL per section
     std::vector<double> sDotOld_; // last step's ds/dt, the lagged slip
                                   // inertia the mixture momentum feels
@@ -1447,6 +1523,16 @@ private:
 ///       slugVelocity 1.5;        // m/s, constant mode; > 0 required
 ///       gasCapTime 5;            // s, gasCap mode; > 0, needs gasR
 ///       maxSlugVelocity 0;       // m/s optional clamp (0 = none)
+///   }
+///   pigging     // optional (5.176): reduced 1D pig (scraper) tracking
+///   {
+///       enable true;             // false keeps the run byte-identical
+///       startX 0;                // m, launch arc
+///       endX 20;                 // m, arrival arc (0 = chain end)
+///       pigVelocity 1.0;         // m/s, declared base velocity u0 (> 0)
+///       blockage 0.5;            // [0,1): v = u0 (1 - beta H/C)
+///       pushEfficiency 0.6;      // [0,1] fraction of swept liquid piled ahead
+///       frontCapacity 8;         // m, front volume that fully chokes the pig
 ///   }
 ///   thermal      // optional: presence switches the temperature state on
 ///   {

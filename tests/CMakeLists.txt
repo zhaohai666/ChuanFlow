@@ -1961,6 +1961,18 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientPurgeWave)
 
+# E6 (5.176): reduced 1D pigging (scraper) tracking. The checker re-derives
+# the pig position/velocity/piled-front inventory independently from the
+# reported holdup field, checks the ARRIVE release conservation, proves the
+# undeclared and disabled twins byte-identical, exercises the blockage-0
+# one-knob arm and the loud rejections.
+add_test(
+    NAME verify.transientPigging
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_pigging.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientPigging)
+
 # O4 (5.163): rigorous inhibitor phase equilibrium. The checker replicates
 # the activity-root recursion (aW = 1/(1 + activityK w) on the declared
 # curve) cell by cell on the sealed geothermal line - including the spatial

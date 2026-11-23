@@ -5,6 +5,7 @@ pub fn run() {
         .manage(commands::JobRegistry::default())
         .invoke_handler(tauri::generate_handler![
             commands::default_engines,
+            commands::three_d_engines,
             commands::run_case,
             commands::run_case_text,
             commands::run_case_texts,

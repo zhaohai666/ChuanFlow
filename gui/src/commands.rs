@@ -1156,15 +1156,14 @@ pub fn resolve_default_engines() -> (String, String, String, String, String, Str
     )
 }
 
-/// E1: resolve the default 3D solver (packaged Resources/bin first, developer
-/// tree second). piso-foam is the most general pressure-based 3D app and the
-/// startedChannel template (a verified PISO case) is verified against it.
-pub fn resolve_default_3d_engine() -> String {
-    let name = "chflow-piso-foam";
+/// E1 (§5.181): resolve a named 3D engine binary (packaged Resources/bin
+/// first, developer tree second). The 3D family registry below keys every
+/// member by its CMake target name.
+pub fn resolve_three_d_engine_named(bin_name: &str) -> String {
     let packaged = std::env::current_exe().ok().and_then(|exe| {
         exe.ancestors()
             .find(|a| a.file_name().map(|n| n == "Contents").unwrap_or(false))
-            .map(|c| c.join("Resources/bin").join(name))
+            .map(|c| c.join("Resources/bin").join(bin_name))
             .filter(|p| p.exists())
     });
     match packaged {
@@ -1174,10 +1173,88 @@ pub fn resolve_default_3d_engine() -> String {
                 .parent()
                 .unwrap()
                 .join("build/src/3d/apps")
-                .join(name);
+                .join(bin_name);
             dev.to_string_lossy().into_owned()
         }
     }
+}
+
+/// E1: resolve the default 3D solver. piso-foam is the most general
+/// pressure-based 3D app and the startedChannel template (a verified PISO
+/// case) is verified against it.
+pub fn resolve_default_3d_engine() -> String {
+    resolve_three_d_engine_named("chflow-piso-foam")
+}
+
+/// E1 (§5.181): the 3D engine family registry. One row per 3D app that has a
+/// real, engine-verified case (tests/cases/<case_id>/case.dict) AND honours
+/// the `output { vtk ...; }` redirect the GUI's 3D flow injects, so the field
+/// view can auto-load the VTU after the run. Members without a VTU-producing
+/// path (cht, ale, adaptiveRefine, dynamicMesh, mixturePbm, qmom,
+/// combustionDetailed) stay out of the GUI registry on purpose - wiring them
+/// would promise a field view the app cannot deliver.
+/// Rows: (frontend engine key, binary name, case id, human label).
+pub const THREE_D_FAMILY: &[(&str, &str, &str, &str)] = &[
+    ("threeD", "chflow-piso-foam", "startedChannel", "PISO 瞬态通道启动"),
+    ("threeDSimple", "chflow-simple-foam", "poiseuilleChannel", "SIMPLE 稳态泊肃叶通道"),
+    ("threeDVof", "chflow-vof", "vofDroplet", "VOF 液滴界面捕捉"),
+    ("threeDCompressible", "chflow-3d-compressible", "compressibleNsSod", "可压缩 NS（Sod 激波管）"),
+    ("threeDScalar", "chflow-scalar-transport", "advectionDiffusion", "标量对流-扩散"),
+    ("threeDDpm", "chflow-3d-dpm", "dpmChannel", "DPM 颗粒通道（单向耦合）"),
+    ("threeDP1", "chflow-3d-p1", "radiationP1Slab", "P1 辐射灰色介质板"),
+    ("threeDCombustion", "chflow-3d-combustion", "combustionFixedOxidiser", "一步化学燃烧"),
+    ("threeDLes", "chflow-3d-les", "lesSgs", "LES 亚格子模型"),
+    ("threeDMelting", "chflow-3d-melting", "meltingFront", "熔化前沿（相变）"),
+    ("threeDCavitation", "chflow-3d-cavitation", "cavitationVenturi", "Venturi 空化"),
+];
+
+/// One 3D family entry handed to the frontend: the persistent engine key,
+/// the resolved binary path and the case template that drives it.
+#[derive(Debug, Clone, Serialize)]
+pub struct ThreeDEngineEntry {
+    pub key: String,
+    pub label: String,
+    pub exe: String,
+    pub case_id: String,
+    pub case_path: String,
+}
+
+/// Resolve a CTest case dictionary: packaged Resources/cases/<id>.dict wins
+/// when present, developer tree tests/cases/<id>/case.dict otherwise.
+fn resolve_case_path(id: &str) -> PathBuf {
+    let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("tests/cases")
+        .join(id)
+        .join("case.dict");
+    let packaged = std::env::current_exe().ok().and_then(|exe| {
+        exe.ancestors()
+            .find(|a| a.file_name().map(|n| n == "Contents").unwrap_or(false))
+            .map(|contents| contents.join("Resources/cases").join(format!("{id}.dict")))
+            .filter(|p| p.exists())
+    });
+    packaged.unwrap_or(dev)
+}
+
+/// E1 (§5.181): the full 3D family with resolved binary and case paths.
+pub fn resolve_three_d_family() -> Vec<ThreeDEngineEntry> {
+    THREE_D_FAMILY
+        .iter()
+        .map(|(key, bin, case_id, label)| ThreeDEngineEntry {
+            key: (*key).to_string(),
+            label: (*label).to_string(),
+            exe: resolve_three_d_engine_named(bin),
+            case_id: (*case_id).to_string(),
+            case_path: resolve_case_path(case_id).to_string_lossy().into_owned(),
+        })
+        .collect()
+}
+
+/// Frontend hook: the 3D engine family (key / label / exe / case path).
+#[tauri::command]
+pub fn three_d_engines() -> Vec<ThreeDEngineEntry> {
+    resolve_three_d_family()
 }
 
 /// Frontend hook: the default engine paths for this installation
@@ -1215,16 +1292,21 @@ pub fn resolve_case_templates() -> Vec<TemplateEntry> {
         ("nodalVogel", "节点分析（Vogel IPR × Beggs-Brill 垂直举升）"),
         ("pvtFlash", "PVT 闪蒸（烃组分 + 黏度/表面张力）"),
         ("startedChannel", "3D 通道启动（PISO，体积力驱动 + VTU 场）"),
+        // E1 (§5.181): 3D family templates - each pairs a registered 3D
+        // engine with its engine-verified case (see THREE_D_FAMILY).
+        ("poiseuilleChannel", "3D 泊肃叶通道（SIMPLE 稳态解析剖面）"),
+        ("vofDroplet", "3D VOF 液滴（表面张力界面捕捉）"),
+        ("compressibleNsSod", "3D 可压缩 NS（Sod 激波管）"),
+        ("advectionDiffusion", "3D 标量输运（对流-扩散）"),
+        ("dpmChannel", "3D DPM 颗粒通道（单向耦合）"),
+        ("radiationP1Slab", "3D P1 辐射（灰色介质平板）"),
+        ("combustionFixedOxidiser", "3D 燃烧（固定氧化剂一步化学）"),
+        ("lesSgs", "3D LES 亚格子输运"),
+        ("meltingFront", "3D 熔化前沿（相变）"),
+        ("cavitationVenturi", "3D Venturi 空化"),
     ];
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-    let dev_cases = root.join("tests/cases");
     let mut out = Vec::new();
     for (id, name) in TEMPLATES {
-        let dev_path = if *id == "coupled1d3d" {
-            dev_cases.join("coupled1d3d/case.dict")
-        } else {
-            dev_cases.join(id).join("case.dict")
-        };
         // packaged path wins when it exists (the .app carries the same dicts)
         let path = std::env::current_exe().ok().and_then(|exe| {
             exe.ancestors()
@@ -1237,7 +1319,7 @@ pub fn resolve_case_templates() -> Vec<TemplateEntry> {
         });
         let chosen = match path {
             Some(p) if p.exists() => p,
-            _ => dev_path,
+            _ => resolve_case_path(id),
         };
         out.push(TemplateEntry {
             id: (*id).to_string(),
@@ -1828,7 +1910,8 @@ mod tests {
     #[test]
     fn case_templates_resolve_to_existing_verified_cases() {
         let templates = resolve_case_templates();
-        assert_eq!(templates.len(), 10);
+        // E1 (§5.181): 10 pre-existing + 10 new 3D family templates.
+        assert_eq!(templates.len(), 20);
         for t in &templates {
             assert!(
                 Path::new(&t.path).exists(),
@@ -1849,14 +1932,67 @@ mod tests {
         assert!(slug.path.ends_with("twoFluidTerrainSlug/case.dict") || slug.path.ends_with("twoFluidTerrainSlug.dict"));
     }
 
+    /// E1 (§5.181): the 3D engine family registry must resolve every member's
+    /// binary (developer tree layout) and its engine-verified case dict.
+    #[test]
+    fn three_d_family_resolves_binaries_and_verified_cases() {
+        let family = resolve_three_d_family();
+        assert_eq!(family.len(), THREE_D_FAMILY.len());
+        assert_eq!(family.len(), 11);
+        // keys are unique and the PISO entry leads the family
+        let mut keys: Vec<&str> = family.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys[0], "threeD");
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), THREE_D_FAMILY.len(), "family keys must be unique");
+        let bins: Vec<&str> = THREE_D_FAMILY.iter().map(|(_, bin, ..)| *bin).collect();
+        let mut sorted_bins = bins.to_vec();
+        sorted_bins.sort_unstable();
+        sorted_bins.dedup();
+        assert_eq!(sorted_bins.len(), bins.len(), "family binaries must be unique");
+        for e in &family {
+            assert!(e.exe.ends_with(THREE_D_FAMILY.iter()
+                .find(|(k, ..)| *k == e.key).map(|(_, b, ..)| *b).unwrap()));
+            assert!(
+                Path::new(&e.case_path).exists(),
+                "family case {} must exist: {}",
+                e.case_id,
+                e.case_path
+            );
+            assert!(e.case_path.ends_with(&format!("{}/case.dict", e.case_id)));
+            assert!(!e.label.is_empty());
+        }
+        let piso = family.iter().find(|e| e.key == "threeD").unwrap();
+        assert!(piso.exe.ends_with("chflow-piso-foam"));
+        assert!(piso.case_path.ends_with("startedChannel/case.dict"));
+    }
+
+    /// E1 (§5.181): every 3D family case id must be registered as a template
+    /// so the template menu and the engine family cannot drift apart.
+    #[test]
+    fn three_d_family_cases_are_all_registered_templates() {
+        let templates = resolve_case_templates();
+        let ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
+        for (key, _bin, case_id, _label) in THREE_D_FAMILY {
+            assert!(
+                ids.contains(case_id),
+                "family engine {key} case {case_id} missing from template registry"
+            );
+        }
+        // the default 3D resolve still points at PISO (frontends persist it)
+        assert!(resolve_default_3d_engine().ends_with("chflow-piso-foam"));
+        assert!(resolve_three_d_engine_named("chflow-simple-foam").ends_with("chflow-simple-foam"));
+    }
+
     #[test]
     fn resolve_default_3d_engine_points_at_piso() {
         let p = resolve_default_3d_engine();
         assert!(p.ends_with("chflow-piso-foam"), "got {p}");
-        // developer tree fallback must exist in this checkout; a packaged
-        // .app resolve wins when present, so only assert existence when the
-        // dev-tree path was chosen.
-        if p.contains("/build/src/3d/apps/") {
+        // developer tree fallback must exist when this checkout has a CMake
+        // build; an isolated worktree (no build/) still resolves the right
+        // name, mirroring the resolve_default_engines test convention.
+        let dev_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("build");
+        if dev_root.exists() {
             assert!(Path::new(&p).exists(), "dev 3D engine {p} must exist");
         }
     }

@@ -38,6 +38,32 @@ struct EnergyProps
     scalar initialAmplitude = 0;   // K
     std::string initialAxis = "z"; // axis the mode is measured along
 
+    /// F12 melting/solidification, opt-in through the `energy{ phaseChange{} }`
+    /// sub-block. Without it the props, the validation and the solve are
+    /// byte-for-byte the plain convection-diffusion model. With it the
+    /// temperature equation carries the latent heat as an apparent heat
+    /// capacity (Voller-Prakash enthalpy-porosity):
+    ///   H(T) = cp T + L f_l(T),  f_l = clamp((T - Ts)/(Tl - Ts), 0, 1),
+    /// linearised as cp dT/dt + L df_l/dT dT/dt, so the transient diagonal
+    /// gains V (L/cp) df_l/dT / dt and the mushy zone of width Tl - Ts
+    /// absorbs the latent heat between solidus and liquidus. The momentum
+    /// side of the method - the Darcy term that stops the flow where f_l
+    /// vanishes, -(1-f_l)^2/(f_l^3+eps) A_mush U - is applied by the app,
+    /// which reads liquidFraction() back out.
+    struct PhaseChange
+    {
+        bool enabled = false;
+        scalar latent = 0;          // L, J/kg
+        scalar Tsolidus = 0;        // K
+        scalar Tliquidus = 0;       // K, must exceed the solidus
+        scalar mushyConstant = 0;   // A_mush, 1/s^2 (Darcy prefactor)
+        scalar mushyEpsilon = 1e-3; // regulariser of f_l^3 + eps
+
+        static PhaseChange fromCase(const Dictionary& e);
+        void validate() const;
+    };
+    PhaseChange phase;
+
     /// Read the case's `energy{}` block, then validate(). The apps check
     /// `caseDict.has("energy")` first: no block means the case has no thermal
     /// field at all.
@@ -158,6 +184,14 @@ public:
     /// carries out. With the patch heat rates it closes the discrete balance.
     scalar netEnthalpyRate() const;
 
+    /// liquid fraction f_l(T) per cell, recomputed at every correctEnergy();
+    /// all zero when the case declares no phaseChange block
+    const Field<scalar>& liquidFraction() const { return fl_; }
+    /// integral of rho (cp (T - tRef) + L f_l) over the domain (J): the
+    /// apparent-capacity formulation conserves exactly this quantity against
+    /// the boundary heat input
+    scalar totalEnthalpy() const;
+
     /// State of the thermal wall function on a patch's fixed-value wall faces:
     /// area-weighted u_tau, y+, T+ and the wall heat rate (W). `active` is
     /// false when the patch carries no such face or no wall layer was handed
@@ -178,6 +212,8 @@ public:
     Field<scalar> sourceRate() const;
     /// f = -beta (T - tRef) gravity over the current temperature.
     void refreshBuoyancy();
+    /// f_l(T) over the current temperature; no-op when phase change is off.
+    void refreshLiquidFraction();
     /// Diffusivity [m2/s] per face: the harmonic mean of alphaCell(), with the
     /// thermal wall function's u_tau y/T+ at fixed-value wall faces. Shared by
     /// the assembled equation and the reported heat rates, so the two always
@@ -196,6 +232,7 @@ public:
     volScalarField t_;
     Field<Vector> buoyancy_;
     bool hasBuoyancy_ = false;
+    Field<scalar> fl_;
 
     static constexpr scalar linearTol = 1e-13;
     static constexpr int linearMaxIter = 20000;

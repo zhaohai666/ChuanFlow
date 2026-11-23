@@ -64,6 +64,7 @@ inline void writeTurbulence(VtkWriter& writer, const RansModel& model)
     if (model.dissipationName() == "none") return;
     writer.addCellScalar("k", model.k());
     writer.addCellScalar(model.dissipationName(), model.dissipation());
+    if (model.auxField()) writer.addCellScalar(model.auxFieldName(), *model.auxField());
 }
 
 } // namespace app

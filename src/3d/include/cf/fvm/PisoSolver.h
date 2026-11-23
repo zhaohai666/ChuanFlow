@@ -28,6 +28,12 @@ struct PisoControls
     /// continuity is closed (faces), and a force that reaches only one of the
     /// two leaves the other to accelerate the fluid.
     const Field<Vector>* cellForce = nullptr;
+
+    /// Optional per-cell 1/rho multiplying the momentum response rAU, so the
+    /// pressure correction (and the flux built from rAUf) sees the mixture
+    /// density of a two-phase field. Null (the only value every existing case
+    /// leaves it at) keeps the step byte-for-byte the unit-density projection.
+    const Field<scalar>* cellInvRho = nullptr;
 };
 
 struct PisoStepResult

@@ -41,12 +41,22 @@ inline constexpr int linearMaxIter = 2000;
 ///   }
 /// `lengthScale` <= 0 falls back to 7% of the mesh bounding box, the usual
 /// hydraulic-diameter rule for a case that states no inlet condition.
+/// The advanced models (F4) add their own keys to the same block; they are
+/// read only by the models that use them, so an existing case that declares
+/// none of them keeps its exact behaviour:
+///   des:              C_DES 0.61
+///   gammaTransition:  reOnset <Re threshold>; onsetWidth (optional);
+///                     gammaRate (optional, default 4)
 struct TurbulenceConfig
 {
     std::string model = "laminar";
     scalar intensity = 0.05;
     scalar lengthScale = -1;
     scalar relaxation = 0.7;
+    scalar cDES = 0.61;
+    scalar reOnset = 0;
+    scalar onsetWidth = -1;
+    scalar gammaRate = 4.0;
 
     /// A missing `turbulence` block means laminar.
     static TurbulenceConfig fromCase(const Dictionary& caseDict);
@@ -101,6 +111,12 @@ public:
     virtual std::string name() const = 0;
     /// name of the dissipation variable, for reports and the vtu field
     virtual std::string dissipationName() const = 0;
+
+    /// Optional model-specific per-cell field written to the vtu next to
+    /// k/epsilon/nut (the DES shielded length, the transition intermittency).
+    /// Null for the models that carry none.
+    virtual const Field<scalar>* auxField() const { return nullptr; }
+    virtual std::string auxFieldName() const { return ""; }
 
     const polyMesh& mesh() const { return mesh_; }
     const Field<scalar>& nut() const { return nut_; }

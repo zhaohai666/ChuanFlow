@@ -1,0 +1,47 @@
+// DRAFT (calibration): single-phase flow through the built-in venturi,
+// pSat driven far below every pressure so alpha must stay at alpha0.
+venturi
+{
+    nx 60; ny 10;
+    x1 0.10; x2 0.20; x3 0.25; x4 0.40;
+    H1 0.10; H2 0.05;
+    depth 0.02;
+}
+
+nu 0.01;
+
+patches
+{
+    inlet  { U (1 0 0); UType fixedValue; pType zeroGradient; }
+    outlet { UType zeroGradient; p 0; pType fixedValue; }
+    bottom { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top    { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    front  { UType zeroGradient; pType zeroGradient; }
+    back   { UType zeroGradient; pType zeroGradient; }
+}
+
+schemes
+{
+    ddt Euler;
+    div upwind;
+    laplacian none;
+    grad linear;
+}
+
+piso
+{
+    dt 0.0005;
+    endTime 0.05;
+    correctors 2;
+    continuityTol 1e-8;
+    reportEvery 10;
+    force (0 0 0);
+}
+
+cavitation
+{
+    pSat 0;
+    rhoL 1; rhoV 998;
+    Ce 2897; Cc 80; Rb 1e-5;
+    alpha0 1e-6; diffusivity 0;
+}

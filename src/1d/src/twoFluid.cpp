@@ -262,6 +262,22 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
             cfFatal("twoFluid: purgeWave riser window holds no cell centre");
     }
 
+    // E6 (5.176): the pig's launch/arrival arcs must sit on this chain. The
+    // loader checked their signs and ordering; only the arc geometry is
+    // known here. Launch the pig at construction so the t = 0 report already
+    // shows it RUN at startX with a zero pile.
+    if (cfg_.piggingOn)
+    {
+        const TwoFluidPigging& pg = cfg_.pigging;
+        const double end = pg.endX > 0 ? pg.endX : length_;
+        if (pg.startX < 0 || pg.startX > length_ + 1e-9 || end > length_ + 1e-9
+            || pg.startX >= end)
+            cfFatal("twoFluid: pigging launch/arrival arc outside the chain");
+        pigState_.launched = true;
+        pigState_.x = pg.startX;
+        pigState_.v = pg.pigVelocity;
+    }
+
     if (cfg_.thermalOn)
     {
         const TwoFluidThermal& th = cfg_.thermal;
@@ -2005,6 +2021,7 @@ void TwoFluidPipe::step(double dt)
     compositionStep(dt); // G1: per-cell PR flash diagnostics (reads only)
     thermalStep(dt);
     slugTrackStep(dt); // O2 (5.161): rides the step's final holdup field
+    piggingStep(dt); // E6 (5.176): reduced pig rides the final holdup field
     vMOld_ = vM_;
     t_ += dt;
 }
@@ -2888,6 +2905,63 @@ void TwoFluidPipe::purgeWaveStep(double dt)
     }
 }
 
+void TwoFluidPipe::piggingStep(double dt)
+{
+    if (!cfg_.piggingOn || !pigState_.launched || pigState_.arrived) return;
+    const TwoFluidPigging& pg = cfg_.pigging;
+    const double end = pg.endX > 0 ? pg.endX : length_;
+    const double evT = t_ + dt;
+
+    // swept-liquid inventory over [x0, x1] of the step's final holdup field;
+    // partial cells weigh in by their overlap fraction, exactly the idiom
+    // slugTrackStep uses. H is a diagnosed volume (per m2 of bore), not a
+    // write-back to alpha_.
+    auto swept = [&](double x0, double x1)
+    {
+        const double lo = std::max(0.0, x0), hi = std::min(length_, x1);
+        if (hi <= lo) return 0.0;
+        double inv = 0, acc = 0;
+        for (int i = 0; i < n_; ++i)
+        {
+            const double o = std::min(hi, acc + dxs_[i]) - std::max(lo, acc);
+            if (o > 0) inv += alpha_[i] * o;
+            acc += dxs_[i];
+        }
+        return inv;
+    };
+
+    // a growing front chokes the pig: v = u0 (1 - beta clamp(H/C, 0, 1)).
+    const double choke = pg.frontCapacity > 0
+        ? std::min(1.0, std::max(0.0, pigState_.holdupFront
+                                 / pg.frontCapacity)) : 0.0;
+    const double v = pg.pigVelocity * (1.0 - pg.blockage * choke);
+    const double x0 = pigState_.x;
+    double x1 = x0 + v * dt;
+    if (x1 > end) x1 = end;
+
+    pigState_.holdupFront += pg.pushEfficiency * swept(x0, x1);
+    pigState_.x = x1;
+    pigState_.v = v;
+
+    if (x1 >= end)
+    {
+        // arrival: the whole piled front is released; freeze the pig (the
+        // state line thereafter reads v = 0, event NONE) and journal the
+        // ARRIVE with the velocity that carried it to the end arc.
+        pigState_.outVol = pigState_.holdupFront;
+        pigState_.arrived = true;
+        pigState_.v = 0.0;
+        TwoFluidPigEvent e;
+        e.t = evT;
+        e.kind = 1;
+        e.x = x1;
+        e.v = v;
+        e.holdupFront = pigState_.holdupFront;
+        e.outVol = pigState_.outVol;
+        pigJournal_.push_back(e);
+    }
+}
+
 namespace
 {
 
@@ -3395,6 +3469,44 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
             && c.purgeWave.riserEnd <= c.purgeWave.riserStart)
             cfFatal("twoFluid: purgeWave riserEnd must exceed riserStart");
         c.purgeWaveOn = enable;
+    }
+
+    if (caseDict.has("pigging"))
+    {
+        // E6 (5.176): reduced 1D pig tracking. The block is opt-in and
+        // enable false (or no block at all) leaves the run byte-identical.
+        const Dictionary& gd = caseDict.getDict("pigging");
+        bool enable = true;
+        if (gd.has("enable"))
+        {
+            const std::string w = gd.getWord("enable");
+            if (w == "true") enable = true;
+            else if (w == "false") enable = false;
+            else cfFatal("twoFluid: pigging enable must be true or false");
+        }
+        c.pigging.startX = gd.getScalarOr("startX", 0.0);
+        c.pigging.endX = gd.getScalarOr("endX", 0.0);
+        c.pigging.pigVelocity = gd.getScalarOr("pigVelocity", 0.0);
+        c.pigging.blockage = gd.getScalarOr("blockage", 0.0);
+        c.pigging.pushEfficiency = gd.getScalarOr("pushEfficiency", 0.0);
+        c.pigging.frontCapacity = gd.getScalarOr("frontCapacity", 0.0);
+        if (c.pigging.startX < 0)
+            cfFatal("twoFluid: negative pigging startX");
+        if (c.pigging.endX < 0)
+            cfFatal("twoFluid: negative pigging endX");
+        if (c.pigging.endX > 0 && c.pigging.endX <= c.pigging.startX)
+            cfFatal("twoFluid: pigging endX must exceed startX");
+        if (c.pigging.pigVelocity < 0)
+            cfFatal("twoFluid: negative pigging pigVelocity");
+        if (c.pigging.blockage < 0 || c.pigging.blockage >= 1.0)
+            cfFatal("twoFluid: pigging blockage must be in [0, 1)");
+        if (c.pigging.pushEfficiency < 0 || c.pigging.pushEfficiency > 1.0)
+            cfFatal("twoFluid: pigging pushEfficiency must be in [0, 1]");
+        if (!(c.pigging.frontCapacity > 0))
+            cfFatal("twoFluid: pigging needs a positive frontCapacity");
+        if (enable && !(c.pigging.pigVelocity > 0))
+            cfFatal("twoFluid: pigging needs a positive pigVelocity");
+        c.piggingOn = enable;
     }
 }
 

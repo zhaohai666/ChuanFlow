@@ -220,6 +220,8 @@ int main(int argc, char** argv)
         std::size_t slugTrackCursor = 0;
         // O3 (5.162): cursor over the purge wave TRIGGER/COMPLETE journal
         std::size_t purgeCursor = 0;
+        // E6 (5.176): cursor over the pig ARRIVE journal
+        std::size_t pigCursor = 0;
 
         auto emit = [&](const TwoFluidPipe& s)
         {
@@ -375,6 +377,27 @@ int main(int argc, char** argv)
                               + " out " + num(e.outVol) + " duration "
                               + num(e.duration) + " period " + num(e.period);
                     log::info(line);
+                }
+            }
+            if (c.piggingOn)
+            {
+                // E6 (5.176): one pig state line per sampled frame (RUN while
+                // travelling, NONE after arrival) and each ARRIVE journal line
+                // once, even between frames -- the same cursor idiom as the
+                // slug tracking / purge reports.
+                const TwoFluidPigState& ps = s.pigState();
+                log::info("pig t ", num(s.time()), " x ", num(ps.x),
+                          " v ", num(ps.v), " holdupFront ",
+                          num(ps.holdupFront), " outVol ", num(ps.outVol),
+                          " event ", ps.arrived ? "NONE" : "RUN");
+                const std::vector<TwoFluidPigEvent>& evs = s.pigEvents();
+                for (; pigCursor < evs.size(); ++pigCursor)
+                {
+                    const TwoFluidPigEvent& e = evs[pigCursor];
+                    log::info("pig t ", num(e.t), " x ", num(e.x),
+                              " v ", num(e.v), " holdupFront ",
+                              num(e.holdupFront), " outVol ", num(e.outVol),
+                              " event ARRIVE");
                 }
             }
             if (c.terrainOn)

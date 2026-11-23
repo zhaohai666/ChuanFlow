@@ -1,0 +1,54 @@
+// E6 (5.176) rejection witness: blockage 1.5 is outside [0, 1). The loader
+// must refuse loudly instead of letting the velocity law go negative.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 20;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.5;
+}
+
+initial
+{
+    alpha 0.61803398875;
+    water 0.3;
+}
+
+pigging
+{
+    enable true;
+    startX 0;
+    endX 20;
+    pigVelocity 2.0;
+    blockage 1.5;
+    pushEfficiency 0.6;
+    frontCapacity 8;
+}
+
+boundaries
+{
+    inlet { type phaseRates; vsl 0.5; vsg 0.5; }
+    outlet { type fixedPressure; p 5e6; }
+}
+
+time
+{
+    dt 0.05;
+    endTime 20;
+    reportEvery 1;
+}

@@ -1,0 +1,65 @@
+// E6 (5.176) enable-false twin: the pigging block is declared and validated
+// but disabled. The run must stay byte-for-byte identical to caseBase.dict.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 20;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.5;
+}
+
+initial
+{
+    alpha 0.61803398875;
+    water 0.3;
+}
+
+pigging
+{
+    enable false;
+    startX 0;
+    endX 20;
+    pigVelocity 2.0;
+    blockage 0.5;
+    pushEfficiency 0.6;
+    frontCapacity 8;
+}
+
+boundaries
+{
+    inlet
+    {
+        type phaseRates;
+        vsl 0.5;
+        vsg 0.5;
+        waterFraction 0.3;
+        schedule
+        {
+            p1 { t 3; vsl 0.8; vsg 0.2; }
+            p2 { t 7; vsl 0.5; vsg 0.5; }
+        }
+    }
+    outlet { type fixedPressure; p 5e6; }
+}
+
+time
+{
+    dt 0.05;
+    endTime 20;
+    reportEvery 1;
+}

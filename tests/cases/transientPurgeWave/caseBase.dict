@@ -1,0 +1,13 @@
+// O3 (5.162): twin of case.dict WITHOUT the purgeWave block - the
+// byte-identity witness of the undeclared path (the checker strips the
+// purge lines from case.dict's stdout and compares the rest verbatim).
+time { dt 0.05; endTime 300; reportEvery 1; }
+fluid { rhoL 1000; rhoG 5; muL 0.1; muG 1e-5; gasR 287; }
+pipe { length 60; diameter 0.1; roughness 0; angleDeg 90; sections 60; }
+closure { model wallis; slipVelocity 0.5; }
+initial { alpha 0.951249219725039; water 0; }
+boundaries
+{
+    inlet { type phaseRates; vsl 0.5; vsg 0.05; }
+    outlet { type fixedPressure; p 1e5; }
+}

@@ -1,0 +1,81 @@
+// O4 (5.163): pure-water witness - the rigorous block stays declared but
+// the inhibitor is absent (initial 0): aW = 1 exactly, so the trajectory
+// must be byte-identical to the same file with the block stripped (the
+// checker generates that twin and compares stdout).
+fluid
+{
+    rhoL 1000;
+    rhoG 200;
+    muL  0.01;
+    muG  1e-5;
+    cL   4180;
+    cG   2150;
+    gasR 287;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.02;
+    angleDeg 30;
+    roughness 0;
+    sections 10;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.5;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet  { type sealed; }
+    outlet { type sealed; }
+}
+
+thermal
+{
+    wallHeatTransfer 50;
+    wallModel geothermal;
+    surfaceTemperature 172.6;
+    gradient 1.2;
+    inletDepth 100;
+}
+
+hydrate
+{
+    curveA 35.2;
+    curveB -5684;
+    growthRate 0.01;
+    dissociationRate 0.01;
+    gasContent 122;
+    latentHeat 4.2e8;
+    initial 0.04;
+}
+
+inhibitor
+{
+    kDepression 5;
+    initial 0;
+}
+
+inhibitorEquilibrium
+{
+    activityK 8;
+    basis liquid;
+}
+
+time
+{
+    dt 0.5;
+    endTime 400;
+    reportEvery 40;
+}

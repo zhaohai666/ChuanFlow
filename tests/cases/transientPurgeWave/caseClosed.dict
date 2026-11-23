@@ -1,0 +1,32 @@
+// O3 (5.162): closed-mode purge wave. Same riser as case.dict but the
+// front speed is derived every step from the energy balance
+//   u_wave = sqrt(2 max(triggerFactor rhoL g H_trig - p_cap, 0) / rhoL)
+// with H_trig the column head at the blowdown instant (559714 Pa / rhoL g)
+// and p_cap the live cap state. The first blowdown races up at
+// sqrt(2 (559714 - 430500) / 1000) = 16.08 m/s and accelerates as the cap
+// flushes out through the open riser towards rhoG gasR vsg dx / ... ~ 39
+// kPa; the checker re-derives u_wave from the reported head/cap line by
+// line (1e-9) and integrates the front position frame by frame, exactly
+// as the 5.161 gas-cap case witnesses its formula. The 120 s run completes
+// at least two cycles (period about 111 s: fast traverse plus the wallis
+// fill shock refill); reportEvery 1 lets the checker replay the front
+// step by step.
+time { dt 0.05; endTime 120; reportEvery 1; }
+fluid { rhoL 1000; rhoG 5; muL 0.1; muG 1e-5; gasR 287; }
+pipe { length 60; diameter 0.1; roughness 0; angleDeg 90; sections 60; }
+closure { model wallis; slipVelocity 0.5; }
+initial { alpha 0.951249219725039; water 0; }
+boundaries
+{
+    inlet { type phaseRates; vsl 0.5; vsg 0.05; }
+    outlet { type fixedPressure; p 1e5; }
+}
+purgeWave
+{
+    triggerFactor 1.0;
+    continuityAlpha 0.5;
+    waveMode closed;
+    gasCapTime 20;
+    alphaResidual 0.05;
+    maxCycles 0;
+}

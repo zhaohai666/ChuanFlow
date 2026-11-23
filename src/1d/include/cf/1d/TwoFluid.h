@@ -129,6 +129,15 @@ namespace cf
 /// The equilibrium curve itself stays the declared Clausius form; the
 /// inhibitor is a pure offset of its evaluation point (thermodynamic
 /// inhibition only - no kinetic rate modification, no partitioning).
+/// With an inhibitorEquilibrium{} block (on top of inhibitor{} + hydrate{})
+/// the depression is no longer the linear offset: the kinetics root the
+/// declared curve at the water activity of the transported inhibitor,
+///   aW = 1 / (1 + activityK w),  ln(p aW) = curveA + curveB / T_eq,
+/// with w the inhibitor fraction on the declared basis (of the liquid for
+/// basis liquid, of the free water for basis water, clamped to 1). The
+/// rigorous root REPLACES the kDepression offset on this path (kDepression
+/// stays a required inhibitor{} declaration); at w = 0 the activity is 1
+/// and the declared curve is reproduced bit for bit.
 /// With an entrainment{} block the sections also carry a droplet fraction d
 /// of the liquid (the film-droplet split of annular flow; transport level
 /// only in this increment - the closure, momentum and properties stay
@@ -373,6 +382,124 @@ struct TwoFluidSlugBody
     double inventory = 0; // liquid volume per m2 of bore, sum alpha dx
 };
 
+/// O2 (5.161): OLGA-style full-front slug tracking. A set of Lagrangian
+/// slug objects rides beside the Eulerian holdup field. Each object carries
+/// a front face xF, a rear face xR, a liquid inventory re-estimated every
+/// step from the field over [xR, xF], and the two face velocities. Objects
+/// are GENERATED from the same maximal-run scan slugBodies() reports (so
+/// the two agree at birth within one cell), the front advances at the
+/// declared slug migration velocity (constant slugVelocity, or the 5.142
+/// gas-cap ejection value), the rear at the local liquid transport velocity
+/// at the rear cell. Two objects MERGE when the trailing front reaches the
+/// leading rear (volumes add, the front of the leader and the rear of the
+/// trailer survive); an object retires at the outlet (OUT) when its rear
+/// crosses the domain end. Simplifications, stated honestly: one dimension,
+/// no inter-slug transfer of entrained liquid, a merge is full coalescence,
+/// the front pins at the outlet while the rear drains through it, and the
+/// discharge volume is the liquid flux integrated over the outlet face
+/// while the span covers it.
+struct TwoFluidSlugTracking
+{
+    double alphaThreshold = 0.5; // liquid fraction a run needs to be tracked
+    double minLength = 0;        // m, shortest run that is generated
+    int velocityMode = 0;        // 0 = constant, 1 = gasCap (the 5.142 law)
+    double slugVelocity = 0;     // m/s, constant migration velocity (mode 0)
+    double gasCapTime = 0;       // s, cap-pressure relaxation (mode 1)
+    double maxSlugVelocity = 0;  // m/s optional ejection clamp (0 = none)
+};
+
+struct TwoFluidSlugTrack
+{
+    int id = 0;              // generation order, kept through a merge
+    double xR = 0;           // m, rear face arc position
+    double xF = 0;           // m, front face arc position (pinned at outlet)
+    double inv = 0;          // liquid per m2 of bore in [xR, xF], field re-estimate
+    double uF = 0;           // m/s, front face velocity
+    double uR = 0;           // m/s, rear face velocity
+    double tBorn = 0;        // s, generation time
+    double outVol = 0;       // m, liquid discharged through the outlet face
+                             // while the span covered the outlet
+    double capPressure = 0;  // Pa, gas-cap pressure behind the rear (mode 1)
+};
+
+struct TwoFluidSlugTrackEvent
+{
+    double t = 0;        // s, event time
+    int id = 0;          // surviving object's id (trailer on a merge)
+    int kind = 0;        // 1 GEN, 2 MERGE, 3 OUT
+    double xR = 0;       // m, faces at the event instant
+    double xF = 0;       // m
+    double inv = 0;      // inventory at the event (MERGE: the exact sum)
+    double uF = 0;       // m/s
+    double uR = 0;       // m/s
+    double outVol = 0;   // OUT only: accumulated discharge volume
+    double duration = 0; // OUT only: t - tBorn
+};
+
+/// O3 (5.162): OLGA-aligned distributed purge (blowdown) wave - the riser
+/// emptying stage of the severe-slugging cycle. The 5.142 terrain oscillator
+/// is the lumped-parameter approximation; this layer distributes the blowdown
+/// over the riser's cells. A gas cap state rides at the riser base: its
+/// pressure relaxes (implicit Euler, gasCapTime) towards the EOS pressure of
+/// the base cell - the same 5.142 relaxation idiom, but an independent state
+/// that never touches the dynamicUs criteria. While the riser column is
+/// continuous (every window cell at or above continuityAlpha) and the cap
+/// falls below triggerFactor * rhoL * g * H of the column head, the column is
+/// unsupported: a purge wave front is born at the riser base and travels up
+/// the column at the declared constant uWave (mode constant) or at the
+/// energy-balance value
+///   u_wave = sqrt(2 max(triggerFactor rhoL g H_trig - p_cap, 0) / rhoL)
+/// recomputed every step from the column head at the blowdown instant and
+/// the live cap pressure (mode closed). Every window
+/// cell the front has passed relaxes to the residual holdup alphaResidual -
+/// the section is blown dry by the gas - and the displaced liquid leaves
+/// through the riser top into the out accumulator (the flow pulse). When the
+/// front crosses the riser top the purge COMPLETEs, the cycle counter grows
+/// and the run returns to accumulation: the inflow refills the column, the
+/// cap re-charges towards the EOS base pressure, and the next blowdown
+/// triggers. Simplifications, stated honestly: one dimension, the front
+/// thickness is one numerical cell (cell centres), alphaResidual is a
+/// constant, the displaced liquid is vented at the top rather than sliding
+/// down the pipe, and no inter-phase slip detail rides the front.
+struct TwoFluidPurgeWave
+{
+    double triggerFactor = 1.0;   // fraction of the static head that still
+                                  // supports the column (cap below it = blowdown)
+    double continuityAlpha = 0.5; // alpha a window cell needs for a continuous column
+    int waveMode = 0;             // 0 = closed (imbalance formula), 1 = constant
+    double uWave = 0;             // m/s, constant-mode front speed (> 0 required)
+    double gasCapTime = 0;        // s, cap-pressure relaxation (> 0, needs gasR)
+    double alphaResidual = 0.05;  // residual liquid holdup behind the front
+    int maxCycles = 0;            // purge cycles allowed (0 = unlimited)
+    double riserStart = 0;        // m, arc of the riser window start
+    double riserEnd = 0;          // m, arc of the riser window end (0 = chain end)
+};
+
+struct TwoFluidPurgeState
+{
+    int phase = 0;          // 0 NONE, 1 TRIGGER, 2 PROPAGATE, 3 COMPLETE
+    double xWave = 0;       // m, arc of the wave front (0 while idle)
+    double uWave = 0;       // m/s, front velocity used by the last step
+    double capPressure = 0; // Pa, gas-cap state relaxing to the base EOS pressure
+    double basePressure = 0;// Pa, EOS pressure of the base cell this step
+    double head = 0;        // m, vertical liquid head of the window column
+    int cycles = 0;         // purges completed
+    double outVol = 0;      // m, liquid purged through the riser top (cumulative)
+};
+
+struct TwoFluidPurgeEvent
+{
+    double t = 0;         // s, event time
+    int kind = 0;         // 1 TRIGGER, 2 COMPLETE
+    double xWave = 0;     // m, front position at the event
+    double head = 0;      // m, column head the trigger saw (TRIGGER)
+    double capPressure = 0; // Pa, cap state at the event
+    int cycle = 0;        // COMPLETE only: 1-based cycle number
+    double outVol = 0;    // COMPLETE only: liquid purged during this cycle
+    double duration = 0;  // COMPLETE only: t - t_trigger
+    double period = 0;    // COMPLETE only: t - t_previousComplete (0 = first)
+};
+
 /// Terrain-induced slugging, increment 1 (D6): the low-point pooling map and
 /// its spill-fill initiation criterion. Like slug{} this is a statistics
 /// layer over the holdup the transport already solves and the elevation the
@@ -614,6 +741,20 @@ struct TwoFluidInhibitor
     double initial = 0;     // initial inhibitor fraction of the liquid
 };
 
+/// O4 (5.163): rigorous inhibitor phase equilibrium. The kinetics read the
+/// equilibrium line at the water activity aW = 1/(1 + activityK w) of the
+/// transported inhibitor instead of the Hammerschmidt offset:
+///   T_eq(p, w) = curveB / (ln p + ln aW - curveA).
+/// w is the inhibitor fraction on the declared basis (of the liquid mass
+/// when basis liquid, of the free water when basis water). activityK is a
+/// DECLARED coefficient (dimensionless activity constant) - the kernel
+/// carries no inhibitor chemistry table.
+struct TwoFluidInhibitorEquilibrium
+{
+    double activityK = 0;    // activity constant in aW = 1/(1+K w), > 0
+    bool basisWater = false; // false: w = c; true: w = c / water cut
+};
+
 struct TwoFluidCase
 {
     TwoFluidFluid fluid;
@@ -650,6 +791,10 @@ struct TwoFluidCase
     bool inhibitorOn = false;    // thermodynamic hydrate inhibition declared
                                  // (inhibitor{} present; needs hydrate{})
     TwoFluidInhibitor inhibitor;
+    bool inhibitorEquilibriumOn = false; // rigorous activity root declared
+                                         // (inhibitorEquilibrium{} present;
+                                         // needs inhibitor{} and hydrate{})
+    TwoFluidInhibitorEquilibrium inhibitorEquilibrium;
     bool sandOn = false;         // sand/cuttings transport declared (sand{})
     TwoFluidSand sand;
     // G1: transient composition tracking + per-cell PR flash diagnostics
@@ -661,8 +806,14 @@ struct TwoFluidCase
     std::vector<double> compositionZ0;         // feed mole fractions z
     bool slugOn = false;         // slug-body statistics solved (slug{} present)
     TwoFluidSlug slug;
+    bool slugTrackingOn = false; // Lagrangian slug tracking solved
+                                 // (slugTracking{} present)
+    TwoFluidSlugTracking slugTracking;
     bool terrainOn = false;      // low-point pooling map solved (terrain{} present)
     TwoFluidTerrain terrain;
+    bool purgeWaveOn = false;    // distributed purge wave solved
+                                 // (purgeWave{} present)
+    TwoFluidPurgeWave purgeWave;
     bool networkMode = false;    // branch-network member: the junction end
                                  // boundary is owned by the TwoFluidNetwork
                                  // (mutated every step), so the constructor
@@ -758,6 +909,28 @@ public:
     /// Inhibitor mass fraction of the liquid per section (inhibitor on);
     /// zeros unless the inhibitor{} block is present.
     std::vector<double> cellInhibitor() const { return inhibitor_; }
+    /// O4 (5.163): rigorous inhibited equilibrium temperature
+    /// T_eq(p_i, w_i) per section; EMPTY unless inhibitorEquilibrium{} is
+    /// declared (the undeclared path reports no columns at all).
+    std::vector<double> cellEquilibriumTemperature() const
+    {
+        std::vector<double> t;
+        if (!cfg_.inhibitorEquilibriumOn) return t;
+        const std::vector<double> p = cellPressure();
+        t.resize(n_);
+        for (int i = 0; i < n_; ++i)
+            t[i] = rigorousEquilibriumTemperature(p[i], i);
+        return t;
+    }
+    /// Subcooling dT_sub = T_eq - T_i the kinetics see per section
+    /// (5.163); empty unless inhibitorEquilibrium{} is declared.
+    std::vector<double> cellSubcooling() const
+    {
+        std::vector<double> t = cellEquilibriumTemperature();
+        if (t.empty()) return t;
+        for (int i = 0; i < n_; ++i) t[i] -= sectionTemperature(i);
+        return t;
+    }
     /// Suspended sand volume fraction of the liquid per section (sand on);
     /// zeros unless the sand{} block is present.
     std::vector<double> cellSand() const { return sandFrac_; }
@@ -830,6 +1003,29 @@ public:
     /// with alpha >= alphaThreshold and length >= minLength, in flow
     /// order (empty unless the slug{} block is present). See TwoFluidSlug.
     std::vector<TwoFluidSlugBody> slugBodies() const;
+    /// O2 (5.161): the live Lagrangian slug objects in flow order (empty
+    /// unless the slugTracking{} block is present). See
+    /// TwoFluidSlugTracking.
+    const std::vector<TwoFluidSlugTrack>& slugTracks() const
+    {
+        return slugTracks_;
+    }
+    /// O3 (5.162): the live purge wave state (phase, front, cap, head,
+    /// cycle count, purged volume); zeroed unless purgeWave{} is declared.
+    /// See the TwoFluidPurgeWave documentation.
+    const TwoFluidPurgeState& purgeState() const { return purgeState_; }
+    /// O3 (5.162): the TRIGGER/COMPLETE event journal (empty unless the
+    /// purgeWave{} block is declared and enabled).
+    const std::vector<TwoFluidPurgeEvent>& purgeEvents() const
+    {
+        return purgeJournal_;
+    }
+    /// Slug tracking events (GEN/MERGE/OUT) in occurrence order, so the
+    /// app can report every event even between two sampled frames.
+    const std::vector<TwoFluidSlugTrackEvent>& slugTrackEvents() const
+    {
+        return slugTrackJournal_;
+    }
     /// Low-point pooling map of the chain's elevation profile: each dip's
     /// basin inventory, geometric spill capacity and fill fraction, with the
     /// spill-fill initiation verdict (empty unless the terrain{} block is
@@ -987,6 +1183,18 @@ private:
     void slipStep(double dt);
     void transportStep(double dt);
     void terrainSlugStep(double dt);
+    /// O2 (5.161): advance/generate/merge/retire the Lagrangian slug
+    /// objects over the transport's final field (see TwoFluidSlugTracking).
+    void slugTrackStep(double dt);
+    /// O3 (5.162): relax the gas-cap state, trigger / propagate / complete
+    /// the distributed purge wave over the riser window (see
+    /// TwoFluidPurgeWave). Writes the holdup field behind the front.
+    void purgeWaveStep(double dt);
+    /// Maximal runs of sections with alpha >= alphaThreshold and length >=
+    /// minLength, in flow order: the scan slugBodies() reports and the
+    /// slug tracking generates from.
+    std::vector<TwoFluidSlugBody> slugRuns(double alphaThreshold,
+                                           double minLength) const;
     void entrainmentStep(double dt);
     void hydrateStep(double dt);
     void sandStep(double dt);
@@ -1013,14 +1221,33 @@ private:
     {
         return cfg_.hydrate.curveB / (std::log(p) - cfg_.hydrate.curveA);
     }
-    // the same line seen by the kinetics: with inhibitor{} the local
-    // transported fraction depresses it by kDepression c (Hammerschmidt
-    // linear term); without, the declared curve verbatim
+    // the same line seen by the kinetics: with inhibitorEquilibrium{} the
+    // rigorous activity root of the declared curve (5.163); with plain
+    // inhibitor{} the transported fraction depresses it by kDepression c
+    // (Hammerschmidt linear term); without, the declared curve verbatim
     double equilibriumTemperatureInhibited(double p, int i) const
     {
+        if (cfg_.inhibitorEquilibriumOn)
+            return rigorousEquilibriumTemperature(p, i);
         return equilibriumTemperature(p)
              - (cfg_.inhibitorOn ? cfg_.inhibitor.kDepression * inhibitor_[i]
                                  : 0.0);
+    }
+    // O4 (5.163): the rigorous root ln(p aW) = curveA + curveB/T_eq with
+    // aW = 1/(1 + activityK w). w = 0 gives aW = 1 and log(1) = 0 exactly,
+    // so the declared curve is reproduced bit for bit. The basis-water
+    // ratio c/water is clamped to 1 (documented simplification: the
+    // activity model saturates once the inhibitor matches the water).
+    double rigorousEquilibriumTemperature(double p, int i) const
+    {
+        double w = cfg_.inhibitorEquilibrium.basisWater
+                       ? (water_[i] > 0 ? inhibitor_[i] / water_[i] : 0.0)
+                       : inhibitor_[i];
+        if (w > 1.0) w = 1.0;
+        const double aW
+            = 1.0 / (1.0 + cfg_.inhibitorEquilibrium.activityK * w);
+        return cfg_.hydrate.curveB
+             / (std::log(p) + std::log(aW) - cfg_.hydrate.curveA);
     }
     // effective Newtonian liquid viscosity at a section: the emulsion law
     // on the transported water cut when declared, muL otherwise
@@ -1081,6 +1308,16 @@ private:
     std::vector<double> alpha_, water_, T_;
     std::vector<TwoFluidTerrainSlug> terrainSlugs_; // D6 inc 2: one lump per dip
     int terrainDeposits_ = 0; // D6 inc 2: slug discharges so far (cycle count)
+    std::vector<TwoFluidSlugTrack> slugTracks_; // O2: live tracked slugs
+    std::vector<TwoFluidSlugTrackEvent> slugTrackJournal_; // O2: events
+    int slugTrackNextId_ = 0; // O2: generation counter
+    TwoFluidPurgeState purgeState_; // O3: live purge wave state
+    std::vector<TwoFluidPurgeEvent> purgeJournal_; // O3: events
+    bool purgeInit_ = false;  // O3: cap state seeded from the base EOS
+    double purgeHeadAtTrigger_ = 0; // O3: column head at the blowdown instant
+    double purgeCycleOutStart_ = 0; // O3: outVol at the cycle's trigger
+    double purgeCycleStartT_ = 0;   // O3: trigger time of the live cycle
+    double purgeLastCompleteT_ = 0; // O3: previous COMPLETE (period clock)
     std::vector<double> slip_;    // dynamic closure: vG - vL per section
     std::vector<double> sDotOld_; // last step's ds/dt, the lagged slip
                                   // inertia the mixture momentum feels
@@ -1187,6 +1424,29 @@ private:
 ///   {
 ///       alphaThreshold 0.3;      // liquid fraction a body needs
 ///       minLength 1;             // m, shortest run that counts
+///   }
+///   purgeWave    // optional (5.162): distributed riser purge wave
+///   {
+///       enable true;             // false keeps the run byte-identical
+///       triggerFactor 1.0;       // cap below factor*rhoL*g*H = blowdown
+///       continuityAlpha 0.5;     // column continuity threshold
+///       waveMode closed;         // or constant (declared uWave)
+///       uWave 2;                 // m/s, constant mode; > 0 required
+///       gasCapTime 20;           // s, cap relaxation; > 0, needs gasR
+///       alphaResidual 0.05;      // holdup behind the front, < continuityAlpha
+///       maxCycles 0;             // 0 = unlimited
+///       riserStart 0;            // m, riser window arc start
+///       riserEnd 0;              // m, window end (0 = chain end)
+///   }
+///   slugTracking // optional (5.161): Lagrangian slug tracking
+///   {
+///       enable true;             // false keeps the run byte-identical
+///       alphaThreshold 0.45;     // liquid fraction a run needs
+///       minLength 0.5;           // m, shortest run that is generated
+///       velocityMode constant;   // or gasCap (the 5.142 ejection law)
+///       slugVelocity 1.5;        // m/s, constant mode; > 0 required
+///       gasCapTime 5;            // s, gasCap mode; > 0, needs gasR
+///       maxSlugVelocity 0;       // m/s optional clamp (0 = none)
 ///   }
 ///   thermal      // optional: presence switches the temperature state on
 ///   {

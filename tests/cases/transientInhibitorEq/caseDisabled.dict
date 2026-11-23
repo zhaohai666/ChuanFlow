@@ -1,0 +1,80 @@
+// O4 (5.163): the same block with enable false - the rigorous root is off,
+// the run must be byte-identical to caseBase.dict (no block at all).
+fluid
+{
+    rhoL 1000;
+    rhoG 200;
+    muL  0.01;
+    muG  1e-5;
+    cL   4180;
+    cG   2150;
+    gasR 287;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.02;
+    angleDeg 30;
+    roughness 0;
+    sections 10;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.5;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet  { type sealed; }
+    outlet { type sealed; }
+}
+
+thermal
+{
+    wallHeatTransfer 50;
+    wallModel geothermal;
+    surfaceTemperature 172.6;
+    gradient 1.2;
+    inletDepth 100;
+}
+
+hydrate
+{
+    curveA 35.2;
+    curveB -5684;
+    growthRate 0.01;
+    dissociationRate 0.01;
+    gasContent 122;
+    latentHeat 4.2e8;
+    initial 0.04;
+}
+
+inhibitor
+{
+    kDepression 5;
+    initial 0.3;
+}
+
+inhibitorEquilibrium
+{
+    enable false;
+    activityK 8;
+    basis liquid;
+}
+
+time
+{
+    dt 0.5;
+    endTime 400;
+    reportEvery 40;
+}

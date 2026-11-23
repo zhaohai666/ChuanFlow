@@ -130,6 +130,16 @@ int main(int argc, char** argv)
                     const std::vector<double> inh
                         = nc.perPipe.inhibitorOn ? s.cellInhibitor()
                                                  : std::vector<double>();
+                    // O4 (5.163): same gated rigorous-equilibrium columns
+                    // as the serial report
+                    const std::vector<double> teq = nc.perPipe
+                        .inhibitorEquilibriumOn
+                            ? s.cellEquilibriumTemperature()
+                            : std::vector<double>();
+                    const std::vector<double> dts = nc.perPipe
+                        .inhibitorEquilibriumOn
+                            ? s.cellSubcooling()
+                            : std::vector<double>();
                     for (int i = 0; i < s.sections(); ++i)
                         log::info("pcell ", pn, " ", i, " alpha ",
                                   num(a[i]), " water ", num(w[i]), " vsl ",
@@ -145,6 +155,9 @@ int main(int argc, char** argv)
                                               : (" entr " + num(ent[i])),
                                   inh.empty() ? ""
                                               : (" inh " + num(inh[i])),
+                                  teq.empty() ? ""
+                                              : (" Teq " + num(teq[i])
+                                                 + " dTsub " + num(dts[i])),
                                   compositionReport(s, i));
                 }
             };
@@ -187,6 +200,12 @@ int main(int argc, char** argv)
             log::info("twoFluid inhibitor: kDepression ",
                       num(c.inhibitor.kDepression), " initial ",
                       num(c.inhibitor.initial));
+        // O4 (5.163): the rigorous activity root names its own constant
+        if (c.inhibitorEquilibriumOn)
+            log::info("twoFluid inhibitorEquilibrium: activityK ",
+                      num(c.inhibitorEquilibrium.activityK), " basis ",
+                      c.inhibitorEquilibrium.basisWater ? "water"
+                                                        : "liquid");
         if (c.sandOn)
             log::info("twoFluid sand: vt ", num(c.sand.terminalVelocity),
                       " uCrit ", num(c.sand.criticalVelocity), " erodeRate ",
@@ -195,6 +214,12 @@ int main(int argc, char** argv)
         if (c.compositionOn) log::info(compositionDecl(c)); // G1
 
         TwoFluidPipe sim(c);
+
+        // O2 (5.161): cursor over the slug tracking event journal, so every
+        // GEN/MERGE/OUT is reported even between two sampled frames
+        std::size_t slugTrackCursor = 0;
+        // O3 (5.162): cursor over the purge wave TRIGGER/COMPLETE journal
+        std::size_t purgeCursor = 0;
 
         auto emit = [&](const TwoFluidPipe& s)
         {
@@ -239,6 +264,15 @@ int main(int argc, char** argv)
                                   : std::vector<double>();
             const std::vector<double> inh
                 = c.inhibitorOn ? s.cellInhibitor() : std::vector<double>();
+            // O4 (5.163): the rigorous inhibited equilibrium line and the
+            // subcooling the kinetics see - gated columns, absent when the
+            // block is not declared
+            const std::vector<double> teq
+                = c.inhibitorEquilibriumOn ? s.cellEquilibriumTemperature()
+                                           : std::vector<double>();
+            const std::vector<double> dts
+                = c.inhibitorEquilibriumOn ? s.cellSubcooling()
+                                           : std::vector<double>();
             const std::vector<double> me
                 = c.emulsionOn ? s.cellLiquidViscosity()
                                : std::vector<double>();
@@ -261,6 +295,9 @@ int main(int argc, char** argv)
                           sc.empty() ? "" : (" scale " + num(sc[i])),
                           ent.empty() ? "" : (" entr " + num(ent[i])),
                           inh.empty() ? "" : (" inh " + num(inh[i])),
+                          teq.empty() ? ""
+                                      : (" Teq " + num(teq[i])
+                                         + " dTsub " + num(dts[i])),
                           me.empty() ? "" : (" muEff " + num(me[i])),
                           sa.empty() ? "" : (" sand " + num(sa[i])),
                           be.empty() ? "" : (" bed " + num(be[i])),
@@ -276,6 +313,69 @@ int main(int argc, char** argv)
                               num(bodies[k].front), " length ",
                               num(bodies[k].length), " inv ",
                               num(bodies[k].inventory));
+            }
+            if (c.slugTrackingOn)
+            {
+                // O2 (5.161): the live Lagrangian slugs (state lines, one
+                // per object) followed by the event journal lines not yet
+                // reported; the event token separates the two kinds
+                const std::vector<TwoFluidSlugTrack>& objs = s.slugTracks();
+                log::info("slugtrack count ", objs.size());
+                for (const TwoFluidSlugTrack& o : objs)
+                    log::info("slugtrack ", o.id, " t ", num(s.time()),
+                              " xR ", num(o.xR), " xF ", num(o.xF), " L ",
+                              num(o.xF - o.xR), " inv ", num(o.inv),
+                              " uF ", num(o.uF), " uR ", num(o.uR),
+                              " event NONE");
+                const std::vector<TwoFluidSlugTrackEvent>& evs
+                    = s.slugTrackEvents();
+                for (; slugTrackCursor < evs.size(); ++slugTrackCursor)
+                {
+                    const TwoFluidSlugTrackEvent& e = evs[slugTrackCursor];
+                    const char* kind = e.kind == 1 ? "GEN"
+                                     : e.kind == 2 ? "MERGE" : "OUT";
+                    std::string line = "slugtrack " + std::to_string(e.id)
+                        + " t " + num(e.t) + " xR " + num(e.xR)
+                        + " xF " + num(e.xF) + " L " + num(e.xF - e.xR)
+                        + " inv " + num(e.inv) + " uF " + num(e.uF)
+                        + " uR " + num(e.uR) + " event " + kind;
+                    if (e.kind == 3)
+                        line += " out " + num(e.outVol) + " duration "
+                              + num(e.duration);
+                    log::info(line);
+                }
+            }
+            if (c.purgeWaveOn)
+            {
+                // O3 (5.162): the purge wave state line every frame (the
+                // phase token is NONE while the column accumulates) and the
+                // TRIGGER/COMPLETE journal lines not yet reported, same
+                // cursor idiom as slugtrack; COMPLETE adds the cycle
+                // accounting (out pulse volume, duration, period)
+                const TwoFluidPurgeState& ps = s.purgeState();
+                const char* ph = ps.phase == 1 ? "TRIGGER"
+                             : ps.phase == 2 ? "PROPAGATE"
+                             : ps.phase == 3 ? "COMPLETE" : "NONE";
+                log::info("purge t ", num(s.time()), " phase ", ph,
+                          " x_wave ", num(ps.xWave), " u_wave ",
+                          num(ps.uWave), " cap ", num(ps.capPressure),
+                          " pbase ", num(ps.basePressure), " head ",
+                          num(ps.head), " cycles ", ps.cycles, " out ",
+                          num(ps.outVol));
+                const std::vector<TwoFluidPurgeEvent>& evs = s.purgeEvents();
+                for (; purgeCursor < evs.size(); ++purgeCursor)
+                {
+                    const TwoFluidPurgeEvent& e = evs[purgeCursor];
+                    std::string line = "purge t " + num(e.t) + " x_wave "
+                        + num(e.xWave) + " head " + num(e.head) + " cap "
+                        + num(e.capPressure) + " phase "
+                        + (e.kind == 1 ? "TRIGGER" : "COMPLETE");
+                    if (e.kind == 2)
+                        line += " cycle " + std::to_string(e.cycle)
+                              + " out " + num(e.outVol) + " duration "
+                              + num(e.duration) + " period " + num(e.period);
+                    log::info(line);
+                }
             }
             if (c.terrainOn)
             {

@@ -1,0 +1,43 @@
+// O3 (5.162): distributed riser purge (blowdown) wave, constant-mode
+// front. A 60 m vertical riser is fed at the base by a steady gas/liquid
+// inflow whose wallis flux root is alpha = 0.951249219725039 (the declared
+// initial holdup, so the column starts continuous and full). The gas cap
+// state at the riser base relaxes (gasCapTime) towards the EOS pressure of
+// the base cell; with rhoG = 5, gasR = 287 and T = 300 that pin is
+// rhoG gasR T = 430500 Pa, below the full-column static head
+// 1000 * 9.80665 * 0.951249219725039 * 60 = 559714 Pa, so the column is
+// unsupported and a purge front is born at t = dt. The front sweeps up at
+// the declared uWave = 2 m/s (traverse 30 s), relaxing every cell it has
+// passed to the residual holdup 0.05 and venting the displaced liquid
+// through the riser top (the out pulse). The wallis fill shock behind the
+// blowdown refills the column at (vsl - F(alpha_res)) / (alpha_root -
+// alpha_res) = 0.5506 m/s (about 109 s), the cap re-charges towards the
+// EOS pin and the next blowdown triggers - a self-sustaining severe-
+// slugging cycle with period about 139 s, so the 300 s run completes at
+// least two cycles. reportEvery 1 gives the checker a step-by-step
+// witness of the front integration, the cap relaxation and the drained
+// holdup.
+//
+// The twin caseBase.dict (no purgeWave block) and caseDisabled.dict
+// (enable false) witness the byte-identity of the undeclared path.
+time { dt 0.05; endTime 300; reportEvery 1; }
+fluid { rhoL 1000; rhoG 5; muL 0.1; muG 1e-5; gasR 287; }
+pipe { length 60; diameter 0.1; roughness 0; angleDeg 90; sections 60; }
+closure { model wallis; slipVelocity 0.5; }
+initial { alpha 0.951249219725039; water 0; }
+boundaries
+{
+    inlet { type phaseRates; vsl 0.5; vsg 0.05; }
+    outlet { type fixedPressure; p 1e5; }
+}
+purgeWave
+{
+    enable true;
+    triggerFactor 1.0;
+    continuityAlpha 0.5;
+    waveMode constant;
+    uWave 2.0;
+    gasCapTime 20;
+    alphaResidual 0.05;
+    maxCycles 0;
+}

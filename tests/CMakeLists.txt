@@ -1923,6 +1923,52 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidTerrainDynamicUs/case.dict)
 
+# O2 (5.161): Lagrangian slug tracking with a full leading edge. The checker
+# re-derives the whole advance/retire/merge/generate cycle in Python from the
+# reported holdup field, reconciles every GEN against the slug{} scan, checks
+# the merge inventory, the outflow accounting and the event journal, proves
+# the undeclared and disabled twins byte-identical and the loud rejections.
+add_test(
+    NAME verify.transientSlugTracking
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_slugtracking.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientSlugTracking)
+
+# O3 (5.162): distributed riser purge (blowdown) wave. The checker
+# re-derives the trigger inequality, the implicit-Euler gas-cap relaxation,
+# the front integration in both constant and closed modes, the drained
+# holdup footprint, the self-sustaining cycle period against an independent
+# wallis fill-shock model and the out accounting, proves the undeclared and
+# disabled twins byte-identical and the loud rejections.
+add_test(
+    NAME verify.transientPurgeWave
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_purgewave.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientPurgeWave)
+
+# O4 (5.163): rigorous inhibitor phase equilibrium. The checker replicates
+# the activity-root recursion (aW = 1/(1 + activityK w) on the declared
+# curve) cell by cell on the sealed geothermal line - including the spatial
+# dTsub sign flip, the implicit latent thermal step and the stoichiometric
+# gas sink - re-derives the reported Teq/dTsub columns from the reported
+# p/inh/T, replicates the full coupled transport + kinetics + enthalpy step
+# on the inhibitor-front flow case, proves the disabled and pure twins,
+# the K monotonicity, the basis-water clamp sibling and the loud
+# rejections.
+add_test(
+    NAME verify.transientInhibitorEq
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_inhibitoreq.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientInhibitorEq/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientInhibitorEq/caseBase.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientInhibitorEq/caseDisabled.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientInhibitorEq/casePure.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientInhibitorEq/caseFlow.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientInhibitorEq/caseReject.dict)
+
 # G1 (5.143): transient composition transport + per-cell PR flash
 # diagnostics. The checker replicates the upwind z recursion from the
 # reported vm, applies the Wilson-K single-phase clamps independently,

@@ -240,6 +240,28 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
     for (int i = 0; i < n_; ++i)
         gasMass_[i] = f.rhoG * (1.0 - alpha_[i]) * dxs_[i];
 
+    // O3 (5.162): the purge wave window must be a real window on this
+    // chain's cell layout (the loader checked the values, only the arc
+    // geometry is known here)
+    if (cfg_.purgeWaveOn)
+    {
+        const TwoFluidPurgeWave& pw = cfg_.purgeWave;
+        const double end = pw.riserEnd > 0 ? pw.riserEnd : length_;
+        if (pw.riserStart >= end || end > length_ + 1e-9)
+            cfFatal("twoFluid: purgeWave riser window outside the chain");
+        bool any = false;
+        double acc = 0;
+        for (int i = 0; i < n_; ++i)
+        {
+            const double centre = acc + 0.5 * dxs_[i];
+            if (centre >= pw.riserStart && centre <= end)
+            { any = true; break; }
+            acc += dxs_[i];
+        }
+        if (!any)
+            cfFatal("twoFluid: purgeWave riser window holds no cell centre");
+    }
+
     if (cfg_.thermalOn)
     {
         const TwoFluidThermal& th = cfg_.thermal;
@@ -521,6 +543,23 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         if (cfg_.inhibitor.initial < 0 || cfg_.inhibitor.initial > 1)
             cfFatal("twoFluid: initial inhibitor fraction outside [0,1]");
         inhibitor_.assign(n_, cfg_.inhibitor.initial);
+    }
+
+    // O4 (5.163): the rigorous activity root rides the transported
+    // inhibitor fraction, so both parent declarations must be present
+    if (cfg_.inhibitorEquilibriumOn)
+    {
+        if (!cfg_.inhibitorOn)
+            cfFatal("twoFluid: inhibitorEquilibrium{} roots the curve at"
+                    " the transported inhibitor fraction but no inhibitor{}"
+                    " is declared: the activity would act on nothing");
+        if (!cfg_.hydrateOn)
+            cfFatal("twoFluid: inhibitorEquilibrium{} shifts the hydrate"
+                    " equilibrium curve but no hydrate{} is declared");
+        if (!(cfg_.inhibitorEquilibrium.activityK > 0))
+            cfFatal("twoFluid: inhibitorEquilibrium needs a positive"
+                    " activityK (the activity constant in"
+                    " aW = 1/(1 + activityK w))");
     }
 }
 
@@ -1681,8 +1720,10 @@ void TwoFluidPipe::hydrateStep(double dt)
             cfFatal("twoFluid: hydrate kinetics needs gas volume in every"
                     " cell - keep a gas-bearing holdup");
         // with inhibitor{} the equilibrium line is depressed at the local
-        // transported fraction (Hammerschmidt linear term); without, the
-        // declared curve verbatim (exactly the old difference)
+        // transported fraction - the Hammerschmidt linear term, or the
+        // rigorous activity root when inhibitorEquilibrium{} is declared
+        // (5.163); without, the declared curve verbatim (exactly the old
+        // difference)
         const double dT = equilibriumTemperatureInhibited(p[i], i)
                         - sectionTemperature(i);
         const double hOld = hydrate_[i];
@@ -1953,6 +1994,7 @@ void TwoFluidPipe::step(double dt)
     slipStep(dt);
     transportStep(dt);
     terrainSlugStep(dt);
+    purgeWaveStep(dt); // O3 (5.162): the blowdown front rides the final field
     entrainmentStep(dt);
     hydrateStep(dt);
     sandStep(dt);
@@ -1962,6 +2004,7 @@ void TwoFluidPipe::step(double dt)
     refreshDepositDiameter();
     compositionStep(dt); // G1: per-cell PR flash diagnostics (reads only)
     thermalStep(dt);
+    slugTrackStep(dt); // O2 (5.161): rides the step's final holdup field
     vMOld_ = vM_;
     t_ += dt;
 }
@@ -2235,22 +2278,21 @@ std::vector<double> TwoFluidPipe::cellVsg() const
     return v;
 }
 
-std::vector<TwoFluidSlugBody> TwoFluidPipe::slugBodies() const
+std::vector<TwoFluidSlugBody> TwoFluidPipe::slugRuns(double alphaThreshold,
+                                                     double minLength) const
 {
     std::vector<TwoFluidSlugBody> out;
-    if (!cfg_.slugOn) return out;
-    const TwoFluidSlug& cfg = cfg_.slug;
     bool inRun = false;
     double rear = 0, len = 0, inv = 0, x = 0;
     auto closeRun = [&]()
     {
-        if (inRun && len >= cfg.minLength)
+        if (inRun && len >= minLength)
             out.push_back({rear, rear + len, len, inv});
         inRun = false;
     };
     for (int i = 0; i < n_; ++i)
     {
-        if (alpha_[i] >= cfg.alphaThreshold)
+        if (alpha_[i] >= alphaThreshold)
         {
             if (!inRun)
             {
@@ -2270,6 +2312,12 @@ std::vector<TwoFluidSlugBody> TwoFluidPipe::slugBodies() const
     }
     closeRun();
     return out;
+}
+
+std::vector<TwoFluidSlugBody> TwoFluidPipe::slugBodies() const
+{
+    if (!cfg_.slugOn) return {};
+    return slugRuns(cfg_.slug.alphaThreshold, cfg_.slug.minLength);
 }
 
 std::vector<TwoFluidTerrainDip> TwoFluidPipe::terrainDips() const
@@ -2495,6 +2543,348 @@ void TwoFluidPipe::terrainSlugStep(double dt)
                 }
             }
         }
+    }
+}
+
+void TwoFluidPipe::slugTrackStep(double dt)
+{
+    if (!cfg_.slugTrackingOn) return;
+    const TwoFluidSlugTracking& st = cfg_.slugTracking;
+    const double totalArc = length_;
+    const double evT = t_ + dt;
+
+    // cell containing the arc position (a face position rides the cell to
+    // its right; the outlet end rides the last cell)
+    auto cellAt = [&](double x)
+    {
+        double acc = 0;
+        for (int i = 0; i < n_; ++i)
+        {
+            if (x < acc + dxs_[i]) return i;
+            acc += dxs_[i];
+        }
+        return n_ - 1;
+    };
+    // local liquid transport velocity at the section: the closure's phase
+    // velocity vsl/alpha (the superficial flux divided by the holdup that
+    // carries it); the mixture velocity where there is no liquid to price
+    auto liquidVelocity = [&](int i)
+    {
+        const double a = alpha_[i];
+        if (a <= 1e-9) return vM_;
+        return liquidFlux(a, slip_[i], i) / a;
+    };
+    // field re-estimate of the inventory inside [xR, xF] clipped to the
+    // domain; partial cells weigh in by their overlap fraction, so growth
+    // and shrinkage emerge from the holdup the transport just solved
+    auto inventory = [&](double xR, double xF)
+    {
+        const double lo = std::max(0.0, xR), hi = std::min(totalArc, xF);
+        if (hi <= lo) return 0.0;
+        double inv = 0, acc = 0;
+        for (int i = 0; i < n_; ++i)
+        {
+            const double o = std::min(hi, acc + dxs_[i]) - std::max(lo, acc);
+            if (o > 0) inv += alpha_[i] * o;
+            acc += dxs_[i];
+        }
+        return inv;
+    };
+    // elevation of the chain at an arc position (the gasCap head term,
+    // the 5.142 zAt verbatim on this pipe's own polyline)
+    auto zAt = [&](double pos)
+    {
+        double acc = 0, z = 0;
+        if (pos <= 0) return 0.0;
+        for (int i = 0; i < n_; ++i)
+        {
+            const double z1 = z + dxs_[i] * sinT_[i];
+            if (pos <= acc + dxs_[i])
+                return z + (pos - acc) / dxs_[i] * (z1 - z);
+            acc += dxs_[i];
+            z = z1;
+        }
+        return z;
+    };
+
+    std::vector<double> pCell; // EOS profile, fetched once for gasCap mode
+
+    // 1. advance: fronts at the migration velocity, rears at the local
+    // liquid velocity; the front pins at the outlet while the rear drains
+    // through it, the rear never passes the front (a drained slug
+    // collapses onto its face and rides it out)
+    for (auto& o : slugTracks_)
+    {
+        if (st.velocityMode == 0)
+        {
+            o.uF = st.slugVelocity;
+        }
+        else
+        {
+            if (pCell.empty()) pCell = cellPressure();
+            const int ri = cellAt(o.xR), fi = cellAt(o.xF);
+            const double tau = st.gasCapTime;
+            o.capPressure = (o.capPressure / dt + pCell[ri] / tau)
+                          / (1.0 / dt + 1.0 / tau);
+            const double rhoL = cfg_.fluid.rhoL;
+            const double pFront = pCell[fi]
+                + rhoL * kGravity * std::max(0.0, zAt(o.xF) - zAt(o.xR));
+            double u = std::sqrt(2.0 * std::max(o.capPressure - pFront, 0.0)
+                                 / rhoL);
+            if (st.maxSlugVelocity > 0) u = std::min(u, st.maxSlugVelocity);
+            o.uF = u;
+        }
+        o.uR = liquidVelocity(cellAt(o.xR));
+        o.xF += o.uF * dt;
+        o.xR += o.uR * dt;
+        if (o.xR < 0) o.xR = 0;
+        if (o.xF > totalArc) o.xF = totalArc;
+        if (o.xR > o.xF) o.xR = o.xF;
+        if (o.xR < totalArc) o.inv = inventory(o.xR, o.xF);
+        // discharge bookkeeping: while the span covers the outlet, the
+        // liquid flux through the outlet face leaves with the slug
+        if (o.xF >= totalArc && o.xR < totalArc)
+            o.outVol += liquidFlux(alpha_[n_ - 1], slip_[n_ - 1], n_ - 1) * dt;
+    }
+
+    // 2. retire: the rear crossed the domain end, OUT
+    for (std::size_t k = 0; k < slugTracks_.size();)
+    {
+        const TwoFluidSlugTrack& o = slugTracks_[k];
+        if (o.xR >= totalArc)
+        {
+            TwoFluidSlugTrackEvent e;
+            e.t = evT;
+            e.id = o.id;
+            e.kind = 3;
+            e.xR = o.xR;
+            e.xF = o.xF;
+            e.inv = o.inv;
+            e.uF = o.uF;
+            e.uR = o.uR;
+            e.outVol = o.outVol;
+            e.duration = evT - o.tBorn;
+            slugTrackJournal_.push_back(e);
+            slugTracks_.erase(slugTracks_.begin() + k);
+        }
+        else
+        {
+            ++k;
+        }
+    }
+
+    // 3. merge: sorted in flow order, the trailing front reaching the
+    // leading rear coalesces the pair fully - volumes add, the leader's
+    // front and the trailer's rear survive, the trailer keeps the id
+    std::sort(slugTracks_.begin(), slugTracks_.end(),
+              [](const TwoFluidSlugTrack& a, const TwoFluidSlugTrack& b)
+              { return a.xR < b.xR; });
+    for (std::size_t k = 0; k + 1 < slugTracks_.size();)
+    {
+        if (slugTracks_[k + 1].xR <= slugTracks_[k].xF)
+        {
+            TwoFluidSlugTrack& a = slugTracks_[k];
+            const TwoFluidSlugTrack& b = slugTracks_[k + 1];
+            TwoFluidSlugTrackEvent e;
+            e.t = evT;
+            e.id = a.id;
+            e.kind = 2;
+            e.xR = a.xR;
+            e.xF = std::max(a.xF, b.xF);
+            e.inv = a.inv + b.inv;
+            e.uF = b.uF;
+            e.uR = a.uR;
+            slugTrackJournal_.push_back(e);
+            a.xF = e.xF;
+            a.inv = e.inv;
+            a.uF = e.uF;
+            a.outVol += b.outVol;
+            slugTracks_.erase(slugTracks_.begin() + k + 1);
+            // stay on k: the survivor may absorb the next object too
+        }
+        else
+        {
+            ++k;
+        }
+    }
+
+    // 4. generate: a maximal run the scan finds that no object overlaps is
+    // born as a new tracked slug, at the exact faces the statistics report
+    const std::vector<TwoFluidSlugBody> runs =
+        slugRuns(st.alphaThreshold, st.minLength);
+    for (const TwoFluidSlugBody& r : runs)
+    {
+        bool tracked = false;
+        for (const auto& o : slugTracks_)
+            if (r.front > o.xR && r.rear < o.xF) { tracked = true; break; }
+        if (tracked) continue;
+        TwoFluidSlugTrack o;
+        o.id = slugTrackNextId_++;
+        o.xR = r.rear;
+        o.xF = r.front;
+        o.inv = r.inventory;
+        o.tBorn = evT;
+        o.uR = liquidVelocity(cellAt(o.xR));
+        if (st.velocityMode == 0)
+        {
+            o.uF = st.slugVelocity;
+        }
+        else
+        {
+            if (pCell.empty()) pCell = cellPressure();
+            o.capPressure = pCell[cellAt(o.xR)];
+            o.uF = 0; // at birth the front sits on the field face; the
+                      // ejection velocity is solved from the next step on
+        }
+        slugTracks_.push_back(o);
+        TwoFluidSlugTrackEvent e;
+        e.t = evT;
+        e.id = o.id;
+        e.kind = 1;
+        e.xR = o.xR;
+        e.xF = o.xF;
+        e.inv = o.inv;
+        e.uF = o.uF;
+        e.uR = o.uR;
+        slugTrackJournal_.push_back(e);
+    }
+}
+
+void TwoFluidPipe::purgeWaveStep(double dt)
+{
+    if (!cfg_.purgeWaveOn) return;
+    const TwoFluidPurgeWave& pw = cfg_.purgeWave;
+    const double rhoL = cfg_.fluid.rhoL;
+    const double evT = t_ + dt;
+    const double start = pw.riserStart;
+    const double end = pw.riserEnd > 0 ? pw.riserEnd : length_;
+
+    // window cells: those whose centre lies inside [start, end]; the base
+    // cell (the gas-cap pocket) is the first window cell
+    int i0 = -1, i1 = -1;
+    double acc = 0;
+    for (int i = 0; i < n_; ++i)
+    {
+        const double centre = acc + 0.5 * dxs_[i];
+        if (centre >= start && centre <= end)
+        {
+            if (i0 < 0) i0 = i;
+            i1 = i;
+        }
+        acc += dxs_[i];
+    }
+
+    // the COMPLETE frame reports the completion, the next frame returns to
+    // accumulation (the front position is cleared with the idle phase)
+    if (purgeState_.phase == 3)
+    {
+        purgeState_.phase = 0;
+        purgeState_.xWave = 0;
+        purgeState_.uWave = 0;
+    }
+
+    // 1. cap relaxation: the 5.142 implicit-Euler idiom on an independent
+    // state, targeting the EOS pressure of the riser-base cell
+    const std::vector<double> pCell = cellPressure();
+    const double pBase = pCell[i0];
+    if (!purgeInit_)
+    {
+        purgeState_.capPressure = pBase;
+        purgeInit_ = true;
+    }
+    const double tau = pw.gasCapTime;
+    purgeState_.capPressure = (purgeState_.capPressure / dt + pBase / tau)
+                            / (1.0 / dt + 1.0 / tau);
+    purgeState_.basePressure = pBase;
+
+    // 2. column head and continuity over the window
+    double head = 0;
+    bool continuous = true;
+    for (int i = i0; i <= i1; ++i)
+    {
+        head += alpha_[i] * dxs_[i] * sinT_[i];
+        if (alpha_[i] < pw.continuityAlpha) continuous = false;
+    }
+    purgeState_.head = head;
+
+    // 3. trigger: the cap can no longer support the static head of a
+    // continuous column -> a purge front is born at the riser base
+    bool active = purgeState_.phase == 1 || purgeState_.phase == 2;
+    if (!active && continuous && head > 0
+        && (pw.maxCycles <= 0 || purgeState_.cycles < pw.maxCycles)
+        && purgeState_.capPressure
+           < pw.triggerFactor * rhoL * kGravity * head)
+    {
+        active = true;
+        purgeState_.phase = 1;
+        purgeState_.xWave = start;
+        purgeHeadAtTrigger_ = head;
+        purgeCycleOutStart_ = purgeState_.outVol;
+        purgeCycleStartT_ = evT;
+        TwoFluidPurgeEvent e;
+        e.t = evT;
+        e.kind = 1;
+        e.xWave = start;
+        e.head = head;
+        e.capPressure = purgeState_.capPressure;
+        purgeJournal_.push_back(e);
+    }
+    else if (purgeState_.phase == 1)
+    {
+        purgeState_.phase = 2;
+    }
+
+    if (!active) return;
+
+    // 4. propagate: the front rides the declared constant, or the
+    // energy-balance value of the imbalance priced with the column head at
+    // the blowdown instant (the mass being driven down) and the LIVE cap
+    // pressure resisting it
+    double u = pw.uWave;
+    if (pw.waveMode == 0)
+        u = std::sqrt(2.0 * std::max(pw.triggerFactor * rhoL * kGravity
+                                         * purgeHeadAtTrigger_
+                                     - purgeState_.capPressure,
+                                     0.0) / rhoL);
+    purgeState_.uWave = u;
+    purgeState_.xWave += u * dt;
+    if (purgeState_.xWave > end) purgeState_.xWave = end;
+
+    // 5. purge: every window cell the front has passed (cell centre below
+    // the front) relaxes to the residual holdup - the wall film value the
+    // blowing gas sustains, held in both directions against the transport
+    // drain. The net displaced liquid leaves through the riser top into
+    // the out accumulator (the flow pulse)
+    acc = 0;
+    for (int i = i0; i <= i1; ++i)
+    {
+        const double centre = acc + 0.5 * dxs_[i];
+        if (centre <= purgeState_.xWave && alpha_[i] != pw.alphaResidual)
+        {
+            purgeState_.outVol += (alpha_[i] - pw.alphaResidual) * dxs_[i];
+            alpha_[i] = pw.alphaResidual;
+        }
+        acc += dxs_[i];
+    }
+
+    // 6. complete: the front crossed the riser top, the column is blown
+    // dry, the cycle counter grows and accumulation resumes
+    if (purgeState_.xWave >= end)
+    {
+        purgeState_.phase = 3;
+        ++purgeState_.cycles;
+        TwoFluidPurgeEvent e;
+        e.t = evT;
+        e.kind = 2;
+        e.xWave = purgeState_.xWave;
+        e.head = head;
+        e.capPressure = purgeState_.capPressure;
+        e.cycle = purgeState_.cycles;
+        e.outVol = purgeState_.outVol - purgeCycleOutStart_;
+        e.duration = evT - purgeCycleStartT_;
+        e.period = purgeLastCompleteT_ > 0 ? evT - purgeLastCompleteT_ : 0.0;
+        purgeLastCompleteT_ = evT;
+        purgeJournal_.push_back(e);
     }
 }
 
@@ -2769,6 +3159,33 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.inhibitor.initial = id.getScalarOr("initial", 0.0);
     }
 
+    // O4 (5.163): rigorous inhibitor phase equilibrium (opt-in). The
+    // activity constant is required whenever the block is declared (also
+    // when disabled, so a re-enabled file cannot silently carry a typo);
+    // enable false keeps the Hammerschmidt path of inhibitor{}.
+    if (caseDict.has("inhibitorEquilibrium"))
+    {
+        const Dictionary& ied = caseDict.getDict("inhibitorEquilibrium");
+        c.inhibitorEquilibriumOn = true;
+        if (ied.has("enable"))
+        {
+            const std::string w = ied.getWord("enable");
+            if (w == "true") c.inhibitorEquilibriumOn = true;
+            else if (w == "false") c.inhibitorEquilibriumOn = false;
+            else cfFatal("twoFluid: inhibitorEquilibrium enable must be"
+                         " true or false");
+        }
+        c.inhibitorEquilibrium.activityK = ied.getScalar("activityK");
+        if (ied.has("basis"))
+        {
+            const std::string b = ied.getWord("basis");
+            if (b == "liquid") c.inhibitorEquilibrium.basisWater = false;
+            else if (b == "water") c.inhibitorEquilibrium.basisWater = true;
+            else cfFatal("twoFluid: unknown inhibitorEquilibrium basis '"
+                         + b + "' (liquid or water)");
+        }
+    }
+
     if (caseDict.has("sand"))
     {
         c.sandOn = true;
@@ -2866,6 +3283,118 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
                 cfFatal("twoFluid: terrain dynamicUs reads the gas-cap EOS"
                         " pressure but no gasR is declared");
         }
+    }
+
+    if (caseDict.has("slugTracking"))
+    {
+        // O2 (5.161): Lagrangian slug tracking. The block is opt-in and
+        // enable false (or no block at all) leaves the run byte-identical.
+        const Dictionary& sd = caseDict.getDict("slugTracking");
+        bool enable = true;
+        if (sd.has("enable"))
+        {
+            const std::string w = sd.getWord("enable");
+            if (w == "true") enable = true;
+            else if (w == "false") enable = false;
+            else cfFatal("twoFluid: slugTracking enable must be true or false");
+        }
+        c.slugTracking.alphaThreshold = sd.getScalarOr("alphaThreshold", 0.5);
+        c.slugTracking.minLength = sd.getScalarOr("minLength", 0.0);
+        if (c.slugTracking.alphaThreshold <= 0
+            || c.slugTracking.alphaThreshold >= 1)
+            cfFatal("twoFluid: slugTracking alphaThreshold must be in (0, 1)");
+        if (c.slugTracking.minLength < 0)
+            cfFatal("twoFluid: negative slugTracking minLength");
+        const std::string mode = sd.getWordOr("velocityMode", "constant");
+        if (mode == "constant") c.slugTracking.velocityMode = 0;
+        else if (mode == "gasCap") c.slugTracking.velocityMode = 1;
+        else cfFatal("twoFluid: unknown slugTracking velocityMode '" + mode
+                     + "' (constant or gasCap)");
+        c.slugTracking.slugVelocity = sd.getScalarOr("slugVelocity", 0.0);
+        if (c.slugTracking.slugVelocity < 0)
+            cfFatal("twoFluid: negative slugTracking slugVelocity");
+        c.slugTracking.gasCapTime = sd.getScalarOr("gasCapTime", 0.0);
+        c.slugTracking.maxSlugVelocity = sd.getScalarOr("maxSlugVelocity", 0.0);
+        if (c.slugTracking.velocityMode == 0)
+        {
+            if (!(c.slugTracking.slugVelocity > 0))
+                cfFatal("twoFluid: slugTracking constant mode needs a"
+                        " positive slugVelocity");
+        }
+        else
+        {
+            if (!(c.slugTracking.gasCapTime > 0))
+                cfFatal("twoFluid: slugTracking gasCap mode needs a positive"
+                        " gasCapTime (the cap-pressure relaxation)");
+            if (c.slugTracking.maxSlugVelocity < 0)
+                cfFatal("twoFluid: negative slugTracking maxSlugVelocity");
+            if (!(c.fluid.gasR > 0))
+                cfFatal("twoFluid: slugTracking gasCap mode reads the gas-cap"
+                        " EOS pressure but no gasR is declared");
+        }
+        c.slugTrackingOn = enable;
+    }
+
+    if (caseDict.has("purgeWave"))
+    {
+        // O3 (5.162): the distributed riser purge (blowdown) wave. The
+        // block is opt-in and enable false (or no block at all) leaves the
+        // run byte-identical.
+        const Dictionary& pd = caseDict.getDict("purgeWave");
+        bool enable = true;
+        if (pd.has("enable"))
+        {
+            const std::string w = pd.getWord("enable");
+            if (w == "true") enable = true;
+            else if (w == "false") enable = false;
+            else cfFatal("twoFluid: purgeWave enable must be true or false");
+        }
+        c.purgeWave.triggerFactor = pd.getScalarOr("triggerFactor", 1.0);
+        if (!(c.purgeWave.triggerFactor > 0))
+            cfFatal("twoFluid: purgeWave triggerFactor must be positive");
+        c.purgeWave.continuityAlpha = pd.getScalarOr("continuityAlpha", 0.5);
+        if (c.purgeWave.continuityAlpha <= 0
+            || c.purgeWave.continuityAlpha >= 1)
+            cfFatal("twoFluid: purgeWave continuityAlpha must be in (0, 1)");
+        c.purgeWave.alphaResidual = pd.getScalarOr("alphaResidual", 0.05);
+        if (c.purgeWave.alphaResidual < 0 || c.purgeWave.alphaResidual >= 1)
+            cfFatal("twoFluid: purgeWave alphaResidual must be in [0, 1)");
+        if (c.purgeWave.alphaResidual >= c.purgeWave.continuityAlpha)
+            cfFatal("twoFluid: purgeWave alphaResidual must stay below"
+                    " continuityAlpha (a blown-dry column must not"
+                    " re-trigger as continuous)");
+        const std::string mode = pd.getWordOr("waveMode", "closed");
+        if (mode == "closed") c.purgeWave.waveMode = 0;
+        else if (mode == "constant") c.purgeWave.waveMode = 1;
+        else cfFatal("twoFluid: unknown purgeWave waveMode '" + mode
+                     + "' (closed or constant)");
+        c.purgeWave.uWave = pd.getScalarOr("uWave", 0.0);
+        if (c.purgeWave.uWave < 0)
+            cfFatal("twoFluid: negative purgeWave uWave");
+        if (c.purgeWave.waveMode == 1 && !(c.purgeWave.uWave > 0))
+            cfFatal("twoFluid: purgeWave constant mode needs a positive"
+                    " uWave");
+        c.purgeWave.gasCapTime = pd.getScalarOr("gasCapTime", 0.0);
+        if (!(c.purgeWave.gasCapTime > 0))
+            cfFatal("twoFluid: purgeWave needs a positive gasCapTime"
+                    " (the cap-pressure relaxation)");
+        if (!(c.fluid.gasR > 0))
+            cfFatal("twoFluid: purgeWave reads the gas-cap EOS pressure"
+                    " but no gasR is declared");
+        c.purgeWave.maxCycles =
+            static_cast<int>(pd.getScalarOr("maxCycles", 0.0));
+        if (c.purgeWave.maxCycles < 0)
+            cfFatal("twoFluid: negative purgeWave maxCycles");
+        c.purgeWave.riserStart = pd.getScalarOr("riserStart", 0.0);
+        c.purgeWave.riserEnd = pd.getScalarOr("riserEnd", 0.0);
+        if (c.purgeWave.riserStart < 0)
+            cfFatal("twoFluid: negative purgeWave riserStart");
+        if (c.purgeWave.riserEnd < 0)
+            cfFatal("twoFluid: negative purgeWave riserEnd");
+        if (c.purgeWave.riserEnd > 0
+            && c.purgeWave.riserEnd <= c.purgeWave.riserStart)
+            cfFatal("twoFluid: purgeWave riserEnd must exceed riserStart");
+        c.purgeWaveOn = enable;
     }
 }
 

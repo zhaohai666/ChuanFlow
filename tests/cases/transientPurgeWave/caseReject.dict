@@ -1,0 +1,22 @@
+// O3 (5.162): rejection case - purgeWave reads the gas-cap EOS pressure
+// at the riser base but the fluid block declares no gasR. The loader must
+// cfFatal (the checker asserts exit 1 and the message).
+time { dt 0.05; endTime 10; reportEvery 20; }
+fluid { rhoL 1000; rhoG 5; muL 0.1; muG 1e-5; }
+pipe { length 60; diameter 0.1; roughness 0; angleDeg 90; sections 60; }
+closure { model wallis; slipVelocity 0.5; }
+initial { alpha 0.951249219725039; water 0; }
+boundaries
+{
+    inlet { type phaseRates; vsl 0.5; vsg 0.05; }
+    outlet { type fixedPressure; p 1e5; }
+}
+purgeWave
+{
+    triggerFactor 1.0;
+    continuityAlpha 0.5;
+    waveMode constant;
+    uWave 2.0;
+    gasCapTime 20;
+    alphaResidual 0.05;
+}

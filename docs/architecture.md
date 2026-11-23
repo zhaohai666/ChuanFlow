@@ -5507,6 +5507,54 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界。** 声明简化点名：两块都是报告层——优选结果不回写算例、不改任何水力数字；管径是穷举非梯度（maxCombinations 防组合爆炸，成本为声明的每米线性模型而非采购价格曲线）；气举把注入气当纯 GOR 加成（不单列气相、无压缩热/节流温变、无气举阀分配），回压取基础解节点压力——分配对管网的产量反馈不闭合（单向报告），不动点为简单迭代非 Newton。
 
+### 5.161 OLGA 对标段塞追踪完整前缘法（O2 收口）
+
+**能力。** 瞬态两相流内核（`chflow-1d-twofluid`）新增顶层可选块 `slugTracking{}`：在 Euler 场之外维护一组拉格朗日段塞对象（尾缘 xR、前缘 xF、长度 L = xF − xR、持液量 inv、前缘速度 uF、尾缘速度 uR），生成→输运→合并→出流四阶段闭环，逐帧结构化行报告。OLGA 对标差距清单 O2（段塞追踪/完整前缘法）就此收口。
+
+**算法。** 每步在场推进结束后（`step()` 末尾，骑在本步最终 holdup 场上）按固定顺序走四阶段。1）输运——前缘速度按声明模式选：`constant` 用声明的常量迁移速度 slugVelocity（凸通量 F(α) 的 Rankine–Hugoniot 激波速度可离线算好作为声明值输入）；`gasCap` 按 §5.142 气帽喷出口径：capPressure 以声明时间 gasCapTime 隐式松弛到尾缘单元 EOS 压力，uF = √(2·max(cap − p_front, 0)/ρL)，p_front 含静液柱 ρL·g·(z(xF) − z(xR))，maxSlugVelocity > 0 时夹紧。尾缘速度恒为局部液相输运速度 uR = vsl/α（α ≈ 0 处退回 vM）。约束：xR 不低于 0、xF 出口钳制、xR 不越过 xF（排空段塞塌缩贴前缘被带出）。inv 逐帧由域内 [xR, xF] 的 α 重叠加权积分重估——生长与收缩从解出的 holdup 场自然涌现。2）销户——xR 越过域出口 → OUT 事件，报最终 inv、出流量 out 与寿命 duration。3）合并——按 xR 流序排序，上游段塞尾缘追上下游段塞前缘（xR_{k+1} ≤ xF_k）→ MERGE：体积相加、前取前（xF = max）、后取后（幸存者为上游段塞，保其 id/出生时刻/尾缘/尾缘速度），前缘速度取下游段塞的，outVol 相加，幸存者继续吸收下一个。4）生成——`slugRuns(alphaThreshold, minLength)` 扫场（与 `slug{}` 统计扫描同源，仅阈值参数化），未被既有对象覆盖的 run 出生为 GEN，出生面与扫描面精确一致（对账误差 ≤ 一格，实际精确）。
+
+**物理口径与简化（诚实声明）。** 这是骑在 Euler 两相场上的运动学拉格朗日层：段塞不回写场，场只通过重估改段塞；前缘速度是声明常量或 §5.142 气帽公式，不是从场解出的激波速度；inv 逐帧重估意味着尾缘扫过单元时段塞失/得质量，故出流口径为 `out` = 前缘钳制在出口期间出口面液相通量的累计，全局平衡 Σout 对 Σin 只以文档化容差 1e-3 成立（Godunov 界面通量 ≠ 单元闭合通量 F(α)，脉冲尾部穿出口时产生残差）；OUT 以尾缘越过出口判销而非前缘到出口；合并是全量并合，无部分交互、无破碎事件。
+
+**报告。** 不声明 `slugTracking{}` 或声明 `enable false` 时输出与未声明孪生逐字节相同（硬规则）。声明时每帧追加：`slugtrack count <N>` 与每对象一行状态 `slugtrack <id> t .. xR .. xF .. L .. inv .. uF .. uR .. event NONE`；事件日志（GEN/MERGE/OUT）由 app 游标排在状态行之后发出，两帧之间漏报的事件补打，OUT 行追加 ` out <出流量> duration <寿命>`。
+
+**语法与拒收。** 键：`enable`（true/false，默认 true，未知词拒收）；`alphaThreshold` ∈ (0,1)（默认 0.5）；`minLength` ≥ 0（默认 0）；`velocityMode` ∈ {constant, gasCap}（默认 constant，未知词拒收点名两词）；`slugVelocity`（constant 模式必需 > 0，负值拒收）；`gasCapTime`（gasCap 模式必需 > 0）；`maxSlugVelocity` ≥ 0（0 = 不夹紧）；gasCap 模式必需声明 `fluid.gasR`（否则无 EOS 压力可读）。全部违例 cfFatal 大声拒收，不静默吞默认值。
+
+**回归（`tests/check_transient_slugtracking.py`，36 条判据）。** `cases/transientSlugTracking/` 五算例：case.dict（水平管 20 × 1 m、wallis us 0.5、基线 α = 0.17082、入口 p1–p4 脉冲 schedule 保持 vM ≈ 1.0、constant 模式 uF = 1.5 > 平台液速 0.91144 → 追及并合：3 GEN / 1 MERGE / 2 OUT，MERGE 存量精确等于两父之和 1e-9，GEN 数 = OUT + MERGE 无泄漏）；caseGasCap.dict（gasR 287、gasCap 模式 + maxSlugVelocity 2，公式逐帧复现、夹紧生效、有限）；caseBase.dict/caseDisabled.dict 逐字节对照孪生；caseReject.dict gasCap 无 gasR 拒收见证。checker 不复制 C++ 逻辑，从报告场在 Python 独立重推整个 advance/retire/merge/generate 循环：轨迹最大误差 5.03e-11、inv 6.6e-12、事件日志逐条对账、GEN 与 `slug{}` 扫描同帧精确对位、Σout 精确等于钳制窗口出口通量积分 1e-8、Σout ≥ 0.6 × 最后 OUT 前注入量（文档化容差）、全局平衡 1e-3；另 10 条 cfFatal 拒收边界。
+
+**边界。** 追踪层被动不回写场；报告行只接在单管串行路径——网络成员路径解析并推进该块但不逐管报告（不在本增量）；gasCap 出生时前缘速度为 0（cap 压以尾缘单元 EOS 压力初始化，自下一帧起解喷出速度）。
+
+### 5.162 OLGA 对标严重段塞吹扫波完整机理（O3 收口）
+
+**能力。** 瞬态两相流内核（`chflow-1d-twofluid`）新增顶层可选块 `purgeWave{}`：把严重段塞循环里的**吹扫（blowdown）阶段**分布到立管（或 V 形链竖直段）的单元上——触发→传播→反馈→自持循环四阶段闭环，逐帧结构化行报告。§5.142 地形振荡器是这一循环的集总参数近似，本层把它的排空过程展开为沿弧长推进的吹扫波前。OLGA 对标差距清单 O3（严重段塞完整机理——吹扫波）就此收口。
+
+**算法。** 每步在场推进结束后（`step()` 中紧随 `terrainSlugStep`、先于 `entrainmentStep`）走六小步。1）销帧——上一帧 COMPLETE 则本帧回到 NONE（x_wave/u_wave 清零），重新进入积累阶段。2）气帽松弛——独立状态 capPressure 以声明时间 gasCapTime **隐式欧拉**松弛到立管基元（窗口首单元）的 EOS 压力：`cap = (cap/dt + p_base/tau)/(1/dt + 1/tau)`，与 §5.142 同一惯用法但**是独立状态，不触碰 dynamicUs 判据**；首步以 p_base 播种。3）触发——窗口内液柱连续（每个单元 α ≥ continuityAlpha）且 `cap < triggerFactor·ρL·g·H`（H = Σα·dx·sinθ 为窗口竖直液柱压头）：液柱失去支撑，波前在 riserStart 诞生，记 TRIGGER 事件并**冻结触发时刻的 H_trig**、快照循环出流起点。4）传播——`constant` 模式波前以声明常量 uWave 上行；`closed` 模式按能量平衡每步重算 `u_wave = √(2·max(triggerFactor·ρL·g·H_trig − cap, 0)/ρL)`（被排空的柱重定价以活 cap 阻力，永不停滞），x_wave += u·dt，越过 riserEnd 钳到端点。5）吹扫反馈——波前经过（单元中心 ≤ x_wave）的每个窗口单元**双向钉到残余持液率 alphaResidual**（对抗输运抽干与回填的壁膜闭合），净排出量 `out += (α − α_res)·dx` 累计进 out 账本（出口流量脉冲与立管静压塌缩由改写后的场经正常摩阻/静压路径自然涌现）。6）完成——x_wave 到达 riserEnd：记 COMPLETE（cycle 序号、本循环 out、duration、距上次 COMPLETE 的 period），cycles++，maxCycles > 0 且已达上限则不再触发。回填不由本层驱动：入口 wallis 充液激波（s = (vsl − F(α_res))/(α_root − α_res)）把柱重新充满、cap 重新充气到 EOS 钉值，下一次吹扫自发触发——**自持严重段塞循环**。
+
+**物理口径与简化（诚实声明）。** 一维；波前厚度 = 一个数值单元（按单元中心判定前后）；残余持液率是声明常数（不是随气速/壁厚变化的膜闭合模型）；被排开的液体从立管顶部出流记账，不沿管下滑；波前上不携带相间滑移细节；closed 模式的驱动压头取**触发时刻冻结**的液柱重（活值会随排空自灭，冻结是文档化简化）；气帽是 ODE 状态而非真实气穴；立管窗口由 riserStart/riserEnd 弧长**显式声明**，不从倾角自动检测；吹扫改写 holdup 场是声明式弛豫，不是解析出的吹扫 bore 激波。
+
+**报告。** 不声明 `purgeWave{}` 或声明 `enable false` 时输出与未声明孪生逐字节相同（硬规则）。声明时每帧追加状态行 `purge t .. phase NONE|TRIGGER|PROPAGATE|COMPLETE x_wave .. u_wave .. cap .. pbase .. head .. cycles .. out ..`；TRIGGER/COMPLETE 事件日志由 app 游标排在状态行之后发出（与 slugtrack 同一游标惯例，两帧之间漏报的事件补打），COMPLETE 行追加 ` cycle <n> out <循环排出量> duration <吹扫历时> period <循环周期>`。
+
+**语法与拒收。** 键：`enable`（true/false，默认 true，未知词拒收）；`triggerFactor` > 0（默认 1.0）；`continuityAlpha` ∈ (0,1)（默认 0.5）；`alphaResidual` ∈ [0,1) 且必须 < continuityAlpha（默认 0.05，否则吹干的柱会被判"连续"再触发，点名拒收）；`waveMode` ∈ {closed, constant}（默认 closed，未知词拒收点名两词）；`uWave`（constant 模式必需 > 0，负值拒收）；`gasCapTime` 必需 > 0；必需声明 `fluid.gasR`（否则无 EOS 帽压可读，点名拒收）；`maxCycles` ≥ 0（默认 0 = 不限，负值拒收）；`riserStart`/`riserEnd` ≥ 0（默认 0/0 = 全链，riserEnd > 0 时必须 > riserStart）；窗口必须落在链内且至少含一个单元中心（构造期 cfFatal）。全部违例 cfFatal 大声拒收，不静默吞默认值。
+
+**回归（`tests/check_transient_purgewave.py`，60 条判据）。** `cases/transientPurgeWave/` 五算例：case.dict（60 m 竖直立管 60 × 1 m、wallis us 0.5、vsl 0.5/vsg 0.05 → 通量根 α_root = 0.951249219725039 满柱初始连续；rhoG 5/gasR 287/T 300 → cap 钉在 ρG·R·T = 430500 Pa < 满柱静压头 559714 Pa → t = dt 即触发；constant 模式 uWave 2 → 30 s 扫顶，300 s 完成 2 个循环、周期 137.85 s、每循环排出 ≈ 54.30 m）；caseClosed.dict（closed 模式、无 uWave/enable 键、波速逐帧由冻结 H_trig + 活 cap 复算）；caseBase.dict/caseDisabled.dict 逐字节对照孪生 + idle 变体（triggerFactor 1e-6 永不触发，剥离 purge 行 ≡ caseBase）双路见证未声明路径不变；caseReject.dict 无 gasR 拒收见证。checker 不复制 C++ 逻辑，独立重推：wallis 通量根与充液激波速度、周期闭式 T = L/uWave + L/s ≈ 139 s 对实测 137.85 s、触发不等式、用报告 pbase 的隐式欧拉 cap 松弛、逐步 x 积分（含端点钳位）、closed 公式（取最近 TRIGGER 事件的 head）、波前后方 α ≡ α_res（严格中心判定，波前所在过渡单元除外）、COMPLETE 时刻窗口平均 α ≤ α_res + 容差、out 事件值与累计差一致、每循环净排出 ∈ [ΔI − 0.5, ΔI + vM·duration + 0.5]、立管静压差塌缩 < 25% 且恢复 > 80%、相位状态机合法迁移；另 14 条 cfFatal 拒收边界（13 个声明变体 + caseReject）。
+
+**边界。** 吹扫改写场但只按声明弛豫——波前结构、液膜夹带与气体穿透不解析；与 §5.141/§5.142 的地形振荡器、§5.161 段塞追踪各自独立状态，互不回写；报告行只接在单管串行路径——网络成员路径解析并推进该块但不逐管报告（与 slugTracking 同口径）；maxCycles 到限只停止再触发，不终止运行。
+
+### 5.163 抑制剂严格相平衡（O4 收口）
+
+**能力。** 瞬态两相流内核（`chflow-1d-twofluid`）新增顶层可选块 `inhibitorEquilibrium{}`：把 §5.141 的 Hammerschmidt 线性偏移换成**严格相平衡求根**——水合物动力学在输运抑制剂所决定的水活度处读声明平衡曲线，aW = 1/(1 + activityK·w)，T_eq = curveB/(ln p + ln aW − curveA)。OLGA 对标差距清单 O4（严格抑制剂相平衡）就此收口。
+
+**算法。** `hydrateStep` 的平衡温度查询（`equilibriumTemperatureInhibited`）在本块声明时分流到严格根 `rigorousEquilibriumTemperature`：w 按声明基取输运抑制剂浓度 c 之比（basis liquid：w = c；basis water：w = c/water，钳到 1），aW = 1/(1 + activityK·w)，在平移后的声明 Clausius 曲线 ln(p·aW) = curveA + curveB/T_eq 上直接求根。w = 0 时 log(1) = 0 精确成立，逐位复现声明曲线。严格根在本路径上**取代** kDepression·c 偏移（kDepression 仍是 inhibitor{} 的必需声明，严格路径不读它）；下游动力学（隐式生长/解聚、1:1 水迁移、化学计量气耗、潜热源）一律不变——变的只是驱动力 dT = T_eq − T 的评估点。与 §5.127 的口径差异点名：这里不走 pvt 层的 Clausius 参数化（Tref/pRef/dH），1D 模型的单一事实源是声明的 curveA/curveB 曲线，严格根直接建在它上面（避免锚点换算的有损转换）。
+
+**物理口径与简化（诚实声明）。** 水活度取声明的单参数稀释极限形式 aW = 1/(1 + K·w)（K 为用户声明的活度常数，不是抑制剂化学库；无温度依赖、无离子强度修正）；这是相平衡曲线的严格求根，不是三相平衡闪蒸（活度平移水的逸度评估点，等价于整条曲线平移，不解组成依赖曲线）；basis water 的 w = c/water 钳到 1（抑制剂不多于自由水时活度模型饱和，文档化简化）；抑制剂仍按 §5.141 全量随液相输运（无分配、无质量作用、无动力学修正——热力学抑制只作用于生长/解聚驱动力）。
+
+**报告。** 不声明 `inhibitorEquilibrium{}` 或声明 `enable false` 时输出与未声明孪生逐字节相同（硬规则）。声明时启动行追加 `twoFluid inhibitorEquilibrium: activityK <K> basis <liquid|water>`；串行路径逐 cell 行与网络 pcell 行追加 ` Teq <T_eq(p_i,w_i)> dTsub <T_eq − T_i>`（严格根的只读列，由当前报告态读出；未声明时这两列根本不存在）。
+
+**语法与拒收。** 键：`enable`（true/false，默认 true，未知词拒收）；`activityK` 必需 > 0（缺失/非正拒收——禁用时同样必需，防再启用时静默带错）；`basis` ∈ {liquid, water}（默认 liquid，未知词拒收点名两词）。必需同时声明 inhibitor{} 与 hydrate{}（严格根作用于输运抑制剂浓度、平移水合物平衡曲线，缺任一构造期点名拒收）。全部违例 cfFatal 大声拒收，不静默吞默认值。
+
+**回归（`tests/check_transient_inhibitoreq.py`，54 条判据）。** `cases/transientInhibitorEq/` 六算例：case.dict（10 × 2 m 倾 30° 密封管、地热壁温沿弧长从 292 K 降到 281.2 K、横跨 c = 0.3/K = 8 的严格根 ≈287.6 K：暖半段解聚、冷半段生长——dTsub 空间符号翻转；生长单元被潜热钉在自身壁温之上 ≈3 K，全抑制 K40 孪生贴壁）；caseBase/caseDisabled 逐字节对照孪生；casePure（inhibitor 0）轨迹与剥离块孪生去掉声明行/门控列后逐字节一致（w = 0 时严格根 = 声明曲线）；caseFlow（phaseRates 入口 vsl 0.05/vsg 0.25 + inhibitorFraction 0.4 前缘穿过带合物管线：前缘前 dTsub ≈ +11 生长、前缘后活度把根压到 ≈274 K、dTsub ≈ −21 解聚——单元时间符号翻转）；caseReject 缺 inhibitor{} 拒收见证。checker 不复制 C++ 逻辑：密封线逐单元完整递归（活度根、隐式动力学、1:1 水迁移、气耗、隐式潜热热步）与流动案例完整耦合步（α/水/抑制剂/水合物/气质量 Godunov 输运 + 严格动力学 + 隐式焓矩阵解）Python 独立重推到 1e-9；Teq/dTsub 列由报告 p/inh/T 独立复算（1e-8）；water + h 1:1 守恒 1e-12、气存量由报告 p/T 对化学计量汇 1e-6；K 单调性（K10/K40 孪生：Teq 严格降、终态 h 严格降、t = 100 温度严格降）；basis = water 孪生（K = 2，t = 400 时 cells 5–9 钳位生效）全递归 1e-9；流动前缘尖端单调推进并穿线、入口单元饱和 0.4、抑制剂场非均匀；8 条 cfFatal 拒收边界 + enable false 惰性路径见证。
+
+**边界。** 严格根只改驱动力评估点——无成核诱导期、无动力学抑制、无分配；活度形式是声明的单参数稀释极限模型，不是抑制剂化学库；kDepression 偏移与严格根互斥（声明后以后者为准），kDepression 数值不参与严格路径；报告列接单管串行与网络 pcell 两条路径（与 inh 列同口径）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |
@@ -6086,5 +6134,31 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
   marginal 1e-3、预算精确花完、单档搬移不改进；剥离块逐字节不变
   （diameterBase.dict 对照孪生、steadyNetwork 锚无优化 token）；
   29 条拒收边界（两套语法全部声明包络）；
+- `tests/check_transient_slugtracking.py`（CTest `verify.transientSlugTracking`，
+  §5.161）：**36** 条判据——`cases/transientSlugTracking/` 五算例：case.dict
+  水平管入口脉冲 + constant 追及（3 GEN / 1 MERGE / 2 OUT、MERGE 存量 =
+  两父之和 1e-9、GEN = OUT + MERGE 无泄漏）；Python 从报告场独立重推整个
+  advance/retire/merge/generate 循环（轨迹 5e-11、事件逐条对账、GEN 与
+  `slug{}` 扫描同帧精确对位、Σout = 钳制窗口出口通量积分 1e-8、全局平衡
+  文档化容差 1e-3）；caseGasCap.dict 气帽公式复现 + 夹紧；caseBase/
+  caseDisabled 逐字节孪生；caseReject 拒收见证；10 条 cfFatal 边界；
+- `tests/check_transient_purgewave.py`（CTest `verify.transientPurgeWave`，
+  §5.162）：**60** 条判据——`cases/transientPurgeWave/` 五算例：case.dict
+  60 m 竖直立管 constant 模式（t = dt 即触发、300 s 完成 2 个自持循环、
+  周期 137.85 s 对独立 wallis 充液激波闭式 T = L/uWave + L/s ≈ 139 s）；
+  caseClosed.dict 能量平衡波速逐帧复现 + 冻结 H_trig；caseBase/
+  caseDisabled 逐字节孪生 + idle 变体（triggerFactor 1e-6 剥离 purge 行
+  ≡ caseBase）双路见证未声明不变；caseReject 无 gasR 拒收见证；Python
+  独立重推触发不等式、隐式欧拉 cap 松弛、逐步前缘积分、吹干持液率足迹、
+  out 账本与静压塌缩/恢复；14 条 cfFatal 拒收边界；
+- `tests/check_transient_inhibitoreq.py`（CTest `verify.transientInhibitorEq`，
+  §5.163）：**54** 条判据——`cases/transientInhibitorEq/` 六算例：case.dict
+  30° 密封管地热壁温横跨严格根（dTsub 空间符号翻转、生长单元潜热钉在壁温
+  之上）；caseFlow 抑制剂前缘穿线（前缘前生长、缘后解聚——时间符号翻转）；
+  caseBase/caseDisabled 逐字节孪生；casePure 与剥离孪生轨迹一致（w = 0 严格
+  根 = 声明曲线）；caseReject 缺 inhibitor{} 见证；Python 独立重推密封逐单元
+  递归与流动完整耦合步到 1e-9、Teq/dTsub 列由报告 p/inh/T 独立复算、守恒
+  （water+h 1:1、气存量化学计量）、K 单调性、basis = water 钳位孪生、前缘
+  单调穿线；8 条 cfFatal 拒收边界 + enable false 惰性见证；
 - 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`
 

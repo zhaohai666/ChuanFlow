@@ -1,0 +1,91 @@
+// O2 (5.161): OLGA-style slug tracking - the full-front method on a
+// horizontal bore. Wallis closure us = 0.5, mixture velocity vM ~ 1.0 kept
+// constant by the rate pairs (vsl + vsg = 1.0), so the convex liquid flux
+//   F(a) = 0.5 a^2 + 0.5 a
+// has the base root F(a) = 0.1 -> alpha_lo = 0.17082039325003 and the
+// pulse root F(a) = 0.75 -> alpha_hi = 0.82287565553203. Both shocks
+// (base -> pulse and pulse -> base states) ride the same speed
+//   s = (F(a_hi) - F(a_lo)) / (a_hi - a_lo) = 0.996848,
+// and the liquid transport velocity on the plateau is
+//   uL_hi = F(a_hi)/a_hi = 0.911438.
+// Timeline: two 5 s liquid pulses (vsl 0.75) at t = 5 and t = 12 inject
+// two alpha_hi slug bodies. The declared constant migration velocity
+// slugVelocity 1.5 exceeds the plateau liquid velocity, so the trailing
+// slug's front catches the leading slug's rear exactly once in-pipe
+// (MERGE); the survivor's front pins at the outlet, discharges through it,
+// and the object retires (OUT) when its rear crosses the domain end.
+//
+// slug{} stays declared with the same threshold so every GEN can be
+// reconciled against the Eulerian scan; caseBase.dict is the byte-identical
+// twin without the slugTracking block, caseDisabled.dict the enable-false
+// twin. tests/check_transient_slugtracking.py re-derives the whole
+// Lagrangian bookkeeping independently from the reported field.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 20;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.5;
+}
+
+initial
+{
+    alpha 0.17082039325003;
+    water 0.3;
+}
+
+slug
+{
+    alphaThreshold 0.45;
+    minLength 0.5;
+}
+
+slugTracking
+{
+    enable true;
+    alphaThreshold 0.45;
+    minLength 0.5;
+    velocityMode constant;
+    slugVelocity 1.5;
+}
+
+boundaries
+{
+    inlet
+    {
+        type phaseRates;
+        vsl 0.1;
+        vsg 0.9;
+        waterFraction 0.3;
+        schedule
+        {
+            p1 { t 5;  vsl 0.75; vsg 0.25; }
+            p2 { t 10; vsl 0.1;  vsg 0.9; }
+            p3 { t 12; vsl 0.75; vsg 0.25; }
+            p4 { t 17; vsl 0.1;  vsg 0.9; }
+        }
+    }
+    outlet { type fixedPressure; p 5e6; }
+}
+
+time
+{
+    dt 0.05;
+    endTime 60;
+    reportEvery 1;
+}

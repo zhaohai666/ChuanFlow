@@ -1,0 +1,95 @@
+// O4 (5.163) flowing sibling: the inhibitor front (inhibitorFraction 0.4,
+// activityK 20) advects with the liquid through a line that starts hydrate-
+// bearing and inhibitor-free. Ahead of the front the rigorous root sits at
+// the plain curve (~306 K) above the temperature - growth; behind it the
+// activity drops the root to ~274 K - dissociation (temporal sign flip per
+// cell as the front passes). The checker replicates the full coupled step
+// (transport + rigorous kinetics + implicit thermal) cell by cell.
+fluid
+{
+    rhoL 1000;
+    rhoG 200;
+    muL  0.01;
+    muG  1e-5;
+    cL   4180;
+    cG   2150;
+    gasR 287;
+}
+
+pipe
+{
+    length 10;
+    diameter 0.02;
+    angleDeg 0;
+    roughness 0;
+    sections 20;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.3;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.5;
+    temperature 295;
+}
+
+boundaries
+{
+    inlet
+    {
+        type phaseRates;
+        vsl 0.05;
+        vsg 0.25;
+        waterFraction 0.5;
+        inhibitorFraction 0.4;
+        temperature 290;
+    }
+    outlet
+    {
+        type fixedPressure;
+        p 1.7e7;
+        temperature 290;
+    }
+}
+
+thermal
+{
+    wallHeatTransfer 50;
+    wallModel constant;
+    wallTemperature 295;
+}
+
+hydrate
+{
+    curveA 35.2;
+    curveB -5684;
+    growthRate 0.01;
+    dissociationRate 0.01;
+    gasContent 122;
+    latentHeat 4.2e8;
+    initial 0.02;
+}
+
+inhibitor
+{
+    kDepression 5;
+    initial 0;
+}
+
+inhibitorEquilibrium
+{
+    activityK 20;
+    basis liquid;
+}
+
+time
+{
+    dt 0.2;
+    endTime 200;
+    reportEvery 20;
+}

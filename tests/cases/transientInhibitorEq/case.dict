@@ -1,0 +1,83 @@
+// O4 (5.163): rigorous inhibitor phase equilibrium on the sealed line.
+// The inclined pipe's geothermal wall falls from 292 K (inlet) to 283.9 K
+// (outlet); the rigorous root at c = 0.3 / activityK 8 sits at ~287.6 K, so
+// the wall straddles the equilibrium line: the cool half grows hydrate, the
+// warm half dissociates it (spatial dTsub sign flip). The latent release
+// keeps the growth cells pinned just below the rigorous line.
+fluid
+{
+    rhoL 1000;
+    rhoG 200;
+    muL  0.01;
+    muG  1e-5;
+    cL   4180;
+    cG   2150;
+    gasR 287;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.02;
+    angleDeg 30;
+    roughness 0;
+    sections 10;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.5;
+    water 0.5;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet  { type sealed; }
+    outlet { type sealed; }
+}
+
+thermal
+{
+    wallHeatTransfer 50;
+    wallModel geothermal;
+    surfaceTemperature 172.6;
+    gradient 1.2;
+    inletDepth 100;
+}
+
+hydrate
+{
+    curveA 35.2;
+    curveB -5684;
+    growthRate 0.01;
+    dissociationRate 0.01;
+    gasContent 122;
+    latentHeat 4.2e8;
+    initial 0.04;
+}
+
+inhibitor
+{
+    kDepression 5;
+    initial 0.3;
+}
+
+inhibitorEquilibrium
+{
+    activityK 8;
+    basis liquid;
+}
+
+time
+{
+    dt 0.5;
+    endTime 400;
+    reportEvery 40;
+}

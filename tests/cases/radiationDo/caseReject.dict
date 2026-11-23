@@ -1,0 +1,31 @@
+// F9 rejection case: an unknown model name must fail loudly. The checker
+// additionally mutates case.dict in memory to reject negative absorption,
+// negative scattering and an unsupported quadrature order.
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (40 1 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type symmetry; }
+    ymax  { name top;    type symmetry; }
+    zmin  { name front;  type empty;    }
+    zmax  { name back;   type empty;    }
+}
+
+model not-a-model;
+
+radiation
+{
+    absorption 1.0;
+    scattering 0;
+    mediumTemperature 1200;
+}
+
+patches
+{
+    left  { wallTemperature 1500; }
+    right { wallTemperature 900;  }
+}

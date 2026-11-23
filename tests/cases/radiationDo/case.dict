@@ -1,0 +1,51 @@
+// F9 DO case: 1D grey participating slab between two black walls, uniform
+// absorption only (scattering = 0). The S_N transport solution is a closed
+// form: each ordinate attenuates as exp(-beta*x/mu) with beta = kappa_a, so
+// the checker rebuilds the cell-averaged G, the cell-centre q and both wall
+// fluxes from the case constants alone -- no solver number is assumed.
+//
+// Cell-averaged G is reported (not the point value) because that is the
+// quantity for which q(0)-q(L) = integral(S dx) closes as a discrete identity
+// of the exponential-fitting sweep. y is symmetry, z is empty.
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (40 1 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type symmetry; }
+    ymax  { name top;    type symmetry; }
+    zmin  { name front;  type empty;    }
+    zmax  { name back;   type empty;    }
+}
+
+model do;
+quadrature S8;
+
+radiation
+{
+    absorption 1.0;
+    scattering 0;
+    mediumTemperature 1200;
+}
+
+patches
+{
+    left  { wallTemperature 1500; }
+    right { wallTemperature 900;  }
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian none;
+    grad      linear;
+}
+
+output
+{
+    vtk out_radiationDo.vtu;
+}

@@ -1,0 +1,40 @@
+// F9 P1 companion: identical slab / medium / walls as case.dict, but the
+// model switch delegates to the shipped, untouched solveP1. The checker uses
+// this only for the qualitative P1/DO agreement trend (P1 is a diffusion
+// approximation and over-predicts the wall flux of an optically thin slab).
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (40 1 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type symmetry; }
+    ymax  { name top;    type symmetry; }
+    zmin  { name front;  type empty;    }
+    zmax  { name back;   type empty;    }
+}
+
+model p1;
+
+radiation
+{
+    absorption 1.0;
+    scattering 0;
+    mediumTemperature 1200;
+}
+
+patches
+{
+    left  { wallTemperature 1500; }
+    right { wallTemperature 900;  }
+}
+
+schemes
+{
+    ddt       steady;
+    div       upwind;
+    laplacian none;
+    grad      linear;
+}

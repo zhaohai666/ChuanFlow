@@ -1,0 +1,18 @@
+// Invalid-rho twin of case.dict: rhoG is negative, so the app must refuse
+// loudly. The checker additionally mutates case.dict in temp files to test
+// negative rates, an out-of-range (too large) alpha0 and a missing block.
+mixturePbm
+{
+    alpha0 0.05;
+    d0 0.001;
+    rhoL 1000;
+    rhoG -1.2;
+    slip 0.2;
+    j 1.0;
+    J 1000000;
+    breakage 0.5;
+    nFrag 2;
+    dt 0.01;
+    steps 100;
+    reportEvery 10;
+}

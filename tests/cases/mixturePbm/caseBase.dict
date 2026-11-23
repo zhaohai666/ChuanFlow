@@ -1,0 +1,18 @@
+// No-growth twin of case.dict: both rates are zero, so the documented analytic
+// behavior is a constant moment vector (M0..M3 and alpha unchanged at every
+// reported step). slip is kept identical so only the rates differ.
+mixturePbm
+{
+    alpha0 0.05;
+    d0 0.001;
+    rhoL 1000;
+    rhoG 1.2;
+    slip 0.2;
+    j 1.0;
+    J 0;
+    breakage 0;
+    nFrag 2;
+    dt 0.01;
+    steps 100;
+    reportEvery 10;
+}

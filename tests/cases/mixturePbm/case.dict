@@ -1,0 +1,27 @@
+// mixturePbm: opt-in algebraic mixture slip + monodisperse three-moment PBM.
+// The checker parses this text itself and independently re-derives:
+//   v    = pi d0^3/6                     (representative particle volume)
+//   k    = j/(j+slip)                    (drift-flux holdup factor)
+//   M0_0 = alpha0/v, M1_0 = alpha0, M2_0 = alpha0*v, M3_0 = alpha0*v^2
+//   dM0/dt = J + (nFrag-1) b M0
+//   dM1/dt = J v                         (breakage conserves volume)
+//   dM2/dt = J v^2 - (1-1/nFrag) b v^2 M0
+//   dM3/dt = J v^3 - (1-1/nFrag^2) b v^3 M0
+//   alpha = M1*k,  uG-uL = slip
+// and replays the explicit-Euler rule step by step. All moments stay positive
+// and finite over the (short) horizon below.
+mixturePbm
+{
+    alpha0 0.05;
+    d0 0.001;
+    rhoL 1000;
+    rhoG 1.2;
+    slip 0.2;
+    j 1.0;
+    J 1000000;
+    breakage 0.5;
+    nFrag 2;
+    dt 0.01;
+    steps 100;
+    reportEvery 10;
+}

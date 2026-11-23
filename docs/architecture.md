@@ -5555,6 +5555,40 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界。** 严格根只改驱动力评估点——无成核诱导期、无动力学抑制、无分配；活度形式是声明的单参数稀释极限模型，不是抑制剂化学库；kDepression 偏移与严格根互斥（声明后以后者为准），kDepression 数值不参与严格路径；报告列接单管串行与网络 pcell 两条路径（与 inh 列同口径）。
 
+### 5.164 F4 高阶湍流收口：LES 亚格子黏度（Smagorinsky / WALE）
+
+**能力。** 新增 `chflow-3d-les` 应用与 `les{ model smagorinsky|wale; Cs; Cw; }` 可选块；滤波动量方程保留分子黏度，未解析输运由解析速度梯度构造的涡黏封闭，Delta = V^(1/3)（有限体积盒式滤波）。Smagorinsky nut = (Cs Delta)^2 |S|；WALE nut = (Cw Delta)^2 (Sd:Sd)^(3/2) / ((S:S)^(5/2) + (Sd:Sd)^(5/4))，Sd 为速度梯度平方的无迹对称部分。模型无输运方程：`correctTurbulence` 从当前 U 重算代数涡黏，通过 `IEddyViscosity` 进 PISO 压力-速度耦合，面黏度取调和平均。`profile{ type linearShear|cosineShear|uniaxialStrain; rate; amplitude; }` 给解析初场，逐报告步输出 nut min/max/mean、strainMax 与体积平均动能 E。
+
+**物理口径与边界。** LES 要求网格分辨所关心的壁层：本实现不带壁面函数，壁面取邻格黏度；纯剪切场 WALE 恒给 nut = 0（近壁二次阻尼），Smagorinsky 则给出非零定值。RANS 两方程路径（§5.80 起）零改动；`rsm`/`des`/`gammaTransition` 是同批复次落地的可选模型选择器，按子集口径标记为**实验实现**，不计入 F4 收口判据；详细化学与 DES/转捩的完整验证超出 Fluent 子集口径。
+
+**回归（`tests/check_les_sgs.py`，CTest `verify.lesSgs`）。** `cases/lesSgs/` 四算例：Smagorinsky 常剪切、WALE 同场、Cs = 0 关闭 SGS、非法模型拒收。checker 从 case 文本与网格几何独立重推 Delta 与解析 |S|，核对 t = 0 的 nut 闭式值、WALE 在纯剪切下为零而 Smagorinsky 不为零、Cs = 0 时 nut 恒零、E 有界、filterWidth = V^(1/3)，以及非法声明大声拒收。详见 §5.167 台账。
+
+### 5.165 F12 空化收口：均相输运空化（Zwart–Gerber–Bernard）
+
+**能力。** 新增 `chflow-3d-cavitation` 应用与 `cavitation{ pSat; rhoL; rhoV; Ce; Cc; Rb; alpha0; diffusivity; }` 可选块；蒸汽体积分数随 PISO 闭合通量迎风输运，源项取 ZGB 速率 c(p) = (3/Rb)[Ce sqrt(2 max(pSat−p,0)/rhoL) − Cc sqrt(2 max(p−pSat,0)/rhoL)]，乘 alpha(1−alpha_old) 饱和因子，源项对 alpha 隐式线性化，解后钳位 [0,1]。混合密度 rho = alpha rhoV + (1−alpha) rhoL 通过 `PisoControls::cellInvRho` 进入压力修正的响应 rAU；动量方程仍取单位密度（小空隙率下声明的简化）。`venturi{ nx; ny; x1..x4; H1; H2; depth; }` 在应用内构造收缩-扩张通道，逐报告步输出 pMin/pMax/alphaMax 与入口/喉部/出口三截面的 u/p/alpha。
+
+**边界。** 单一气泡半径 Rb 与固定 Ce/Cc，无气泡数密度分布、无空化诱发湍流修正、无热效应；动量侧为运动学近似（密度只反馈压力修正），不适用于高空隙率。未声明 `cavitation{}` 的既有 PISO 算例保持逐字节不变（`cellInvRho` 为 nullptr）。
+
+**回归（`tests/check_cavitation_venturi.py`，CTest `verify.cavitationTransport`）。** `cases/cavitationVenturi/` 含主算例、pSat 远低于全场压力的不生长孪生、非法密度拒收。checker 从 case 常量与报告压力独立重推隐式逻辑增长步，核对 alpha 上界/单调性、喉部加速与低压、不生长孪生逐时刻保持 alpha0、拒收边界。详见 §5.167 台账。
+
+### 5.166 F12 熔化/凝固收口：焓-孔隙率法
+
+**能力。** `energy{ phaseChange{ latentHeat; solidusT; liquidusT; mushyConstant; mushyEpsilon; } }` 把潜热作为表观热容进瞬态能量方程：f_l = clamp((T−Ts)/(Tl−Ts),0,1)，对角线加 V (L/cp) df_l/dT / dt；动量侧由应用按当前 f_l 逐格施加 Darcy 阻尼 −A_mush (1−f_l)^2/(f_l^3+eps) U（显式，速率上限 0.5/dt，防振荡）。`chflow-3d-melting` 逐报告步输出 f_l = 0.5 前沿位置 yF、总焓 H、梯形积分边界热输入 Qin、液相/固相最大速度及 f_l 包络。
+
+**边界。** f_l 取液相线-固相线之间的线性关系，无溶质偏析、无收缩流动；Darcy 项为显式且有上限，因此“固体静止”是数值阻尼口径而非严格本构；无相界面尖锐追踪（糊状区宽度由声明给定）。未声明 phaseChange 时 `EnergyProps`、`validate()` 与求解路径保持原样。
+
+**回归（`tests/check_melting_front.py`，CTest `verify.meltingFront`）。** `cases/meltingFront/` 含主算例、无相变孪生、非法糊状区拒收。checker 独立重推 f_l 与焓定义，核对 H 对 Qin 的离散平衡、yF 单调且在网格范围内、f_l ∈ [0,1]、Darcy 区分固液速度、孪生路径与拒收边界。详见 §5.167 台账。
+
+### 5.167 批次 C 回归台账（§5.164–§5.166）
+
+| CTest | checker | 判据数 | 覆盖 |
+|---|---|---|---|
+| `verify.lesSgs` | `tests/check_les_sgs.py` | 20 | SGS 闭式、WALE 剪切阻尼、关闭孪生、拒收 |
+| `verify.cavitationTransport` | `tests/check_cavitation_venturi.py` | 待回填 | ZGB 增长/收缩、喉部加速、不生长孪生、拒收 |
+| `verify.meltingFront` | `tests/check_melting_front.py` | 103 | 焓平衡、前沿推进、Darcy、无相变孪生、拒收 |
+
+运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`。批次 C 只新增 opt-in 块与新应用；未声明路径的逐字节不变由各 checker 的孪生算例见证。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

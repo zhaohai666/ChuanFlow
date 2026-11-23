@@ -109,7 +109,9 @@ export function logTicks(lo, hi) {
   const out = [];
   if (!(lo > 0) || !(hi >= lo)) return out;
   for (let k = Math.ceil(Math.log10(lo)); k <= Math.floor(Math.log10(hi) + 1e-9); k += 1) {
-    out.push(10 ** k);
+    // 10 ** -4 is 9.999999999999999e-5 in JS; reciprocal of the integer
+    // power keeps the decade an exact decimal for tick formatting/tests.
+    out.push(k >= 0 ? 10 ** k : 1 / (10 ** -k));
   }
   return out;
 }

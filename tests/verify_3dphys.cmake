@@ -1,0 +1,4 @@
+# Batch D aggregate hook: one uniquely named CTest fragment per physics item.
+foreach(_d_fragment d_f7 d_f9 d_f10 d_f11 d_f13)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/verify_${_d_fragment}.cmake OPTIONAL)
+endforeach()

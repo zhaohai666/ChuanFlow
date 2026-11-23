@@ -192,6 +192,194 @@ function fmt(v) {
   return String(Number(v));
 }
 
+// ---------------------------------------------------------------------------
+// Steady equipment field registry (P6-P8 fields + E4 families). One registry
+// drives serialize, extractCaseDetails and the model rebuild so the three can
+// never drift. Key names are the kernel's own (network.cpp pipe keys for
+// ESP/lift/rod/compressor, pointElementsApp.cpp keys for the four standalone
+// point elements, prefixed with the family tag to avoid cross-device clashes).
+// ---------------------------------------------------------------------------
+export const DEVICE_FIELDS = [
+  // ESP advanced intake semantics (steady kernel reads both keys)
+  'pumpGasFraction', 'pumpIntakePressure',
+  // gas-lift valve (§5.89)
+  'liftDomePressure', 'liftAreaRatio', 'liftSpringPressure',
+  'liftDischargeCoeff', 'liftKappa',
+  // rod pump (§5.90)
+  'rodPlungerDiameter', 'rodStrokeLength', 'rodStrokesPerMinute', 'rodDiameter',
+  'rodLength', 'rodYoungModulus', 'rodDensity',
+  // E4: jet pump (§5.140)
+  'jetNozzleArea', 'jetThroatArea', 'jetThroatLength', 'jetFrictionFactor',
+  'jetMotiveRate', 'jetSuctionPressure', 'jetSuctionRate', 'jetDischargePressure',
+  // E4: progressive cavity pump (§5.140)
+  'pcpCavitiesPerRev', 'pcpCavityVolume', 'pcpRpm', 'pcpSlip',
+  'pcpPressureRise', 'pcpDischargePressure', 'pcpIntakePressure',
+  // E4: plunger gas lift (§5.140)
+  'pglGasVolumePerCycle', 'pglReferencePressure', 'pglGasDensityAtReference',
+  'pglCyclePeriod', 'pglOpenWindow', 'pglReleaseDepth',
+  'pglCasingSurfacePressure', 'pglTubingSurfacePressure', 'pglLiquidDensity',
+  'pglDomePressure', 'pglAreaRatio', 'pglSpringPressure', 'pglPortDiameter',
+  'pglDischargeCoeff', 'pglKappa',
+  // E4: separator (§5.115 / pointElementsApp.cpp)
+  'sepFeedRate', 'sepPressure', 'sepTemperature', 'sepEfficiency', 'sepDP',
+  'sepGasGravity', 'sepOilDensity', 'sepGor', 'sepWaterCut',
+  // E4: compressor — real network.cpp pipe keys (§5.156), no prefix needed
+  'pressureRatio', 'shutoffRatio', 'ratedRate', 'polytropicEfficiency',
+  'kappa', 'specificGasConstant', 'compressibility',
+];
+
+/** Base (M5) pipe keys that also carry equipment but predate the registry. */
+export const BASIC_DEVICE_FIELDS = [
+  'valve', 'pumpHead', 'pumpRate', 'pumpShutoffHead', 'pumpStages', 'pumpSpeed',
+];
+
+/** Every equipment key the GUI can round-trip through a case dictionary. */
+export const ALL_DEVICE_FIELDS = [...BASIC_DEVICE_FIELDS, ...DEVICE_FIELDS];
+
+/**
+ * E4 device families: `switch` is the > 0 trigger, `fields` the editable
+ * properties, `block` the top-level point-element dictionary block consumed
+ * by `chflow-1d-point-elements` (null for compressor, whose keys are native
+ * network.cpp pipe keys solved by `chflow-1d-steady`).
+ */
+export const DEVICE_FAMILIES = [
+  {
+    id: 'jetPump', label: '射流泵', switch: 'jetNozzleArea', block: 'jetPumps',
+    fields: ['jetNozzleArea', 'jetThroatArea', 'jetThroatLength', 'jetFrictionFactor',
+      'jetMotiveRate', 'jetSuctionPressure', 'jetSuctionRate', 'jetDischargePressure'],
+    defaults: {
+      jetNozzleArea: 1e-4, jetThroatArea: 4e-4, jetThroatLength: 0.2,
+      jetFrictionFactor: 0.02, jetMotiveRate: 2e-3, jetSuctionPressure: 2e6,
+      jetSuctionRate: 0, jetDischargePressure: 2.05e6,
+    },
+  },
+  {
+    id: 'pcp', label: '螺杆泵 PCP', switch: 'pcpCavityVolume', block: 'pcpPumps',
+    fields: ['pcpCavitiesPerRev', 'pcpCavityVolume', 'pcpRpm', 'pcpSlip',
+      'pcpPressureRise', 'pcpDischargePressure', 'pcpIntakePressure'],
+    defaults: {
+      pcpCavitiesPerRev: 2, pcpCavityVolume: 1.2e-5, pcpRpm: 120, pcpSlip: 2e-12,
+      pcpPressureRise: 8e6, pcpDischargePressure: 0, pcpIntakePressure: 0,
+    },
+  },
+  {
+    id: 'plungerGasLift', label: '柱塞气举', switch: 'pglGasVolumePerCycle',
+    block: 'plungerGasLifts',
+    fields: ['pglGasVolumePerCycle', 'pglReferencePressure',
+      'pglGasDensityAtReference', 'pglCyclePeriod', 'pglOpenWindow',
+      'pglReleaseDepth', 'pglCasingSurfacePressure', 'pglTubingSurfacePressure',
+      'pglLiquidDensity', 'pglDomePressure', 'pglAreaRatio', 'pglSpringPressure',
+      'pglPortDiameter', 'pglDischargeCoeff', 'pglKappa'],
+    defaults: {
+      pglGasVolumePerCycle: 0.5, pglReferencePressure: 1e5,
+      pglGasDensityAtReference: 1.2, pglCyclePeriod: 600, pglOpenWindow: 30,
+      pglReleaseDepth: 1500, pglCasingSurfacePressure: 8e6,
+      pglTubingSurfacePressure: 4e6, pglLiquidDensity: 900, pglDomePressure: 9e6,
+      pglAreaRatio: 0.1, pglSpringPressure: 0, pglPortDiameter: 0.01,
+      pglDischargeCoeff: 0.665, pglKappa: 1.3,
+    },
+  },
+  {
+    id: 'separator', label: '分离器', switch: 'sepFeedRate', block: 'separators',
+    fields: ['sepFeedRate', 'sepPressure', 'sepTemperature', 'sepEfficiency',
+      'sepDP', 'sepGasGravity', 'sepOilDensity', 'sepGor', 'sepWaterCut'],
+    defaults: {
+      sepFeedRate: 0.01, sepPressure: 2e6, sepTemperature: 340, sepEfficiency: 1,
+      sepDP: 0, sepGasGravity: 0.75, sepOilDensity: 850, sepGor: 180,
+      sepWaterCut: 0.05,
+    },
+  },
+  {
+    id: 'compressor', label: '压缩机', switch: 'pressureRatio', block: null,
+    fields: ['pressureRatio', 'shutoffRatio', 'ratedRate',
+      'polytropicEfficiency', 'kappa', 'specificGasConstant', 'compressibility'],
+    defaults: {
+      pressureRatio: 2, shutoffRatio: 2.4, ratedRate: 0.05,
+      polytropicEfficiency: 0.9, kappa: 1.3, specificGasConstant: 518.28,
+      compressibility: 0.95,
+    },
+  },
+];
+
+/**
+ * The five E4 families (excludes the three P6-P8 devices already wired in).
+ * Exported so the toolbar, property panel, removal action and block emitter
+ * all iterate the same list.
+ */
+export const E4_DEVICE_FAMILIES = DEVICE_FAMILIES;
+
+/** Pull every equipment key out of an `extractCaseDetails` pipe record. */
+export function pipeDeviceFieldsFrom(geo = {}) {
+  const out = {};
+  for (const k of ALL_DEVICE_FIELDS) out[k] = geo[k] ?? 0;
+  return out;
+}
+
+/**
+ * Emit the top-level point-element blocks for the four devices whose physics
+ * lives in `chflow-1d-point-elements` (jet pump / PCP / PGL / separator).
+ * Keys are the kernel's exact names from `pointElementsApp.cpp`; each block
+ * entry is named after its source pipe, so one GUI pipe maps to one element.
+ * No device fields => no blocks (plain-pipe byte identity preserved).
+ */
+export function deviceBlocksFromModel(model) {
+  const rho = fmt((model.fluid || {}).rho ?? 850);
+  const lines = [];
+  const active = (key) => model.pipes.filter((p) => Number(p[key]) > 0);
+  const emit = (block, entries) => {
+    if (!entries.length) return;
+    lines.push('', block, '{', ...entries, '}');
+  };
+
+  emit('jetPumps', active('jetNozzleArea').map((p) => {
+    let b = `rho ${rho}; nozzleArea ${fmt(p.jetNozzleArea)}; ` +
+      `throatArea ${fmt(p.jetThroatArea)}; throatLength ${fmt(p.jetThroatLength)}; ` +
+      `frictionFactor ${fmt(p.jetFrictionFactor)}; motiveRate ${fmt(p.jetMotiveRate)}; ` +
+      `dischargePressure ${fmt(p.jetDischargePressure)};`;
+    b += Number(p.jetSuctionRate) > 0
+      ? ` suctionRate ${fmt(p.jetSuctionRate)};`
+      : ` suctionPressure ${fmt(p.jetSuctionPressure)};`;
+    return `    ${p.name} { ${b} }`;
+  }));
+
+  emit('pcpPumps', active('pcpCavityVolume').map((p) => {
+    let b = `rho ${rho}; cavitiesPerRev ${fmt(p.pcpCavitiesPerRev)}; ` +
+      `cavityVolume ${fmt(p.pcpCavityVolume)}; rpm ${fmt(p.pcpRpm)}; ` +
+      `slip ${fmt(p.pcpSlip)};`;
+    b += Number(p.pcpDischargePressure) > 0 && Number(p.pcpIntakePressure) > 0
+      ? ` dischargePressure ${fmt(p.pcpDischargePressure)}; intakePressure ${fmt(p.pcpIntakePressure)};`
+      : ` pressureRise ${fmt(p.pcpPressureRise)};`;
+    return `    ${p.name} { ${b} }`;
+  }));
+
+  emit('plungerGasLifts', active('pglGasVolumePerCycle').map((p) => {
+    const b = `gasVolumePerCycle ${fmt(p.pglGasVolumePerCycle)}; ` +
+      `referencePressure ${fmt(p.pglReferencePressure)}; ` +
+      `gasDensityAtReference ${fmt(p.pglGasDensityAtReference)}; ` +
+      `cyclePeriod ${fmt(p.pglCyclePeriod)}; openWindow ${fmt(p.pglOpenWindow)}; ` +
+      `releaseDepth ${fmt(p.pglReleaseDepth)}; ` +
+      `casingSurfacePressure ${fmt(p.pglCasingSurfacePressure)}; ` +
+      `tubingSurfacePressure ${fmt(p.pglTubingSurfacePressure)}; ` +
+      `liquidDensity ${fmt(p.pglLiquidDensity)}; ` +
+      `liftDomePressure ${fmt(p.pglDomePressure)}; liftAreaRatio ${fmt(p.pglAreaRatio)}; ` +
+      `liftSpringPressure ${fmt(p.pglSpringPressure)}; ` +
+      `liftPortDiameter ${fmt(p.pglPortDiameter)}; ` +
+      `liftDischargeCoeff ${fmt(p.pglDischargeCoeff)}; liftKappa ${fmt(p.pglKappa)};`;
+    return `    ${p.name} { ${b} }`;
+  }));
+
+  emit('separators', active('sepFeedRate').map((p) =>
+    `    ${p.name} { feedRate ${fmt(p.sepFeedRate)}; pressure ${fmt(p.sepPressure)}; ` +
+    `temperature ${fmt(p.sepTemperature)}; efficiency ${fmt(p.sepEfficiency)}; ` +
+    `dP ${fmt(p.sepDP)}; ` +
+    `fluid { blackoil { gasGravity ${fmt(p.sepGasGravity)}; ` +
+    `oilDensity ${fmt(p.sepOilDensity)}; gor ${fmt(p.sepGor)}; ` +
+    `waterCut ${fmt(p.sepWaterCut)}; } } }`,
+  ));
+
+  return lines.length ? lines.join('\n') + '\n' : '';
+}
+
 /**
  * Serialize the editor model into a ChuanFlow dictionary. Emits the explicit
  * `node=` key on sources and the full pipe geometry, so the text is directly
@@ -227,20 +415,9 @@ export function networkToCaseText(model) {
     if (p.pumpShutoffHead) fields += ` pumpShutoffHead ${fmt(p.pumpShutoffHead)};`;
     if (p.pumpStages) fields += ` pumpStages ${fmt(p.pumpStages)};`;
     if (p.pumpSpeed) fields += ` pumpSpeed ${fmt(p.pumpSpeed)};`;
-    if (p.pumpGasFraction) fields += ` pumpGasFraction ${fmt(p.pumpGasFraction)};`;
-    if (p.pumpIntakePressure) fields += ` pumpIntakePressure ${fmt(p.pumpIntakePressure)};`;
-    if (p.liftDomePressure) fields += ` liftDomePressure ${fmt(p.liftDomePressure)};`;
-    if (p.liftAreaRatio) fields += ` liftAreaRatio ${fmt(p.liftAreaRatio)};`;
-    if (p.liftSpringPressure) fields += ` liftSpringPressure ${fmt(p.liftSpringPressure)};`;
-    if (p.liftDischargeCoeff) fields += ` liftDischargeCoeff ${fmt(p.liftDischargeCoeff)};`;
-    if (p.liftKappa) fields += ` liftKappa ${fmt(p.liftKappa)};`;
-    if (p.rodPlungerDiameter) fields += ` rodPlungerDiameter ${fmt(p.rodPlungerDiameter)};`;
-    if (p.rodStrokeLength) fields += ` rodStrokeLength ${fmt(p.rodStrokeLength)};`;
-    if (p.rodStrokesPerMinute) fields += ` rodStrokesPerMinute ${fmt(p.rodStrokesPerMinute)};`;
-    if (p.rodDiameter) fields += ` rodDiameter ${fmt(p.rodDiameter)};`;
-    if (p.rodLength) fields += ` rodLength ${fmt(p.rodLength)};`;
-    if (p.rodYoungModulus) fields += ` rodYoungModulus ${fmt(p.rodYoungModulus)};`;
-    if (p.rodDensity) fields += ` rodDensity ${fmt(p.rodDensity)};`;
+    for (const key of DEVICE_FIELDS) {
+      if (p[key]) fields += ` ${key} ${fmt(p[key])};`;
+    }
     lines.push(`    ${p.name} { ${fields} }`);
   }
   lines.push('}', '', 'sources', '{');
@@ -248,6 +425,11 @@ export function networkToCaseText(model) {
     lines.push(`    ${s.name} { node ${s.node}; rate ${fmt(s.rate)}; }`);
   }
   lines.push('}');
+
+  // E4 point-element blocks (jet pump / PCP / PGL / separator). Absent when
+  // no such device is present, so plain-pipe output stays byte-identical.
+  const blocks = deviceBlocksFromModel(model);
+  if (blocks) lines.push(blocks.trimEnd());
 
   const t = model.time || {};
   if (t.dt !== undefined && t.endTime !== undefined) {
@@ -631,4 +813,156 @@ export function removeDictBlock(caseText, name) {
     return lines.join('\n');
   }
   return caseText;
+}
+
+/**
+ * E4: pure SVG glyph command generator. Returns `{ className, title, commands }`
+ * where each command is `{ type, ...attrs }`; the canvas turns commands into
+ * real SVG nodes and `node --test` can assert the geometry without a DOM.
+ * The three P6-P8 families keep their exact pre-E4 shapes and ordering.
+ */
+export function deviceGlyphCommands(p, mx, my, ax, ay, bx, by) {
+  const el = (type, attrs) => ({ type, ...attrs });
+  const bits = (label, pairs) => {
+    const out = [`${label} ${p.name}:`];
+    for (const [k, v] of pairs) if (v) out.push(`${k}=${v}`);
+    return out.join(' ');
+  };
+
+  if (p.liftDomePressure) {
+    return {
+      className: 'dev-gaslift',
+      title: bits('气举阀', [['dome', p.liftDomePressure], ['Ar', p.liftAreaRatio],
+        ['spring', p.liftSpringPressure], ['Cd', p.liftDischargeCoeff],
+        ['kappa', p.liftKappa]]),
+      commands: [
+        el('path', {
+          d: `M ${mx - 8},${my + 6} Q ${mx - 8},${my - 9} ${mx},${my - 9} ` +
+             `Q ${mx + 8},${my - 9} ${mx + 8},${my + 6} Z`,
+        }),
+        el('circle', { cx: mx, cy: my + 8, r: 2.5 }),
+      ],
+    };
+  }
+  if (p.rodPlungerDiameter) {
+    return {
+      className: 'dev-rodpump',
+      title: bits('有杆泵', [['bore', p.rodPlungerDiameter], ['stroke', p.rodStrokeLength],
+        ['spm', p.rodStrokesPerMinute], ['rodD', p.rodDiameter], ['rodL', p.rodLength]]),
+      commands: [
+        el('rect', { x: mx - 10, y: my - 5, width: 20, height: 10 }),
+        el('path', {
+          d: `M ${mx},${my - 5} L ${mx},${my - 12} L ${mx + 7},${my - 12}`,
+        }),
+      ],
+    };
+  }
+  if (p.valve) {
+    return {
+      className: 'dev-valve',
+      title: `节流阀 ${p.name}: valve K=${p.valve}`,
+      commands: [
+        el('polygon', { points: `${mx - 7},${my - 7} ${mx - 7},${my + 7} ${mx},${my}` }),
+        el('polygon', { points: `${mx + 7},${my - 7} ${mx + 7},${my + 7} ${mx},${my}` }),
+        el('line', { x1: mx, y1: my - 7, x2: mx, y2: my - 12 }),
+      ],
+    };
+  }
+  if (p.pumpHead || p.pumpRate) {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len;
+    const uy = dy / len;
+    return {
+      className: 'dev-pump',
+      title: bits(`泵`, [['pumpHead', p.pumpHead], ['pumpRate', p.pumpRate],
+        ['shutoff', p.pumpShutoffHead], ['stages', p.pumpStages],
+        ['speed', p.pumpSpeed], ['gasFrac', p.pumpGasFraction],
+        ['intake', p.pumpIntakePressure]]),
+      commands: [
+        el('circle', { cx: mx, cy: my, r: 9 }),
+        el('polygon', {
+          points: `${mx + ux * 6},${my + uy * 6} ` +
+            `${mx - ux * 4 - uy * 4},${my - uy * 4 + ux * 4} ` +
+            `${mx - ux * 4 + uy * 4},${my - uy * 4 - ux * 4}`,
+        }),
+      ],
+    };
+  }
+  // ---- E4: five new device families -------------------------------------
+  if (p.jetNozzleArea) {
+    return {
+      className: 'dev-jetpump',
+      title: bits('射流泵', [['An', p.jetNozzleArea], ['At', p.jetThroatArea],
+        ['motive', p.jetMotiveRate], ['pd', p.jetDischargePressure]]),
+      commands: [
+        el('polygon', { points: `${mx - 13},${my - 5} ${mx - 13},${my + 5} ${mx - 3},${my}` }),
+        el('rect', { x: mx - 3, y: my - 4, width: 11, height: 8 }),
+        el('path', {
+          d: `M ${mx + 8},${my - 4} L ${mx + 14},${my - 8} ` +
+             `M ${mx + 8},${my + 4} L ${mx + 14},${my + 8}`,
+        }),
+      ],
+    };
+  }
+  if (p.pcpCavityVolume) {
+    return {
+      className: 'dev-pcp',
+      title: bits('螺杆泵 PCP', [['cav', p.pcpCavityVolume], ['rpm', p.pcpRpm],
+        ['slip', p.pcpSlip], ['dp', p.pcpPressureRise]]),
+      commands: [
+        el('rect', { x: mx - 12, y: my - 7, width: 24, height: 14, rx: 6 }),
+        el('path', {
+          d: `M ${mx - 8},${my} Q ${mx - 4},${my - 7} ${mx},${my} ` +
+             `T ${mx + 8},${my}`,
+        }),
+      ],
+    };
+  }
+  if (p.pglGasVolumePerCycle) {
+    return {
+      className: 'dev-pgl',
+      title: bits('柱塞气举', [['vol', p.pglGasVolumePerCycle],
+        ['T', p.pglCyclePeriod], ['w', p.pglOpenWindow],
+        ['depth', p.pglReleaseDepth], ['dome', p.pglDomePressure]]),
+      commands: [
+        el('rect', { x: mx - 6, y: my - 11, width: 12, height: 22 }),
+        el('rect', { x: mx - 5, y: my, width: 10, height: 5 }),
+        el('circle', { cx: mx, cy: my + 8, r: 2 }),
+        el('circle', { cx: mx - 10, cy: my + 5, r: 1.6 }),
+        el('circle', { cx: mx + 10, cy: my - 4, r: 1.6 }),
+      ],
+    };
+  }
+  if (p.sepFeedRate) {
+    return {
+      className: 'dev-separator',
+      title: bits('分离器', [['feed', p.sepFeedRate], ['p', p.sepPressure],
+        ['T', p.sepTemperature], ['eff', p.sepEfficiency]]),
+      commands: [
+        el('rect', { x: mx - 12, y: my - 8, width: 24, height: 16, rx: 8 }),
+        el('line', { x1: mx - 18, y1: my, x2: mx - 12, y2: my }),
+        el('line', { x1: mx + 12, y1: my - 4, x2: mx + 18, y2: my - 4 }),
+        el('line', { x1: mx + 12, y1: my + 4, x2: mx + 18, y2: my + 4 }),
+        el('line', { x1: mx, y1: my - 8, x2: mx, y2: my + 2 }),
+      ],
+    };
+  }
+  if (p.pressureRatio) {
+    return {
+      className: 'dev-compressor',
+      title: bits('压缩机', [['PR', p.pressureRatio], ['PR0', p.shutoffRatio],
+        ['rate', p.ratedRate], ['eta', p.polytropicEfficiency],
+        ['kappa', p.kappa]]),
+      commands: [
+        el('circle', { cx: mx, cy: my, r: 9 }),
+        el('polygon', {
+          points: `${mx},${my} ${mx + 5},${my - 6} ${mx + 7},${my + 2}`,
+        }),
+        el('path', { d: `M ${mx + 9},${my} L ${mx + 15},${my} L ${mx + 12},${my - 3}` }),
+      ],
+    };
+  }
+  return null;
 }

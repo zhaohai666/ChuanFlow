@@ -13,7 +13,8 @@ import {
   networkToCaseText, setPipeFields, updateSourceRate, setFluid,
   clipKeepsByPlane, adaptiveVectorIndices, upsertOutputVtk,
   applyWhatIfOverrides, TRANSIENT_WHAT_IF_PARAMS, iprLinearVariant,
-  applyScenarioOverrides,
+  applyScenarioOverrides, deviceGlyphCommands, pipeDeviceFieldsFrom,
+  E4_DEVICE_FAMILIES, ALL_DEVICE_FIELDS,
 } from './editor.js';
 import {
   validateCaseText, toBarHeights, toTimeSeriesPoints,
@@ -390,6 +391,56 @@ function numInput(label, value, family, onApply) {
   return wrap;
 }
 
+// E4 device field labels + display unit families (null = raw SI number).
+const DEVICE_FIELD_META = {
+  jetNozzleArea: ['喷嘴面积 An (m²)', null],
+  jetThroatArea: ['喉道面积 At (m²)', null],
+  jetThroatLength: ['喉道长度 Lt (m)', 'length'],
+  jetFrictionFactor: ['喉道摩擦系数 f', null],
+  jetMotiveRate: ['动力液流量 (m³/s)', 'rate'],
+  jetSuctionPressure: ['吸入压力 (Pa)', 'pressure'],
+  jetSuctionRate: ['吸入流量 (m³/s，0 = 按压力解)', 'rate'],
+  jetDischargePressure: ['排出压力 (Pa)', 'pressure'],
+  pcpCavitiesPerRev: ['每转密封腔数', null],
+  pcpCavityVolume: ['单腔体积 (m³)', null],
+  pcpRpm: ['转速 (rpm)', null],
+  pcpSlip: ['滑移系数 (m³/s/Pa)', null],
+  pcpPressureRise: ['压差 (Pa)', 'pressure'],
+  pcpDischargePressure: ['排出压力 (Pa，与吸入同时填 = 端口模式)', 'pressure'],
+  pcpIntakePressure: ['吸入压力 (Pa，与排出同时填 = 端口模式)', 'pressure'],
+  pglGasVolumePerCycle: ['每周期气量 Vg (m³)', null],
+  pglReferencePressure: ['参考压力 (Pa)', 'pressure'],
+  pglGasDensityAtReference: ['参考气密度 (kg/m³)', 'density'],
+  pglCyclePeriod: ['周期 T (s)', null],
+  pglOpenWindow: ['开阀窗口 w (s)', null],
+  pglReleaseDepth: ['释放深度 (m)', 'length'],
+  pglCasingSurfacePressure: ['套管井口压力 (Pa)', 'pressure'],
+  pglTubingSurfacePressure: ['油管井口压力 (Pa)', 'pressure'],
+  pglLiquidDensity: ['液相密度 (kg/m³)', 'density'],
+  pglDomePressure: ['阀充压 Pd (Pa)', 'pressure'],
+  pglAreaRatio: ['阀面积比 R', null],
+  pglSpringPressure: ['弹簧压力 St (Pa)', 'pressure'],
+  pglPortDiameter: ['阀孔径 (m)', 'length'],
+  pglDischargeCoeff: ['流量系数 Cd', null],
+  pglKappa: ['绝热指数 k', null],
+  sepFeedRate: ['进料量 (m³/s)', 'rate'],
+  sepPressure: ['分离压力 (Pa)', 'pressure'],
+  sepTemperature: ['分离温度 (K)', 'temperature'],
+  sepEfficiency: ['液相回收效率 (0..1)', null],
+  sepDP: ['级间压降 dP (Pa)', 'pressure'],
+  sepGasGravity: ['气体相对密度', null],
+  sepOilDensity: ['标况油密度 (kg/m³)', 'density'],
+  sepGor: ['气油比 GOR (sm³/sm³)', null],
+  sepWaterCut: ['含水率 (0..1)', null],
+  pressureRatio: ['压比 PR (rated)', null],
+  shutoffRatio: ['关死压比 PR0', null],
+  ratedRate: ['额定流量 (m³/s)', 'rate'],
+  polytropicEfficiency: ['多变效率 (0..1)', null],
+  kappa: ['绝热指数 k (>1)', null],
+  specificGasConstant: ['气体常数 R (J/kg·K)', null],
+  compressibility: ['压缩因子 Z', null],
+};
+
 function renderProps() {
   propsEl.innerHTML = '';
   const sel = state.sel;
@@ -542,6 +593,21 @@ function renderProps() {
       state.model = setPipeFields(state.model, p.id, { rodDensity: v });
       afterModelChange();
     }));
+    // E4: five new device families (§5.176). Grouped by family; the switch
+    // field (> 0) is listed first in each group.
+    for (const fam of E4_DEVICE_FAMILIES) {
+      const grp = document.createElement('p');
+      grp.className = 'note';
+      grp.textContent = `${fam.label}（${fam.switch} > 0 生效）：`;
+      propsEl.appendChild(grp);
+      for (const key of fam.fields) {
+        const [label, unitFamily] = DEVICE_FIELD_META[key] || [key, null];
+        propsEl.appendChild(numInput(label, p[key] ?? 0, unitFamily, (v) => {
+          state.model = setPipeFields(state.model, p.id, { [key]: v });
+          afterModelChange();
+        }));
+      }
+    }
     if (state.steady) {
       const r = state.steady.pipes.find((x) => x.name === p.name);
       if (r) {
@@ -651,100 +717,28 @@ function renderProps() {
 function appendDeviceGlyph(p, ax, ay, bx, by) {
   const mx = (ax + bx) / 2;
   const my = (ay + by) / 2;
+  const glyph = deviceGlyphCommands(p, mx, my, ax, ay, bx, by);
+  if (!glyph) return;
   const NS = 'http://www.w3.org/2000/svg';
   const g = document.createElementNS(NS, 'g');
   g.dataset.pipeId = p.id;
+  g.setAttribute('class', glyph.className);
+  for (const cmd of glyph.commands) {
+    const { type, ...attrs } = cmd;
+    const node = document.createElementNS(NS, type);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    g.appendChild(node);
+  }
   const title = document.createElementNS(NS, 'title');
-  const sel = () => {
+  title.textContent = glyph.title;
+  g.appendChild(title);
+  g.addEventListener('click', () => {
     state.sel = { kind: 'pipe', ref: p.id };
     state.model.selection = { kind: 'pipe', id: p.id };
     renderCanvas();
     renderProps();
     renderTree();
-  };
-
-  if (p.liftDomePressure) {
-    // gas-lift valve (§5.89): dome charge + port, drawn as a bell with stem
-    g.setAttribute('class', 'dev-gaslift');
-    const bell = document.createElementNS(NS, 'path');
-    bell.setAttribute(
-      'd',
-      `M ${mx - 8},${my + 6} Q ${mx - 8},${my - 9} ${mx},${my - 9} ` +
-      `Q ${mx + 8},${my - 9} ${mx + 8},${my + 6} Z`,
-    );
-    const port = document.createElementNS(NS, 'circle');
-    port.setAttribute('cx', mx);
-    port.setAttribute('cy', my + 8);
-    port.setAttribute('r', 2.5);
-    g.append(bell, port);
-    const bits = [`气举阀 ${p.name}: dome=${p.liftDomePressure}`];
-    if (p.liftAreaRatio) bits.push(`Ar=${p.liftAreaRatio}`);
-    if (p.liftSpringPressure) bits.push(`spring=${p.liftSpringPressure}`);
-    if (p.liftDischargeCoeff) bits.push(`Cd=${p.liftDischargeCoeff}`);
-    if (p.liftKappa) bits.push(`kappa=${p.liftKappa}`);
-    title.textContent = bits.join(' ');
-  } else if (p.rodPlungerDiameter) {
-    // rod pump (§5.90): barrel + plunger, drawn as a piston jack
-    g.setAttribute('class', 'dev-rodpump');
-    const barrel = document.createElementNS(NS, 'rect');
-    barrel.setAttribute('x', mx - 10);
-    barrel.setAttribute('y', my - 5);
-    barrel.setAttribute('width', 20);
-    barrel.setAttribute('height', 10);
-    const horse = document.createElementNS(NS, 'path');
-    horse.setAttribute(
-      'd',
-      `M ${mx},${my - 5} L ${mx},${my - 12} L ${mx + 7},${my - 12}`,
-    );
-    g.append(barrel, horse);
-    const bits = [`有杆泵 ${p.name}: bore=${p.rodPlungerDiameter}`];
-    if (p.rodStrokeLength) bits.push(`stroke=${p.rodStrokeLength}`);
-    if (p.rodStrokesPerMinute) bits.push(`spm=${p.rodStrokesPerMinute}`);
-    if (p.rodDiameter) bits.push(`rodD=${p.rodDiameter}`);
-    if (p.rodLength) bits.push(`rodL=${p.rodLength}`);
-    title.textContent = bits.join(' ');
-  } else if (p.valve) {
-    g.setAttribute('class', 'dev-valve');
-    const t1 = document.createElementNS(NS, 'polygon');
-    t1.setAttribute('points', `${mx - 7},${my - 7} ${mx - 7},${my + 7} ${mx},${my}`);
-    const t2 = document.createElementNS(NS, 'polygon');
-    t2.setAttribute('points', `${mx + 7},${my - 7} ${mx + 7},${my + 7} ${mx},${my}`);
-    const stem = document.createElementNS(NS, 'line');
-    stem.setAttribute('x1', mx);
-    stem.setAttribute('y1', my - 7);
-    stem.setAttribute('x2', mx);
-    stem.setAttribute('y2', my - 12);
-    g.append(t1, t2, stem);
-    title.textContent = `节流阀 ${p.name}: valve K=${p.valve}`;
-  } else if (p.pumpHead || p.pumpRate) {
-    g.setAttribute('class', 'dev-pump');
-    const c = document.createElementNS(NS, 'circle');
-    c.setAttribute('cx', mx);
-    c.setAttribute('cy', my);
-    c.setAttribute('r', 9);
-    const dx = bx - ax;
-    const dy = by - ay;
-    const len = Math.hypot(dx, dy) || 1;
-    const ux = dx / len;
-    const uy = dy / len;
-    const tri = document.createElementNS(NS, 'polygon');
-    tri.setAttribute(
-      'points',
-      `${mx + ux * 6},${my + uy * 6} ${mx - ux * 4 - uy * 4},${my - uy * 4 + ux * 4} ${mx - ux * 4 + uy * 4},${my - uy * 4 - ux * 4}`,
-    );
-    g.append(c, tri);
-    const bits = [`泵 ${p.name}:`];
-    if (p.pumpHead) bits.push(`pumpHead=${p.pumpHead}`);
-    if (p.pumpRate) bits.push(`pumpRate=${p.pumpRate}`);
-    if (p.pumpShutoffHead) bits.push(`shutoff=${p.pumpShutoffHead}`);
-    if (p.pumpStages) bits.push(`stages=${p.pumpStages}`);
-    if (p.pumpSpeed) bits.push(`speed=${p.pumpSpeed}`);
-    if (p.pumpGasFraction) bits.push(`gasFrac=${p.pumpGasFraction}`);
-    if (p.pumpIntakePressure) bits.push(`intake=${p.pumpIntakePressure}`);
-    title.textContent = bits.join(' ');
-  }
-  g.appendChild(title);
-  g.addEventListener('click', sel);
+  });
   svg.appendChild(g);
 }
 
@@ -982,17 +976,28 @@ $('addRodPumpBtn').addEventListener('click', () => {
     );
   });
 });
+// E4: one "add" button per new family; all fields get kernel-valid defaults
+// so the generated dictionary snippet is runnable without further edits.
+for (const fam of E4_DEVICE_FAMILIES) {
+  const btnId = `add${fam.id.charAt(0).toUpperCase()}${fam.id.slice(1)}Btn`;
+  const btn = $(btnId);
+  if (!btn) continue;
+  btn.addEventListener('click', () => {
+    withSelectedPipe((p) => {
+      const patch = {};
+      for (const key of fam.fields) patch[key] = p[key] || fam.defaults[key];
+      state.model = setPipeFields(state.model, p.id, patch);
+      setStatus(
+        `管段 ${p.name} 已加${fam.label}（${fam.switch}=${patch[fam.switch]}）。`,
+        'ok',
+      );
+    });
+  });
+}
 $('removeDeviceBtn').addEventListener('click', () => {
   withSelectedPipe((p) => {
-    state.model = setPipeFields(state.model, p.id, {
-      valve: 0, pumpHead: 0, pumpRate: 0,
-      pumpShutoffHead: 0, pumpStages: 0, pumpSpeed: 0,
-      pumpGasFraction: 0, pumpIntakePressure: 0,
-      liftDomePressure: 0, liftAreaRatio: 0, liftSpringPressure: 0,
-      liftDischargeCoeff: 0, liftKappa: 0,
-      rodPlungerDiameter: 0, rodStrokeLength: 0, rodStrokesPerMinute: 0,
-      rodDiameter: 0, rodLength: 0, rodYoungModulus: 0, rodDensity: 0,
-    });
+    const patch = Object.fromEntries(ALL_DEVICE_FIELDS.map((k) => [k, 0]));
+    state.model = setPipeFields(state.model, p.id, patch);
     setStatus(`管段 ${p.name} 的内嵌设备已移除。`, 'ok');
   });
 });
@@ -1056,12 +1061,9 @@ function freshModel(text) {
         diameter: geo.diameter ?? 0.05,
         roughness: geo.roughness ?? 0,
         elevation: geo.elevation ?? 0,
-        valve: geo.valve ?? 0,
-        pumpHead: geo.pumpHead ?? 0,
-        pumpRate: geo.pumpRate ?? 0,
-        pumpShutoffHead: geo.pumpShutoffHead ?? 0,
-        pumpStages: geo.pumpStages ?? 0,
-        pumpSpeed: geo.pumpSpeed ?? 0,
+        // E4: every equipment field round-trips into the model (not just the
+        // six M5-era ones) — the third leg of the three-sync.
+        ...pipeDeviceFieldsFrom(geo),
       });
     }
     for (const s of r.sources) {

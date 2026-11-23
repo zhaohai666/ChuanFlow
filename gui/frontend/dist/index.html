@@ -31,7 +31,7 @@
           <button id="menuRunSteady">运行稳态（管网收敛）</button>
           <button id="menuRunTransient">运行瞬态（时序）</button>
           <button id="menuRunCoupled">运行 1D↔3D 耦合</button>
-          <button id="menuRun3d">运行 3D（PISO）</button>
+          <button id="menuRun3d">运行 3D（引擎族）</button>
           <hr />
           <button id="menuStop">停止当前作业</button>
         </div>
@@ -63,7 +63,7 @@
       <button id="tbRunTransient" title="运行瞬态求解">▶ 瞬态</button>
       <button id="tbRunCoupled" title="运行 1D↔3D 耦合求解">▶ 耦合</button>
       <button id="tbStop" disabled title="停止当前作业">■ 停止</button>
-      <button id="tbRun3d" title="运行 3D 求解（PISO，完成后自动载入 3D 场视图）">▶ 3D</button>
+      <button id="tbRun3d" title="运行 3D 求解（当前 3D 族成员，完成后自动载入 3D 场视图）">▶ 3D</button>
       <span class="sep"></span>
       <button id="tbUnits" title="SI ↔ 油田单位">单位：SI</button>
       <button id="tbTheme" title="深色 ↔ 浅色">主题：深</button>
@@ -512,7 +512,9 @@
                   <input id="nodalExePath" type="text" spellcheck="false" /></label>
                 <label class="field"><span>PVT 闪蒸求解器</span>
                   <input id="pvtExePath" type="text" spellcheck="false" /></label>
-                <label class="field"><span>3D 求解器（PISO）</span>
+                <label class="field"><span>3D 引擎族（§5.181：模板决定成员）</span>
+                  <select id="threeDEngineSel" spellcheck="false"></select></label>
+                <label class="field"><span>3D 求解器（当前族成员）</span>
                   <input id="threeDExePath" type="text" spellcheck="false" /></label>
                 <div class="actions">
                   <button id="applyDictBtn" class="primary">应用字典到模型</button>

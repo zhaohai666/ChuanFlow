@@ -36,7 +36,7 @@ import {
   pvtFlashCaseText, parsePvtOutput, pvtCurvesByT, parsePvtCaseDict, PVT_COMPONENTS,
 } from './workspace.js';
 import {
-  templateTarget, isPartialFidelity, isSteadyComparable,
+  templateTarget, isPartialFidelity, isSteadyComparable, THREE_D_FAMILY,
 } from './templates.js';
 import {
   REGIME_NAMES, REGIME_COLORS, mapPoint, regimeHit, regimeMapDrawCommands,
@@ -76,6 +76,10 @@ const DEFAULT_PVT_EXE =
   '/Users/haizai/project/ChuanFlow/build/src/pvt/apps/chflow-pvt';
 const DEFAULT_3D_EXE =
   '/Users/haizai/project/ChuanFlow/build/src/3d/apps/chflow-piso-foam';
+// E1 (§5.181): the 3D engine family's developer-tree defaults. The Rust
+// `three_d_engines` resolve beats these at startup, exactly like the 8
+// pre-existing engine keys.
+const DEFAULT_3D_FAMILY_DIR = '/Users/haizai/project/ChuanFlow/build/src/3d/apps';
 const THREE_D_VTU = '/tmp/chflow_gui_3d_field.vtu';
 const DEFAULT_COUPLED_CASE =
   '/Users/haizai/project/ChuanFlow/tests/cases/coupled1d3d/case.dict';
@@ -154,8 +158,12 @@ const state = {
 };
 
 const ENGINES_STORE_KEY = 'chflow.engines.v1';
+// E1 (§5.181): the 3D engine family rides the same persisted store — one
+// key per family member, aligned with the pre-existing 8-key style.
+const THREE_D_FAMILY_KEYS = THREE_D_FAMILY.map((e) => e.key);
 const ENGINES_KEYS = [
   'steady', 'transient', 'coupled', 'coupledCase', 'twofluid', 'nodal', 'pvt', 'threeD',
+  ...THREE_D_FAMILY_KEYS.filter((k) => k !== 'threeD'),
 ];
 const ENGINE_INPUT_IDS = {
   steady: 'exePath',
@@ -178,6 +186,14 @@ const engines = {
   pvt: DEFAULT_PVT_EXE,
   threeD: DEFAULT_3D_EXE,
 };
+// E1 (§5.181): per-member developer-tree defaults; threeD (PISO) is declared
+// above so the original constant keeps its single meaning.
+for (const e of THREE_D_FAMILY) {
+  if (e.key !== 'threeD') engines[e.key] = `${DEFAULT_3D_FAMILY_DIR}/${e.bin}`;
+}
+// which family member the next ▶ 3D run submits to (set by template load /
+// the dictionary-page family selector; defaults to PISO)
+let active3DEngine = 'threeD';
 
 // E9: restore engine paths persisted from a previous session (settings beat
 // hardcoded developer defaults; the backend resolve beats both below).
@@ -1123,7 +1139,7 @@ async function startJob(label, caseText_, isPath = false) {
     label === 'steady' ? engines.steady
     : label === 'transient' ? engines.transient
     : label === 'slug' ? engines.twofluid
-    : label === '3d' ? engines.threeD
+    : label === '3d' ? (engines[active3DEngine] || engines.threeD)
     : engines.coupled;
   let casePath;
   if (label === 'coupled') {
@@ -3217,10 +3233,15 @@ async function loadTemplate(entry) {
     return;
   }
   if (target.kind === '3d') {
+    // E1 (§5.181): the template names its family member; the ▶ 3D run and
+    // the dictionary-page path box follow it instead of hardcoded PISO.
+    active3DEngine = target.engine || 'threeD';
+    $('threeDEngineSel').value = active3DEngine;
+    $('threeDExePath').value = engines[active3DEngine] || engines.threeD;
     $('caseText').value = text;
-    if (!$('threeDExePath').value.trim()) $('threeDExePath').value = engines.threeD;
+    const famLabel = (THREE_D_FAMILY.find((e) => e.key === active3DEngine) || {}).label || active3DEngine;
     switchTab('dict');
-    setStatus(`已载入模板「${entry.name}」：点「▶ 3D」提交 PISO 求解，完成后自动载入 3D 场视图。`, 'ok');
+    setStatus(`已载入模板「${entry.name}」：点「▶ 3D」提交 3D 族引擎（${famLabel}）求解，完成后自动载入 3D 场视图。`, 'ok');
     return;
   }
   if (target.kind === 'coupled') {
@@ -4257,9 +4278,46 @@ reflectEngines();
     console.warn('default_engines failed:', err);
     setStatus('未解析到随包引擎路径，已回退到设置/开发树默认值；如求解失败请在 case 字典页核对路径。');
   }
+  // E1 (§5.181): resolve the 3D engine family (binaries + case paths). The
+  // Rust resolve beats the hardcoded developer-tree defaults, same contract
+  // as the 8 pre-existing keys; an older backend without the command keeps
+  // the defaults quietly.
+  try {
+    const fam = await invoke('three_d_engines') || [];
+    for (const e of fam) {
+      if (THREE_D_FAMILY_KEYS.includes(e.key) && e.exe) engines[e.key] = e.exe;
+    }
+  } catch (err) {
+    console.warn('three_d_engines failed:', err);
+  }
+  populate3DEngineSelect();
+  $('threeDExePath').value = engines[active3DEngine] || engines.threeD;
+  persistEngines();
+  reflectEngines();
   renderTemplateMenu();
   reconcileRegimeBoundaries();
 })();
+
+// E1 (§5.181): fill the dictionary-page 3D family selector from the static
+// registry (labels), so the family is usable before the backend resolves.
+function populate3DEngineSelect() {
+  const sel = $('threeDEngineSel');
+  if (!sel || sel.options.length) return;
+  for (const e of THREE_D_FAMILY) {
+    const opt = document.createElement('option');
+    opt.value = e.key;
+    opt.textContent = `${e.label} (${e.bin})`;
+    sel.appendChild(opt);
+  }
+  sel.value = active3DEngine;
+}
+
+$('threeDEngineSel').addEventListener('change', (e) => {
+  active3DEngine = e.target.value;
+  $('threeDExePath').value = engines[active3DEngine] || engines.threeD;
+  const famLabel = (THREE_D_FAMILY.find((en) => en.key === active3DEngine) || {}).label || active3DEngine;
+  setStatus(`3D 求解器已切换到族成员：${famLabel}。载入对应模板后点「▶ 3D」求解。`, 'ok');
+});
 
 /**
  * E5: reconcile the frontend's hardcoded Beggs-Brill boundary copy against
@@ -4302,7 +4360,10 @@ async function reconcileRegimeBoundaries() {
     if (id === 'twofluidExePath') engines.twofluid = v;
     if (id === 'nodalExePath') engines.nodal = v;
     if (id === 'pvtExePath') engines.pvt = v;
-    if (id === 'threeDExePath') engines.threeD = v;
+    if (id === 'threeDExePath') {
+      // E1 (§5.181): the box edits the *active* family member's binary
+      engines[active3DEngine] = v;
+    }
     if (id === 'coupledCasePath') engines.coupledCase = v;
     persistEngines();
   });

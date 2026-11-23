@@ -91,6 +91,7 @@ import {
   templateTarget,
   isPartialFidelity,
   isSteadyComparable,
+  THREE_D_FAMILY,
 } from '../frontend/dist/templates.js';
 import {
   beggsBrillPattern,
@@ -639,13 +640,13 @@ test('workspace: parseTwoFluidFrames 帧与逐格键值', () => {
 // ---------------------------------------------------------------------------
 
 test('templates: 模板目标页与保真度标注', () => {
-  assert.equal(TEMPLATE_IDS.length, 10);
+  assert.equal(TEMPLATE_IDS.length, 20);
   assert.deepEqual(templateTarget('twoFluidTerrainSlug'), { tab: 'slug', kind: 'slug' });
   assert.deepEqual(templateTarget('coupled1d3d'), { tab: 'coupled', kind: 'coupled' });
   assert.deepEqual(templateTarget('nodalVogel'), { tab: 'nodal', kind: 'nodal' });
   assert.deepEqual(templateTarget('pvtFlash'), { tab: 'pvt', kind: 'pvt' });
   assert.deepEqual(templateTarget('steadyEquipmentPump'), { tab: 'canvas', kind: 'dict' });
-  assert.deepEqual(templateTarget('startedChannel'), { tab: 'dict', kind: '3d' });
+  assert.deepEqual(templateTarget('startedChannel'), { tab: 'dict', kind: '3d', engine: 'threeD' });
   assert.equal(isPartialFidelity('steadyNetworkMultiphase'), true);
   assert.equal(isPartialFidelity('steadyEquipmentValve'), false);
 });
@@ -2049,4 +2050,62 @@ test('E2 applyFlowAssurance: inhibitorEquilibrium 缺 inhibitor{} 时拒收', ()
   const out = applyFlowAssurance(FA_CASE, form);
   assert.ok(out.includes('activityK 8;'));
   assert.ok(out.includes('kDepression 5;'));
+});
+
+// ---------------------------------------------------------------------------
+// E1 (§5.181)：3D 引擎族注册表与模板配对
+// ---------------------------------------------------------------------------
+
+test('templates: 3D 引擎族键唯一且模板与引擎一一配对', () => {
+  const keys = THREE_D_FAMILY.map((e) => e.key);
+  assert.equal(new Set(keys).size, keys.length, 'family keys must be unique');
+  assert.equal(new Set(THREE_D_FAMILY.map((e) => e.bin)).size, keys.length, 'family binaries must be unique');
+  assert.equal(keys[0], 'threeD', 'PISO leads the family');
+  // every family member drives exactly one registered template, and that
+  // template targets the member back (engine <-> template pairing)
+  for (const e of THREE_D_FAMILY) {
+    assert.ok(TEMPLATE_IDS.includes(e.template), `template ${e.template} registered`);
+    const target = templateTarget(e.template);
+    assert.equal(target.kind, '3d');
+    assert.equal(target.engine, e.key);
+    assert.equal(target.tab, 'dict');
+  }
+  // every 3d-kind template comes from the family (no orphan 3D templates)
+  for (const id of TEMPLATE_IDS) {
+    const t = templateTarget(id);
+    if (t.kind === '3d') {
+      assert.ok(THREE_D_FAMILY.some((e) => e.key === t.engine), `${id} engine ${t.engine} in family`);
+    }
+  }
+});
+
+test('templates: SIMPLE 模板绝不指向 PISO（引擎/模板匹配护栏）', () => {
+  // poiseuilleChannel 是 SIMPLE 稳态算例，曾被误用作 3D 模板导致运行时拒收
+  assert.equal(templateTarget('poiseuilleChannel').engine, 'threeDSimple');
+  assert.ok(THREE_D_FAMILY.find((e) => e.key === 'threeDSimple').bin === 'chflow-simple-foam');
+  assert.ok(THREE_D_FAMILY.find((e) => e.key === 'threeD').bin === 'chflow-piso-foam');
+  // 稳态 kind 的模板不能进入 3d kind
+  assert.notEqual(templateTarget('steadyNetwork').kind, '3d');
+});
+
+test('templates: 3D 族覆盖全部接入 app（10 个新成员）', () => {
+  assert.equal(THREE_D_FAMILY.length, 11);
+  const expected = {
+    threeDSimple: 'poiseuilleChannel',
+    threeDVof: 'vofDroplet',
+    threeDCompressible: 'compressibleNsSod',
+    threeDScalar: 'advectionDiffusion',
+    threeDDpm: 'dpmChannel',
+    threeDP1: 'radiationP1Slab',
+    threeDCombustion: 'combustionFixedOxidiser',
+    threeDLes: 'lesSgs',
+    threeDMelting: 'meltingFront',
+    threeDCavitation: 'cavitationVenturi',
+  };
+  for (const [key, tpl] of Object.entries(expected)) {
+    const e = THREE_D_FAMILY.find((x) => x.key === key);
+    assert.ok(e, `family member ${key} present`);
+    assert.equal(e.template, tpl);
+    assert.ok(e.label && e.label.length > 0);
+  }
 });

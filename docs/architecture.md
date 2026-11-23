@@ -5589,6 +5589,26 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 运行：`cmake -S . -B build && cmake --build build && ctest --test-dir build`。批次 C 只新增 opt-in 块与新应用；未声明路径的逐字节不变由各 checker 的孪生算例见证。
 
+### 5.168 批次 D · GUI 对标五项（P4/P20/F16/F17/F18 收口）
+
+**能力。** 前端五个新模块（全部纯函数 + 画布接线，`gui/frontend/dist/`）：`regimemap.js` Beggs–Brill 四区流型图（λ–Nfr 对数轴、四条边界线闭式采样、栅格色带、工况点命中与钳位投影）；`tornado.js` 敏感性龙卷风图（双向增量相对基准、按幅度降序、退化行塌缩）；`contour.js` marching squares 等值线层（截面场栅格化、闭合环串接、鞍点歧义规则、1D 剖面连续带）；`monitor.js` 按迭代在线 MONITOR 流（ITER/MONITOR 半行续传、乱序/重复迭代拒绝、对数 y 刻度、滚动窗口多序列画线）；`paramsets.js` Workbench 级参数集（版本化 JSON 往返、同键冲突检测、稳态模型替换与瞬态字典精确替换两种激活路径）。入口接线在 `app.js` 与 `index.html`。
+
+**回归（`gui/tests/frontend.test.mjs`，CTest `gui.frontend`）。** 30 条批次 D 专项测试 + 既有回归：流型图边界闭式逐位一致与四区覆盖、tornado 排序/退化/NaN 塌缩、marching squares 圆阈值交点/周长单调/鞍点规则、monitor 半行切分不丢不重/旧样本拒绝/对数刻度采样点、参数集 JSON 往返与冲突。`logTicks` 十进制幂改为倒数幂消除浮点尾差（`10 ** -4` → `1 / 10 ** 4`）。
+
+**边界。** 流型图是 Beggs–Brill 声明口径的 UI 重绘（不是独立流型判据源）；等值线作用于剖切面栅格化场；MONITOR 行按内核报告行格式约定（格式不符计入 malformed）；参数集激活不改原模型对象。
+
+### 5.169 批次 D · Fluent 物理五项（F7/F9/F10/F11/F13 收口）
+
+**隔离与钩子。** 五项各自独立分支开发（`batch-d-f7/9/10/11/13`），只新增文件；共享 `cmake_src_3dphys.cmake`/`cmake_apps_3dphys.cmake`/`verify_3dphys.cmake` 聚合钩子按唯一片段名逐项 OPTIONAL include，缺省构建路径不变。
+
+- **F7 Mixture/PBM（`mixturePbm{}`，`chflow-3d-mixture-pbm`）**：代数滑移混合（drift-flux，k=j/(j+slip)）+ 单分散三/四矩 PBM（成核 J + 破碎 b，M0–M3 矩源解析），`MIXTUREPBM` 报告。回归 `verify.mixturePbm`：**230** 判据（独立 Euler 重推 + 闭式 + 矩正定 + 拒收）。
+- **F9 DO/S2S（`radiation{ model do|s2s|p1 }`，`chflow-3d-radiation-do`）**：S_N 角向扫掠（非散射逐方向指数闭式，散射源迭代）+ 平行黑板 S2S 极限 + P1 委托既有内核，`RADDO` 报告。回归 `verify.radiationDoS2s`：**490** 判据（解析 S8/S4 闭式最差 4.65e-12、离散守恒 7.7e-17、7 类拒收）。
+- **F10 多步化学/点火熄火（`detailedChemistry{}`，`chflow-3d-combustion-detailed`）**：两步链式分支机理（F+R→P+2R，R→P）+ 放热冷却，绝热不变量 T+qYf；点火延迟与 Semenov 熄火临界冷却系数为实算输出。回归 `verify.combustionDetailed`：**28918** 判据（独立 RK4 历史重推 + 二分阈值 + 拒收）。
+- **F11 动网格相对通量 + 6DOF（`dynamicMesh{}`，`chflow-3d-dynamic-mesh`）**：相对面通量 `phi_rel=(U−U_mesh)·Sf` + GCL 精确体积修正 + 刚体 6DOF 子集（力向平动 + 面外转动 RK4），`DYNMESH` 报告。回归 `verify.dynamicMesh6Dof`：**1340** 判据（闭式终端速度/阻尼谐振 + 均匀标量移动网格精确不变 + GCL 残差 2.2e-16 + 静态孪生 + 拒收）。
+- **F13 自适应加密（`adapt{}`，`chflow-3d-adaptive-refine`）**：梯度判据 + dyadic slab 共形细化（无 hanging node）+ 深度封顶 + 解析积分守恒，均匀场不加密。回归 `verify.adaptiveRefine`：**105** 判据（Python 独立重推加密树/体积/积分，含舍入容差）。
+
+**诚实边界。** F7 是空间均匀单分散矩源内核（无相间动量耦合，破碎固定父代尺寸的文档化闭包）；F9 DO/S2S 限 1D 平板几何（P1 仍走完整 polyMesh，S2S 为透明介质平行板极限）；F10 是 0D 均相唯象两步机理（非基元机理库，熄火为集总热损临界而非火焰拉伸）；F11 的 6DOF 实装 2 自由度（其余固定零，网格运动限均匀刚体平移）；F13 限结构化 slab dyadic 加密与 linear/step 声明场。以上口径均已写入对应头文件注释。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

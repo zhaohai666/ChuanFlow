@@ -354,7 +354,11 @@ def check_summary(rep, exp, case, tag):
     check(abs(rep["maxVolume"] - exp["maxvol"]) <= 1e-9,
           "%s: maxVolume %.12g differs from independent %.12g" % (tag, rep["maxVolume"], exp["maxvol"]))
     mean = rep["volumeSum"] / rep["cells"]
-    check(rep["minVolume"] <= mean <= rep["maxVolume"],
+    # All six report numbers are printed at 12 significant digits; the mean
+    # formed from volumeSum/cells can sit a fraction of a last digit outside
+    # the printed min/max even when the underlying cell volumes are identical.
+    tol = 1e-12 * max(1.0, abs(mean))
+    check(rep["minVolume"] - tol <= mean <= rep["maxVolume"] + tol,
           "%s: mean cell volume must lie between min and max" % tag)
     if rep["topo"]:
         t = rep["topo"]

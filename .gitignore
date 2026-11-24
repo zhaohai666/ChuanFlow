@@ -33,3 +33,4 @@ cli/target/
 src/3d/apps/mpiApp.cpp
 tests/check_mpi.py
 tests/cases/mpiDecomposition/
+build-e7b/

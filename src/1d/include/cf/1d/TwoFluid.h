@@ -406,6 +406,37 @@ struct TwoFluidSlugTracking
     double slugVelocity = 0;     // m/s, constant migration velocity (mode 0)
     double gasCapTime = 0;       // s, cap-pressure relaxation (mode 1)
     double maxSlugVelocity = 0;  // m/s optional ejection clamp (0 = none)
+    // E7b (5.182): opt-in Bendiksen front closure. frontMode 1 replaces the
+    // declared velocityMode law (they are mutually exclusive, loudly
+    // rejected at load time) with the translational-velocity correlation of
+    // Bendiksen (1984), "An experimental investigation of the motion of
+    // long bubbles in slug flow in horizontal pipes", Int. J. Multiphase
+    // Flow 10, 469-483:
+    //   v_front = C0 v_m + V_d,
+    //   V_d default = 0.35 sin(theta_cell) sqrt(g D (rhoL - rhoG)/rhoL)
+    // evaluated at the cell holding the front face. The default constants
+    // are the turbulent branch Bendiksen recommends for mixture velocities
+    // above roughly 5 m/s (C0 = 1.20, drift 0.35 sqrt(gD) sin(theta); the
+    // sqrt((rhoL-rhoG)/rhoL) factor is the density-corrected Taylor-bubble
+    // nose form used by the TUFFP-type unified models, reducing to
+    // Bendiksen's air-water value). APPLICABILITY, stated honestly: the
+    // correlation is a kinematic closure for turbulent slug flow; the
+    // low-velocity laminar branch Bendiksen also measured (C0 = 1.05
+    // + 0.15 sin(theta), V_d = (0.35 sin(theta) + 0.54 cos(theta))
+    // sqrt(gD)) is NOT implemented - the coefficients are declarable, so a
+    // user may pin them, but the defaults carry no laminar-branch term.
+    // The drift uses the DECLARED rhoL/rhoG, not the EOS per-cell densities.
+    int frontMode = 0;           // 0 = the velocityMode law, 1 = Bendiksen
+    double bendiksenC0 = 1.2;    // distribution coefficient C0 (declared)
+    double bendiksenVd = 0;      // m/s, declared constant drift velocity
+    bool bendiksenVdDeclared = false; // false: V_d from the default law above
+    // E7b (5.182): opt-in SLUG/FILM cell partition. A cell reports SLUG
+    // (1) when its CENTRE lies inside [xR, xF] of a live tracked slug
+    // object, FILM (0) otherwise, so the zone boundaries ride the moving
+    // faces frame by frame. Purely diagnostic (read-only over the tracking
+    // state); it never writes to the holdup field and leaves the existing
+    // cell-row keys (including the closure slip `s`) untouched.
+    bool zoning = false;
 };
 
 struct TwoFluidSlugTrack
@@ -1070,6 +1101,11 @@ public:
     {
         return slugTracks_;
     }
+    /// E7b (5.182): the SLUG/FILM cell partition (1 = the cell centre lies
+    /// inside a live tracked slug span, 0 = film), all-zero unless
+    /// slugTracking{} is present AND zoning was declared. See
+    /// TwoFluidSlugTracking.zoning.
+    std::vector<int> cellZones() const;
     /// O3 (5.162): the live purge wave state (phase, front, cap, head,
     /// cycle count, purged volume); zeroed unless purgeWave{} is declared.
     /// See the TwoFluidPurgeWave documentation.
@@ -1363,6 +1399,12 @@ private:
     }
     double cellFriction(int i, double vM) const; // sgn-agnostic |dp/dx| fric
     std::vector<double> cellPressureLosses(double vM) const; // fr + grav, Pa
+    /// E7b (5.182): the Bendiksen front velocity priced at the cell holding
+    /// the front face: v_front = C0 v_m + V_d, with V_d the declared
+    /// constant or the default drift law 0.35 sin(theta) sqrt(g D
+    /// (rhoL-rhoG)/rhoL). See TwoFluidSlugTracking for the source and the
+    /// applicability boundary.
+    double bendiksenFrontVelocity(int frontCell) const;
     /// Momentum residual in the u -> 0 limit on the branch the column
     /// came FROM: friction tends to the signed distributed threshold, so
     /// this is the exact rest value of the discontinuous wall law (5.77).

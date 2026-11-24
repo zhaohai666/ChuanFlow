@@ -1,21 +1,32 @@
 #!/usr/bin/env python3
 """Verify the real-MPI distributed sparse linear solve (A11 / §5.122).
 
-The app is run under `mpiexec -np N` for every N in `mpi ranks`. It assembles
-one global graph-Laplacian CSR (rows distributed by the coordinate-median
-Decomposition), and solves it with a diagonal-preconditioned CG whose matvec is
-a real MPI_Sendrecv halo exchange plus a local CSR product and whose dot
-products / residual norms are MPI_Allreduce. The right-hand side is b = A*xExact
-for a known polynomial, so the analytic solution is available independently.
+Criterion makeup: 3 independent physical criteria + mirror diagnostics
+(regression safety net). The mirror no longer carries the verdict alone.
 
-For every rank count this checker verifies, from the log AND from the per-cell
-dump the app wrote:
+Independent physical criteria (built from the case + the per-cell dump only):
 
-  1. distributed solution == serial solveCG on the same global CSR (maxDiff)
-  2. distributed and serial solutions == the analytic solution
-  3. every rank converged, with a sane iteration count
-  4. the distributed matvec IS the serial CSR product (matvecDev)
-  5. rank-count invariance of the gathered solution
+  I1. Independent residual. The checker assembles the graph Laplacian itself
+      from the uniform grid (adjacency re-derived from the dumped cell
+      centres by spacing, diagonal = face count + shift, off-diagonal -1),
+      builds b = A * xExact from the case polynomial, and holds both the
+      distributed and the serial solution to ||A x - b|| <~ 0 -- i.e. the
+      solve really is the SPD-shifted Laplacian system, independent of the
+      app's own matrix bookkeeping.
+
+  I2. Partitioning never degrades the answer. The distributed-vs-analytic
+      error and the distributed-vs-serial gap stay bounded by their first
+      rank count's values (and the case tolerances) as np grows.
+
+  I3. Rank-count invariance of the gathered solution (kept from the earlier
+      round): the solution does not depend on how the rows were cut up.
+
+Mirror diagnostics (regression safety net):
+
+  M1. distributed solution == serial solveCG on the same global CSR (maxDiff)
+  M2. distributed and serial solutions == the analytic solution
+  M3. every rank converged, with a sane iteration count
+  M4. the distributed matvec IS the serial CSR product (matvecDev)
 
 The analytic field is re-derived here from the case's `exactCoeffs` and the
 per-cell centres in the dump, so the app's analytic column is not trusted.
@@ -164,7 +175,50 @@ def main():
         if not ok:
             failures.append(what)
 
+    # ---- I1: the graph Laplacian, assembled independently of the app ----
+    bmin = list_value(block, 'min')
+    bmax = list_value(block, 'max')
+    spacing = [(bmax[a] - bmin[a]) / cells[a] for a in range(3)]
+    centres0 = [(r[4], r[5], r[6]) for r in dumps[ranks[0]]]
+    deg = [0] * n_cells
+    for i in range(n_cells):
+        for j in range(i + 1, n_cells):
+            off = 0
+            axis_hit = False
+            for a in range(3):
+                dv = abs(centres0[j][a] - centres0[i][a])
+                if dv > 1e-9:
+                    if abs(dv - spacing[a]) > 1e-9:
+                        off = 2
+                        break
+                    off += 1
+                    axis_hit = True
+            if off == 1 and axis_hit:
+                deg[i] += 1
+                deg[j] += 1
+    maxdeg = max(deg)
+    check(maxdeg > 0, "I1: the re-derived grid adjacency has no faces")
+
+    A = [[0.0] * n_cells for _ in range(n_cells)]
+    for i in range(n_cells):
+        A[i][i] = deg[i] + shift
+    for i in range(n_cells):
+        for j in range(i + 1, n_cells):
+            dx = [abs(centres0[j][a] - centres0[i][a]) for a in range(3)]
+            near = [abs(dx[a] - spacing[a]) <= 1e-9 for a in range(3)]
+            zero = [dx[a] <= 1e-9 for a in range(3)]
+            if sum(near) == 1 and all(zero[a] or near[a] for a in range(3)):
+                A[i][j] = A[j][i] = -1.0
+    x_e0 = [poly(coeffs, *p) for p in centres0]
+    b_ind = [sum(A[i][j] * x_e0[j] for j in range(n_cells)) for i in range(n_cells)]
+    res_bound = (2 * maxdeg + shift) * tol_analytic * 10.0
+
+    def matvec(x):
+        return [sum(A[i][j] * x[j] for j in range(n_cells)) for i in range(n_cells)]
+
     base_dist = None
+    base_err = None
+    base_gap = None
     for n in ranks:
         out = outs[n]
         st = re.search(RE_START, out)
@@ -228,13 +282,33 @@ def main():
               "ranks=%d: the dumped analytic column is not the case polynomial "
               "(off %g)" % (n, d_da_dump))
 
+        # ---- I1: independent residual against the re-assembled system ----
+        r_dist = matvec(x_dist)
+        r_ser = matvec(x_ser)
+        rd = max(abs(r_dist[i] - b_ind[i]) for i in range(n_cells))
+        rs = max(abs(r_ser[i] - b_ind[i]) for i in range(n_cells))
+        check(rd <= res_bound,
+              "ranks=%d: distributed residual of the independently assembled "
+              "Laplacian system is %g (bound %g)" % (n, rd, res_bound))
+        check(rs <= res_bound,
+              "ranks=%d: serial residual of the independently assembled "
+              "Laplacian system is %g (bound %g)" % (n, rs, res_bound))
+
         if base_dist is None:
             base_dist = x_dist
+            base_err, base_gap = d_da, d_ds
         else:
             d_rank = maxdiff(x_dist, base_dist)
             check(d_rank <= tol_diff,
                   "ranks=%d: the solution differs from the %d-rank run by %g (tol %g)"
                   % (n, ranks[0], d_rank, tol_diff))
+            # ---- I2: partitioning never degrades the answer ----
+            check(d_da <= max(base_err, tol_analytic),
+                  "ranks=%d: analytic error %g exceeds the %d-rank error %g"
+                  % (n, d_da, ranks[0], base_err))
+            check(d_ds <= max(base_gap, tol_diff),
+                  "ranks=%d: distributed-vs-serial gap %g exceeds the "
+                  "%d-rank gap %g" % (n, d_ds, ranks[0], base_gap))
 
     if failures:
         raise SystemExit("mpi linear-solver check FAILED:\n  " + "\n  ".join(failures))

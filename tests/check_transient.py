@@ -6,6 +6,12 @@ usage: check_transient.py <exe> <case.dict> <mode>
             (Q, p) system is 2x2 linear, so we replicate the exact discrete
             update (tight tolerance) AND the physical slow decay
             exp(-t / (R*C)) (2 %).
+            Criterion makeup for this arm: 3 independent physical criteria
+            (I-a monotone tank drainage, I-b the exact two-mode exponential
+            solution of the discrete step matrix at 1e-7 -- far tighter than
+            the 2 % envelope, I-c first-order dt-halving convergence toward
+            the two-mode continuous reference) + the mirror recursion as a
+            regression diagnostic (no longer the sole verdict).
   mode = rlc      : inertial sloshing between two compliant nodes, compared
             against the exact underdamped RLC solution for Q(t).
   mode = slug     : liquid fraction advected through incompressible ports at
@@ -19,8 +25,10 @@ usage: check_transient.py <exe> <case.dict> <mode>
             resumed discharge after reopen.
 """
 import math
+import os
 import subprocess
 import sys
+import tempfile
 
 if len(sys.argv) != 4:
     raise SystemExit(__doc__)
@@ -103,6 +111,103 @@ if mode == "blowdown":
     tau = Rr * C
     check("continuous envelope p(end)",
           nodes_series[-1]["TANK"]["p"], 5.0e5 * math.exp(-times[-1] / tau), 0.02)
+
+    # ---- independent blowdown criteria (2026-11-24 round) ----
+    # I-a: the tank must drain monotonically.
+    ps = [s["TANK"]["p"] for s in nodes_series]
+    qs = [s["LINE"] for s in pipes_series]
+    if any(b >= a for a, b in zip(ps, ps[1:])):
+        fails.append("blowdown tank pressure is not strictly decreasing")
+    else:
+        print(f"ok:   tank pressure strictly decreasing over {len(ps)} samples")
+
+    # I-b: exact exponential solution of the discrete system. The 2x2
+    # implicit-Euler step matrix has two real eigenvalues (heavily
+    # overdamped); their closed forms give the exact per-step amplification,
+    # so the whole trajectory must match the two-mode closed form far
+    # tighter than the 2% continuous envelope above.
+    a_ = inertia / dt
+    c_ = dt * K / V
+    S_ = a_ + Rr + c_
+    disc = Rr * Rr - 4.0 * a_ * c_
+    if disc <= 0:
+        fails.append("blowdown system not overdamped; eigen closed form n/a")
+    else:
+        sq = math.sqrt(disc)
+        lam_s = ((2.0 * a_ + Rr) + sq) / (2.0 * S_)
+        lam_f = ((2.0 * a_ + Rr) - sq) / (2.0 * S_)
+        r_s = (1.0 - lam_s) / (lam_s * c_)   # q/p per eigenmode
+        r_f = (1.0 - lam_f) / (lam_f * c_)
+        p0, q0 = ps[0], qs[0]
+        B_ = (q0 - p0 * r_s) / (r_f - r_s)
+        A_ = p0 - B_
+        for i, t in enumerate(times):
+            n = int(round(t / dt))
+            p_want = A_ * lam_s ** n + B_ * lam_f ** n
+            q_want = A_ * r_s * lam_s ** n + B_ * r_f * lam_f ** n
+            check(f"eigen p(t={t:.2f})", ps[i], p_want, 1e-7)
+            check(f"eigen Q(t={t:.2f})", qs[i], q_want, 1e-7)
+
+    # I-c: first-order time-step convergence. The continuous reference is
+    # the two-mode analytic solution (the q=0 initial condition rides a
+    # fast flow-buildup mode, so the single exponential under-predicts the
+    # tank pressure by an O(1) offset); halving dt must halve the error.
+    IC = inertia * C
+    sq = math.sqrt((Rr * C) ** 2 - 4.0 * IC)
+    tau1 = 2.0 * IC / (Rr * C - sq)
+    tau2 = 2.0 * IC / (Rr * C + sq)
+    r1c, r2c = C / tau1, C / tau2
+    Bc = (0.0 - ps[0] * r1c) / (r2c - r1c)
+    Ac = ps[0] - Bc
+
+    def p_cont(t):
+        return Ac * math.exp(-t / tau1) + Bc * math.exp(-t / tau2)
+
+    def twin_last_p(dt_new):
+        twin = open(case).read().replace("dt 0.05;", "dt %g;" % dt_new)
+        if "dt %g;" % dt_new not in twin:
+            raise SystemExit("I-c: could not retune the twin dt")
+        with tempfile.TemporaryDirectory(prefix="cf_blowdown_") as td2:
+            tp = os.path.join(td2, "twin.dict")
+            open(tp, "w").write(twin)
+            pr = subprocess.run([exe, tp], capture_output=True, text=True)
+            if pr.returncode != 0:
+                raise SystemExit(f"I-c: twin dt={dt_new} failed rc={pr.returncode}")
+            last_p, last_t = None, None
+            cur = None
+            for line in pr.stdout.splitlines():
+                tok = line.replace("[chflow]", "").split()
+                if not tok:
+                    continue
+                if tok[0] == "t":
+                    cur = {"t": float(tok[1]), "p": None}
+                elif tok[0] == "node" and tok[1] == "TANK" and cur is not None:
+                    cur["p"] = float(tok[3])
+                    last_p, last_t = cur["p"], cur["t"]
+            if last_p is None:
+                raise SystemExit("I-c: twin output unparsable")
+            return last_t, last_p
+
+    errs = []
+    for label, dtv, p_end, t_end in (
+            ("dt", dt, ps[-1], times[-1]),
+            ("dt/2", dt / 2.0, None, None),
+            ("dt/4", dt / 4.0, None, None)):
+        if p_end is None:
+            t_end, p_end = twin_last_p(dtv)
+        errs.append(p_end - p_cont(t_end))
+    if not (errs[0] > errs[1] > errs[2] > 0):
+        fails.append(f"I-c: dt-convergence errors not positive and decreasing: {errs}")
+    else:
+        r12 = errs[0] / errs[1]
+        r23 = errs[1] / errs[2]
+        if not (1.6 <= r12 <= 2.4 and 1.6 <= r23 <= 2.4):
+            fails.append(f"I-c: first-order Richardson ratios off: "
+                         f"e(dt)/e(dt/2)={r12:.3f}, e(dt/2)/e(dt/4)={r23:.3f}")
+        else:
+            print(f"ok:   first-order dt convergence: errors "
+                  f"[{errs[0]:.2f}, {errs[1]:.2f}, {errs[2]:.2f}] Pa, ratios "
+                  f"{r12:.3f} / {r23:.3f}")
 
 elif mode == "rlc":
     V, K = 1.0, 1.0e8

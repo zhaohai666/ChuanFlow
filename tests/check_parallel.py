@@ -2,38 +2,71 @@
 """Run a domain-decomposition case and verify what cutting a 3D mesh into
 domains has to deliver.
 
-The case is run for every domain count in `decompose domains`, and each result
-is checked four ways:
+Criterion makeup: 5 independent physical criteria + mirror diagnostics
+(regression safety net). The mirror no longer carries the verdict alone.
 
-  1. The partition is re-derived, not trusted. This checker recomputes the
-     kernel's own recursive coordinate-median ordering from the cell centres read
-     out of the .vtu, slices it into contiguous domains, and compares the result
-     with the written `domain` field for every cell. It then derives, from the
-     face adjacency of the mesh alone, each domain's owned cells, halo cells,
-     internal/coupled/boundary face entries and distinct peers, and holds every
-     one of those to the numbers the kernel logged. Balance is max-min <= 1 by
-     construction, and the three face classes have to reassemble the global mesh.
+Independent physical criteria (do not trust any kernel bookkeeping):
 
-  2. A decomposed stencil IS the serial stencil. gradDev (assembled gradient
-     against fvc::grad on the whole mesh) and divDev (assembled net out-flux
-     against fvc::divPhi) are required to be exactly 0 -- the domains sweep their
-     faces in global order and use the mesh's own bounded weights, so nothing is
-     gained in accuracy and nothing is lost. The same holds for the two Gauss
-     schemes and for haloDrift, the checksum of everything the exchange moved.
+  I1. Geometric volume closure. Every cell's volume is computed twice, by two
+      independent exact methods (divergence theorem over face rings vs a
+      signed tetrahedral decomposition from the cell centre), and the global
+      sum must equal the analytic block volume from the case.
 
-  3. The answer does not depend on the cut. Every written field -- the field
-     itself, both gradients, both out-fluxes -- is compared cell by cell between
-     the 1-domain file and each other domain count, again exactly.
+  I2. Analytic integral conservation across the cut. The written field holds
+      point values at cell centres, so its volume-weighted sum is the
+      midpoint quadrature: for the linear polynomial that quadrature is
+      exact, and it must equal the continuum integral of the polynomial over
+      the exact mesh geometry (2nd-order moments from the same tet
+      decomposition) -- halo assembly neither creates nor destroys mass.
+      For the quadratic field only the rank-grouped reassembly of the same
+      integral is owed (midpoint quadrature is O(h^2) there by design).
 
-  4. The physics stays put. On the hex mesh the linear test field's gradient is
-     re-derived here from the .vtu geometry and held to the analytic one (the
-     tolerance is the case's, not a fitted number); on a mesh coarse or skewed
-     enough that the serial scheme cannot reproduce even a linear field, that
-     accuracy is reported rather than demanded, and only cut-invariance is owed.
-     A divergence-free flux gives every interior cell -- cells whose faces all
-     have a neighbour, including the ones a cut runs through -- a net out-flux of
-     zero, and the volume-weighted sum, min, max and halo checksum the kernel
-     reduced per domain are re-summed here independently.
+  I3. Load balance read off the written `domain` field alone: the rank cell
+      counts sum to the mesh, no rank is empty, and max - min <= 1.
+
+  I4. Per-rank cumulative flux reassembly. The divergence integral grouped by
+      written rank sums back to the serial divergence integral of the same
+      run -- the two sides of every cut face carry contributions that cancel.
+
+  I5. Cut invariance of the physics (kept from the earlier round, tightened
+      wording): the linear field's gradient is the analytic one, and every
+      written field is bit-identical between domain counts.
+
+Mirror diagnostics (regression safety net; each one re-derives kernel
+bookkeeping and pins it to the logs, but none is the sole verdict):
+
+  M1. The partition is re-derived, not trusted. This checker recomputes the
+      kernel's own recursive coordinate-median ordering from the cell centres
+      read out of the .vtu, slices it into contiguous domains, and compares
+      the result with the written `domain` field for every cell. It then
+      derives, from the face adjacency of the mesh alone, each domain's owned
+      cells, halo cells, internal/coupled/boundary face entries and distinct
+      peers, and holds every one of those to the numbers the kernel logged.
+      Balance is max-min <= 1 by construction, and the three face classes
+      have to reassemble the global mesh.
+
+  M2. A decomposed stencil IS the serial stencil. gradDev (assembled gradient
+      against fvc::grad on the whole mesh) and divDev (assembled net out-flux
+      against fvc::divPhi) are required to be exactly 0 -- the domains sweep
+      their faces in global order and use the mesh's own bounded weights, so
+      nothing is gained in accuracy and nothing is lost. The same holds for
+      the two Gauss schemes and for haloDrift, the checksum of everything the
+      exchange moved.
+
+  M3. The answer does not depend on the cut. Every written field -- the field
+      itself, both gradients, both out-fluxes -- is compared cell by cell
+      between the 1-domain file and each other domain count, again exactly.
+
+  M4. The physics stays put. On the hex mesh the linear test field's gradient
+      is re-derived here from the .vtu geometry and held to the analytic one
+      (the tolerance is the case's, not a fitted number); on a mesh coarse or
+      skewed enough that the serial scheme cannot reproduce even a linear
+      field, that accuracy is reported rather than demanded, and only
+      cut-invariance is owed. A divergence-free flux gives every interior
+      cell -- cells whose faces all have a neighbour, including the ones a
+      cut runs through -- a net out-flux of zero, and the volume-weighted
+      sum, min, max and halo checksum the kernel reduced per domain are
+      re-summed here independently.
 
 usage: check_parallel.py <chflow-3d-parallel> <case.dict>
 """
@@ -169,6 +202,63 @@ def face_adjacency(cell_faces):
         for ring in rings:
             where.setdefault(tuple(sorted(ring)), []).append(c)
     return where
+
+
+def tet_decompose(points, cell_faces, centres):
+    """Independent exact geometry: split every cell into tetrahedra (cell
+    centre -> a triangle fan of each face ring) and accumulate exact volume
+    and 2nd-order moments. Exact for planar faces. The .vtu face rings carry
+    no guaranteed winding, so each ring is oriented by its Newell normal
+    against (face centre - cell centre) before its fan is accumulated."""
+    vols = []
+    mom = {k: 0.0 for k in ('V', 'x', 'y', 'z', 'x2', 'y2', 'z2', 'xy', 'yz', 'zx')}
+    for c, rings in enumerate(cell_faces):
+        C = centres[c]
+        v = 0.0
+        for ring in rings:
+            xf = cell_centre(points, ring)
+            s = area_vector(points, ring)
+            outward = 1.0 if (s[0] * (xf[0] - C[0]) + s[1] * (xf[1] - C[1])
+                              + s[2] * (xf[2] - C[2])) >= 0 else -1.0
+            n = len(ring)
+            for i in range(1, n - 1):
+                a, b, d = points[ring[0]], points[ring[i]], points[ring[i + 1]]
+                u = tuple(b[k] - C[k] for k in range(3))
+                w = tuple(d[k] - C[k] for k in range(3))
+                t = tuple(a[k] - C[k] for k in range(3))
+                d6 = (u[0] * (w[1] * t[2] - w[2] * t[1])
+                      - u[1] * (w[0] * t[2] - w[2] * t[0])
+                      + u[2] * (w[0] * t[1] - w[1] * t[0])) * outward
+                v += d6 / 6.0
+                sx = C[0] + a[0] + b[0] + d[0]
+                sy = C[1] + a[1] + b[1] + d[1]
+                sz = C[2] + a[2] + b[2] + d[2]
+                sxx = C[0] ** 2 + a[0] ** 2 + b[0] ** 2 + d[0] ** 2
+                syy = C[1] ** 2 + a[1] ** 2 + b[1] ** 2 + d[1] ** 2
+                szz = C[2] ** 2 + a[2] ** 2 + b[2] ** 2 + d[2] ** 2
+                sxy = C[0] * C[1] + a[0] * a[1] + b[0] * b[1] + d[0] * d[1]
+                syz = C[1] * C[2] + a[1] * a[2] + b[1] * b[2] + d[1] * d[2]
+                szx = C[2] * C[0] + a[2] * a[0] + b[2] * b[0] + d[2] * d[0]
+                mom['x'] += d6 * sx / 24.0
+                mom['y'] += d6 * sy / 24.0
+                mom['z'] += d6 * sz / 24.0
+                mom['x2'] += d6 * (sx * sx + sxx) / 120.0
+                mom['y2'] += d6 * (sy * sy + syy) / 120.0
+                mom['z2'] += d6 * (sz * sz + szz) / 120.0
+                mom['xy'] += d6 * (sx * sy + sxy) / 120.0
+                mom['yz'] += d6 * (sy * sz + syz) / 120.0
+                mom['zx'] += d6 * (sz * sx + szx) / 120.0
+        vols.append(v)
+        mom['V'] += v
+    return vols, mom
+
+
+def poly_integral(coeffs, mom):
+    """Exact integral of the case polynomial over the exact mesh geometry."""
+    return (coeffs[0] * mom['V'] + coeffs[1] * mom['x'] + coeffs[2] * mom['y']
+            + coeffs[3] * mom['z'] + coeffs[4] * mom['x2'] + coeffs[5] * mom['y2']
+            + coeffs[6] * mom['z2'] + coeffs[7] * mom['xy'] + coeffs[8] * mom['yz']
+            + coeffs[9] * mom['zx'])
 
 
 # ------------------------------------------------------------- the RCD mirror
@@ -358,6 +448,27 @@ def main():
     interior = [all(len(adjacency[tuple(sorted(r))]) == 2 for r in cell_faces[c])
                 for c in range(n_cells)]
 
+    # ---- I1: geometric volume closure, two independent exact methods ----
+    bmin = list_value(block, 'min')
+    bmax = list_value(block, 'max')
+    if bmin and bmax:
+        block_vol = (bmax[0] - bmin[0]) * (bmax[1] - bmin[1]) * (bmax[2] - bmin[2])
+    else:
+        block_vol = None
+    tet_vols, moments = tet_decompose(points, cell_faces, centres)
+    worst_v = max(abs(a - b) / max(b, 1e-30) for a, b in zip(tet_vols, volumes))
+    check(worst_v <= 1e-9,
+          "I1: divergence-theorem and tet-decomposition cell volumes disagree "
+          "by %g relative" % worst_v)
+    if block_vol is not None:
+        check(abs(sum(volumes) - block_vol) <= 1e-9 * block_vol,
+              "I1: summed cell volume %r != analytic block volume %r"
+              % (sum(volumes), block_vol))
+
+    # ---- I2 reference: exact integrals of the case polynomials ----
+    integral = {tag: poly_integral(coeffs, moments)
+                for tag, coeffs in (('Linear', lin), ('Quad', quad))}
+
     by_field = {}
     for tag, coeffs in (('Linear', lin), ('Quad', quad)):
         by_field[tag] = coeffs
@@ -386,6 +497,18 @@ def main():
               "domains=%d: the written domain of a cell is not the re-derived one" % d)
         check(sorted(set(written_domain)) == list(range(d)),
               "domains=%d: the written domains are not 0..%d" % (d, d - 1))
+
+        # ---- I3: load balance, read off the written field alone ----
+        counts = [written_domain.count(k) for k in range(d)]
+        check(sum(counts) == n_cells,
+              "domains=%d: written rank cell counts sum to %d, mesh has %d"
+              % (d, sum(counts), n_cells))
+        check(min(counts) >= 1,
+              "domains=%d: an empty rank in the written partition (%s)"
+              % (d, counts))
+        check(max(counts) - min(counts) <= 1,
+              "domains=%d: written load imbalance %d (counts %s)"
+              % (d, max(counts) - min(counts), counts))
 
         run = [r for r in rows(out, RE_RUN) if int(r[0]) == d]
         check(len(run) == 1, "domains=%d: %d run lines" % (d, len(run)))
@@ -459,9 +582,40 @@ def main():
               "domains=%d: an interior cell's written net out-flux is %g (tol %g)"
               % (d, div_off, tol_div))
 
+        # ---- I4: per-rank cumulative flux reassembles across the cuts ----
+        scale = sum(abs(fields['divPhiSerial'][c]) * volumes[c] for c in range(n_cells))
+        per_rank = [0.0] * d
+        for c in range(n_cells):
+            per_rank[written_domain[c]] += fields['divPhiParallel'][c] * volumes[c]
+        serial_total = sum(fields['divPhiSerial'][c] * volumes[c] for c in range(n_cells))
+        check(abs(sum(per_rank) - serial_total) <= 1e-9 * scale,
+              "domains=%d: rank-grouped divergence sums to %r, the serial "
+              "integral is %r -- cut-face contributions do not cancel"
+              % (d, sum(per_rank), serial_total))
+
         for tag, coeffs in sorted(by_field.items()):
             t = fields['t' + tag]
             off = max(abs(v - poly_value(coeffs, *centres[c])) for c, v in enumerate(t))
+
+            # ---- I2: analytic integral conservation across the cut. The
+            # written field holds point values at the cell centres, so its
+            # volume-weighted sum is the midpoint quadrature: exact for the
+            # linear field (a true mass-conservation statement), and for the
+            # quadratic field owed only as rank-grouped reassembly below.
+            s_field = sum(t[c] * volumes[c] for c in range(n_cells))
+            if tag == 'Linear':
+                ref = integral[tag]
+                check(abs(s_field - ref) <= 1e-8 * abs(ref) + 1e-11,
+                      "domains=%d %s: written field integrates to %r, the exact "
+                      "geometry integral is %r" % (d, tag, s_field, ref))
+            rank_parts = [0.0] * d
+            for c in range(n_cells):
+                rank_parts[written_domain[c]] += t[c] * volumes[c]
+            check(abs(sum(rank_parts) - s_field) <= 1e-9 * max(1.0, abs(s_field)),
+                  "domains=%d %s: rank-grouped field integral %r does not "
+                  "reassemble the global %r" % (d, tag, sum(rank_parts), s_field))
+
+            s_lin = sum(t[c] * volumes[c] for c in range(n_cells))
             check(off <= 1e-9,
                   "domains=%d %s: the written field is not the case's polynomial (off %g)"
                   % (d, tag, off))

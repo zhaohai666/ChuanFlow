@@ -1,0 +1,62 @@
+// Gas-flux consistency rejection witness: aModel wood declared without
+// liquidSoundSpeed. Wood's equation needs the LIQUID phase sound speed
+// aL, and the kernel invents no liquid EOS to derive it - a wood
+// declaration without a declared aL has nothing to derive from and is
+// refused loudly at load. The checker derives the further witnesses
+// (wood + soundSpeed mutual exclusion, unknown aModel word, non-positive
+// liquidSoundSpeed, wood with the EOS off, disabled-but-contradictory
+// declarations) from caseWood.dict by text mutation.
+
+fluid
+{
+    rhoL 1000;
+    rhoG 11.61;      // p0 = 999621 Pa; rhoG aG^2 = rhoG gasR T = p0
+    muL  0.01;
+    muG  1e-5;
+    gasR 287;
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 100;
+}
+
+closure
+{
+    model wallis;
+}
+
+initial
+{
+    alpha 0.5;       // a 50/50 mixture: Wood's equation bites here (the
+                     // liquid compliance dominates the gas compliance
+                     // and the mixture speed collapses to ~63 m/s)
+    water 0;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet { type sealed; }
+    outlet { type sealed; }
+}
+
+acoustics
+{
+    enable true;
+    initialGauge 1e6;
+    aModel wood;     // missing liquidSoundSpeed: refused at load
+    cfl 0.5;
+    openEnd outlet;
+}
+
+time
+{
+    dt 0.001;        // a_wood dt / dx ~ 0.063 << 0.5
+    endTime 10;      // covers the 4L/a ~ 6.4 s quarter-wave period
+    reportEvery 5;
+}

@@ -1,0 +1,54 @@
+// Gas-flux consistency zero-declaration twin: case.dict with the fill
+// removed and the initial holdup uniform at the injected value (0.8).
+// No front ever exists on this run - every face is uniform for the whole
+// simulation - so the gvol repair has nothing to change and the old and
+// new kernels move the identical fields: the checker uses it to prove
+// the face-identity report (the `face` lines, gated on gasR > 0 alone)
+// is pure reporting, and the manual baseline diff proves the uniform run
+// byte-identical to the pre-fix binary modulo those additive lines.
+
+fluid
+{
+    rhoL 1000;
+    rhoG 11.61;      // p0 = rhoG gasR T = 11.61 * 287 * 300 = 999621 Pa
+    muL  0.01;
+    muG  1e-5;
+    gasR 287;        // gasR > 0: EOS on; a^2 = gasR * T = 86100
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 100;    // dx = 1 m
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;  // F = vM alpha: the front advects at exactly vM
+}
+
+initial
+{
+    alpha 0.8;       // uniform: matches the injected holdup
+    water 0;
+    temperature 300; // uniform constant T (the pG denominator)
+}
+
+boundaries
+{
+    // vM = vsl + vsg = 1.0 m/s exactly; the injected holdup
+    // vsl / vM = 0.8 matches the fill, so the swept state is uniform
+    inlet { type phaseRates; vsl 0.8; vsg 0.2; }
+    outlet { type fixedPressure; p 999621; alpha 0.8; temperature 300; }
+}
+
+time
+{
+    dt 0.05;         // vM dt / dx = 0.05 << 1
+    endTime 110;     // the front (x = 50 + 1.0 t) leaves at t = 50
+    reportEvery 20;  // 1.0 s sampling: uF * dtSample / dx = 1 cell exactly
+}

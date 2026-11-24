@@ -1,0 +1,61 @@
+// Gas-flux consistency Wood byte-identity twin: caseWood.dict WITHOUT
+// the aModel wood / liquidSoundSpeed declarations - the default aModel
+// eos path verbatim. The opt-in model must not move the default path:
+// this run rides the EOS speed sqrt(287 300) ~ 293.4 m/s (the checker
+// verifies the front arrivals differ from the wood arm's by the full
+// speed ratio), and the manual baseline diff proves it byte-identical
+// to the pre-fix binary modulo the additive `face` lines.
+
+fluid
+{
+    rhoL 1000;
+    rhoG 11.61;      // p0 = 999621 Pa; rhoG aG^2 = rhoG gasR T = p0
+    muL  0.01;
+    muG  1e-5;
+    gasR 287;
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 100;
+}
+
+closure
+{
+    model wallis;
+}
+
+initial
+{
+    alpha 0.5;       // a 50/50 mixture: Wood's equation bites here (the
+                     // liquid compliance dominates the gas compliance
+                     // and the mixture speed collapses to ~63 m/s)
+    water 0;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet { type sealed; }
+    outlet { type sealed; }
+}
+
+acoustics
+{
+    enable true;
+    initialGauge 1e6;
+    soundSpeed 0;    // 0 = the EOS-consistent isothermal sqrt(gasR T)
+    cfl 0.5;
+    openEnd outlet;
+}
+
+time
+{
+    dt 0.001;        // a_wood dt / dx ~ 0.063 << 0.5
+    endTime 10;      // covers the 4L/a ~ 6.4 s quarter-wave period
+    reportEvery 5;
+}

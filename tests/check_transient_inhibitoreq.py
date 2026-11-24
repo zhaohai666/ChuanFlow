@@ -487,10 +487,12 @@ for k, fr in enumerate(fframes):
                                 alpha[j]))
         a_end = alpha[FN - 1]
         flux.append(FUS * a_end * a_end + (FVM - FUS) * a_end)
+        # gas face flux = the identity G = vm - F: an independent Godunov
+        # solve of the mirrored quadratic does not mirror the liquid
+        # branch selection and breaks F + G = vm on non-uniform faces
         gvol = [VSG]
         for j in range(1, FN):
-            gvol.append(godunov(-FUS, FUS - FVM, FVM, alpha[j - 1],
-                                alpha[j]))
+            gvol.append(FVM - flux[j])
         gvol.append(FVM + (FUS - FVM) * a_end - FUS * a_end * a_end)
 
         def rho_up(j, q):

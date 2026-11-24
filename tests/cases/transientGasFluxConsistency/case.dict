@@ -1,0 +1,88 @@
+// Gas-flux consistency main case: the pG-front invariance witness on the
+// EOS two-fluid kernel (chflow-1d-twofluid).
+//
+// A rate-driven 100 m line carries a single uniform front (an alphaL=0.8 /
+// alphaR=0.3 holdup step from the fill block) that the lumped mixture
+// velocity translates rigidly: the wallis closure with slipVelocity 0 is
+// linear in alpha (F = vM alpha, G = (1 - alpha) vM), so the Godunov
+// upwind shift advects the step at exactly vM = vsl + vsg = 1.0 m/s and
+// the profile never smears beyond one cell.
+//
+// The EOS is on (gasR 287, T = 300 K uniform) and every gas density in
+// the run - the initial inventory, the injected gas (no rhoGInjected
+// mechanism on a serial rate boundary) and every upwind cell - is the
+// declared fluid rhoG. The gas mass in a cell then evolves exactly as
+// rhoG times its gas volume (the identity gvol = vM - flux makes the mass
+// divergence the rhoG-scaled image of the volume divergence), so the EOS
+// pressure p = m gasR T / volume stays p0 = rhoG gasR T = 999621 Pa in
+// EVERY cell at EVERY instant - before the front, behind the front and
+// while the front crosses the cell. The pre-fix independent Godunov solve
+// of the mirrored gas quadratic broke F + G = vM on the non-uniform front
+// faces (F + G = 3.05 for vM = 2 on the canonical probe), over/under
+// sweeping gas at each front and drifting pG away from p0 - exactly the
+// drift this case must not show. The checker asserts:
+//   * the face identity F + G = vM on every reported face every frame;
+//   * p == p0 everywhere (front invariance (a));
+//   * behind the measured front the pressure is a settled plateau
+//     (d pG/dt -> 0, criterion (b));
+//   * the alpha front rides vM and the p profile is shift-invariant
+//     under x -> x - uF t with the integer-aligned sample spacing
+//     (criterion (c), the strong form);
+//   * the gas volume balance injected - discharged == inventory change
+//     (the gas counterpart of the liquid balance of the slug tracking
+//     checker);
+//   * the undeclared twin is byte-identical (see caseBase.dict).
+fluid
+{
+    rhoL 1000;
+    rhoG 11.61;      // p0 = rhoG gasR T = 11.61 * 287 * 300 = 999621 Pa
+    muL  0.01;
+    muG  1e-5;
+    gasR 287;        // gasR > 0: EOS on; a^2 = gasR * T = 86100
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 100;    // dx = 1 m
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;  // F = vM alpha: the front advects at exactly vM
+}
+
+initial
+{
+    alpha 0.3;       // the tail state (gas-rich)
+    water 0;
+    temperature 300; // uniform constant T (the pG denominator)
+    fills
+    {
+        front { from 0; to 50; alpha 0.8; }   // the head state: the front
+                                              // sits at x = 50 m at t = 0
+    }
+}
+
+boundaries
+{
+    // vM = vsl + vsg = 1.0 m/s exactly; the injected holdup
+    // vsl / vM = 0.8 matches the fill, so the swept state is uniform
+    inlet { type phaseRates; vsl 0.8; vsg 0.2; }
+    outlet { type fixedPressure; p 999621; alpha 0.3; temperature 300; }
+}
+
+time
+{
+    dt 0.05;         // vM dt / dx = 0.05 << 1
+    endTime 55;      // the front (x = 50 + 1.0 t) leaves at t = 50
+    reportEvery 1;   // per-step sampling: every reported face value IS
+                     // the step's own flux, so the checker's rectangular
+                     // sum is the exact discrete integral of the gas
+                     // balance (every 20th frame is the 1.0 s spacing
+                     // with uF * dtSample / dx = 1 cell exactly)
+}

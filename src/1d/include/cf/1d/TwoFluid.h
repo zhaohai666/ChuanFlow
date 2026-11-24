@@ -629,8 +629,17 @@ struct TwoFluidAcoustics
 {
     double initialGauge = 0;  // Pa, uniform initial acoustic overpressure
                               // (> 0 when enabled; the field vents from it)
-    double soundSpeed = 0;    // m/s, declared wave speed (0 = EOS-consistent
-                              // isothermal sqrt(gasR T) per cell)
+    double soundSpeed = 0;    // m/s, declared wave speed (0 = the model
+                              // path below per cell)
+    std::string aModel = "eos"; // wave-speed model: "eos" = the exact
+                              // density derivative of the kernel's own
+                              // gas law, a^2 = gasR T per cell (default,
+                              // byte-identical to the undeclared path);
+                              // "wood" = Wood's homogeneous-mixture sound
+                              // speed (see acousticsStep)
+    double liquidSoundSpeed = 0; // m/s, the LIQUID phase sound speed aL
+                              // for aModel wood - declared, never derived
+                              // (the kernel invents no liquid EOS)
     double cfl = 0.5;         // stability bound on a_max dt / dx_min,
                               // (0, 0.5] (the pressure-release face updates
                               // on a half control volume)
@@ -726,6 +735,13 @@ struct TwoFluidTerrainSlug
                              // constant slugVelocity when undeclared)
     double capPressure = 0;  // Pa, gas-cap pressure behind the lump
                              // (dynamicUs; 0 when undeclared)
+    double calcFront = 0;    // m, the front POSITION the reported velocity was
+                             // computed AT (dynamicUs; 0 = the branch has not
+                             // run this step, e.g. the capture frame). The
+                             // reported "front" is the post-travel value, so
+                             // independent checkers re-derive the ejection
+                             // relation from this one to land on the same
+                             // cell / elevation the kernel sampled.
 };
 
 /// Gas-hydrate kinetics (see the class documentation above). The equilibrium
@@ -1043,6 +1059,13 @@ public:
     /// pressure, not the hydraulic loss profile (see nodePressure()).
     std::vector<double> cellPressure() const;
     std::vector<double> cellTemperature() const { return T_; }
+    /// This step's face liquid volume flux F and face gas volume flux G
+    /// (the transport step's own face values, n_+1 entries each; the
+    /// model's identity F + G = vM closes exactly on every face). Empty
+    /// before the first transport step. The report layer emits them so an
+    /// independent checker can assert the identity from the report alone.
+    std::vector<double> faceLiquidFlux() const { return liquidFaceFlux_; }
+    std::vector<double> faceGasVolumeFlux() const { return gasFaceFlux_; }
     /// Hydrate volume fraction of the liquid+hydrate slurry per section;
     /// zeros unless the hydrate{} block is present.
     std::vector<double> cellHydrate() const { return hydrate_; }

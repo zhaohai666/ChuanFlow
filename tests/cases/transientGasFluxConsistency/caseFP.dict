@@ -1,0 +1,66 @@
+// Gas-flux consistency fixedPressure arm: the same single front as
+// case.dict, driven by a 2000 Pa pressure difference instead of imposed
+// rates - vM (and with it the front speed) is the lumped momentum
+// solve's answer, not a declared number. The inlet ghost gas density is
+// the declared pressure's EOS density (999621 / (287 300) = 11.61 = the
+// fluid rhoG), so every gas density in the run is again the declared
+// rhoG and the checker asserts the same pG == p0 front invariance plus
+// the face identity F + G = vM with the REPORTED mixture velocity.
+
+fluid
+{
+    rhoL 1000;
+    rhoG 11.61;      // p0 = rhoG gasR T = 11.61 * 287 * 300 = 999621 Pa
+    muL  0.01;
+    muG  1e-5;
+    gasR 287;        // gasR > 0: EOS on; a^2 = gasR * T = 86100
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 100;    // dx = 1 m
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;  // F = vM alpha: the front advects at exactly vM
+}
+
+initial
+{
+    alpha 0.3;       // the tail state (gas-rich)
+    water 0;
+    temperature 300; // uniform constant T (the pG denominator)
+    fills
+    {
+        front { from 0; to 50; alpha 0.8; }   // the head state: the front
+                                              // sits at x = 50 m at t = 0
+    }
+}
+
+boundaries
+{
+    // pressure-driven: vM comes from the lumped momentum solve on the
+    // 2000 Pa drive, so the front speed is measured, not declared. The
+    // inlet ghost density is p / (gasR T) = 999621 / 86100 = 11.61 = the
+    // fluid rhoG, so the injected gas carries the same density as the
+    // initial inventory and the pG == p0 invariant holds here too.
+    inlet { type fixedPressure; p 999621; alpha 0.8; temperature 300; }
+    outlet { type fixedPressure; p 997621; alpha 0.3; temperature 300; }
+}
+
+time
+{
+    dt 0.05;         // vM dt / dx = 0.05 << 1
+    endTime 55;      // the front (x = 50 + 1.0 t) leaves at t = 50
+    reportEvery 1;   // per-step sampling: every reported face value IS
+                     // the step's own flux, so the checker's rectangular
+                     // sum is the exact discrete integral of the gas
+                     // balance (every 20th frame is the 1.0 s spacing
+                     // with uF * dtSample / dx = 1 cell exactly)
+}

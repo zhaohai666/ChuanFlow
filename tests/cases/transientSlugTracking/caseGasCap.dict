@@ -4,12 +4,30 @@
 // tracked rear; the checker re-derives the relaxation and the ejection
 // sqrt(2 max(p_cap - p_front, 0)/rho_L) from the reported p profile on
 // every frame.
+//
+// PHYSICS NOTE (gvol = vM - flux repair): under the repaired gas-face
+// identity a serial rate-driven EOS line carries the exact invariant
+// p = rhoG gasR T - every gas density stays the declared rhoG (the
+// injected reference density and every upwind cell), so a uniform-T line
+// has a perfectly uniform pressure field and NO cap pressure difference
+// can exist: the ejection law needs a real gas-density/temperature
+// mechanism, not the spurious front pressure gradients the broken
+// F + G = vM used to paint (the old scenario's ejection rode those
+// artifacts). The scenario therefore drives the ejection PHYSICALLY: a
+// thermal block (wall at 300 K, wallHeatTransfer 146 -> a ~20 m wall
+// relaxation length) with the inlet injecting gas at 350 K - the tracked
+// slugs ride inside their own warm pulse waves with the film ahead
+// cooler, so p_cap - p_front = rhoG gasR (T_r - T_f) is tens of kPa, the
+// ejection law saturates its maxSlugVelocity clamp robustly, and the
+// cap-pressure relaxation is priced away from any quantization edge.
 fluid
 {
     rhoL 1000;
     rhoG 20;
     muL  0.01;
     muG  1e-5;
+    cL   2000;
+    cG   2000;
     gasR 287;
 }
 
@@ -32,6 +50,7 @@ initial
 {
     alpha 0.17082039325003;
     water 0.3;
+    temperature 300;
 }
 
 slug
@@ -58,6 +77,7 @@ boundaries
         vsl 0.1;
         vsg 0.9;
         waterFraction 0.3;
+        temperature 350;   // the injected gas carries the cap pressure
         schedule
         {
             p1 { t 5;  vsl 0.75; vsg 0.25; }
@@ -66,7 +86,14 @@ boundaries
             p4 { t 17; vsl 0.1;  vsg 0.9; }
         }
     }
-    outlet { type fixedPressure; p 5e6; }
+    outlet { type fixedPressure; p 5e6; temperature 300; }
+}
+
+thermal
+{
+    wallHeatTransfer 146;  // wall relaxation length ~ vM C/h ~ 20 m
+    wallModel constant;
+    wallTemperature 300;
 }
 
 time

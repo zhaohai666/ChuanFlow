@@ -5735,6 +5735,20 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 **边界**。无 `output{vtk}` 产出路径的 app 有意不接（cht / ale / adaptiveRefine / dynamicMesh / mixturePbm / qmom / combustionDetailed）——GUI 入口的验收标准是「跑通且产出可渲染场」，凑数接入只会产生空视图；vofDroplet 算例的 vtkInitial 旁路输出会写到进程 cwd（既有内核行为，GUI 经 resolve_case_path 定位不影响）。
 
 
+### 5.182 E7b · Bendiksen 前缘闭合 + 液膜/液塞双区制 sectioning
+
+**差距**（E7b，拆分自 E7①，2026-11-24 立项）：§5.161 `slugTracking` 的前缘速度是声明常量 `slugVelocity` / gasCap 模型，不由局部流态解出；全库无液膜/液塞双区制。
+
+**实现**。`slugTracking{}` 内两个独立 opt-in：
+- `frontClosure bendiksen`：前缘速度 `v_front = C0·v_m + V_d`，C0 默认 1.2、V_d 默认 `0.35·sinθ_cell·√(g·D·(ρL−ρG)/ρL)`（按前缘 cell 求值、用声明密度），均可用 `C0` / `driftVelocity` 显式覆盖；每帧 slugtrack 行的 `uF` 打印实际生效值。与 velocityMode/slugVelocity/gasCapTime/maxSlugVelocity 加载期互斥拒收。**出处核对**：Bendiksen (1984), *Int. J. Multiphase Flow* 10:469-483（水平长气泡实验）；高速分支 C0=1.20、V_d=0.35·sinθ·√(gD)，密度修正 √((ρL−ρG)/ρL) 为 TUFFP 类统一模型通行的 Taylor 气泡鼻端形式（空气-水退化回 Bendiksen 原值）。水平管 sinθ=0 漂移项精确为零（与原实验一致）。**低速分支（C0=1.05+0.15sinθ 与 0.54cosθ 项）未实现**——结构体文档如实声明此边界，宁保守不夹带。
+- `zoning true`：cell 行新增数值键 `zone 1|0`（1=SLUG：cell 中心落在任一 tracked span [xR,xF] 内；0=FILM），边界随前缘/尾部逐帧移动。既有 cell 键（含闭合律滑移 `s`，其语义为闭合律滑移速度、仅 model 2/3 打印）一字未动。
+
+**回归**。`verify.transientSlugMechanics` + checker **45 判据**：v_front 与 zone 边界从 case 文本独立重推（不信任内核打印）、倾斜 5° 漂移项变体、8 条拒收（未知 frontClosure 词、四种互斥组合、C0=0 / C0<0、zoning 坏词）；**twin 逐字节**——主 case 剥离 slugtrack/zone 行 == 整块不声明 twin == enable-false twin，既有 transientSlugTracking 的 case/caseBase 用改前基线二进制与新二进制 cmp 对拍逐字节相同。slug/purge/pigging/twoFluid 家族 40/40 绿。
+
+**边界**。漂移项用声明密度而非 EOS 逐 cell 密度；zone 判定用 cell 中心规则、zone 纯诊断不回写持液率场；报告 12 位有效数字使 face 恰落 cell 中心的个别帧不可判定（实测 4/24020，checker 歧义跳过上限 ≤20）。
+
+## 6. 概念映射速查（OpenFOAM → ChuanFlow）
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

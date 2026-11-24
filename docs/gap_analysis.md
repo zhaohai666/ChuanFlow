@@ -477,11 +477,11 @@
 
 ### E7b. Bendiksen 前缘闭合 + 液膜/液塞双区制 sectioning（内核级，拆分自 E7①）
 
-- **当前状态**：`OPEN`（2026-11-24 立项）
+- **当前状态**：`CLOSED`（2026-11-24，§5.182）
 - **差距**：`slugTracking`（§5.161）的前缘速度是声明常量 `slugVelocity` / gasCap 模型，不由局部流态解出；全库无液膜/液塞双区制。
 - **建议实施**：`slugTracking` 增 opt-in 前缘闭合（`frontClosure bendiksen`：v_front = C0·v_m + V_d，C0/V_d 可显式声明、默认取 Bendiksen (1984) 建议值并写明出处）+ 双区制 sectioning（slug 区 / film 区随前缘/尾部移动，cell 报告增 zone 标志）。全部 opt-in，未声明路径逐字节不变。
 - **成本估计**：~1.5 增量
-- **落点**：待分配
+- **落点**：§5.182（`frontClosure bendiksen` + `zoning true`；`verify.transientSlugMechanics` 45 判据 + 8 拒收；双 twin 逐字节；低速分支未实现已声明边界）
 
 ### E7c. 可压管线沿线 EOS 泄压瞬态声学（内核级，拆分自 E7③）
 
@@ -630,3 +630,5 @@
 | 2026-11-23 | E10（文档口径修正） | §5.176 | ad8ce02 | node 112/112（合并后 126/126） | G9 lateral 口径与 P5 对齐（§5.157 已 CLOSED）；§4.2 四套 hydrate 语义区分（transient 常速率 / twoFluid ln(p) 平衡线 / pvt CC / PWHc）；GUI 落地 hydrateSeriesNote + monitor 树「常速率 h ⓘ」+ 段塞 h 色带「ln p 平衡」标注 |
 | 2026-11-23 | E3 GUI（日程时间轴编辑器） | §5.180 | 58349eb | node 139/139（合并后 142/142） | scheduleEditor.js 纯函数（parse/apply/esdPreset/timelineSvg，键名逐字对齐 transient.cpp loader：valve 日程在 pipes 条目内、source 顶层单块、值键 k/rate、相等 t 为 STEP）+ 字典页 SVG 时间轴 + ESD 联动预设；13 条测试；三条生成路径真跑 chflow-1d-transient 1000 步 rc=0，真跑暴露并修复 entry.body 嵌套偏移 bug（须从 open+1 起算） |
 | 2026-11-23 | E1 收尾（3D 引擎族注册表） | §5.181 | c8b7bcd | node 129/129 + rust 34/34（合并后 142/142） | THREE_D_FAMILY 11 成员（PISO/simpleFoam/VOF/可压缩/标量/DPM/P1/燃烧/LES/熔化/空化）注册 + resolve_three_d_family + three_d_engines 命令；模板库 10→20（engine↔template 双向配对护栏测试固化 §5.172 教训）；startJob('3d') 按模板族成员解析二进制；10 个新成员真实二进制冒烟 rc=0 产 VTU；无 vtk 产出路径 app（cht/ale/adaptiveRefine/dynamicMesh/mixturePbm/qmom/combustionDetailed）有意不接 |
+
+| 2026-11-24 | E7b（Bendiksen 前缘闭合 + 双区制） | §5.182 | fdc41ea | verify.transientSlugMechanics 45 判据；slug/purge/pigging/twoFluid 40/40 | `frontClosure bendiksen`：v_front=C0·v_m+V_d（C0=1.2、V_d=0.35·sinθ·√(gD·Δρ/ρL)，Bendiksen 1984 高速分支 + TUFFP 密度修正，低速分支未实现已声明边界）+ `zoning true`：cell 行 zone 1\|0（cell 中心规则，纯诊断不回写 α）；与 velocityMode/slugVelocity/gasCapTime/maxSlugVelocity 互斥拒收；双 twin 逐字节 + 基线二进制 cmp 对拍 |

@@ -142,7 +142,7 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 - 场系统：标量场、矢量场、张量场；
 - 离散算子：梯度、散度、拉普拉斯、插值；
 - 时间推进：稳态SIMPLE、瞬态PISO；
-- 多相模型：VOF、Euler-Euler双流体；
+- 多相模型：VOF、Euler-Euler双流体（3D Euler-Euler 规划中，当前仅 VOF）；
 - 湍流模型：k-ε、k-ω SST；
 - 线性求解后端：小规模 Eigen，大规模 PETSc。
 
@@ -159,7 +159,7 @@ ChuanFlow 采用 **内核与上层应用解耦、求解与UI进程隔离** 的�
 > （法向对解析径向 1.16° 对 mixed 的 8.34°、随加密收敛到 0.30°，真平面场方向精确到
 > 1e-6°；同一转盘带 65 格、形状误差 3.33% 对 3.85%）与截面几何曲率（带内截面点二次曲面，
 > κ 带均值 −5.1 对 −1/R = −5 而散度模板停在 −3.5，平面锋至舍入级；`kappaPlic` 可喂给 CSF）；
-> Euler-Euler 双流体、张量场、
+> 张量场、
 > MPI 域分解、跨域矩阵求解与 Eigen 后端已落地（§5.119/§5.122/§5.123；PETSc 顺序后端真库验证 §5.124、MPI 版分布式对照 §5.136——MatCreateAIJ + KSPCG 与自研分布式 CG 在 16384 格上 np=1/2/4 双路径交叉全绿）。
 
 #### 5. 绑定层 `src/bindings`
@@ -1493,7 +1493,7 @@ print(result.pressure_profile)
   重锁 **929**、再释放 **1390**（5.60 里只在 **1479** 步释放一次、从不重锁）。弱壁四臂同步 `[1, 1, 1, 1]` 逐字不变；`n = 1` 与 `n = 2` 的臂 `c / d`
   仍 `NEVER`（补给不够把节点拉到天花板以下）。行算术**一行未改**；**84** 条判据、3 个 case 文件（ctest Test #91：单独跑 **5.52 s**）、
   `beta` × 静止支与耦合边两笔账照旧拒收（docs/architecture.md 5.62）。
-  Euler-Euler 双流体在此）
+  3D Euler-Euler 双流体规划中，当前仅 VOF）
 - M5：Tauri GUI 管网编辑器、实时曲线面板 ✅（离线 Tauri 2 + WKWebView，零 npm；§5.116 最小闭环：case 编辑→稳态管网求解→SVG 实时曲线；§5.125 增量2 补齐拖拽管网建模（SVG 画布加节点/连管/拖动/删除/设压力/加源，`editor.js` 纯函数 + `networkToCaseText` 输出真实可运行 case）与瞬态多帧曲线 + 时间滑条（`run_transient_text` 命令 + `parse_transient_output`）；Rust 16/16 + node 19/19 无头测试全绿，CTest `gui.unit`/`gui.build`/`gui.frontend`；§5.132 macOS `.app` 打包收尾：`gui/package_app.sh` release 构建 + 手工组装 bundle（Info.plist/icns/ad-hoc 签名）+ 求解器进 `Contents/Resources/bin`（`default_engines` 命令按运行二进制解析包内路径，Finder 启动 CWD 无关），启动验证通过；§5.135 打包再升级：`--universal` opt-in（lipo 合并 arm64 slice，缺则单架构）+ `--dmg` 经典流程打包（本机 `hdiutil -srcfolder` 报「功能未实现」，改空白 RW HFS+ 映像→挂载拷贝→convert UDZO→只读挂载验证），实跑产出 `gui/dist/ChuanFlow-GUI.dmg`（4.4 MB）挂载验证通过；边界：DMG 未公证（ad-hoc 签名首次打开需右键绕 Gatekeeper））
 - M6：Kokkos GPU 加速、更多工业模型扩充 🚧（并行后端抽象 `cf::backend::parallelFor` 已落地：CPU 串行默认逐位不变、可选 OpenMP/Kokkos 开关，§5.114；§5.126 已把 `parallelFor` 接进五处纯映射 domain kernel（divideByVolume / gaussGrad / interpolate / forceFromImpulse / surfaceTensionForce），scatter/reduction 刻意不接，默认逐位不变、受影响 checker 9/9 绿，code a6d8c27 / 全量 176/176 525.72 s；黑油分离器 §5.115；真实 MPI 传输 + 分布式 CSR 求解 §5.119/§5.122；Eigen 后端实测 §5.123、PETSc 可选本机无库降级 §5.124；两流体伴随 §5.118；pvt 声明闭包 k=μcp/Pr 与水合物 Clausius–Clapeyron 已落地 §5.127（code 177d3d0 / 全量 177/177 497.13 s）；非等温闪蒸已落地 §5.128（PR departure 焓 + 声明式 cp(T) + PH-flash 等压反求温度，checker 独立 Python PR 重推，code 29c68ee / 全量 178/178 1058.98 s）。D13 CLOSED——Kokkos 分支已用真实 Kokkos 4.4.01（Serial host）编译+实跑验证、PETSc 分支已用真实 PETSc 3.23.4 编译+实跑验证（三后端同二进制交叉全绿，code 70775ee / 全量 178/178 861.05 s）；PETSc MPI 版（MPICH 4.2.3）分布式对照已落地 §5.136（MatCreateAIJ + KSPCG vs 自研分布式 CSR CG，16384 格 np=1/2/4 交叉全绿，`verify.petscDistributed` 2.94 s）；仅剩 CUDA/HIP GPU 硬件执行需 GPU 机器）
 

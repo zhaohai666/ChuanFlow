@@ -4,17 +4,42 @@
 
 usage: check_two_fluid_sand_transport.py <exe> <case.dict>
 
-Settling branch (main frame, vM = 0.6 < uCrit = 1.0): the suspended
-fraction rides the upwind transport from the inlet composition and the
-bed grows by exactly the removed liquid share, so the checker replicates
-the kernel's per-step recursion -- transport (explicit Euler on the
-constant liquid flux) then the implicit-Euler settling S -> S / (1 + dt
-vt/(D/2)) with B += alpha (S - S_new). Cell 0 therefore relaxes to the
-settling/replenishment steady state S = 0.15 (0.6 (0.2 - S) = 0.2 S), not
-a pure decay. The thin-layer law dEff = D sqrt(1 - B) prices the bore.
-Erosion sibling (vM = 1.2 >= uCrit): the bed decays
-B_n = B_0 (1 + dt erodeRate (vM/uCrit - 1))^-n while the eroded sand
-rides the upwind transport. Rejections are loud.
+Criterion makeup: 3 independent physical criteria + mirror diagnostics
+(regression safety net). The mirror no longer carries the verdict alone.
+
+Independent physical criteria:
+
+  I1. Inventory conservation closure. On a dense twin (reportEvery 1) the
+      total inventory sum_c (alpha*sand_c + bed_c) must change, every single
+      step, by exactly the upwind through-flow: dI = dt/dx * q_L * (s_in -
+      s_last) -- settling/erosion only exchanges between suspension and bed,
+      so the balance is closed by the boundary fluxes alone. Checked on the
+      settling frame (s_in = 0.2) and the erosion twin (s_in = 0).
+
+  I2. Thin-layer monotonicity. With feedback on, dEff = D*sqrt(1 - B): the
+      bore thins monotonically wherever the bed grows (settling run) and
+      thickens monotonically wherever the bed decays (erosion run).
+
+  I3. Critical-velocity band. Two siblings straddling uCrit -- vM = 0.99
+      uCrit and vM = 1.01 uCrit, same sand everywhere -- must land on
+      opposite branches: the bed grows below uCrit and decays above it, by
+      margins the erode/settle rates make unambiguous.
+
+Mirror diagnostics (regression safety net):
+
+  M1. Settling branch (main frame, vM = 0.6 < uCrit = 1.0): the suspended
+      fraction rides the upwind transport from the inlet composition and the
+      bed grows by exactly the removed liquid share, so the checker
+      replicates the kernel's per-step recursion -- transport (explicit Euler
+      on the constant liquid flux) then the implicit-Euler settling
+      S -> S / (1 + dt vt/(D/2)) with B += alpha (S - S_new). Cell 0
+      therefore relaxes to the settling/replenishment steady state S = 0.15
+      (0.6 (0.2 - S) = 0.2 S), not a pure decay. The thin-layer law
+      dEff = D sqrt(1 - B) prices the bore.
+  M2. Erosion sibling (vM = 1.2 >= uCrit): the bed decays
+      B_n = B_0 (1 + dt erodeRate (vM/uCrit - 1))^-n while the eroded sand
+      rides the upwind transport.
+  M3. Rejections are loud.
 """
 
 import math
@@ -180,6 +205,109 @@ with tempfile.TemporaryDirectory(prefix="cf_sand_") as td:
               "^-n advected by the upwind transport replicated (1e-9)")
     if b[0] > 0.09:
         fails.append("erosion barely moved the bed")
+
+# ---- I1: inventory conservation closure on dense twins (every step) ----
+DENSE = text.replace("reportEvery 20;", "reportEvery 1;")
+FLUX_S = VSL  # settling twin keeps the original vsl 0.3 line
+with tempfile.TemporaryDirectory(prefix="cf_sand_dense_") as td:
+    # settling twin: inlet injects S_IN = 0.2 with the liquid flux
+    p = os.path.join(td, "dense_settle.dict")
+    open(p, "w").write(DENSE)
+    fr_d = run(p)
+    ok = True
+    for k in range(len(fr_d) - 1):
+        inv0 = sum(A0 * c["sand"] + c["bed"] for c in fr_d[k]["cells"])
+        inv1 = sum(A0 * c["sand"] + c["bed"] for c in fr_d[k + 1]["cells"])
+        s_last = fr_d[k]["cells"][-1]["sand"]
+        want = DT / DX * FLUX_S * (S_IN - s_last)
+        got = inv1 - inv0
+        if abs(got - want) > 1e-9 * max(abs(want), 1e-3) + 1e-12:
+            fails.append(f"I1 settling closure: t={fr_d[k + 1]['t']}: "
+                         f"dInventory {got!r} != through-flow {want!r}")
+            ok = False
+            break
+    if ok:
+        print(f"ok:   I1 settling inventory closure dI = dt/dx qL (sIn - sLast) "
+              f"on all {len(fr_d) - 1} dense steps")
+
+    # erosion twin: inlet sand 0, initial 0, bedInitial 0.1 (mirror recipe)
+    ero_d = DENSE.replace("vsl 0.3; vsg 0.3", "vsl 0.6; vsg 0.6")
+    ero_d = ero_d.replace("initial 0.2;", "initial 0;")
+    ero_d = ero_d.replace("bedInitial 0;", "bedInitial 0.1;")
+    ero_d = ero_d.replace("sandFraction 0.2", "sandFraction 0.0")
+    p = os.path.join(td, "dense_erode.dict")
+    open(p, "w").write(ero_d)
+    fr_de = run(p)
+    FLUX_E = 0.6
+    ok = True
+    for k in range(len(fr_de) - 1):
+        inv0 = sum(A0 * c["sand"] + c["bed"] for c in fr_de[k]["cells"])
+        inv1 = sum(A0 * c["sand"] + c["bed"] for c in fr_de[k + 1]["cells"])
+        s_last = fr_de[k]["cells"][-1]["sand"]
+        want = -DT / DX * FLUX_E * s_last
+        got = inv1 - inv0
+        if abs(got - want) > 1e-9 * max(abs(want), 1e-3) + 1e-12:
+            fails.append(f"I1 erosion closure: t={fr_de[k + 1]['t']}: "
+                         f"dInventory {got!r} != outflow {-want!r}")
+            ok = False
+            break
+    if ok:
+        print(f"ok:   I1 erosion inventory closure dI = -dt/dx qL sLast "
+              f"on all {len(fr_de) - 1} dense steps")
+
+# ---- I2: thin-layer dEff monotonicity wherever the bed moves ----
+bad = []
+for k in range(len(frames) - 1):
+    for i, (c0, c1) in enumerate(zip(frames[k]["cells"], frames[k + 1]["cells"])):
+        if c1["dEff"] > c0["dEff"] + 1e-12:
+            bad.append(f"settling t={frames[k + 1]['t']} cell {i}: "
+                       f"dEff rose {c0['dEff']} -> {c1['dEff']}")
+            break
+    if bad:
+        break
+if bad:
+    fails.extend(bad)
+else:
+    print("ok:   I2 settling dEff = D sqrt(1-B) monotone thinning on all frames")
+bad = []
+for k in range(len(fr_e) - 1):
+    for i, (c0, c1) in enumerate(zip(fr_e[k]["cells"], fr_e[k + 1]["cells"])):
+        if c1["dEff"] < c0["dEff"] - 1e-12:
+            bad.append(f"erosion t={fr_e[k + 1]['t']} cell {i}: "
+                       f"dEff fell {c0['dEff']} -> {c1['dEff']}")
+            break
+    if bad:
+        break
+if bad:
+    fails.extend(bad)
+else:
+    print("ok:   I2 erosion dEff monotone thickening on all frames")
+
+# ---- I3: critical-velocity band -- 0.99 uCrit settles, 1.01 uCrit erodes ----
+with tempfile.TemporaryDirectory(prefix="cf_sand_band_") as td:
+    below = text.replace("vsl 0.3; vsg 0.3", "vsl 0.495; vsg 0.495")
+    above = text.replace("vsl 0.3; vsg 0.3", "vsl 0.505; vsg 0.505")
+    above = above.replace("bedInitial 0;", "bedInitial 0.1;")
+    p = os.path.join(td, "below.dict")
+    open(p, "w").write(below)
+    fr_b = run(p)
+    beds = [c["bed"] for c in fr_b[-1]["cells"]]
+    if not all(b > 1e-3 for b in beds):
+        fails.append(f"I3: vM = 0.99 uCrit did not grow the bed everywhere "
+                     f"(final beds {beds})")
+    else:
+        print(f"ok:   I3 vM = 0.99 uCrit: bed grows everywhere "
+              f"(final beds {['%.3f' % b for b in beds]})")
+    p = os.path.join(td, "above.dict")
+    open(p, "w").write(above)
+    fr_a = run(p)
+    beds = [c["bed"] for c in fr_a[-1]["cells"]]
+    if not all(b < 0.1 - 1e-3 for b in beds):
+        fails.append(f"I3: vM = 1.01 uCrit did not erode the bed everywhere "
+                     f"(final beds {beds})")
+    else:
+        print(f"ok:   I3 vM = 1.01 uCrit: bed erodes everywhere "
+              f"(final beds {['%.3f' % b for b in beds]})")
 
     # ---- rejections ----
     p = os.path.join(td, "r1.dict")

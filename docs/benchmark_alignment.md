@@ -8,9 +8,10 @@
 > **收口状态（2026-11-20）**：全量 CTest 回归 **190/190 全部通过**；G1–G11 + U 系列全部改动（含 7 个 verify 脚本、点元件模块、GUI 前端）已提交并推送至 origin/main（`eeb3590..bdce7a3`）。
 > **第二轮收口（2026-11-20–23，§5.155–§5.175）**：批次 A（PIPESIM 侧）已关闭 P3（OLGAS-steady，§5.155）、P10（分离器/压缩机设备点元，§5.156）、P5（lateral 多分支井筒，§5.157）、P18（稳态段塞预测，§5.158）、P22（风险提示，§5.159）、P21（管径优选+气举分配，§5.160）；批次 B（OLGA 侧）已关闭 O2（段塞前缘追踪，§5.161）、O3（吹扫波完整机理，§5.162）、O4（严格抑制剂相平衡，§5.163）；批次 C（Fluent 侧）已关闭 F4（LES SGS，§5.164）与 F12（空化 + 熔化/凝固，§5.165/§5.166）。
 > **第三轮收口（2026-11-23，§5.168–§5.169）**：批次 D（GUI + Fluent 物理侧）已关闭 P4（流型图 UI）、P20（龙卷风图）、F16（等值线）、F17（在线 monitor）、F18（parameter set，§5.168）；F7（Mixture/PBM）、F9（DO/S2S）、F10（多步化学 + 点火熄火）、F11（动网格相对通量 + 6DOF）、F13（自适应加密）（§5.169）。剩余声明口径不关闭项：F14 GPU（需 GPU 机器）、P12 外部物性包；F4 的 DES/转捩与 RSM 为实验实现、不计入收口判据。
-> **剩余未完成项（对标矩阵口径已收口）**：无未实现/部分对标项——F14 双打标（✅ CPU/MPI / 🟡 GPU，需 GPU 机器）与 P12 外部物性包联动按声明口径保持，不作为缺口继续推进。
+> **剩余未完成项（对标矩阵口径已收口）**：F14 双打标（✅ CPU/MPI / 🟡 GPU，仅 Kokkos 接口契约，待 GPU 机器）与 P12 外部物性包联动按声明口径保持，不作为缺口继续推进；**2026-11-24 打标回调后 F6 改 🟡**（3D Euler-Euler 未实现，见第一章 1.3 表），其余无未实现/部分对标项。
 > **E 类第一轮收口（2026-11-23，§5.170–§5.174）**：GUI 集成断链/流动保障真缺口（docs/gap_analysis.md 第 5 节）首轮关闭 E5（流型图前端对账）、E8（pvt 层简化 vdW–Platteeuw PWHc，125 判据）、E9（引擎路径持久化 + 失败显式提示）；E3 内核多段 valve/source 事件表 CLOSED（48 判据，GUI 时间轴编辑器仍 OPEN）；E1 PISO 单条 3D 入口接通（其余 20+ 3D app 仍 OPEN）。新增 CTest `verify.transientMultiSchedule` 与 `verify.pvtHydratePWHc`；本轮不改动第一章 57 项对标矩阵打标（E 类是产品集成/新增能力，不属于原矩阵项）。
 > **E 类第二轮收口（2026-11-23，§5.175）**：E2 CLOSED——段塞页新增 hydrate/inhibitor/inhibitorEquilibrium/slugTracking/purgeWave 五块结构化编辑与事件时间轴（前端 111/111）；本轮同属产品集成层，不改动第一章打标。
+> **打标回调（2026-11-24）**：F6/F7/F9/F11/F14 实现边界核实后回调打标——F6 由 ✅ 改 🟡（3D Euler-Euler 未实现，1D 两流体已有）；F7/F9 加子集括注（Mixture/DPM/PBM、1D 平板辐射）；F11 现状措辞收窄为 2 自由度刚体子集；F14 GPU 侧改「仅 Kokkos 接口契约（默认关闭，无 CUDA/HIP 实现）」。同步修正 README.md 三处 3D Euler-Euler 表述（模块 bullet、首版已落地清单、M4 里程碑尾注）。
 
 ---
 
@@ -81,21 +82,21 @@
 | F3 | 湍流模型：k-ε、k-ω SST + 壁面函数 | KEpsilon/KOmegaSST + Spalding 壁函数 + 平衡壁面单元 + Jayatilleke 热壁面函数 | ✅ | M3 条目；turbulenceTests（CTest turbulence.unit） |
 | F4 | 高阶湍流（RSM、LES、DES、转捩模型） | LES 亚格子黏度已落地：Smagorinsky/WALE 代数 nut（Δ = V^(1/3)）+ PISO 耦合 + 20 条独立判据；RSM/DES/γ-Transition 为实验模型选择器（不计入收口），详细化学与 DES/转捩完整验证超出子集口径 | ✅（LES 子集） | §5.164；§5.167 |
 | F5 | 多相：VOF（含几何重构、表面张力） | VOF + PLIC 几何重构/输运 + fit 法向 + 截面几何曲率 + CSF + WK 逐格 sigma | ✅ | M4 条目；§5.120 |
-| F6 | 多相：Euler-Euler 双流体 | Euler-Euler 双流体已落地 | ✅ | README 第 142 行、M4 |
-| F7 | 多相：Mixture 模型 / DPM / DDPM / PBM | DPM 单向+双向（Schiller-Naumann、Picard 回路）；QMOM 两点（聚并）；`mixturePbm{}` 代数滑移混合 + 单分散矩 PBM（成核 J + 破碎 b，M0–M3 矩输运），独立重推回归 | ✅ | §5.102/§5.103/§5.107；§5.168；§5.169 |
+| F6 | 多相：Euler-Euler 双流体 | 1D 两流体已有（O1，§5.75–77，含分布式流变/水合物/段塞追踪）；**3D Euler-Euler 未实现**（3D 侧目前只有 VOF，§5.120 的 VOF 液滴算例） | 🟡 | README.md:145（规划 bullet，已注明规划中）、M4 |
+| F7 | 多相：Mixture 模型 / DPM / DDPM / PBM | DPM 单向+双向（Schiller-Naumann、Picard 回路）；QMOM 两点（聚并）；`mixturePbm{}` 代数滑移混合 + 单分散矩 PBM（成核 J + 破碎 b，M0–M3 矩输运），独立重推回归 | ✅（Mixture/DPM 子集；DDPM 未含；PBM 限空间均匀单分散矩 + 常数核 QMOM，未接流动单元源框架） | §5.102/§5.103/§5.107；§5.168；§5.169 |
 | F8 | 传热：能量方程、Boussinesq、共轭传热（CHT） | 能量方程 + 热壁面函数 + 湍流释热 + Boussinesq + p_rgh + CHT 双区割线迭代 | ✅ | M3 条目；§5.108 |
-| F9 | 辐射模型（P1/DO/S2S） | P1 灰体扩散近似（§5.105）+ DO/S2S：S_N 角向扫掠（非散射指数闭式）+ 平行黑板 S2S 极限，`model do|s2s|p1`，独立重推回归 | ✅ | §5.105；§5.168；§5.169 |
+| F9 | 辐射模型（P1/DO/S2S） | P1 灰体扩散近似（§5.105）+ DO/S2S：S_N 角向扫掠（非散射指数闭式）+ 平行黑板 S2S 极限，`model do|s2s|p1`，独立重推回归 | ✅（1D 平板子集：DO 为 S_N 逐方向指数闭式 + 散射源迭代；S2S 为透明介质平行板极限） | §5.105；§5.168；§5.169 |
 | F10 | 燃烧/反应流 | 单步总包（§5.106）+ 两步链式分支机理 `detailedChemistry{}`（F/R/P 三组分 + 放热 + 冷却，点火延迟与 Semenov 熄火阈值实算），独立 ODE 重推回归 | ✅（两步子集） | §5.106；§5.168；§5.169 |
-| F11 | 动网格（smoothing/remeshing/sliding/6DOF） | ALE/GCL 几何核（§5.109）+ `dynamicMesh{}` 相对面通量 `phi_rel=(U−U_mesh)·Sf` + GCL 精确体积修正 + 6DOF（力向平动 + 面外转动，RK4 刚体 ODE），均匀标量移动网格精确不变 | ✅（刚体子集） | §5.109 / D8 增量 8；§5.168；§5.169 |
+| F11 | 动网格（smoothing/remeshing/sliding/6DOF） | ALE/GCL 几何核（§5.109）+ `dynamicMesh{}` 相对面通量 `phi_rel=(U−U_mesh)·Sf` + GCL 精确体积修正 + 6DOF 的 2 自由度刚体子集（力向平动 + 单轴面外转动，RK4），均匀标量移动网格精确不变 | ✅（刚体子集） | §5.109 / D8 增量 8；§5.168；§5.169 |
 | F12 | 相变（熔化/凝固/空化） | 均相输运空化（ZGB 源项 + 隐式 alpha + 混合密度进压力修正，内置 venturi）+ 焓-孔隙率熔化/凝固（表观热容 + Darcy 阻尼 + 前沿报告），各自带独立回归 | ✅ | §5.165/§5.166；§5.167 |
 | F13 | 网格：多面体、Gmsh/OpenFOAM 导入、自适应 | blockMesh + Gmsh msh + OpenFOAM ASCII polyMesh 导入（§5.112）+ 自适应加密 `adapt{}`：梯度判据 + dyadic slab 共形细化 + 深度封顶 + 解析积分守恒，均匀孪生不加密 | ✅（slab 子集） | §5.112；§5.168；§5.169 |
-| F14 | 并行（MPI 大规模、GPU） | MPI 域分解（逐位复现串行算子）+ 分布式 CSR CG（np=1/2/4 实跑）+ **PETSc 自身 MPI 机器对照**（MatCreateAIJ + KSPCG，16384 格 np=1/2/4 双路径交叉全绿）+ Eigen/PETSc/Kokkos 后端（CUDA/HIP 需 GPU 机器） | ✅（CPU/MPI）/ 🟡（GPU） | M3/M6 条目；§5.119/§5.122/§5.123/§5.124/§5.136 |
+| F14 | 并行（MPI 大规模、GPU） | MPI 域分解（逐位复现串行算子）+ 分布式 CSR CG（np=1/2/4 实跑）+ **PETSc 自身 MPI 机器对照**（MatCreateAIJ + KSPCG，16384 格 np=1/2/4 双路径交叉全绿）+ Eigen/PETSc/Kokkos 后端（GPU：仅 Kokkos 接口契约，默认关闭，无 CUDA/HIP 实现，待 GPU 机器） | ✅（CPU/MPI）/ 🟡（GPU） | M3/M6 条目；§5.119/§5.122/§5.123/§5.124/§5.136 |
 | F15 | system coupling（与 1D 网络耦合） | 1D↔3D 耦合全矩阵（见 O16），含 Fluent velocity-inlet 剖面对标 | ✅ | §5.18–§5.39；概念映射第 6 节 |
 | F16 | 后处理：等值线/矢量/流线/report definitions/CFD-Post | GUI Canvas 彩虹色图 + 剖切/矢量/流线/等值面/CSV（§5.135/§5.138/§5.152/§5.153）+ `contour.js` marching squares 等值线层（截面栅格化、闭合环、剖面带） | ✅ | §5.133–§5.153；§5.168；§5.169 |
 | F17 | 监控（残差/通量/自定义 monitor） | GUI 收敛监控 + report definitions（§5.139）+ `monitor.js` 按迭代在线 MONITOR 流（ITER/MONITOR 行乱序拒绝、对数刻度、滚动窗口、多序列画线） | ✅ | §5.133/§5.139；§5.168；§5.169 |
 | F18 | Case 管理与参数化（Workbench parameter set） | 批量扫描/模板/工况管理器（§5.134/§5.148/§5.150）+ `paramsets.js` 参数集：版本化 JSON 往返、同键冲突检测、稳态/瞬态激活替换，工作树挂多个参数集 | ✅ | §5.134/§5.148/§5.150；§5.168；§5.169 |
 
-小结：✅ 17 项 / 🟡 0 项 / ❌ 0 项（F14 双打标：CPU/MPI ✅、GPU 🟡 需 GPU 机器；F4 按 LES 子集关闭、F10 按两步机理子集关闭、F11 按刚体子集关闭、F13 按 slab 子集关闭）。
+小结：✅ 16 项 / 🟡 1 项 / ❌ 0 项（F6 回调改 🟡：1D 两流体已有、3D Euler-Euler 未实现；F14 双打标：CPU/MPI ✅、GPU 🟡 仅 Kokkos 接口契约待 GPU 机器；F4 按 LES 子集关闭、F10 按两步机理子集关闭、F11 按 2 自由度刚体子集关闭、F13 按 slab 子集关闭）。
 
 ---
 

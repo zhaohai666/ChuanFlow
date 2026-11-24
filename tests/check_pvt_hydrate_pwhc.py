@@ -48,6 +48,18 @@ SQRT2 = 1.4142135623730951
 OMEGA_A = 0.45723552892138218
 OMEGA_B = 0.07779607390388846
 
+# PR76 alpha kappa (omega <= 0.491 branch): published PR76 standard constants,
+# see Cantera 3.1 reference https://www.cantera.org/3.1/reference/thermo/species-thermo.html
+PR_KAPPA_BASE = 0.37464
+PR_KAPPA_LINEAR = 1.54226
+PR_KAPPA_QUAD = 0.26992
+
+
+def pr76_kappa(w):
+    """PR76 standard kappa; independent of the chflow kernel constants."""
+    return PR_KAPPA_BASE + PR_KAPPA_LINEAR * w - PR_KAPPA_QUAD * w * w
+
+
 # Exact constants from src/pvt/src/components.cpp (MW g/mol, Tc K, Pc Pa, omega).
 CT = {
     "methane": (16.043, 190.564, 45.992e5, 0.0115),
@@ -100,7 +112,7 @@ def pr_lnphi(names, zs, T, p, pref):
     aI, bI = [], []
     for c in names:
         _, Tc, Pc, w = CT[c]
-        kappa = 0.37464 + 1.54226 * w - 0.026992 * w * w
+        kappa = pr76_kappa(w)
         alpha = (1.0 + kappa * (1.0 - math.sqrt(T / Tc))) ** 2
         aI.append(OMEGA_A * (R * Tc) ** 2 / Pc * alpha)
         bI.append(OMEGA_B * R * Tc / Pc)

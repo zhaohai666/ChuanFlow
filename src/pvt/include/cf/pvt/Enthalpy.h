@@ -22,7 +22,7 @@ scalar idealGasEnthalpyRise(scalar T, scalar Tref, scalar cpA, scalar cpB);
 
 /// Analytic da_i/dT of the PR alpha(T) function
 ///   alpha = [1 + kappa (1 - sqrt(T/Tc))]^2,
-///   kappa = 0.37464 + 1.54226 w - 0.026992 w^2.
+///   kappa = 0.37464 + 1.54226 w - 0.26992 w^2 (PR76 standard, omega <= 0.491 branch).
 scalar prDaDT(const Component& c, scalar T);
 
 /// Mixture departure (residual) enthalpy from the PR EOS at T,p for the

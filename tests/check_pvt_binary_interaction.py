@@ -38,6 +38,24 @@ SQRT2 = 1.4142135623730951
 OMEGA_A = 0.45723552892138218
 OMEGA_B = 0.07779607390388846
 
+# ---- Independent PR76 alpha kappa (NOT a mirror of the chflow kernel) -------
+# Source: Cantera 3.1 documentation, "Peng-Robinson Equation of State":
+#   https://www.cantera.org/3.1/reference/thermo/species-thermo.html
+#   alpha = [1 + kappa (1 - sqrt(T/Tc))]^2
+#   kappa = 0.37464 + 1.54226 w - 0.26992 w^2,  for w <= 0.491
+# These are the PR76 original published coefficients, re-derived here from the
+# external physical reference; they are NOT transcribed from src/pvt (the old
+# checker copy had a 10x-too-small quadratic term 0.026992).
+PR_KAPPA_BASE = 0.37464
+PR_KAPPA_LINEAR = 1.54226
+PR_KAPPA_QUAD = 0.26992
+
+
+def pr76_kappa(w):
+    """PR76 kappa from the published alpha function, omega <= 0.491 branch."""
+    # All CT components above have omega <= 0.3443, i.e. inside this branch.
+    return PR_KAPPA_BASE + PR_KAPPA_LINEAR * w - PR_KAPPA_QUAD * w * w
+
 # Exact constants from src/pvt/src/components.cpp (MW g/mol, Tc K, Pc Pa, omega).
 CT = {
     "methane": (16.043, 190.564, 45.992e5, 0.0115),
@@ -84,7 +102,7 @@ def pr_phase(names, zs, T, p, kij, pref):
     aI, bI = [], []
     for c in names:
         _, Tc, Pc, w = CT[c]
-        kappa = 0.37464 + 1.54226 * w - 0.026992 * w * w
+        kappa = pr76_kappa(w)  # independent PR76 criterion, not a kernel mirror
         alpha = (1.0 + kappa * (1.0 - math.sqrt(T / Tc))) ** 2
         Rtc = R * Tc
         aI.append(OMEGA_A * Rtc * Rtc / Pc * alpha)

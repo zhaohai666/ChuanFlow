@@ -32,6 +32,19 @@ R = 8.314462618
 SQRT2 = 1.4142135623730951
 OMEGA_A = 0.45723552892138218
 OMEGA_B = 0.07779607390388846
+
+# PR76 alpha kappa (omega <= 0.491 branch): published PR76 standard constants,
+# see Cantera 3.1 reference https://www.cantera.org/3.1/reference/thermo/species-thermo.html
+PR_KAPPA_BASE = 0.37464
+PR_KAPPA_LINEAR = 1.54226
+PR_KAPPA_QUAD = 0.26992
+
+
+def pr76_kappa(w):
+    """PR76 standard kappa; independent of the chflow kernel constants."""
+    return PR_KAPPA_BASE + PR_KAPPA_LINEAR * w - PR_KAPPA_QUAD * w * w
+
+
 CT = {  # name -> (MW g/mol, Tc K, Pc Pa, acentric), from components.cpp
     "methane": (16.043, 190.564, 45.992e5, 0.0115),
     "ethane": (30.070, 305.322, 48.722e5, 0.0995),
@@ -140,7 +153,7 @@ def pr_params(z, T, p):
     aI, bI = [], []
     for name in names:
         _, Tc, Pc, w = CT[name]
-        kappa = 0.37464 + 1.54226 * w - 0.026992 * w * w
+        kappa = pr76_kappa(w)
         alpha = (1.0 + kappa * (1.0 - math.sqrt(T / Tc))) ** 2
         Rtc = R * Tc
         aI.append(OMEGA_A * Rtc * Rtc / Pc * alpha)
@@ -166,7 +179,7 @@ def pr_root(z, T, p, pref):
 
 def da_dt(name, T):
     _, Tc, Pc, w = CT[name]
-    kappa = 0.37464 + 1.54226 * w - 0.026992 * w * w
+    kappa = pr76_kappa(w)
     f = 1.0 + kappa * (1.0 - math.sqrt(T / Tc))
     return -OMEGA_A * (R * Tc) ** 2 / Pc * kappa * f / math.sqrt(T * Tc)
 

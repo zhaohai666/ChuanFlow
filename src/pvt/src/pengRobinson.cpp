@@ -74,7 +74,8 @@ PengRobinsonParams mixtureParameters(const Mixture& mix, scalar T, scalar p)
     for (std::size_t i = 0; i < n; ++i)
     {
         const scalar w = comps[i].acentric;
-        const scalar kappa = 0.37464 + 1.54226 * w - 0.026992 * w * w;
+        // PR76 alpha function (omega <= 0.491 branch): kappa = 0.37464 + 1.54226 w - 0.26992 w^2.
+        const scalar kappa = 0.37464 + 1.54226 * w - 0.26992 * w * w;
         const scalar alpha = (1.0 + kappa * (1.0 - std::sqrt(T / comps[i].Tc)))
                            * (1.0 + kappa * (1.0 - std::sqrt(T / comps[i].Tc)));
         // a_i = 0.45724 (R Tc)^2 / Pc * alpha(T),  b_i = 0.07780 R Tc / Pc

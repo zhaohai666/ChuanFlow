@@ -4690,7 +4690,7 @@ P_i 是组分 parachor，SI 单位 [N^0.25 m^2.75 / mol]；Vml / Vmg 是液 / �
     a_ij = √(a_i a_j)(1 − kij),  aMix = ΣΣ x_i x_j a_ij,  bMix = Σ x_i b_i
     A = aMix·p/(RT)²,  B = bMix·p/(RT)
 
-kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723552892138218` / `kOmegaB=0.07779607390388846`（非舍入的 0.45724/0.07780）、`kappa=0.37464+1.54226ω−0.026992ω²`、`alpha=(1+kappa(1−√(T/Tc)))²`。逸度系数 `lnPhi_i` 的混合项 `2Σ_j x_j a_ij/aMix − b_i/bMix` 随之带上 kij，故 kij 同时进密度（经 A）与相平衡（经 lnPhi）。**缺省逐位不变**：`kij_` 空时 `binaryInteraction` 返回 0.0，`(1.0−0.0)=1.0`，`√(a_i a_j)×1.0` 在 IEEE 下精确等于 `√(a_i a_j)`，故未声明 kij 的混合物与经典 PR 一个位都不差。
+kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723552892138218` / `kOmegaB=0.07779607390388846`（非舍入的 0.45724/0.07780）、`kappa=0.37464+1.54226ω−0.26992ω²`（PR76 原文系数，ω≤0.491 支；此前误写 0.026992 差 10 倍，已修正）、`alpha=(1+kappa(1−√(T/Tc)))²`。逸度系数 `lnPhi_i` 的混合项 `2Σ_j x_j a_ij/aMix − b_i/bMix` 随之带上 kij，故 kij 同时进密度（经 A）与相平衡（经 lnPhi）。**缺省逐位不变**：`kij_` 空时 `binaryInteraction` 返回 0.0，`(1.0−0.0)=1.0`，`√(a_i a_j)×1.0` 在 IEEE 下精确等于 `√(a_i a_j)`，故未声明 kij 的混合物与经典 PR 一个位都不差。
 
 **水组分。** `water()` = MW 18.01528 g/mol、Tc 647.096 K、Pc 22.064 MPa（IAPWS/NIST 临界点）、ω 0.3443（Reid/Prausnitz/Poling）。PR 把水当正常流体处理——其极性/缔合精度是一条**命名边界**（PR 液相水密度 ~850 kg/m³ 对真实 997，偏差如实记录，不夹带未核实的修正）。CO₂（Tc 304.128 K/Pc 7.3773 MPa/ω 0.2239）与 H₂S（Tc 373.4 K/Pc 8.9628 MPa/ω 0.09）此前已在册。
 

@@ -468,12 +468,28 @@
 - **成本估计**：~2 增量
 - **落点**：§5.178（`pigging{}` opt-in + piggingStep + 报告行；`verify.transientPigging` 30 判据，twin 逐字节 + 10 拒收；twoFluid 家族 37/37 未声明路径不变）
 
-### E7. 段塞机理升级 + 瞬态井筒元件族（内核级真缺口，需立项拆分）
+### E7. 段塞机理升级 + 瞬态井筒元件族（内核级真缺口）
 
-- **当前状态**：`PARTIAL`（2026-11-23 子项② CLOSED → §5.179；子项①③ 仍 `OPEN`）
+- **当前状态**：`PARTIAL`（2026-11-23 子项② CLOSED → §5.179；子项①③ 拆分为 E7b / E7c 独立项）
 - **差距**：① 段塞闭合简化——两流体是 3 方程混合动量模型（非 4 方程双速度双压力），段塞生成靠持液率阈值检测、前缘速度是声明常量/gasCap 模型，**无 Bendiksen 类由局部流态解出的前缘闭合、无液膜/液塞双区制**（architecture §4.2 自认「机理型段塞追踪尚未实现」，全库无 sectioning）；② 瞬态引擎显式拒收人工举升设备（transient.cpp:1026-1029「gas-lift valve has no bellows」），无 ESP/气举/有杆泵动态、无 SSSV 安全阀、无节流嘴瞬态元件；③ 可压管线沿线 EOS 泄压瞬态声学不解析（两流体 EOS 模式动量仍 lumped）。
 - **成本估计**：4+ 增量
-- **落点**：子项② → §5.179（`sssv{}`/`choke{}`/`esp{}` 三 opt-in 块 + `verify.transientWellboreEquipment` 42 判据 + 11 拒收 + 零声明 twin；原「no bellows」拒收解除）。子项①③ 需另立项
+- **落点**：子项② → §5.179（`sssv{}`/`choke{}`/`esp{}` 三 opt-in 块 + `verify.transientWellboreEquipment` 42 判据 + 11 拒收 + 零声明 twin；原「no bellows」拒收解除）
+
+### E7b. Bendiksen 前缘闭合 + 液膜/液塞双区制 sectioning（内核级，拆分自 E7①）
+
+- **当前状态**：`OPEN`（2026-11-24 立项）
+- **差距**：`slugTracking`（§5.161）的前缘速度是声明常量 `slugVelocity` / gasCap 模型，不由局部流态解出；全库无液膜/液塞双区制。
+- **建议实施**：`slugTracking` 增 opt-in 前缘闭合（`frontClosure bendiksen`：v_front = C0·v_m + V_d，C0/V_d 可显式声明、默认取 Bendiksen (1984) 建议值并写明出处）+ 双区制 sectioning（slug 区 / film 区随前缘/尾部移动，cell 报告增 zone 标志）。全部 opt-in，未声明路径逐字节不变。
+- **成本估计**：~1.5 增量
+- **落点**：待分配
+
+### E7c. 可压管线沿线 EOS 泄压瞬态声学（内核级，拆分自 E7③）
+
+- **当前状态**：`OPEN`（2026-11-24 立项）
+- **差距**：两流体 EOS 模式的动量仍 lumped（单一集总 dp），泄压时沿线压力波传播（声学）不解析。
+- **建议实施**：EOS 模式 opt-in 沿线声学（线性压力波/特征线更新，稳定准则与时间步约束显式化），case/checker 立项。
+- **成本估计**：~1.5 增量
+- **落点**：待分配
 
 ### E8. 水合物状态包 PWHc（可选升级）
 

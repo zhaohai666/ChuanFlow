@@ -2407,6 +2407,24 @@ add_test(
         $<TARGET_FILE:chflow-pvt>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtNonIsothermal/case.dict)
 
+# Gas-flux consistency (gvol = vM - flux): the checker re-derives the
+# model's defining identity F + G = vM from the reported per-face flux
+# rows alone, asserts the EOS gas-pressure front invariance p == rhoG
+# gasR T on the rate-driven and fixedPressure front translations (every
+# criterion (a)/(b)/(c)), closes the gas volume balance injected -
+# discharged == inventory change per step, verifies the Wood
+# homogeneous-mixture sound-speed option rides the re-derived a_wood and
+# the undeclared twin rides the EOS speed, and proves the zero-declaration
+# uniform twin clean plus 7 loud rejections (wood without a declared
+# liquid sound speed, mutual exclusions, unknown words, non-positive aL,
+# EOS off, contradictory disabled declarations).
+add_test(
+    NAME verify.transientGasFluxConsistency
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_gas_flux_consistency.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientGasFluxConsistency)
+
 # README M5: Tauri GUI (command-layer Rust unit tests, offline build, and the
 # DOM-free frontend pure-function tests). Only registered when cargo / node
 # exist, so a bare environment keeps every CTest green.

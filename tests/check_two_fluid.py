@@ -834,13 +834,17 @@ elif mode == "compressibleholdup":
         return (s_old / dt + drive / ks) / (1.0 / dt + rate)
 
     def face_fluxes(alpha, slip):
-        # liquid and gas volume fluxes of the dynamic closure: F convex,
-        # G = vm - F concave, so the Godunov selections differ
+        # liquid and gas volume fluxes of the dynamic closure: the gas
+        # inventory is the pipe volume minus the liquid volume, so the
+        # consistent gas face flux is the identity G = vm - F (an
+        # independent Godunov solve of the mirrored quadratic does not
+        # mirror the branch selection and breaks F + G = vm on every
+        # non-uniform face)
         flux, gvol = [VSL], [VSG]
         for j in range(1, N):
             s = 0.5 * (slip[j - 1] + slip[j])
             flux.append(godunov(s, VM - s, 0.0, alpha[j - 1], alpha[j]))
-            gvol.append(godunov(-s, s - VM, VM, alpha[j - 1], alpha[j]))
+            gvol.append(VM - flux[j])
         sl = slip[N - 1]
         a_end = alpha[N - 1]
         flux.append(sl * a_end * a_end + (VM - sl) * a_end)
@@ -1260,9 +1264,10 @@ elif mode == "hydrateflow":
                 flux.append(godunov(US, VM - US, 0.0, alpha[j - 1], alpha[j]))
             a_end = alpha[N - 1]
             flux.append(US * a_end * a_end + (VM - US) * a_end)
+            # gas face flux = the identity G = vm - F (see face_fluxes)
             gvol = [VSG]
             for j in range(1, N):
-                gvol.append(godunov(-US, US - VM, VM, alpha[j - 1], alpha[j]))
+                gvol.append(VM - flux[j])
             gvol.append(VM + (US - VM) * a_end - US * a_end * a_end)
             wflux, hflux = [0.0] * (N + 1), [0.0] * (N + 1)
             for j in range(N + 1):
@@ -2010,9 +2015,9 @@ elif mode == "entrained":
                     + [godunov(qa, qb, qc, alpha[j - 1], alpha[j])
                        for j in range(1, N)]
                     + [qc + alpha[-1] * (qb + qa * alpha[-1])])
+            # gas face flux = the identity G = vm - F (see face_fluxes)
             gvol = ([VSG]
-                    + [godunov(ga, gb, gc, alpha[j - 1], alpha[j])
-                       for j in range(1, N)]
+                    + [VM - f for f in flux[1:]]
                     + [gc + alpha[-1] * (gb + ga * alpha[-1])])
             wflux = [PHI_IN * flux[0]]
             for j in range(1, N):
@@ -2193,12 +2198,13 @@ elif mode == "fullmomentum":
     def face_fluxes(alpha, slip):
         # liquid and gas volume fluxes of the full closure: the same face
         # machinery as the dynamic closure (interior godunov on the
-        # averaged slip, outlet face the last cell's flux)
+        # averaged slip, outlet face the last cell's flux), the gas side
+        # the identity G = vm - F (see face_fluxes above)
         flux, gvol = [VSL], [VSG]
         for j in range(1, N):
             s = 0.5 * (slip[j - 1] + slip[j])
             flux.append(godunov(s, VM - s, 0.0, alpha[j - 1], alpha[j]))
-            gvol.append(godunov(-s, s - VM, VM, alpha[j - 1], alpha[j]))
+            gvol.append(VM - flux[j])
         sl = slip[N - 1]
         a_end = alpha[N - 1]
         flux.append(sl * a_end * a_end + (VM - sl) * a_end)

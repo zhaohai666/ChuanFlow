@@ -1182,22 +1182,6 @@ void TwoFluidPipe::transportStep(double dt)
             fqc = vM_ * (1.0 - cfg_.closure.c0) - d;
         }
     };
-    auto gasCoeffsAt = [&](int j, double& gqa, double& gqb, double& gqc)
-    {
-        const double d = faceDrift(j);
-        if (cfg_.closure.model == 0) // wallis: vG = vM + alpha*d
-        {
-            gqa = -d;
-            gqb = d - vM_;
-            gqc = vM_;
-        }
-        else // zuber: vG = C0 vM + d (constant)
-        {
-            gqa = 0.0;
-            gqb = -(cfg_.closure.c0 * vM_ + d);
-            gqc = cfg_.closure.c0 * vM_ + d;
-        }
-    };
     const bool faceLocal = !slipClosure() && cfg_.closure.gravitySlip;
 
     // CFL guard for the explicit Godunov transport (monotone under
@@ -1468,73 +1452,48 @@ void TwoFluidPipe::transportStep(double dt)
         }
     }
 
-    // gas volume flux per face: the gas counterpart of the liquid flux,
-    // quadratic/linear in alpha for every closure with G(1) = 0, so the
-    // same Godunov machinery and the same CFL bound apply. The volume flux
-    // exists regardless of the EOS (the thermal step advects gas enthalpy
-    // with it); with the EOS on the mass flux upwinds the density from the
-    // side the volume flux comes from: the injected reference density at a
-    // rate boundary, the ghost density at a pressure boundary, the cell
-    // density inside.
+    // gas volume flux per face. The gas inventory is the pipe volume
+    // minus the liquid volume, so the gas transport equation is the
+    // exact complement of the liquid one and its consistent face flux is
+    // G = vM - F - NOT an independent Riemann solve of the mirrored
+    // quadratic: the mirror G(a) = vM - F(a) is pointwise exact for every
+    // closure, but the Godunov branch selection of the mirrored
+    // quadratic does not mirror the liquid one (the qa == 0 linear leg
+    // upwinds the opposite state, the rising/falling jumps swap the
+    // shock and rarefaction branches), so an independent solve breaks
+    // F + G = vM on every non-uniform face - the gas volume flux then
+    // exceeds or falls short of the mixture flux, over/under-sweeps gas
+    // at each front and drifts the EOS gas pressure. Interior faces and
+    // a fixed-pressure inlet therefore take the one-line identity below.
+    // The imposed faces keep their exact imposed values, which satisfy
+    // the same identity by construction (verified per boundary): a
+    // phaseRates inlet carries vM = vsl + vsg, so in.vsg IS vM - vsl
+    // (kept verbatim rather than re-derived, which would round it off
+    // the imposed rate by one ulp); a phaseRates outlet receives the
+    // junction split from the pipe's own flux functions at the mixed
+    // holdup, where liquidFluxAt + gasVolumeFluxAt = vM holds for every
+    // closure; a sealed pipe carries vM = 0 with F = 0, so the identity
+    // answers 0 there verbatim; an open outlet keeps the pointwise
+    // closure, where gasVolumeFlux == vM - liquidFlux holds identically.
+    // The volume flux exists regardless of the EOS (the thermal step
+    // advects gas enthalpy with it); with the EOS the mass flux upwinds
+    // the density from the side the volume flux comes from: the injected
+    // reference density at a rate boundary, the ghost density at a
+    // pressure boundary, the cell density inside.
     for (int j = 0; j <= n_; ++j)
     {
-        if (j == 0)
-        {
-            if (in.type == TwoFluidBoundary::Type::phaseRates)
-                gvol[0] = in.vsg;
-            else if (in.type == TwoFluidBoundary::Type::fixedPressure)
-            {
-                if (slipClosure())
-                {
-                    const double s = faceSlip(0);
-                    gvol[0] = godunovQuadratic(-s, s - vM_, vM_, in.alpha,
-                                               alpha_[0]);
-                }
-                else if (faceLocal)
-                {
-                    double gqa, gqb, gqc;
-                    gasCoeffsAt(0, gqa, gqb, gqc);
-                    gvol[0] = godunovQuadratic(gqa, gqb, gqc, in.alpha,
-                                               alpha_[0]);
-                }
-                else
-                {
-                    double gqa, gqb, gqc;
-                    gasFluxCoeffs(gqa, gqb, gqc);
-                    gvol[0] = godunovQuadratic(gqa, gqb, gqc, in.alpha,
-                                               alpha_[0]);
-                }
-            }
-            // sealed inlet: gvol[0] stays 0
-        }
-        else if (j == n_)
-        {
-            if (out.type == TwoFluidBoundary::Type::phaseRates)
-                gvol[n_] = out.vsg; // junction-imposed split
-            else if (out.type != TwoFluidBoundary::Type::sealed)
-                gvol[n_] = gasVolumeFlux(alpha_[n_ - 1], faceSlip(n_),
-                                         n_ - 1);
-        }
-        else if (slipClosure())
-        {
-            const double s = faceSlip(j);
-            gvol[j] = godunovQuadratic(-s, s - vM_, vM_, alpha_[j - 1],
-                                       alpha_[j]);
-        }
-        else if (faceLocal)
-        {
-            double gqa, gqb, gqc;
-            gasCoeffsAt(j, gqa, gqb, gqc);
-            gvol[j] = godunovQuadratic(gqa, gqb, gqc, alpha_[j - 1],
-                                       alpha_[j]);
-        }
+        if (j == 0 && in.type == TwoFluidBoundary::Type::phaseRates)
+            gvol[0] = in.vsg; // the injected rate, the identity verbatim
+        else if (j == n_
+                 && out.type == TwoFluidBoundary::Type::phaseRates)
+            gvol[n_] = out.vsg; // junction-imposed split, F + G = vM
+        else if (j == n_
+                 && out.type != TwoFluidBoundary::Type::sealed)
+            gvol[n_] = gasVolumeFlux(alpha_[n_ - 1], faceSlip(n_),
+                                     n_ - 1); // == vM - F pointwise
         else
-        {
-            double gqa, gqb, gqc;
-            gasFluxCoeffs(gqa, gqb, gqc);
-            gvol[j] = godunovQuadratic(gqa, gqb, gqc, alpha_[j - 1],
-                                       alpha_[j]);
-        }
+            gvol[j] = vM_ - flux[j]; // interior + fixedPressure inlet
+                                     // + sealed faces (vM = 0, F = 0)
 
         if (eosOn())
         {
@@ -2575,6 +2534,11 @@ void TwoFluidPipe::terrainSlugStep(double dt)
                 if (cfg_.terrain.maxSlugVelocity > 0)
                     u = std::min(u, cfg_.terrain.maxSlugVelocity);
                 s.velocity = u;
+                // the pre-travel position the reported us/pcap were computed
+                // at (the report's "front" is this plus u*dt); independent
+                // checkers re-derive the relation from this value to land
+                // on the same cell and elevation the kernel sampled
+                s.calcFront = s.front;
             }
             // kinematic travel at the (declared or gas-driven) velocity
             s.front += u * dt;
@@ -3046,18 +3010,43 @@ void TwoFluidPipe::acousticsStep(double dt)
     if (!cfg_.acousticsOn) return;
     const TwoFluidAcoustics& ac = cfg_.acoustics;
 
-    // per-cell wave speed and inertia. EOS path: a^2 = (dp/drho)_T =
-    // gasR T, the exact density derivative of the kernel's own gas law
-    // p = rhoG gasR T - so rho a^2 reproduces the cell's EOS pressure
-    // exactly. Declared path: the case's constant replaces it wholesale.
+    // per-cell wave speed and inertia. EOS path (aModel eos, the
+    // default): a^2 = (dp/drho)_T = gasR T, the exact density derivative
+    // of the kernel's own gas law p = rhoG gasR T - so rho a^2
+    // reproduces the cell's EOS pressure exactly. Wood path (aModel
+    // wood): Wood's homogeneous-mixture sound speed (A. B. Wood, "A
+    // Textbook of Sound", 1930; the standard uniform-equilibrium
+    // compressibility rule for a mixture),
+    //   1 / (rho_m a^2) = alphaL / (rhoL aL^2) + alphaG / (rhoG aG^2),
+    // with aG^2 = gasR T the same EOS-exact gas derivative, aL the
+    // DECLARED liquid sound speed (the kernel invents no liquid EOS),
+    // and rho_m the cell's mixture density. Applicability boundary: Wood
+    // assumes uniform PRESSURE equilibrium - both phases compress under
+    // the same dp with no interphase mass/heat exchange and no slip, so
+    // it prices the mixture's effective bulk modulus; it is the right
+    // wave speed for a bubbly/dispersed homogeneous mixture and it
+    // degenerates correctly (alphaG -> 0 gives aL, alphaL -> 0 gives
+    // aG). Declared path: the case's constant replaces it wholesale.
     std::vector<double> a2(n_), rho(n_);
     double aMax = 0.0, dxMin = 1e300;
     for (int i = 0; i < n_; ++i)
     {
-        const double a = ac.soundSpeed > 0
-                             ? ac.soundSpeed
-                             : std::sqrt(cfg_.fluid.gasR
-                                         * sectionTemperature(i));
+        double a;
+        if (ac.soundSpeed > 0) a = ac.soundSpeed;
+        else if (ac.aModel == "wood")
+        {
+            const double aL = 1.0 - alpha_[i]; // gas share
+            const double aG2 = cfg_.fluid.gasR * sectionTemperature(i);
+            const double rhoG = cellGasDensity(i);
+            // the compliance sum; the degenerate single-phase cells
+            // drop the vanishing phase's term by its alpha weight
+            const double compliance
+                = alpha_[i] / (cfg_.fluid.rhoL * ac.liquidSoundSpeed
+                               * ac.liquidSoundSpeed)
+                + (aL > 0 ? aL / (rhoG * aG2) : 0.0);
+            a = std::sqrt(1.0 / (compliance * mixtureRhoCell(i)));
+        }
+        else a = std::sqrt(cfg_.fluid.gasR * sectionTemperature(i));
         a2[i] = a * a;
         rho[i] = mixtureRhoCell(i);
         if (a > aMax) aMax = a;
@@ -3745,8 +3734,48 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.acoustics.soundSpeed = ad.getScalarOr("soundSpeed", 0.0);
         if (c.acoustics.soundSpeed < 0)
             cfFatal("twoFluid: acoustics soundSpeed must be positive"
-                    " (0 selects the EOS-consistent isothermal speed"
-                    " sqrt(gasR T))");
+                    " (0 selects the model path of aModel: the"
+                    " EOS-consistent isothermal sqrt(gasR T), or Wood's"
+                    " mixture speed)");
+        // opt-in mixture wave-speed model (default "eos" rides the
+        // original path verbatim). A declared model word is read loudly;
+        // unknown words are refused, not ignored.
+        if (ad.has("aModel"))
+        {
+            const std::string w = ad.getWord("aModel");
+            if (w == "eos") c.acoustics.aModel = "eos";
+            else if (w == "wood") c.acoustics.aModel = "wood";
+            else cfFatal("twoFluid: unknown acoustics aModel '" + w
+                         + "' (eos or wood)");
+        }
+        if (ad.has("liquidSoundSpeed"))
+        {
+            c.acoustics.liquidSoundSpeed
+                = ad.getScalarOr("liquidSoundSpeed", 0.0);
+            if (!(c.acoustics.liquidSoundSpeed > 0))
+                cfFatal("twoFluid: acoustics liquidSoundSpeed must be"
+                        " positive (it is the LIQUID phase sound speed"
+                        " aL of Wood's equation; the kernel invents no"
+                        " liquid EOS to derive it)");
+        }
+        // the declared wholesale override and the mixture model are
+        // mutually exclusive: soundSpeed replaces the wave speed
+        // wholesale, aModel wood derives it - declaring both is a
+        // contradiction, and a wood declaration without aL has nothing
+        // to derive from (the liquid sound speed is not invented)
+        if (c.acoustics.aModel == "wood")
+        {
+            if (c.acoustics.soundSpeed > 0)
+                cfFatal("twoFluid: acoustics soundSpeed and aModel wood"
+                        " are mutually exclusive (a declared speed"
+                        " replaces the wave speed wholesale; wood"
+                        " derives it from the phase speeds)");
+            if (!(c.acoustics.liquidSoundSpeed > 0))
+                cfFatal("twoFluid: aModel wood needs a positive"
+                        " liquidSoundSpeed (Wood's equation needs the"
+                        " LIQUID phase sound speed aL; the kernel"
+                        " invents no liquid EOS)");
+        }
         c.acoustics.cfl = ad.getScalarOr("cfl", 0.5);
         if (c.acoustics.cfl <= 0 || c.acoustics.cfl > 0.5)
             cfFatal("twoFluid: acoustics cfl must be in (0, 0.5] (the"

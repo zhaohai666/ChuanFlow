@@ -306,6 +306,18 @@ int main(int argc, char** argv)
             if (!uAc.empty())
                 for (std::size_t j = 0; j < uAc.size(); ++j)
                     log::info("aunode ", j, " u ", num(uAc[j]));
+            // face flux columns (EOS-gated): this step's face liquid
+            // volume flux F and gas volume flux G, one line per face - an
+            // independent checker asserts the model identity F + G = vM
+            // from the report alone
+            if (c.fluid.gasR > 0)
+            {
+                const std::vector<double> fl = s.faceLiquidFlux();
+                const std::vector<double> fg = s.faceGasVolumeFlux();
+                for (std::size_t j = 0; j < fl.size(); ++j)
+                    log::info("face ", j, " F ", num(fl[j]), " G ",
+                              num(fg[j]));
+            }
             for (int i = 0; i < s.sections(); ++i)
             {
                 log::info("cell ", i, " alpha ", num(a[i]), " water ",
@@ -453,7 +465,8 @@ int main(int argc, char** argv)
                               num(slugs[k].capturedFrom),
                               c.terrain.dynamicUs
                                   ? (" us " + num(slugs[k].velocity)
-                                     + " pcap " + num(slugs[k].capPressure))
+                                     + " pcap " + num(slugs[k].capPressure)
+                                     + " cfront " + num(slugs[k].calcFront))
                                   : std::string(),
                               slugs[k].active ? " ACTIVE" : " IDLE");
             }

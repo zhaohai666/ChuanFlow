@@ -1960,6 +1960,22 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientSlugTracking)
 
+# E7b (5.182): slug mechanics - the Bendiksen (1984) front closure
+# (frontClosure bendiksen) plus the SLUG/FILM cell partition (zoning).
+# The checker re-derives every front velocity from the reported mixture
+# velocity and the case geometry (the drift term on the inclined
+# variant), replays the whole advance/retire/merge/generate cycle, and
+# re-derives the zone partition from both the replayed spans and the
+# reported slugtrack lines; proves the no-block and disabled twins
+# byte-identical, the legacy constant law intact and the 8 loud
+# rejections (mutual exclusions, coefficient ranges, word values).
+add_test(
+    NAME verify.transientSlugMechanics
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_slug_mechanics.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientSlugMechanics)
+
 # O3 (5.162): distributed riser purge (blowdown) wave. The checker
 # re-derives the trigger inequality, the implicit-Euler gas-cap relaxation,
 # the front integration in both constant and closed modes, the drained

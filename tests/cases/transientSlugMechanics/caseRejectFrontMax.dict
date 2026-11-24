@@ -1,0 +1,102 @@
+// E7b (5.182): slug mechanics - the Bendiksen (1984) front closure plus
+// the SLUG/FILM cell partition, on the distributed two-fluid kernel.
+// Same horizontal bore and pulse schedule as the 5.161 case
+// (tests/cases/transientSlugTracking): wallis closure us = 0.5, mixture
+// velocity vM ~ 1.0 kept constant by the rate pairs (vsl + vsg = 1.0),
+// so the convex liquid flux
+//   F(a) = 0.5 a^2 + 0.5 a
+// has the base root F(a) = 0.1 -> alpha_lo = 0.17082039325003 and the
+// pulse root F(a) = 0.75 -> alpha_hi = 0.82287565553203. Two 5 s liquid
+// pulses (vsl 0.75) at t = 5 and t = 12 inject two alpha_hi slug bodies.
+//
+// E7b front closure: `frontClosure bendiksen` replaces the declared
+// constant migration law with v_front = C0 v_m + V_d, the Bendiksen
+// (1984) turbulent-branch correlation (Int. J. Multiphase Flow 10,
+// 469-483; C0 = 1.2, drift 0.35 sin(theta) sqrt(g D (rhoL-rhoG)/rhoL) -
+// on this horizontal bore sin(theta) = 0 kills the drift term exactly,
+// Bendiksen's own horizontal result). vM is reported every frame, so the
+// front velocity is re-derivable from the report alone: uF = 1.2 vM.
+//
+// E7b zoning: `zoning true` adds a numeric `zone` key to every cell row
+// (1 = SLUG, the cell centre lies inside a live tracked slug span
+// [xR, xF]; 0 = FILM, the inter-slug liquid film region). The boundaries
+// ride the moving tracked faces frame by frame and are re-derivable from
+// the slugtrack state lines. The existing cell keys - including the
+// closure slip `s` - are untouched.
+//
+// caseBase.dict is this case with the two E7b keys deleted (the legacy
+// constant slugVelocity law), caseDisabled.dict the enable-false twin:
+// the declared run minus the slugtrack lines and the zone tokens must
+// reproduce caseBase's output byte for byte, and caseDisabled must equal
+// caseBase outright. tests/check_transient_slug_mechanics.py re-derives
+// the front velocities, the whole Lagrangian bookkeeping and the zone
+// partition independently from the reported field.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+pipe
+{
+    length 20;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 20;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0.5;
+}
+
+initial
+{
+    alpha 0.17082039325003;
+    water 0.3;
+}
+
+slug
+{
+    alphaThreshold 0.45;
+    minLength 0.5;
+}
+
+slugTracking
+{
+    enable true;
+    alphaThreshold 0.45;
+    minLength 0.5;
+    frontClosure bendiksen;
+    maxSlugVelocity 2;
+}
+
+boundaries
+{
+    inlet
+    {
+        type phaseRates;
+        vsl 0.1;
+        vsg 0.9;
+        waterFraction 0.3;
+        schedule
+        {
+            p1 { t 5;  vsl 0.75; vsg 0.25; }
+            p2 { t 10; vsl 0.1;  vsg 0.9; }
+            p3 { t 12; vsl 0.75; vsg 0.25; }
+            p4 { t 17; vsl 0.1;  vsg 0.9; }
+        }
+    }
+    outlet { type fixedPressure; p 5e6; }
+}
+
+time
+{
+    dt 0.05;
+    endTime 60;
+    reportEvery 1;
+}

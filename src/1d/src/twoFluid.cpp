@@ -2337,6 +2337,49 @@ std::vector<TwoFluidSlugBody> TwoFluidPipe::slugBodies() const
     return slugRuns(cfg_.slug.alphaThreshold, cfg_.slug.minLength);
 }
 
+double TwoFluidPipe::bendiksenFrontVelocity(int frontCell) const
+{
+    // E7b (5.182): Bendiksen (1984) translational velocity, priced at the
+    // cell holding the front face. v_front = C0 v_m + V_d with V_d either
+    // the declared constant or the default drift law
+    //   V_d = 0.35 sin(theta) sqrt(g D (rhoL - rhoG)/rhoL),
+    // Bendiksen's turbulent-branch coefficient with the density-corrected
+    // Taylor-bubble nose form (see TwoFluidSlugTracking for the full
+    // citation and applicability boundary). The declared densities are
+    // used (not the EOS per-cell gas densities) and the density difference
+    // is clamped at zero so a mis-ordered declaration can never reach the
+    // sqrt (the loader rejects it loudly anyway).
+    const TwoFluidSlugTracking& st = cfg_.slugTracking;
+    double vd = st.bendiksenVd;
+    if (!st.bendiksenVdDeclared)
+    {
+        const double dr = std::max(cfg_.fluid.rhoL - cfg_.fluid.rhoG, 0.0);
+        vd = 0.35 * sinT_[frontCell]
+           * std::sqrt(kGravity * diameter_ * dr / cfg_.fluid.rhoL);
+    }
+    return st.bendiksenC0 * vM_ + vd;
+}
+
+std::vector<int> TwoFluidPipe::cellZones() const
+{
+    // E7b (5.182): the SLUG/FILM partition. A cell is SLUG (1) when its
+    // centre lies inside [xR, xF] of a live tracked slug object, FILM (0)
+    // otherwise - the zone boundaries ride the moving tracked faces frame
+    // by frame. Diagnostic only: read-only over the tracking state, no
+    // write-back to the holdup field.
+    std::vector<int> z(n_, 0);
+    if (!cfg_.slugTrackingOn || !cfg_.slugTracking.zoning) return z;
+    double acc = 0;
+    for (int i = 0; i < n_; ++i)
+    {
+        const double centre = acc + 0.5 * dxs_[i];
+        for (const TwoFluidSlugTrack& o : slugTracks_)
+            if (centre >= o.xR && centre <= o.xF) { z[i] = 1; break; }
+        acc += dxs_[i];
+    }
+    return z;
+}
+
 std::vector<TwoFluidTerrainDip> TwoFluidPipe::terrainDips() const
 {
     std::vector<TwoFluidTerrainDip> out;
@@ -2632,7 +2675,13 @@ void TwoFluidPipe::slugTrackStep(double dt)
     // collapses onto its face and rides it out)
     for (auto& o : slugTracks_)
     {
-        if (st.velocityMode == 0)
+        if (st.frontMode == 1)
+        {
+            // E7b (5.182): the Bendiksen closure prices the front at the
+            // cell holding it; the reported uF is the effective value
+            o.uF = bendiksenFrontVelocity(cellAt(o.xF));
+        }
+        else if (st.velocityMode == 0)
         {
             o.uF = st.slugVelocity;
         }
@@ -2742,7 +2791,12 @@ void TwoFluidPipe::slugTrackStep(double dt)
         o.inv = r.inventory;
         o.tBorn = evT;
         o.uR = liquidVelocity(cellAt(o.xR));
-        if (st.velocityMode == 0)
+        if (st.frontMode == 1)
+        {
+            // E7b (5.182): the Bendiksen value at birth (the front's cell)
+            o.uF = bendiksenFrontVelocity(cellAt(o.xF));
+        }
+        else if (st.velocityMode == 0)
         {
             o.uF = st.slugVelocity;
         }
@@ -3384,12 +3438,66 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         else if (mode == "gasCap") c.slugTracking.velocityMode = 1;
         else cfFatal("twoFluid: unknown slugTracking velocityMode '" + mode
                      + "' (constant or gasCap)");
+        // E7b (5.182): opt-in Bendiksen front closure. Declaring
+        // frontClosure bendiksen replaces the declared velocityMode law
+        // with v_front = C0 v_m + V_d (Bendiksen 1984, turbulent branch;
+        // source and applicability in TwoFluidSlugTracking). The two laws
+        // are mutually exclusive: any legacy front-velocity declaration
+        // alongside bendiksen is rejected loudly, so a run either rides a
+        // fully declared migration law or the closure, never a mixture.
+        if (sd.has("frontClosure"))
+        {
+            const std::string fc = sd.getWord("frontClosure");
+            if (fc == "bendiksen")
+            {
+                if (sd.has("velocityMode"))
+                    cfFatal("twoFluid: slugTracking frontClosure bendiksen"
+                            " is mutually exclusive with velocityMode (the"
+                            " Bendiksen closure replaces the declared"
+                            " migration law)");
+                if (sd.has("slugVelocity"))
+                    cfFatal("twoFluid: slugTracking frontClosure bendiksen"
+                            " is mutually exclusive with slugVelocity");
+                if (sd.has("gasCapTime"))
+                    cfFatal("twoFluid: slugTracking frontClosure bendiksen"
+                            " is mutually exclusive with gasCapTime (no"
+                            " gas-cap state rides a Bendiksen front)");
+                if (sd.has("maxSlugVelocity"))
+                    cfFatal("twoFluid: slugTracking frontClosure bendiksen"
+                            " is mutually exclusive with maxSlugVelocity"
+                            " (the clamp belongs to the gasCap law)");
+                c.slugTracking.bendiksenC0 = sd.getScalarOr("C0", 1.2);
+                if (!(c.slugTracking.bendiksenC0 > 0))
+                    cfFatal("twoFluid: slugTracking Bendiksen C0 must be"
+                            " positive");
+                if (sd.has("driftVelocity"))
+                {
+                    c.slugTracking.bendiksenVd
+                        = sd.getScalarOr("driftVelocity", 0.0);
+                    c.slugTracking.bendiksenVdDeclared = true;
+                }
+                if (!(c.fluid.rhoL > c.fluid.rhoG))
+                    cfFatal("twoFluid: slugTracking Bendiksen drift needs"
+                            " rhoL > rhoG");
+                c.slugTracking.frontMode = 1;
+            }
+            else
+                cfFatal("twoFluid: unknown slugTracking frontClosure '"
+                        + fc + "' (bendiksen is the only closure this"
+                               " build ships)");
+        }
         c.slugTracking.slugVelocity = sd.getScalarOr("slugVelocity", 0.0);
         if (c.slugTracking.slugVelocity < 0)
             cfFatal("twoFluid: negative slugTracking slugVelocity");
         c.slugTracking.gasCapTime = sd.getScalarOr("gasCapTime", 0.0);
         c.slugTracking.maxSlugVelocity = sd.getScalarOr("maxSlugVelocity", 0.0);
-        if (c.slugTracking.velocityMode == 0)
+        if (c.slugTracking.frontMode == 1)
+        {
+            // the Bendiksen closure owns the front; the legacy modes'
+            // required declarations do not apply (and were rejected above
+            // if present)
+        }
+        else if (c.slugTracking.velocityMode == 0)
         {
             if (!(c.slugTracking.slugVelocity > 0))
                 cfFatal("twoFluid: slugTracking constant mode needs a"
@@ -3405,6 +3513,18 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
             if (!(c.fluid.gasR > 0))
                 cfFatal("twoFluid: slugTracking gasCap mode reads the gas-cap"
                         " EOS pressure but no gasR is declared");
+        }
+        // E7b (5.182): opt-in SLUG/FILM cell partition, reported as a
+        // `zone` key on every cell row. Purely diagnostic over the
+        // tracking state; enable false keeps the whole block (zoning
+        // included) inert and the run byte-identical.
+        if (sd.has("zoning"))
+        {
+            const std::string zw = sd.getWord("zoning");
+            if (zw == "true") c.slugTracking.zoning = true;
+            else if (zw == "false") c.slugTracking.zoning = false;
+            else cfFatal("twoFluid: slugTracking zoning must be true or"
+                         " false");
         }
         c.slugTrackingOn = enable;
     }

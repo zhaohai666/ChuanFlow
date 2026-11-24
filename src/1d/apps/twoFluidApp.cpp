@@ -282,6 +282,15 @@ int main(int argc, char** argv)
                 = c.sandOn ? s.cellSand() : std::vector<double>();
             const std::vector<double> be
                 = c.sandOn ? s.cellBed() : std::vector<double>();
+            // E7b (5.182): the opt-in SLUG/FILM partition rides the cell
+            // rows as a numeric `zone` key (1 = the cell centre is inside
+            // a tracked slug span, 0 = film), absent unless slugTracking
+            // declared zoning. The existing keys - including the closure
+            // slip `s` - are untouched.
+            const std::vector<int> zoned
+                = c.slugTrackingOn && c.slugTracking.zoning
+                      ? s.cellZones()
+                      : std::vector<int>();
             for (int i = 0; i < s.sections(); ++i)
             {
                 log::info("cell ", i, " alpha ", num(a[i]), " water ",
@@ -289,6 +298,8 @@ int main(int argc, char** argv)
                           num(vsg[i]),
                           T.empty() ? "" : (" T " + num(T[i])),
                           sl.empty() ? "" : (" s " + num(sl[i])),
+                          zoned.empty()
+                              ? "" : (" zone " + std::to_string(zoned[i])),
                           ep.empty() ? "" : (" p " + num(ep[i])),
                           hy.empty() ? "" : (" h " + num(hy[i])),
                           wx.empty() ? "" : (" wax " + num(wx[i])),

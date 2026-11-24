@@ -241,31 +241,27 @@ def check(model, res, c):
     #    on this wall-function column the first cell is held at y+ = 52 with
     #    k = u_tau^2/sqrt(beta*) and omega = u_tau/(sqrt(beta*) kappa y), so
     #    Ub is decided by the eddy viscosity the model carries above it. The
-    #    old 20% band was calibrated against the superseded SST closure with
-    #    gamma1 = 0.2333, for which this case read +6%.
+    #    20% band is the mesh's (eight cells resolve the log layer), not the
+    #    model's, and holds for both closures.
     #
     #    The corrected Menter-2003 closure (Menter, AIAA J 41(2) 2003; the same
     #    coefficients are published in OpenFOAM's kOmegaSST and TRACE's
     #    MenterSST) sets gamma1 = beta1/betaStar - sigmaW1 kappa^2/sqrt(betaStar)
-    #    = 5/9 ~= 0.5532. That is 2.37x the old value, so the omega production
-    #    gamma S^2 grows by the same factor, k/omega falls in the log layer and
-    #    the Bradshaw limiter nut = a1 k/max(a1 omega, S F2) caps the first
-    #    cell at ~0.27 kappa u_tau y (measured 8.5e-5 against 3.2e-4). The
-    #    smaller nut steepens the profile and raises Ub systematically:
-    #    +19.9% (PISO) / +22.1% (SIMPLE) here, while kEpsilon stays at -15%.
-    #    This is the published closure's behaviour on a log-layer-resolving
-    #    wall-function mesh, not a regression of the friction balance. Keep
-    #    the 20% band for kEpsilon and allow 25% for kOmegaSST -- still tight
-    #    enough to catch a wrong wall shear, a missing turbulence source or a
-    #    broken coupling, without hard-coding the obsolete gamma1 into the
-    #    anchor.
+    #    = 5/9 ~= 0.5532, 2.37x the old 0.2333. Before the omega production
+    #    limiter was restored the raw gamma S^2 outran omega's beta omega^2
+    #    sink, driving the first cell's nut to ~0.27 kappa u_tau y and the bulk
+    #    speed to +22.1% -- outside this band. The Menter production limiter
+    #    P_omega = min(gamma S^2, 10 betaStar gamma omega^2) (OpenFOAM
+    #    kOmegaSSTBase.C, consistent production) caps that runaway: nut comes
+    #    back up and the deviation settles at +17.8% (PISO) / +19.3% (SIMPLE),
+    #    inside the original 20% mesh band. kEpsilon stays at -14.5%/-15.5%.
+    #    No band relaxation is needed once the published closure is complete.
     ub = sum(u for _, u in prof) / len(prof)
     expect = pope_bulk_velocity(u_tau, 2.0 * c["height"], c["nu"])
     err_f = ub / expect - 1.0
-    band = 0.25 if model == "kOmegaSST" else 0.20
-    print("%s: Ub/u_tau = %.2f, Pope: %.2f (err %+.1f%%, band %.0f%%)"
-          % (model, ub / u_tau, expect / u_tau, 100.0 * err_f, 100.0 * band))
-    if abs(err_f) > band:
+    print("%s: Ub/u_tau = %.2f, Pope: %.2f (err %+.1f%%, band 20%%)"
+          % (model, ub / u_tau, expect / u_tau, 100.0 * err_f))
+    if abs(err_f) > 0.20:
         failures.append("bulk velocity outside the friction-law band")
 
     # 7. the equilibrium wall cell, out of the vtu: the closure that keeps the

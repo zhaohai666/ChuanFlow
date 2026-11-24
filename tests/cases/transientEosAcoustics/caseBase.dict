@@ -1,0 +1,48 @@
+// E7c (5.183) byte-identity witness: case.dict WITHOUT the acoustics
+// block. The acoustic layer reads the mean state but never writes it, so
+// the whole physics report must be byte-for-byte identical to the
+// declared run once the `pA` tokens and `aunode` lines are stripped. The
+// checker diffs the two full reports, and also diffs this run against the
+// pre-change baseline binary (the zero-declaration path must not move).
+fluid
+{
+    rhoL 1000;
+    rhoG 11.61;
+    muL  0.01;
+    muG  1e-5;
+    gasR 287;
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 100;
+}
+
+closure
+{
+    model wallis;
+}
+
+initial
+{
+    alpha 0;
+    water 0;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet { type sealed; }
+    outlet { type sealed; }
+}
+
+time
+{
+    dt 0.001;
+    endTime 2.0;
+    reportEvery 5;
+}

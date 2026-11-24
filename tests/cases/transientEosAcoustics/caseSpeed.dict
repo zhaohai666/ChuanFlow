@@ -1,0 +1,57 @@
+// E7c (5.183) one-knob arm: the DECLARED sound-speed override. The only
+// difference to case.dict is soundSpeed 250 (m/s) - the kernel cannot
+// derive an adiabatic/bulk correction itself (no cV is declared), so the
+// case pins the wave speed explicitly and the checker verifies the
+// reported fronts ride 250 m/s (and NOT the EOS isothermal 293.4 m/s),
+// with the reflection period moving to 2L/250 = 0.8 s accordingly.
+fluid
+{
+    rhoL 1000;
+    rhoG 11.61;
+    muL  0.01;
+    muG  1e-5;
+    gasR 287;
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 100;
+}
+
+closure
+{
+    model wallis;
+}
+
+initial
+{
+    alpha 0;
+    water 0;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet { type sealed; }
+    outlet { type sealed; }
+}
+
+acoustics
+{
+    enable true;
+    initialGauge 1e6;
+    soundSpeed 250;    // declared wave speed: 250 * 0.001 / 1 = 0.25 <= 0.5
+    cfl 0.5;
+    openEnd outlet;
+}
+
+time
+{
+    dt 0.001;
+    endTime 2.4;       // covers wall transitions at 0.4, 1.2, 2.0 s
+    reportEvery 5;
+}

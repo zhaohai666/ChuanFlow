@@ -1,0 +1,75 @@
+// E7c (5.183): linear along-the-line pressure-wave acoustics on the EOS
+// two-fluid kernel (chflow-1d-twofluid) - the depressurization transient.
+//
+// The line is a sealed 100 m gas bore (the lumped mean state is static:
+// vM = 0, the EOS fields never move - the acoustic field is the whole
+// story). The acoustics{} block declares the OUTLET end as the
+// pressure-release vent: at t = 0 the uniform declared overpressure
+// initialGauge = 1e6 Pa starts venting, the release wave travels up the
+// line at the EOS wave speed a = sqrt(gasR T) = sqrt(287 * 300) ~ 293.4
+// m/s (the exact density derivative of the kernel's own gas law
+// p = rhoG gasR T, isothermal form), reflects off the hard-wall inlet,
+// and the whole signal repeats with the 4L/a quarter-wave period
+// (transitions at a fixed cell spaced 2L/a). The checker re-derives the
+// wave speed, the front positions, the reflection period and the energy
+// decay from the report alone.
+//
+// The undeclared twin (caseBase.dict) is byte-identical to this run once
+// the pA tokens and aunode lines are stripped; caseDisabled.dict (enable
+// false) is byte-identical outright. The mean fields (alpha, water, vsl,
+// vsg, EOS p, vm, dp) are untouched by the acoustic layer - it is
+// report-only, so the stripped declared report equals the baseline
+// binary's output byte for byte.
+fluid
+{
+    rhoL 1000;
+    rhoG 11.61;   // the density the declared 1e6 Pa overpressure refers
+                  // to at 287 K (1e6 / (287 * 300))
+    muL  0.01;
+    muG  1e-5;
+    gasR 287;     // gasR > 0: ideal-gas EOS on; a^2 = gasR * T = 86100
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 100;
+}
+
+closure
+{
+    model wallis;
+}
+
+initial
+{
+    alpha 0;          // a gas line: the acoustic medium is the gas
+    water 0;
+    temperature 300;  // T = 300 K fixed (no thermal block)
+}
+
+// sealed both ends: the lumped mean state stays static, vM = 0
+boundaries
+{
+    inlet { type sealed; }
+    outlet { type sealed; }
+}
+
+acoustics
+{
+    enable true;
+    initialGauge 1e6;   // Pa, uniform acoustic overpressure at t = 0
+    soundSpeed 0;       // 0 = the EOS-consistent isothermal sqrt(gasR T)
+    cfl 0.5;            // a dt / dx = 293.4 * 0.001 / 1 ~ 0.29 <= 0.5
+    openEnd outlet;     // the venting end (pressure release)
+}
+
+time
+{
+    dt 0.001;
+    endTime 2.0;        // covers wall transitions at L/a, 3L/a, 5L/a
+    reportEvery 5;
+}

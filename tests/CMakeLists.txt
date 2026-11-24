@@ -2001,6 +2001,23 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientPigging)
 
+# E7c (5.183): linear along-the-line EOS acoustics - the depressurization
+# pressure-wave transient. The checker re-derives the wave speed
+# (a^2 = gasR T, the exact density derivative of the kernel's own gas law),
+# the stability bound a dt/dx <= cfl, the wave-front positions, the
+# reflection period (hard-wall gauge transitions spaced 2L/a) and the
+# acoustic energy budget from the report alone; exercises the declared
+# soundSpeed override arm; proves the undeclared and disabled twins
+# byte-identical (stripped pA/aunode columns) and the 8 loud rejections
+# (cfl window, enable word, non-positive declarations, missing EOS, and a
+# dt violating the stability bound at runtime).
+add_test(
+    NAME verify.transientEosAcoustics
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_eos_acoustics.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientEosAcoustics)
+
 # O4 (5.163): rigorous inhibitor phase equilibrium. The checker replicates
 # the activity-root recursion (aW = 1/(1 + activityK w) on the declared
 # curve) cell by cell on the sealed geothermal line - including the spatial

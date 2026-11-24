@@ -60,6 +60,7 @@
       <button id="tbNew" title="新建工程">新建</button>
       <button id="tbSave" title="保存工程">保存</button>
       <button id="tbRunSteady" class="primary" title="运行稳态求解">▶ 稳态</button>
+      <button id="tbRunPointElements" title="运行点元设备求解（射流泵/螺杆泵/柱塞气举/分离器，消费 E4 设备块的闭式物理）">▶ 点元</button>
       <button id="tbRunTransient" title="运行瞬态求解">▶ 瞬态</button>
       <button id="tbRunCoupled" title="运行 1D↔3D 耦合求解">▶ 耦合</button>
       <button id="tbStop" disabled title="停止当前作业">■ 停止</button>
@@ -502,6 +503,8 @@
               <div class="dict-col">
                 <label class="field"><span>稳态求解器</span>
                   <input id="exePath" type="text" spellcheck="false" /></label>
+                <label class="field"><span>点元设备求解器</span>
+                  <input id="pointElementsExePath" type="text" spellcheck="false" /></label>
                 <label class="field"><span>瞬态求解器</span>
                   <input id="transientExePath" type="text" spellcheck="false" /></label>
                 <label class="field"><span>耦合求解器</span>

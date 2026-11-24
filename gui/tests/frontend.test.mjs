@@ -2326,3 +2326,33 @@ test('templates: 3D 族覆盖全部接入 app（10 个新成员）', () => {
     assert.ok(e.label && e.label.length > 0);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Audit fixes (2026-11-24): P2-5 aunode consumption
+// ---------------------------------------------------------------------------
+
+test('audit P2-5: parseTwoFluidFrames 消费 E7c aunode 面声速行', () => {
+  const out = `t 0.1 vm 0.5 dp 100
+aunode 0 u 0.0
+aunode 1 u 12.5
+node 0 p 950000
+cell 0 alpha 0.5 water 0.2 pA 9e5
+cell 1 alpha 0.4 water 0.1 pA 8.5e5
+t 0.2 vm 0.6 dp 120
+aunode 0 u -3.25
+aunode 1 u 0
+cell 0 alpha 0.5 water 0.2 pA 7e5
+cell 1 alpha 0.4 water 0.1 pA 6e5
+`;
+  const frames = parseTwoFluidFrames(out);
+  assert.equal(frames.length, 2);
+  assert.deepEqual(frames[0].aunode, [0, 12.5]);
+  assert.deepEqual(frames[1].aunode, [-3.25, 0]);
+  // aunode rows must not leak into cell parsing
+  assert.equal(frames[0].cells.length, 2);
+  assert.equal(frames[0].cells[0].pA, 9e5);
+  // slugSeriesKeys keeps collecting cell keys (pA included), aunode stays on the frame
+  const keys = slugSeriesKeys(frames);
+  assert.ok(keys.includes('pA'));
+  assert.ok(!keys.includes('aunode'));
+});

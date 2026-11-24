@@ -40,6 +40,7 @@ import {
 } from './templates.js';
 import {
   REGIME_NAMES, REGIME_COLORS, mapPoint, regimeHit, regimeMapDrawCommands,
+  beggsBrillPattern,
 } from './regimemap.js';
 import {
   tornadoData, tornadoCommands,
@@ -67,6 +68,13 @@ import {
 // ---------------------------------------------------------------------------
 
 const DEFAULT_EXE = '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-steady';
+// Audit fix (P1-2): the point-element engine (chflow-1d-point-elements) is the
+// only consumer of the E4 device top-level blocks (jetPumps/pcpPumps/
+// plungerGasLifts/separators — the steady network app ignores unknown blocks,
+// so device physics silently dropped out of a plain ▶稳态 run). Lives in the
+// same build directory as the steady binary; E9 persistence covers it.
+const DEFAULT_POINT_ELEMENTS_EXE = DEFAULT_EXE.replace('chflow-1d-steady', 'chflow-1d-point-elements');
+const POINT_ELEMENT_BLOCK_RE = /^\s*(jetPumps|pcpPumps|plungerGasLifts|separators)\s*\{/m;
 const DEFAULT_TRANSIENT_EXE =
   '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-transient';
 const DEFAULT_COUPLED_EXE =
@@ -165,11 +173,12 @@ const ENGINES_STORE_KEY = 'chflow.engines.v1';
 // key per family member, aligned with the pre-existing 8-key style.
 const THREE_D_FAMILY_KEYS = THREE_D_FAMILY.map((e) => e.key);
 const ENGINES_KEYS = [
-  'steady', 'transient', 'coupled', 'coupledCase', 'twofluid', 'nodal', 'pvt', 'threeD',
+  'steady', 'pointElements', 'transient', 'coupled', 'coupledCase', 'twofluid', 'nodal', 'pvt', 'threeD',
   ...THREE_D_FAMILY_KEYS.filter((k) => k !== 'threeD'),
 ];
 const ENGINE_INPUT_IDS = {
   steady: 'exePath',
+  pointElements: 'pointElementsExePath',
   transient: 'transientExePath',
   coupled: 'coupledExePath',
   coupledCase: 'coupledCasePath',
@@ -181,6 +190,7 @@ const ENGINE_INPUT_IDS = {
 
 const engines = {
   steady: DEFAULT_EXE,
+  pointElements: DEFAULT_POINT_ELEMENTS_EXE,
   transient: DEFAULT_TRANSIENT_EXE,
   coupled: DEFAULT_COUPLED_EXE,
   coupledCase: DEFAULT_COUPLED_CASE,
@@ -807,7 +817,11 @@ function renderCanvas() {
       :       `${p.name}`;
     svg.appendChild(label);
 
-    if (p.valve || p.pumpHead || p.pumpRate) {
+    // Audit fix (P1-3): the gate must cover every device family the glyph
+    // generator supports, not just the three M5-era inline keys — otherwise a
+    // pipe carrying only a jet pump / PCP / PGL / separator / compressor gets
+    // serialized correctly but draws no glyph on the canvas.
+    if (p.valve || p.pumpHead || p.pumpRate || ALL_DEVICE_FIELDS.some((k) => p[k])) {
       appendDeviceGlyph(p, a.x, a.y, b.x, b.y);
     }
   }
@@ -1140,6 +1154,7 @@ async function startJob(label, caseText_, isPath = false) {
   }
   const exe =
     label === 'steady' ? engines.steady
+    : label === 'pointElements' ? engines.pointElements
     : label === 'transient' ? engines.transient
     : label === 'slug' ? engines.twofluid
     : label === '3d' ? (engines[active3DEngine] || engines.threeD)
@@ -1209,6 +1224,7 @@ setInterval(async () => {
     if (st.exit === 0) {
       appendLog(`[job] ${label} 完成`);
       if (label === 'steady') onSteadyDone(full);
+      else if (label === 'pointElements') onPointElementsDone(full);
       else if (label === 'transient') onTransientDone(full);
       else if (label === 'coupled') onCoupledDone(full);
       else if (label === 'slug') onSlugDone(full);
@@ -1219,6 +1235,20 @@ setInterval(async () => {
     }
   }
 }, 300);
+
+// Audit fix (P1-2): the point-element engine prints one verdict line per
+// device (PUMPING / NO-SUCTION / OPEN / CLOSED / closure=...); surface them in
+// the status area and the run log — no chart plumbing, the physics is closed-form.
+function onPointElementsDone(fullOutput) {
+  const lines = fullOutput.split('\n').map((l) => l.replace('[chflow] ', '').trim())
+    .filter((l) => /(PUMPING|NO-SUCTION|OPEN|CLOSED|SEPARAT|closure=|point elements)/.test(l));
+  if (!lines.length) {
+    setStatus('点元求解完成（无设备报告行）。');
+    return;
+  }
+  appendLog(`[point-elements] ${lines.join(' | ')}`);
+  setStatus(`点元设备求解完成：${lines.length} 条报告行，详见求解日志。`, 'ok');
+}
 
 function onSteadyDone(fullOutput) {
   const s = parseSteadyOutput(fullOutput);
@@ -4383,8 +4413,26 @@ $('menuStop').addEventListener('click', () => $('tbStop').click());
 
 $('tbRunSteady').addEventListener('click', () => {
   const text = state.rawDictText || networkToCaseText(state.model);
+  // Audit fix (P1-2): the steady network app silently ignores the E4 device
+  // blocks — point the user at ▶点元 instead of dropping the physics.
+  if (POINT_ELEMENT_BLOCK_RE.test(text)) {
+    appendLog('[steady] 检测到点元设备块（jetPumps/pcpPumps/plungerGasLifts/separators）：稳态求解不消费其物理，请用 ▶点元 运行。');
+    setStatus('检测到点元设备块：稳态求解不含设备效应，请使用 ▶点元。');
+  }
   startJob('steady', text);
 });
+
+// Audit fix (P1-2): point-element run — same serialized dictionary, device
+// blocks consumed by chflow-1d-point-elements.
+$('tbRunPointElements')?.addEventListener('click', () => {
+  const text = state.rawDictText || networkToCaseText(state.model);
+  if (!POINT_ELEMENT_BLOCK_RE.test(text)) {
+    setStatus('当前画布没有点元设备（射流泵/螺杆泵/柱塞气举/分离器），无需运行点元引擎。', 'error');
+    return;
+  }
+  startJob('pointElements', text);
+});
+$('menuRunPointElements')?.addEventListener('click', () => $('tbRunPointElements').click());
 $('tbRunTransient').addEventListener('click', () => {
   const text = state.rawDictText || networkToCaseText(state.model);
   startJob('transient', text);
@@ -4417,6 +4465,12 @@ caseText.value = DEFAULT_CASE;
 // E2: initialize the flow-assurance form from the case dictionary now that
 // it carries its default text (the grid was built earlier at module load).
 renderFlowAssuranceForm(parseFlowAssurance(caseText.value));
+
+// Audit fix (P2-6): the schedule panel must initialize from the case dictionary
+// too — an empty form applied by click would removeDictBlock the dictionary's
+// existing sourceSchedule{} silently. Mirrors the E2 flow-assurance startup load.
+schedModel = parseSchedules(caseText.value);
+renderSchedulePanel();
 
 reflectEngines();
 

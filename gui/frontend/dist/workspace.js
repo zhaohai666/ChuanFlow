@@ -736,6 +736,9 @@ export function parseTwoFluidFrames(out) {
   const tRe = /^t\s+(\S+)\s+vm\s+(\S+)\s+dp\s+(\S+)/;
   const cellRe = /^cell\s+(\d+)\s+(.*)$/;
   const nodeRe = /^node\s+(\d+)\s+p\s+(\S+)$/;
+  // E7c (§5.183): face acoustic velocity "aunode <j> u <v>" — stored on the
+  // frame instead of being dropped, so the slug canvas can overlay it.
+  const auRe = /^aunode\s+(\d+)\s+u\s+(\S+)$/;
   for (const raw of out.split('\n')) {
     const line = raw.trim().replace('[chflow] ', '').trim();
     if (!line) continue;
@@ -748,7 +751,13 @@ export function parseTwoFluidFrames(out) {
         dp: Number(tm[3]),
         nodeP: [],
         cells: [],
+        aunode: [],
       };
+      continue;
+    }
+    const am = auRe.exec(line);
+    if (am && cur) {
+      cur.aunode[Number(am[1])] = Number(am[2]);
       continue;
     }
     const nm = nodeRe.exec(line);

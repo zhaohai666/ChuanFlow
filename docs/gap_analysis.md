@@ -1,6 +1,7 @@
 
 | 2026-11-24 | E7c（EOS 泄压沿线声学） | §5.183 | 03284d3 | verify.transientEosAcoustics 34 判据（8 拒收）；196 standing case 基线对拍逐字节 | EOS 模式 `acoustics{}`：线性化 Euler 显式交错格式（先面 u′ 再 cell 心 p′），a²=gasR·T 为内核自研 EOS 精确密度导数（零发明物理）+ 声明式覆盖；释放端 p′=0 半控制体、硬壁 u′=0；CFL≤0.5 显式准则（开口面半控制体使极限减半）违规 cfFatal；波速 −0.5%、反射周期 ±2% 独立重推；声能守恒（无损线性系统不衰减）为推导发现并验证；纯诊断层不回写场 |# ChuanFlow 对标 Pipesim / OLGA / Fluent 能力差异清单
 
+| 2026-11-24 | E 类验收审计（产品愿景真实比对） | — | 见修复 commit | node 143/143 + rust 34/34 | 三层链路审计（Explore agent）发现 4 断链并当轮修复：**P0** `case_templates` 未注册 main.rs generate_handler（模板库死链，一行注册）；**P1-2** E4 点元四设备块无消费引擎——GUI 增 ▶点元 运行入口（引擎键/路径框/E9 持久化/onPointElementsDone 报告行）+ ▶稳态 检测设备块时提示改用 ▶点元（compressor 走稳态原生管键不受影响）；**P1-3** glyph 门槛漏新设备族（改 ALL_DEVICE_FIELDS.some）；**P1-4** beggsBrillPattern 未导入（E5 对账 ReferenceError 被空 catch 吞，补 import）；P2-5 parseTwoFluidFrames 增 E7c aunode 行消费；P2-6 日程面板启动载入对齐 E2 范式。端到端 12/12 + GUI 截图复核（▶点元 按钮渲染、点元真跑 PUMPING r=0.343 resid 1.5e-11） |
 > 本文档记录 ChuanFlow 相对 **Pipesim / OLGA / Fluent** 三款商业软件的现存能力差异，作为"继续排查还有哪些能力没有实现"工作线的单一可信来源。
 >
 > - 每完成一个增量，本文档同步更新：状态列从 `OPEN` → `IN_PROGRESS` → `CLOSED`，并在末尾的"实施日志"里追加一行实测结果。

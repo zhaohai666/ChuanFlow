@@ -43,14 +43,17 @@ public:
     /// Menter's production limiter: Pk <= 10 betaStar k w
     static constexpr scalar productionLimit = 10.0;
 
-    /// blend functions, exposed for the unit tests. `cellSize` is the largest
-    /// cell edge of the mesh, Menter's free-stream guard.
-    static scalar f1(scalar k, scalar omega, scalar y, scalar nu, scalar cellSize);
+    /// blend functions, exposed for the unit tests. `cdKw` is Menter's
+    /// cross-diffusion guard CD_komega = max(2 sigmaW2/omega grad(w).grad(k),
+    /// 1e-10) of the cell (see cdKOmega()); F1's third argument caps arg1 in
+    /// the free stream, where the guard is active, and opens when the
+    /// gradients vanish (CD at its floor).
+    static scalar f1(scalar k, scalar omega, scalar y, scalar nu, scalar cdKw);
     static scalar f2(scalar k, scalar omega, scalar y, scalar nu);
 
-    /// largest cell volume to the 1/3, used as the cell size of F1's third
-    /// argument (a cube root is a mesh-size estimate that needs no face data)
-    scalar cellSize() const { return cellSize_; }
+    /// Menter's CD_komega field from the current k/omega gradients, floored
+    /// at 1e-10 so a zero-gradient region leaves the free-stream guard open
+    Field<scalar> cdKOmega() const;
 
 protected:
     void initializeFields() override;
@@ -66,9 +69,6 @@ protected:
     /// production and destruction of both equations balance in the log layer
     void wallEquilibrium(const WallState& ws, scalar y,
                          scalar& kEq, scalar& dissEq) const override;
-
-private:
-    scalar cellSize_ = 1;
 };
 
 } // namespace cf

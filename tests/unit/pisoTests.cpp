@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 #include "cf/common/Error.h"
@@ -117,23 +118,72 @@ int main()
               "predicted flux is already divergence-free");
     }
 
-    // ---- second corrector carries the corrected flux and contracts the ----
-    // ---- residual (OpenFOAM pisoFoam semantics)                        ----
+    // ---- the second corrector must not overwrite the first one's p ----
+    // The full-p design (PisoSolver.h) re-predicts the pressure-free flux
+    // at every corrector, so the second corrector re-solves the same fixed
+    // point: the residual stays at the floor and the pressure must match a
+    // single-corrector run. The ac1b343 flux carry-over instead made the
+    // second corrector solve L(p) = -div(phi_closed) ~ 0 and replaced the
+    // pressure field with a near-zero one - guarded here on both the
+    // orthogonal channel and a sheared (non-orthogonal) mesh, where the
+    // closed flux leaves a real residual for the collapse to feed on.
     {
-        Channel c(Vector{0.2, H, 0.05}, Vector{2, 10, 1}, NU, Vector{A, 0, 0});
-        PisoControls ctl;
-        ctl.dt = 0.002;
-        ctl.correctors = 2;
-        ctl.continuityTol = 0.0; // never break early: both correctors must run
-        ctl.bodyForce = c.force;
-        const PisoStepResult r =
-            solveTransientIncompressiblePiso(c.mesh, c.U, c.p, c.phi, c.nu, schemes(), ctl);
-        CHECK(r.correctorsUsed == 2 && r.correctorResiduals.size() == 2,
+        auto run = [](Channel& c, int correctors)
+        {
+            PisoControls ctl;
+            ctl.dt = 0.002;
+            ctl.correctors = correctors;
+            ctl.continuityTol = 0.0; // never break early
+            ctl.bodyForce = c.force;
+            const PisoStepResult r = solveTransientIncompressiblePiso(
+                c.mesh, c.U, c.p, c.phi, c.nu, schemes(), ctl);
+            scalar pMax = 0;
+            for (const scalar v : c.p.internalField())
+                pMax = std::max(pMax, std::abs(v));
+            return std::pair<scalar, PisoStepResult>(pMax, r);
+        };
+
+        Channel orth(Vector{0.2, H, 0.05}, Vector{2, 10, 1}, NU, Vector{A, 0, 0});
+        Channel sheared(Vector{0.2, H, 0.05}, Vector{2, 10, 1}, NU, Vector{A, 0, 0});
+        // a mild shear (2.9 deg non-orthogonal): the corrected scheme still
+        // closes continuity to ~1e-10, but the pressure is now a real field
+        // (not the ~0 gauge of the orthogonal channel), so a carry-over that
+        // collapses p on the second corrector is caught
+        Field<Vector> pts = sheared.mesh.points();
+        for (Vector& pt : pts) pt.x += 0.05 * pt.y;
+        sheared.mesh.movePoints(pts);
+
+        const auto one = run(orth, 1);
+        const auto two = run(orth, 2);
+        CHECK(two.second.correctorsUsed == 2 &&
+                  two.second.correctorResiduals.size() == 2,
               "correctors = 2 runs both correctors");
-        CHECK(r.correctorResiduals[1] < r.correctorResiduals[0],
-              "the second corrector shrinks the continuity residual");
-        std::cout << "info: corrector residuals " << r.correctorResiduals[0]
-                  << " -> " << r.correctorResiduals[1] << "\n";
+        // orthogonal channel: the predicted flux already closes continuity,
+        // so the second corrector is a fixed point - the residual must not
+        // grow (the ac1b343 carry-over instead drove p to the gauge here)
+        CHECK(two.second.correctorResiduals[1] <= two.second.correctorResiduals[0] + 1e-18,
+              "the second corrector does not grow the continuity residual (orthogonal)");
+        CHECK(two.first > 0.5 * one.first,
+              "the second corrector does not collapse the pressure (orthogonal)");
+
+        const auto sOne = run(sheared, 1);
+        const auto sTwo = run(sheared, 2);
+        CHECK(sTwo.second.correctorsUsed == 2, "the sheared mesh runs both correctors");
+        // the non-idle case: on a non-orthogonal mesh the first corrector
+        // leaves a real residual (the predicted flux does not close it), and
+        // the second corrector re-predicts and re-solves to shrink it. This
+        // is the contraction the orthogonal mesh cannot show.
+        CHECK(sTwo.second.correctorResiduals[1] < sTwo.second.correctorResiduals[0],
+              "the second corrector shrinks the continuity residual (non-orthogonal)");
+        // and the refined pressure must stay a real field, not collapse to
+        // the gauge the way the carry-over made it
+        CHECK(sTwo.first > 0.5 * sOne.first && sTwo.first < 2.0 * sOne.first,
+              "the second corrector preserves the pressure field (non-orthogonal)");
+        std::cout << "info: corrector residuals orth " << two.second.correctorResiduals[0]
+                  << " -> " << two.second.correctorResiduals[1] << ", sheared "
+                  << sTwo.second.correctorResiduals[0] << " -> "
+                  << sTwo.second.correctorResiduals[1] << " (pMax " << sOne.first
+                  << " -> " << sTwo.first << ")\n";
     }
 
     // ---- steady limit: the discrete parabola of the wall-cell scheme ----

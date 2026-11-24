@@ -133,18 +133,20 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
     const Field<scalar> rAUf = interpolateToFaces(mesh, rAU);
 
     // ---------------- correctors ----------------
+    // pisoFoam re-predicts the pressure-free flux from HbyA at the top of
+    // EVERY corrector and solves the FULL p there (PisoSolver.h: solving p
+    // rather than accumulating p' is the documented design). Carrying the
+    // closed flux into a later corrector instead - as ac1b343 tried - makes
+    // the next full-p solve invert L(p) = -div(phi_closed) ~ 0 and replaces
+    // the pressure field with a near-zero one. With the re-predicted flux
+    // the second corrector repeats the first's fixed point: the outer loop
+    // is a convergence check, while the non-orthogonal correction work
+    // happens inside the Poisson solve (ctl.nonOrthCorrectors).
     for (int corr = 1; corr <= ctl.correctors; ++corr)
     {
-        if (corr == 1)
-        {
-            // predicted flux: momentum response, pressure not yet included
-            updatePhiInternal(mesh, HbyA, phi);
-            phi.correctBoundaryFlux(HbyA);
-        }
-        // correctors > 1 keep the flux the previous corrector closed with
-        // correctFluxes (OpenFOAM pisoFoam semantics): the next pressure
-        // solve then drives the residual of the remaining divergence down
-        // instead of repeating the first corrector's RHS verbatim
+        // predicted flux: momentum response, pressure not yet included
+        updatePhiInternal(mesh, HbyA, phi);
+        phi.correctBoundaryFlux(HbyA);
         res.predictedContinuityError = continuityError(mesh, phi);
 
         const Field<scalar> divPhi = fvc::divPhi(mesh, phi.values());

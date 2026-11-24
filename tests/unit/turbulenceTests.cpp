@@ -224,24 +224,43 @@ int main()
 
     // ---------------- SST blend functions ----------------
     {
-        const scalar nu = NU_AIR, cell = 0.01;
+        const scalar nu = NU_AIR;
+        // Menter 1994 Eqs. 10/8. F1's third argument is capped by the
+        // cross-diffusion guard CD_komega = max(2 sigmaW2/omega grad(w).grad(k),
+        // 1e-10); the near-wall scaling grad ~ field/y gives CD = 2 sigmaW2
+        // k/y^2, for which the cap is exactly 2.0 and the two wall
+        // arguments decide the blend.
+        auto cdOf = [](double kk, double yy)
+        { return 2.0 * KOmegaSST::sigmaW2 * kk / (yy * yy); };
         // near a wall at y = 0.1 mm with the k/omega pair of the log layer
-        const scalar nearWall = KOmegaSST::f1(0.01, 10.0, 1e-4, nu, cell);
+        const scalar nearWall = KOmegaSST::f1(0.01, 10.0, 1e-4, nu, cdOf(0.01, 1e-4));
         // free stream: k = 1e-4 with omega = sqrt(k)/(Cmu^1/4 L), L = 10 mm,
         // measured a third of the domain away from the wall
         const scalar kFree = 1e-4, wFree = 1.83;
-        const scalar f1Mid = KOmegaSST::f1(kFree, wFree, 0.15, nu, cell);
-        const scalar f1Far = KOmegaSST::f1(kFree, wFree, 0.3, nu, cell);
+        const scalar f1Mid = KOmegaSST::f1(kFree, wFree, 0.08, nu, cdOf(kFree, 0.08));
+        const scalar f1Far = KOmegaSST::f1(kFree, wFree, 0.3, nu, cdOf(kFree, 0.3));
         const scalar freeStream = f1Far;
         CHECK(nearWall > 0.999, "F1 = 1 in the near-wall k-omega branch");
         CHECK(freeStream < 0.05, "F1 = 0 in the free-stream k-epsilon branch");
+        // the guard caps DOWN, never up (the old max-nesting did the
+        // opposite): aligned free-stream gradients at L = 10 mm suppress F1
+        // below the unguarded value at the same point, where CD sits at
+        // its floor and the wall arguments decide
+        CHECK(KOmegaSST::f1(kFree, wFree, 0.15, nu, cdOf(kFree, 0.01))
+                  < KOmegaSST::f1(kFree, wFree, 0.15, nu, 1e-10),
+              "F1's cross-diffusion guard suppresses the free-stream blend");
         // the blend switches across the outer layer: F1 is intermediate at
-        // y = 0.15 and falls from there to the free stream
+        // y = 0.08 and falls from there to the free stream
         CHECK(f1Mid > 0.2 && f1Mid < 0.8, "F1 switches inside the outer layer");
-        CHECK(KOmegaSST::f1(kFree, wFree, 0.05, nu, cell) >= f1Mid && f1Mid > f1Far,
+        CHECK(KOmegaSST::f1(kFree, wFree, 0.05, nu, cdOf(kFree, 0.05)) >= f1Mid && f1Mid > f1Far,
               "F1 decreases away from the wall");
         CHECK(KOmegaSST::f2(kFree, wFree, 1e-3, nu) > KOmegaSST::f2(kFree, wFree, 0.3, nu),
               "F2 decreases away from the wall");
+        // the viscous branch 500 nu/(y^2 omega) keeps F2 = 1 in the
+        // sublayer even when the eddy branch is small (the old form dropped
+        // it and let the limiter open there)
+        CHECK(KOmegaSST::f2(1e-8, 100.0, 1e-3, nu) > 0.999,
+              "F2 = 1 in the sublayer via the viscous branch");
 
         CHECK(near(KOmegaSST::f2(0.01, 10.0, 1e-4, nu), 1.0, 1e-12), "F2 = 1 near the wall");
         const scalar f2Far = KOmegaSST::f2(kFree, wFree, 0.3, nu);
@@ -257,7 +276,7 @@ int main()
             {
                 for (double ww : {1e-14, 1e-2, 1e4})
                 {
-                    const scalar a = KOmegaSST::f1(kk, ww, yy, nu, cell);
+                    const scalar a = KOmegaSST::f1(kk, ww, yy, nu, cdOf(kk, yy));
                     const scalar b = KOmegaSST::f2(kk, ww, yy, nu);
                     bounded = bounded && a >= 0 && a <= 1 && b >= 0 && b <= 1;
                     finite = finite && std::isfinite(a) && std::isfinite(b);
@@ -556,7 +575,9 @@ int main()
         auto& m = model;
         const scalar k0 = 1.0, w0 = 1e-3;
         m.initializeUniform(k0, w0);
-        CHECK(KOmegaSST::f1(k0, w0, m.cellWallDistance()[0], NU_AIR, model.cellSize()) > 0.999,
+        // a uniform seed has zero gradients, so CD_komega sits at its floor
+        // and F1's free-stream guard stays open
+        CHECK(KOmegaSST::f1(k0, w0, m.cellWallDistance()[0], NU_AIR, m.cdKOmega()[0]) > 0.999,
               "the decay state sits in the k-omega branch");
 
         const scalar dt = 1.0;

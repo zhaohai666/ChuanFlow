@@ -84,13 +84,18 @@ def vogel_rate(pwf, pres, qmax):
 
 
 # the operating points recorded when this checker was calibrated; the solver
-# is deterministic, so any drift means the physics moved
+# is deterministic, so any drift means the physics moved. Recalibrated when
+# the undersaturated Vazquez-Beggs co was corrected to its PUBLISHED form
+# (denominator = the evaluation pressure, Vazquez & Beggs 1980): the dead-oil
+# twin (pb = 0) previously shrank Bo far faster than the paper's formula, so
+# its operating point and static columns moved; the vogel/deadwell static
+# columns shift slightly where they rise above pb.
 GOLDEN = {
     "vogel": {"q": 0.00290785579167, "pwf": 15120468.4282,
-              "static": 18642604.4027},
-    "deadoil": {"q": 0.00057633047675, "pwf": 20796742.5522,
-                "static": 20769607.9235},
-    "deadwell": {"static": 18642604.4027},
+              "static": 18641266.279},
+    "deadoil": {"q": 0.000900165707941, "pwf": 20092848.201,
+                "static": 20034494.0404},
+    "deadwell": {"static": 18641266.279},
 }
 
 results = {}

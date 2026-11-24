@@ -279,10 +279,15 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
 
     const double theta = in.angleDeg * M_PI / 180.0;
     double hl;
+    // the two branch holdups of the published transition (regime 1): each
+    // neighbouring regime's law, each lifted with its OWN inclination set,
+    // so each branch can be priced as a complete gradient below
+    double hlSeg = 0.0, hlInt = 0.0;
     if (in.correlation == 0)
     {
-    // horizontal holdup with the >= lambda clamp; index 1 (transition) is
-    // never taken directly - it blends hl0(0) and hl0(1) (= lambda)
+    // horizontal holdup with the >= lambda clamp; index 1 (transition) has
+    // no law of its own - the published transition blends the neighbouring
+    // regimes' branch answers
     const double ab[4] = {0.98, 0.0, 0.845, 1.065};
     const double bb[4] = {0.4846, 0.0, 0.5351, 0.5824};
     const double cb[4] = {0.0868, 0.0, 0.0173, 0.0609};
@@ -291,44 +296,58 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
         const double v = ab[r] * std::pow(lambda, bb[r]) * std::pow(fr, -cb[r]);
         return std::max(v, lambda);
     };
-    if (regime == 1)
+    // the published inclination C sets, applied per regime r: uphill
+    // segregated and uphill intermittent carry their own sets, uphill
+    // distributed none, and one downhill set prices every regime
+    auto lifted = [&](double h, int r) -> double
     {
-        const double w = pat.transitionWeight;
-        hl = w * hl0(0) + (1.0 - w) * hl0(1);
-    }
-    else
-    {
-        hl = hl0(regime);
-    }
-
-    // inclination correction
-    if (std::abs(in.angleDeg) > 1e-12 && lambda > 1e-9)
-    {
-        double d, e, f, h;
-        if (in.angleDeg > 0 && regime != 3)
+        if (std::abs(in.angleDeg) > 1e-12 && lambda > 1e-9)
         {
-            if (regime == 0) { d = 0.011; e = -3.768; f = 3.539; h = -1.614; }
-            else { d = 2.96; e = 0.305; f = -0.4473; h = 0.0978; }
-        }
-        else if (in.angleDeg < 0)
-        {
-            d = 4.70; e = -0.3692; f = 0.1244; h = -0.5056;
-        }
-        else
-        {
-            d = 0.0; // uphill distributed: no correction
-        }
-        if (d > 0.0)
-        {
+            double d, e, f, hExp;
+            if (in.angleDeg > 0 && r != 3)
+            {
+                if (r == 0) { d = 0.011; e = -3.768; f = 3.539; hExp = -1.614; }
+                else { d = 2.96; e = 0.305; f = -0.4473; hExp = 0.0978; }
+            }
+            else if (in.angleDeg < 0)
+            {
+                d = 4.70; e = -0.3692; f = 0.1244; hExp = -0.5056;
+            }
+            else
+            {
+                return h; // uphill distributed: no correction
+            }
             const double nlv =
                 in.vsl * std::sqrt(std::sqrt(in.rhoL / (kGravity * in.sigma)));
             double c = (1.0 - lambda)
                      * std::log(d * std::pow(lambda, e) * std::pow(nlv, f)
-                                * std::pow(fr, h));
+                                * std::pow(fr, hExp));
             c = std::max(c, 0.0);
             const double s1 = std::sin(1.8 * theta);
-            hl *= 1.0 + c * (s1 - s1 * s1 * s1 / 3.0);
+            h *= 1.0 + c * (s1 - s1 * s1 * s1 / 3.0);
         }
+        return h;
+    };
+    if (regime == 1)
+    {
+        // the published transition (Beggs & Brill 1973): the gradient is
+        // the blend of the two NEIGHBOURING regimes' complete branch
+        // answers, not one branch priced on a blended holdup. Each branch
+        // carries its own horizontal holdup (segregated HL0(0) /
+        // intermittent HL0(2)), its own inclination C set and therefore its
+        // own full dp/ds below; the reported holdup blends the branch
+        // holdups, which makes the L2 / L3 boundaries continuous with the
+        // segregated and intermittent regimes.
+        const double w = pat.regime == 1
+            ? pat.transitionWeight
+            : (pat.l3 - fr) / (pat.l3 - pat.l2);
+        hlSeg = lifted(hl0(0), 0);
+        hlInt = lifted(hl0(2), 2);
+        hl = w * hlSeg + (1.0 - w) * hlInt;
+    }
+    else
+    {
+        hl = lifted(hl0(regime), regime);
     }
     }
     else if (in.correlation == 1)
@@ -368,7 +387,6 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
     out.holdup = hl;
 
     const double rhoM = in.rhoL * lambda + in.rhoG * (1.0 - lambda);
-    const double rhoS = in.rhoL * hl + in.rhoG * (1.0 - hl);
     // 5.76 (A5 increment 2): the liquid phase's apparent viscosity priced
     // on the mixture wall rate. The same lambda (no-slip) weighting the
     // correlation has always used is kept, and nothing else in the
@@ -382,28 +400,61 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
     const double fNs = pvt::colebrookDarcyFriction(re, in.roughness / in.diameter);
     out.fNs = fNs;
 
-    // two-phase friction multiplier on y = lambda / HL^2
-    double s;
-    if (lambda < 1e-9 || hl < 1e-9)
+    // the published single-branch gradient at one holdup (BB 1973): the
+    // two-phase friction multiplier S on y = lambda / HL^2, the elevation
+    // head on the slippage (in-situ) density, the Darcy-Weisbach friction on
+    // the no-slip mixture density and the Ek acceleration correction, all
+    // evaluated on THIS branch's holdup. Both transition branches and every
+    // single-regime path price through it, so the branches cannot drift
+    // from the regimes they blend with.
+    const double sinTheta = std::sin(theta);
+    const double pEk = std::max(in.pPa, 1000.0);
+    auto branchGradient = [&](double hlB, double& fTpB)
     {
-        s = 0.0; // single-phase degenerate: no slippage correction
+        hlB = std::min(std::max(hlB, 0.0), 1.0);
+        const double rhoS = in.rhoL * hlB + in.rhoG * (1.0 - hlB);
+        double s;
+        if (lambda < 1e-9 || hlB < 1e-9)
+        {
+            s = 0.0; // single-phase degenerate: no slippage correction
+        }
+        else
+        {
+            const double y = lambda / (hlB * hlB);
+            const double ly = std::log(y);
+            if (y > 1.0 && y < 1.2) s = std::log(2.2 * y - 1.2);
+            else s = ly / (ly * (ly * (0.01853 * ly * ly - 0.8725) + 3.182) - 0.0523);
+            s = std::min(s, 7.0);
+        }
+        fTpB = fNs * std::exp(s);
+        const double ele = kGravity * sinTheta * rhoS;
+        const double fric = fTpB * rhoM * vm * vm / (2.0 * in.diameter);
+        const double ek = in.vsg * vm * rhoS / pEk;
+        return (ele + fric) / std::max(1.0 - ek, 0.1);
+    };
+
+    double fTp = 0.0;
+    if (regime == 1 && in.correlation == 0)
+    {
+        // the published transition gradient: (dp/dz)_t = w (dp/dz)_seg
+        // + (1 - w) (dp/dz)_int, each branch a COMPLETE gradient (its own
+        // holdup, inclination set, S multiplier, slippage density and Ek).
+        // The reported fTp is the same blend, which is exactly the
+        // multiplier consistent with the blended friction term.
+        const double w = pat.regime == 1
+            ? pat.transitionWeight
+            : (pat.l3 - fr) / (pat.l3 - pat.l2);
+        double fSeg = 0.0, fInt = 0.0;
+        const double dpSeg = branchGradient(hlSeg, fSeg);
+        const double dpInt = branchGradient(hlInt, fInt);
+        out.dpPerMeter = w * dpSeg + (1.0 - w) * dpInt;
+        fTp = w * fSeg + (1.0 - w) * fInt;
     }
     else
     {
-        const double y = lambda / (hl * hl);
-        const double ly = std::log(y);
-        if (y > 1.0 && y < 1.2) s = std::log(2.2 * y - 1.2);
-        else s = ly / (ly * (ly * (0.01853 * ly * ly - 0.8725) + 3.182) - 0.0523);
-        s = std::min(s, 7.0);
+        out.dpPerMeter = branchGradient(hl, fTp);
     }
-    const double fTp = fNs * std::exp(s);
     out.fTp = fTp;
-
-    const double ele = kGravity * std::sin(theta) * rhoS;
-    const double fric = fTp * rhoM * vm * vm / (2.0 * in.diameter);
-    const double p = std::max(in.pPa, 1000.0);
-    const double ek = in.vsg * vm * rhoS / p;
-    out.dpPerMeter = (ele + fric) / std::max(1.0 - ek, 0.1);
     return out;
 }
 

@@ -260,10 +260,22 @@ int main()
         CHECK(vazquezBeggsBoRbStb(0.5 * pbAnchor, 150, pbAnchor, 0.75, 30, 160)
                   < bob,
               "Bo below pb is smaller than Bob");
+        // Undersaturated Bo, the PUBLISHED Vazquez-Beggs form: co is
+        // evaluated at the pressure the state is taken at, not at pb.
+        // Independent recomputation from the paper's formulas (gg = 0.75,
+        // 30 API, TF = 160 F, Rs = 350 scf/stb, pb = 1736.2810988821 psia,
+        // evaluation point p = pb + 1000 = 2736.2810988821 psia):
+        //   Bob  = 1 + 4.677e-4*350 + 1.751e-5*(100*30/0.75)
+        //          - 1.811e-8*350*(100*30/0.75)          = 1.208381
+        //   co   = (-1433 + 5*350 + 17.2*160 - 1180*0.75 + 12.61*30)
+        //          / (1e5 * 2736.2810988821)             = 9.3641694965e-6 /psi
+        //   Bo   = Bob * exp(co * (pb - p))
+        //        = 1.208381 * exp(-9.3641694965e-6 * 1000)
+        //        = 1.208381 * 0.9906795...               = 1.19711833...
         CHECK(relNear(vazquezBeggsBoRbStb(pbAnchor + 1000, 350, pbAnchor,
                                           0.75, 30, 160),
-                      1.1906793708, 1e-8),
-              "undersaturated Bo shrinks above pb");
+                      1.1971183305720536, 1e-8),
+              "undersaturated Bo shrinks above pb (published co at p)");
 
         // Beggs-Robinson viscosity: gas thins the live oil
         const double muDead = beggsRobinsonDeadOilCp(30, 160);

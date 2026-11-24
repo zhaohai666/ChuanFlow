@@ -264,7 +264,7 @@ class BlackOil:
         if p_psia <= pb:
             return bob
         co = ((-1433 + 5 * rs + 17.2 * tf - 1180 * gg + 12.61 * api)
-              / (1e5 * max(pb, 300.0)))
+              / (1e5 * p_psia))
         return bob * math.exp(co * (pb - p_psia))
 
     def z_dak(self, p_psia):
@@ -593,9 +593,12 @@ def load_case(path):
 
 
 # golden anchors recorded when this checker was calibrated; the solver is
-# deterministic, so any drift means the physics moved.
-GOLDEN_Q = {"case2": 0.00297038656391, "case3": 0.00363466635438,
-            "caseHetero": 0.00274048090481, "caseDead": 0.00199074204004}
+# deterministic, so any drift means the physics moved. Recalibrated when the
+# undersaturated Vazquez-Beggs co was corrected to its PUBLISHED form
+# (denominator = the evaluation pressure, Vazquez & Beggs 1980): the wells
+# march segments above pb, so Bo and the operating rates shift slightly.
+GOLDEN_Q = {"case2": 0.00297063943666, "case3": 0.00363508295731,
+            "caseHetero": 0.0027406891076, "caseDead": 0.00199079469287}
 
 results, models = {}, {}
 for name, path in CASES.items():

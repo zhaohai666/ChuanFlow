@@ -28,8 +28,12 @@ inclination correction and the 24-segment march -- and asserts:
   * a forced law is really the forced law: at Nfr ~ 400 the segregated law
     falls under the >= lambda clamp, so the forced-segregated arm on the
     distributed pipe sits exactly on lambda,
-  * on the transition arm the auto answer is the published blend and forcing
-    0 or 2 collapses the blend onto that one law,
+  * on the transition arm the auto answer prices the PUBLISHED dual-branch
+    interpolation (each neighbouring branch in full, blended with the
+    published weight; the reported holdup blends the BRANCH holdups), the
+    blend is continuous with the segregated / intermittent branches at the
+    L2 / L3 boundaries and reproduces a hard-coded third-party anchor, and
+    forcing 0 or 2 collapses the blend onto that one law,
   * uphill, the forced regime also switches the inclination coefficient set
     (the reported holdup matches ITS OWN set and not the other arms'), and
     uphill-distributed takes no correction at all,
@@ -182,8 +186,12 @@ def blend_weight(lam, nfr):
 
 def hl_horizontal(lam, nfr, r):
     if r == 1:
+        # the published transition blends the BRANCH holdups of the two
+        # neighbouring regimes (not lambda); each branch also carries its
+        # own complete gradient, which the march below prices
         w = blend_weight(lam, nfr)
-        return w * hl0_of(lam, nfr, 0) + (1.0 - w) * lam
+        hl = w * hl0_of(lam, nfr, 0) + (1.0 - w) * hl0_of(lam, nfr, 2)
+        return min(max(hl, 0.0), 1.0)
     return hl0_of(lam, nfr, r)
 
 
@@ -237,6 +245,30 @@ def colebrook(re, ed):
     return 1.0 / (y * y)
 
 
+def bo_vb(p_psia, rs_scf, pb_psia, gg, api, tf):
+    """The published Vazquez-Beggs Bo with the PUBLISHED undersaturated
+    compressibility: co's denominator is the pressure the state is
+    evaluated at (Vazquez & Beggs 1980), so co is re-priced at every p."""
+    c1, c2, c3 = ((4.670e-4, 1.100e-5, 1.337e-9) if api > 30
+                  else (4.677e-4, 1.751e-5, -1.811e-8))
+    tt = (tf - 60.0) * api / gg
+    bob = 1 + c1 * rs_scf + c2 * tt + c3 * rs_scf * tt
+    if p_psia <= pb_psia:
+        return bob
+    co = (-1433 + 5 * rs_scf + 17.2 * tf - 1180 * gg + 12.61 * api) / (1e5 * p_psia)
+    return bob * math.exp(co * (pb_psia - p_psia))
+
+
+# third-party anchor for the published co form, computed by hand:
+#   gg = 0.75, 30 API, TF = 160 F, Rs = 350 scf/stb
+#   pb = 1736.2810988821 psia, p = pb + 1000 = 2736.2810988821 psia
+#   Bob = 1.208381; co = 2562.3 / (1e5 * 2736.2810988821) = 9.3641694965e-6/psi
+#   Bo = 1.208381 * exp(-9.3641694965e-6 * 1000) = 1.1971183305720536
+check("published VB undersaturated Bo anchor: co evaluated AT p",
+      near(bo_vb(2736.2810988821, 350.0, 1736.2810988821, 0.75, 30.0, 160.0),
+           1.1971183305720536, 1e-9))
+
+
 class BlackOil:
     """Independent restatement of evaluateBlackOil + marchBeggsBrillPipe for
     one fluid (horizontal or inclined, no declared liquid rheology), marching
@@ -262,14 +294,7 @@ class BlackOil:
         return c1 * self.gg * max(p_psia, 0.0) ** c2 * math.exp(c3 * self.api / (self.tf + 459.67))
 
     def bo_of(self, p_psia, rs, pb):
-        api, gg, tf = self.api, self.gg, self.tf
-        c1, c2, c3 = (4.670e-4, 1.100e-5, 1.337e-9) if api > 30 else (4.677e-4, 1.751e-5, -1.811e-8)
-        tt = (tf - 60.0) * api / gg
-        bob = 1 + c1 * rs + c2 * tt + c3 * rs * tt
-        if p_psia <= pb:
-            return bob
-        co = (-1433 + 5 * rs + 17.2 * tf - 1180 * gg + 12.61 * api) / (1e5 * max(pb, 300.0))
-        return bob * math.exp(co * (pb - p_psia))
+        return bo_vb(p_psia, rs, pb, self.gg, self.api, self.tf)
 
     def z_dak(self, p_psia):
         gg, tr = self.gg, self.tr
@@ -344,6 +369,7 @@ class BlackOil:
         ds = L / nseg
         p_floor = max(0.02 * pin, 1000.0)
         angle_deg = math.degrees(math.asin(max(-1.0, min(1.0, sintheta))))
+        sin_t = math.sin(math.radians(angle_deg))
         p = pin
         last = None
         ok = True
@@ -358,26 +384,51 @@ class BlackOil:
             r_map = regime_of(lam, nfr)
             r = r_map if forced < 0 else forced
             l1, l2, l3, l4 = boundaries(lam)
-            hl = hl_priced(lam, nfr, r, vsl, st["rhol"], angle_deg)
             rhom = st["rhol"] * lam + st["rhog"] * (1 - lam)
-            rhos = st["rhol"] * hl + st["rhog"] * (1 - hl)
             mum = st["mul"] * lam + st["mug"] * (1 - lam)
             re = rhom * vm * D / mum
             fns = colebrook(re, rough / D)
-            if lam < 1e-9 or hl < 1e-9:
-                sm = 0.0
-            else:
-                yy = lam / (hl * hl)
-                ly = math.log(yy)
-                if 1.0 < yy < 1.2:
-                    sm = math.log(2.2 * yy - 1.2)
+
+            def branch(hl_b):
+                """One published branch's full gradient at holdup hl_b."""
+                hl_b = min(max(hl_b, 0.0), 1.0)
+                rhos_b = st["rhol"] * hl_b + st["rhog"] * (1 - hl_b)
+                if lam < 1e-9 or hl_b < 1e-9:
+                    sm_b = 0.0
                 else:
-                    sm = ly / (ly * (ly * (0.01853 * ly * ly - 0.8725) + 3.182) - 0.0523)
-                sm = min(sm, 7.0)
-            ftp = fns * math.exp(sm)
-            ek = vsg * vm * rhos / max(p, 1000.0)
-            ele = G * math.sin(math.radians(angle_deg)) * rhos
-            dpds = (ele + ftp * rhom * vm * vm / (2 * D)) / max(1 - ek, 0.1)
+                    yy = lam / (hl_b * hl_b)
+                    ly = math.log(yy)
+                    if 1.0 < yy < 1.2:
+                        sm_b = math.log(2.2 * yy - 1.2)
+                    else:
+                        sm_b = ly / (ly * (ly * (0.01853 * ly * ly - 0.8725)
+                                           + 3.182) - 0.0523)
+                    sm_b = min(sm_b, 7.0)
+                f_b = fns * math.exp(sm_b)
+                ek_b = vsg * vm * rhos_b / max(p, 1000.0)
+                ele_b = G * sin_t * rhos_b
+                return f_b, (ele_b + f_b * rhom * vm * vm / (2 * D)) \
+                    / max(1 - ek_b, 0.1)
+
+            if r == 1:
+                # the published transition: BOTH neighbouring branches in
+                # full, each with its own inclination coefficient set,
+                # blended with the published weight
+                w = (l3 - nfr) / (l3 - l2)
+                hl_seg = hl_lifted(hl0_of(lam, nfr, 0), lam, nfr, vsl,
+                                   st["rhol"], angle_deg,
+                                   incline_coeff(angle_deg, 0))
+                hl_int = hl_lifted(hl0_of(lam, nfr, 2), lam, nfr, vsl,
+                                   st["rhol"], angle_deg,
+                                   incline_coeff(angle_deg, 2))
+                hl = w * hl_seg + (1 - w) * hl_int
+                f_seg, dp_seg = branch(hl_seg)
+                f_int, dp_int = branch(hl_int)
+                ftp = w * f_seg + (1 - w) * f_int
+                dpds = w * dp_seg + (1 - w) * dp_int
+            else:
+                hl = hl_priced(lam, nfr, r, vsl, st["rhol"], angle_deg)
+                ftp, dpds = branch(hl)
             rmin, rmax = min(rmin, r), max(rmax, r)
             last = dict(p=p, lam=lam, nfr=nfr, r=r, r_map=r_map, hl=hl, vm=vm,
                         vsl=vsl, rhol=st["rhol"], l1=l1, l2=l2, l3=l3, l4=l4,
@@ -584,10 +635,14 @@ lam_t, nfr_t = field(pipes["T_Auto"], "lambda"), field(pipes["T_Auto"], "Nfr")
 w_t = blend_weight(lam_t, nfr_t)
 check("T_Auto: the auto arm sits inside the map's L2..L3 band",
       0.0 < w_t < 1.0, f"w = {w_t:.6f}")
-blend = w_t * hl0_of(lam_t, nfr_t, 0) + (1 - w_t) * lam_t
-check("T_Auto: the auto holdup is the published blend",
+blend = w_t * hl0_of(lam_t, nfr_t, 0) + (1 - w_t) * hl0_of(lam_t, nfr_t, 2)
+check("T_Auto: the auto holdup is the published dual-branch blend",
       near(field(pipes["T_Auto"], "HL"), min(max(blend, 0.0), 1.0), 1e-8),
       f"{field(pipes['T_Auto'], 'HL'):.9f} vs {blend:.9f}")
+check("T_Auto: the blend sits between its two branch holdups",
+      min(hl0_of(lam_t, nfr_t, 0), hl0_of(lam_t, nfr_t, 2)) - 1e-12
+      <= field(pipes["T_Auto"], "HL")
+      <= max(hl0_of(lam_t, nfr_t, 0), hl0_of(lam_t, nfr_t, 2)) + 1e-12)
 for twin, law in (("T_Seg", 0), ("T_Int", 2)):
     lam_x, nfr_x = field(pipes[twin], "lambda"), field(pipes[twin], "Nfr")
     check(f"{twin}: forcing collapses the blend onto the r={law} law",
@@ -595,6 +650,94 @@ for twin, law in (("T_Seg", 0), ("T_Int", 2)):
           f"{field(pipes[twin], 'HL'):.9f} vs {hl0_of(lam_x, nfr_x, law):.9f}")
     check(f"{twin}: ... which is a different number than the blend",
           abs(field(pipes[twin], "HL") - field(pipes["T_Auto"], "HL")) > 1e-6)
+
+# ---- the published dual-branch transition: independent criteria ----
+# (a) boundary continuity, closed form: at Nfr = L2 the published weight is
+# 1 and the transition IS the segregated branch; at Nfr = L3 it is 0 and the
+# transition IS the intermittent branch -- holdup and full gradient alike.
+def _branch_gradient(lam, nfr, vsl, vsg, rhol, rhog, mul, mug, D, rough,
+                     p_pa, hl_b):
+    hl_b = min(max(hl_b, 0.0), 1.0)
+    rho_m = rhol * lam + rhog * (1 - lam)
+    mu_m = mul * lam + mug * (1 - lam)
+    vm_b = vsl + vsg
+    re = rho_m * vm_b * D / mu_m
+    fns = colebrook(re, rough / D)
+    rho_s = rhol * hl_b + rhog * (1 - hl_b)
+    yy = lam / (hl_b * hl_b)
+    ly = math.log(yy)
+    if 1.0 < yy < 1.2:
+        s = math.log(2.2 * yy - 1.2)
+    else:
+        s = ly / (ly * (ly * (0.01853 * ly * ly - 0.8725) + 3.182) - 0.0523)
+    s = min(s, 7.0)
+    f_b = fns * math.exp(s)
+    ek_b = vsg * vm_b * rho_s / max(p_pa, 1000.0)
+    return f_b, (f_b * rho_m * vm_b * vm_b / (2 * D)) / max(1 - ek_b, 0.1)
+
+
+for lam_c in (0.05, 0.1, 0.2, 0.4, 0.6, 0.9):
+    l2c, l3c = boundaries(lam_c)[1], boundaries(lam_c)[2]
+    check(f"continuity lam={lam_c}: w(L2) = 1, w(L3) = 0",
+          abs(blend_weight(lam_c, l2c) - 1.0) < 1e-12
+          and abs(blend_weight(lam_c, l3c)) < 1e-12)
+    check(f"continuity lam={lam_c}: holdup(L2) = segregated law",
+          abs(hl_horizontal(lam_c, l2c, 1)
+              - min(max(hl0_of(lam_c, l2c, 0), 0.0), 1.0)) < 1e-12)
+    check(f"continuity lam={lam_c}: holdup(L3) = intermittent law",
+          abs(hl_horizontal(lam_c, l3c, 1)
+              - min(max(hl0_of(lam_c, l3c, 2), 0.0), 1.0)) < 1e-12)
+    vm_c = math.sqrt(0.05 * G * 0.05)
+    common = (lam_c * vm_c, (1 - lam_c) * vm_c, 915.0, 2.67, 180e-6, 14e-6,
+              0.05, 0.0, 1.0e7)
+    w_l2 = blend_weight(lam_c, l2c)
+    w_l3 = blend_weight(lam_c, l3c)
+    _, dp_s2 = _branch_gradient(lam_c, l2c, *common, hl0_of(lam_c, l2c, 0))
+    _, dp_i3 = _branch_gradient(lam_c, l3c, *common, hl0_of(lam_c, l3c, 2))
+    _, dp_b2 = _branch_gradient(lam_c, l2c, *common,
+                                w_l2 * hl0_of(lam_c, l2c, 0)
+                                + (1 - w_l2) * hl0_of(lam_c, l2c, 2))
+    _, dp_b3 = _branch_gradient(lam_c, l3c, *common,
+                                w_l3 * hl0_of(lam_c, l3c, 0)
+                                + (1 - w_l3) * hl0_of(lam_c, l3c, 2))
+    check(f"continuity lam={lam_c}: w=1 collapse reaches the segregated branch",
+          abs(dp_b2 - dp_s2) < 1e-12)
+    check(f"continuity lam={lam_c}: w=0 collapse reaches the intermittent branch",
+          abs(dp_b3 - dp_i3) < 1e-12)
+
+# (c) third-party numeric anchor, computed by hand from the paper's
+# formulas (horizontal, D = 0.05 m, p = 1e7 Pa, roughness 0: rhoL 915,
+# rhoG 2.67, muL 180e-6, muG 14e-6; lambda = 0.4, Nfr = 0.05 so
+# vm = sqrt(Nfr g D) = 0.15657785603334848 m/s):
+#   L2 = 0.008881999440997143, L3 = 0.37813747212622595
+#   w      = (L3 - 0.05)/(L3 - L2)            = 0.8886461986331783
+#   HL_seg = 0.98*0.4^0.4846*0.05^-0.0868     = 0.8152930705289793
+#   HL_int = 0.845*0.4^0.5351*0.05^-0.0173    = 0.5450380588971202
+#   HL_t   = w*HL_seg + (1-w)*HL_int          = 0.7851991476453372
+#   fns = 0.022536993703394008 (Re 35794.98)
+#   f_t    = w*f_seg + (1-w)*f_int            = 0.029805001869711356
+#   dp_t   = w*dp_seg + (1-w)*dp_int          = 2.6861370122741586 Pa/m
+vm_a = math.sqrt(0.05 * G * 0.05)
+lam_a, nfr_a = 0.4, 0.05
+w_a = blend_weight(lam_a, nfr_a)
+hl_seg_a, hl_int_a = hl0_of(lam_a, nfr_a, 0), hl0_of(lam_a, nfr_a, 2)
+hl_a = w_a * hl_seg_a + (1 - w_a) * hl_int_a
+common_a = (lam_a * vm_a, (1 - lam_a) * vm_a, 915.0, 2.67, 180e-6, 14e-6,
+            0.05, 0.0, 1.0e7)
+f_seg_a, dp_seg_a = _branch_gradient(lam_a, nfr_a, *common_a, hl_seg_a)
+f_int_a, dp_int_a = _branch_gradient(lam_a, nfr_a, *common_a, hl_int_a)
+check("anchor: transition weight", near(w_a, 0.8886461986331783, 1e-12),
+      f"{w_a!r}")
+check("anchor: segregated branch holdup", near(hl_seg_a, 0.8152930705289793, 1e-12),
+      f"{hl_seg_a!r}")
+check("anchor: intermittent branch holdup", near(hl_int_a, 0.5450380588971202, 1e-12),
+      f"{hl_int_a!r}")
+check("anchor: blended transition holdup", near(hl_a, 0.7851991476453372, 1e-12),
+      f"{hl_a!r}")
+check("anchor: blended transition fTp",
+      near(w_a * f_seg_a + (1 - w_a) * f_int_a, 0.029805001869711356, 1e-12))
+check("anchor: blended transition gradient",
+      near(w_a * dp_seg_a + (1 - w_a) * dp_int_a, 2.6861370122741586, 1e-12))
 
 # ---- uphill: the forced regime also switches the inclination set ----
 for nm, r_want in (("I_Auto", 2), ("I_Seg", 0), ("I_Dist", 3)):

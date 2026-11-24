@@ -5747,6 +5747,30 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界**。漂移项用声明密度而非 EOS 逐 cell 密度；zone 判定用 cell 中心规则、zone 纯诊断不回写持液率场；报告 12 位有效数字使 face 恰落 cell 中心的个别帧不可判定（实测 4/24020，checker 歧义跳过上限 ≤20）。
 
+### 5.183 E7c · EOS 泄压沿线瞬态声学
+
+**差距**（E7c，拆分自 E7③，2026-11-24 立项）：两流体 EOS 模式的压力更新是 lumped（单一集总 dp），泄压时沿线压力波传播不解析。
+
+**实现**。EOS 模式内 opt-in `acoustics{}` 块：线性化 Euler 声学（LeVeque ch.9 显式交错格式——先面 u′ 行、再在新 u 上更新 cell 心 p′ 行，symplectic/leapfrog 配对；注释写明两行同时前向 Euler 会放大故弃用）。**声速零发明**：`a² = (∂p/∂ρ)_T = gasR·T` 是内核自研 EOS（p = ρG·gasR·T）的精确密度导数，ρa² 精确复现 cell EOS 压力；另留声明式 `soundSpeed` 覆盖路径（内核无 cV 不自导 γ，边界已注释）。边界条件：声明端压力释放（p′=0 半控制体积更新）、另一端硬壁（u′=0）。**稳定准则显式化**：`a_max·dt/dx_min ≤ cfl`（默认且硬上限 0.5——开口面半控制体积使显式极限减半，注释写明），违规 cfFatal；twoFluid 无自适应 dt（transient.cpp 有、twoFluid 无），固定 dt 约束已声明。纯诊断层：不回写动量/持液/EOS 密度（分布式动量耦合为 header 命名的 follow-up）；network 模式大声拒收。报告：cell 行 `pA` 键 + `aunode j u` 行（gated）。
+
+**回归**。`verify.transientEosAcoustics` + checker **34 判据**（含 8 条拒收）：波前到达拟合 a_fit=291.97 m/s vs 理论 √(287·300)=293.43（−0.5%）；波前位置 t=0.1/0.25 s 与 L−a·t 差 ≤0.5 cell；硬壁反射周期（方波滞回转变间距）0.695/0.670 s vs 2L/a=0.6816 s（+2.0%/−1.7%）；声速覆盖臂 250 m/s 拟合 246.9（−1.2%）且验证非 EOS 速度；p′=0 边界能流为零 → 无损线性系统**声能守恒不衰减**（推导发现的物理事实，checker 验证有界+守恒）。**twin**：同一二进制下主 case 去 pA/aunode 行 == caseBase == caseDisabled 逐字节；基线对拍用干净 6f6a82b 自建旧二进制跑全部 89 目录 196 个 standing case 文件——成功运行逐字节一致（差异仅 E7c 新算例与 cfFatal 文本内嵌源码行号 +91 行，fatal 文本本身一致）。`transientEosAcoustics|transientSlugMechanics|twoFluid` 合并后 **38/38** 绿。
+
+**边界**。声学层纯诊断（与动量/持液场的双向耦合是显式命名的后续增量）；固定 dt（无自适应）；线性声学不建模激波/非线性有限幅效应。
+
+## 6. 概念映射速查（OpenFOAM → ChuanFlow）
+
+## 6. 概念映射速查（OpenFOAM → ChuanFlow）
+
+### 5.183 E7c · EOS 泄压沿线瞬态声学
+
+**差距**（E7c，拆分自 E7③，2026-11-24 立项）：两流体 EOS 模式的压力更新是 lumped（单一集总 dp），泄压时沿线压力波传播不解析。
+
+**实现**。EOS 模式内 opt-in `acoustics{}` 块：线性化 Euler 声学（LeVeque ch.9 显式交错格式——先面 u′ 行、再在新 u 上更新 cell 心 p′ 行，symplectic/leapfrog 配对；注释写明两行同时前向 Euler 会放大故弃用）。**声速零发明**：`a² = (∂p/∂ρ)_T = gasR·T` 是内核自研 EOS（p = ρG·gasR·T）的精确密度导数，ρa² 精确复现 cell EOS 压力；另留声明式 `soundSpeed` 覆盖路径（内核无 cV 不自导 γ，边界已注释）。边界条件：声明端压力释放（p′=0 半控制体积更新）、另一端硬壁（u′=0）。**稳定准则显式化**：`a_max·dt/dx_min ≤ cfl`（默认且硬上限 0.5——开口面半控制体积使显式极限减半，注释写明），违规 cfFatal；twoFluid 无自适应 dt（transient.cpp 有、twoFluid 无），固定 dt 约束已声明。纯诊断层：不回写动量/持液/EOS 密度（分布式动量耦合为 header 命名的 follow-up）；network 模式大声拒收。报告：cell 行 `pA` 键 + `aunode j u` 行（gated）。
+
+**回归**。`verify.transientEosAcoustics` + checker **34 判据**（含 8 条拒收）：波前到达拟合 a_fit=291.97 m/s vs 理论 √(287·300)=293.43（−0.5%）；波前位置 t=0.1/0.25 s 与 L−a·t 差 ≤0.5 cell；硬壁反射周期（方波滞回转变间距）0.695/0.670 s vs 2L/a=0.6816 s（+2.0%/−1.7%）；声速覆盖臂 250 m/s 拟合 246.9（−1.2%）且验证非 EOS 速度；p′=0 边界能流为零 → 无损线性系统**声能守恒不衰减**（推导发现的物理事实，checker 验证有界+守恒）。**twin**：同一二进制下主 case 去 pA/aunode 行 == caseBase == caseDisabled 逐字节；基线对拍用干净 6f6a82b 自建旧二进制跑全部 89 目录 196 个 standing case 文件——成功运行逐字节一致（差异仅 E7c 新算例与 cfFatal 文本内嵌源码行号 +91 行，fatal 文本本身一致）。`transientEosAcoustics|transientSlugMechanics|twoFluid` 合并后 **38/38** 绿。
+
+**边界**。声学层纯诊断（与动量/持液场的双向耦合是显式命名的后续增量）；固定 dt（无自适应）；线性声学不建模激波/非线性有限幅效应。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）

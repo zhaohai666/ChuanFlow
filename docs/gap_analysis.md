@@ -1,4 +1,5 @@
-# ChuanFlow 对标 Pipesim / OLGA / Fluent 能力差异清单
+
+| 2026-11-24 | E7c（EOS 泄压沿线声学） | §5.183 | 03284d3 | verify.transientEosAcoustics 34 判据（8 拒收）；196 standing case 基线对拍逐字节 | EOS 模式 `acoustics{}`：线性化 Euler 显式交错格式（先面 u′ 再 cell 心 p′），a²=gasR·T 为内核自研 EOS 精确密度导数（零发明物理）+ 声明式覆盖；释放端 p′=0 半控制体、硬壁 u′=0；CFL≤0.5 显式准则（开口面半控制体使极限减半）违规 cfFatal；波速 −0.5%、反射周期 ±2% 独立重推；声能守恒（无损线性系统不衰减）为推导发现并验证；纯诊断层不回写场 |# ChuanFlow 对标 Pipesim / OLGA / Fluent 能力差异清单
 
 > 本文档记录 ChuanFlow 相对 **Pipesim / OLGA / Fluent** 三款商业软件的现存能力差异，作为"继续排查还有哪些能力没有实现"工作线的单一可信来源。
 >
@@ -418,6 +419,8 @@
 >
 > **第二轮收口（2026-11-23，§5.175）**：E2 CLOSED——段塞页新增五个流动保障声明块的结构化表单与 GEN/MERGE/OUT + 吹扫周期事件时间轴；前端 111/111（+8 条 E2 测试），内核事件解析用真实算例对账。
 >
+> **第四轮收口（2026-11-24，§5.182–§5.183，串行 worktree）**：E7b（Bendiksen 前缘闭合 + 双区制 §5.182，45 判据）、E7c（EOS 泄压声学 §5.183，34 判据）CLOSED——**E7 三格齐、E 类清单 E1–E10 全部 CLOSED**。串行原因：两子项同改 twoFluid 内核同批文件，并行必冲突（与 GUI 分区改动可并行相反）。
+>
 > **第三轮收口（2026-11-23，§5.176–§5.181，五 worktree 并行 + 主树）**：E4（五设备画布族 §5.177）、E6（清管 pigging §5.178）、E7 子项②（瞬态井筒元件族 §5.179）、E3 GUI 时间轴（§5.180）、E1 其余 3D 入口（§5.181）、E10（文档口径 §5.176）全部 CLOSED；E7 转 PARTIAL（子项①③ OPEN 需另立项）。新增 CTest `verify.transientPigging`（30 判据）与 `verify.transientWellboreEquipment`（42 判据）；前端 142/142、Rust 34/34。E 类清单至此仅余 E7 子项①③（Bendiksen 前缘闭合/双区制、可压泄压声学）
 
 ### E1. 3D 求解器 GUI 入口（产品层最大断链）
@@ -434,7 +437,7 @@
 - **差距**：内核齐全——`hydrate{}`（ln(p) 平衡线 + 一阶动力学 + 潜热，twoFluid.cpp:3068-3078）、`inhibitor{}`（Hammerschmidt 温降 + inhibitorEquilibrium 活度根，§5.141/§5.163）、`slugTracking{}`（拉格朗日前缘追踪 GEN/MERGE/OUT 事件，§5.161）、`purgeWave{}`（立管吹扫波，§5.162）——但 GUI 无任何结构化设置入口（grep gui/ 中 hydrate 只命中输出解析），只能手改 dict。
 - **建议实施**：段塞动画页/属性面板增四个声明块的结构化编辑（对齐 U10 what-if 的 applyWhatIfOverrides 精确替换模式），slugTracking 事件日志进段塞时间轴。
 - **成本估计**：~1.5 增量
-- **落点**：待分配
+- **落点**：§5.183（EOS 模式 `acoustics{}` 线性化 Euler 交错格式；`verify.transientEosAcoustics` 34 判据 + 8 拒收；波速/反射周期独立重推 ≤2%；196 standing case 基线对拍逐字节）
 
 ### E3. 多段日程编辑器（内核扩展 + GUI）
 
@@ -470,7 +473,7 @@
 
 ### E7. 段塞机理升级 + 瞬态井筒元件族（内核级真缺口）
 
-- **当前状态**：`PARTIAL`（2026-11-23 子项② CLOSED → §5.179；子项①③ 拆分为 E7b / E7c 独立项）
+- **当前状态**：`CLOSED`（2026-11-24：子项② §5.179、子项① E7b §5.182、子项③ E7c §5.183 三格齐）
 - **差距**：① 段塞闭合简化——两流体是 3 方程混合动量模型（非 4 方程双速度双压力），段塞生成靠持液率阈值检测、前缘速度是声明常量/gasCap 模型，**无 Bendiksen 类由局部流态解出的前缘闭合、无液膜/液塞双区制**（architecture §4.2 自认「机理型段塞追踪尚未实现」，全库无 sectioning）；② 瞬态引擎显式拒收人工举升设备（transient.cpp:1026-1029「gas-lift valve has no bellows」），无 ESP/气举/有杆泵动态、无 SSSV 安全阀、无节流嘴瞬态元件；③ 可压管线沿线 EOS 泄压瞬态声学不解析（两流体 EOS 模式动量仍 lumped）。
 - **成本估计**：4+ 增量
 - **落点**：子项② → §5.179（`sssv{}`/`choke{}`/`esp{}` 三 opt-in 块 + `verify.transientWellboreEquipment` 42 判据 + 11 拒收 + 零声明 twin；原「no bellows」拒收解除）
@@ -485,11 +488,11 @@
 
 ### E7c. 可压管线沿线 EOS 泄压瞬态声学（内核级，拆分自 E7③）
 
-- **当前状态**：`OPEN`（2026-11-24 立项）
+- **当前状态**：`CLOSED`（2026-11-24，§5.183）
 - **差距**：两流体 EOS 模式的动量仍 lumped（单一集总 dp），泄压时沿线压力波传播（声学）不解析。
 - **建议实施**：EOS 模式 opt-in 沿线声学（线性压力波/特征线更新，稳定准则与时间步约束显式化），case/checker 立项。
 - **成本估计**：~1.5 增量
-- **落点**：待分配
+- **落点**：§5.183（EOS 模式 `acoustics{}` 线性化 Euler 交错格式；`verify.transientEosAcoustics` 34 判据 + 8 拒收；波速/反射周期独立重推 ≤2%；196 standing case 基线对拍逐字节）
 
 ### E8. 水合物状态包 PWHc（可选升级）
 

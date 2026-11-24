@@ -16,12 +16,13 @@ namespace cf::pvt
 scalar stielThodosViscosity(scalar T, scalar Tc, scalar Pc, scalar MW);
 
 /// Lohrenz-Bray-Clark (1964, SPE 915) residual viscosity, in the form given
-/// by Whitson & Brule (2000) and reproduced by the `chemicals` library
-/// (this implementation is validated against that library's worked example
-/// to 1e-12 in tests/check_pvt_lbc.py):
+/// by Whitson & Brule (2000); the quartic coefficient is the original
+/// SPE-915 value 0.0093324 (the `chemicals` library carries a misprint
+/// 0.0093724; the two agree to 7e-14 cP on that library's worked example,
+/// which therefore cannot pin the digit — see docs/architecture.md 5.93):
 ///   mu[cP] = mu0[cP] + (poly^4 - 1e-4) / xi
 ///   poly = 0.1023 + 0.023364 rr + 0.058533 rr^2 - 0.040758 rr^3
-///          + 0.0093724 rr^4
+///          + 0.0093324 rr^4
 ///   xi = Tc^(1/6) / (sqrt(MW) Pc[atm]^(2/3)),   rr = Vc / Vm
 /// mu0 is the Herning-Zipperer sqrt(MW)-weighted mix of the per-component
 /// Stiel-Thodos dilute-gas viscosities; Tc, Pc, MW, Vc are Kay (mole-fraction)

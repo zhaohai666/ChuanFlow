@@ -8,9 +8,12 @@ viscosity is checked two independent ways:
 
   formula    a pure-Python transcription of the LBC equations reproduces the
              Whitson & Brule (2000) worked example as published by the
-             `chemicals` library to 1e-12 -- this pins the coefficients
-             (a4 = 0.0093724), the xi units, the Stiel-Thodos dilute-gas term,
-             the Herning-Zipperer mixing and rr = Vc/Vm.
+             `chemicals` library to 1e-12 -- this pins the xi units, the
+             Stiel-Thodos dilute-gas term, the Herning-Zipperer mixing and
+             rr = Vc/Vm.  It does NOT pin a4: the example's rr ~ 0.0621 makes
+             0.0093324 vs the library's misprint 0.0093724 differ by only
+             7.1e-14 cP, below the gate.  a4 = 0.0093324 is the original
+             SPE-915 Eq. 14 value (2026-11-24 erratum).
   kernel     for every flashed phase the checker re-derives mu from the
              reported phase state (Vm = M/rho, PR critical volume
              Vc = 0.3074 R Tc/Pc, Kay-averaged constants) and weighs it against
@@ -74,7 +77,7 @@ def lbc(T, Vm, zs, MWs, Tcs, Pcs, Vcs):
     den = sum(z * math.sqrt(m) for z, m in zip(zs, MWs))
     mu0_cp = num / den * 1.0e3
     poly = (0.1023 + 0.023364 * rr + 0.058533 * rr ** 2
-            - 0.040758 * rr ** 3 + 0.0093724 * rr ** 4)
+            - 0.040758 * rr ** 3 + 0.0093324 * rr ** 4)
     return (mu0_cp + (poly ** 4 - 1.0e-4) / xi(Tc, Pc, MW)) * 1.0e-3
 
 

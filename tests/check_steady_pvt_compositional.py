@@ -156,7 +156,7 @@ def lbc(T, Vm, zs, names):
     den = sum(z * math.sqrt(m) for z, m in zip(zs, MWs))
     mu0_cp = num / den * 1.0e3
     poly = (0.1023 + 0.023364 * rr + 0.058533 * rr ** 2
-            - 0.040758 * rr ** 3 + 0.0093724 * rr ** 4)
+            - 0.040758 * rr ** 3 + 0.0093324 * rr ** 4)
     return (mu0_cp + (poly ** 4 - 1.0e-4) / xi(Tc, Pc, MW)) * 1.0e-3
 
 

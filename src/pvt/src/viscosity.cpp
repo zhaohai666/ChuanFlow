@@ -67,7 +67,7 @@ scalar lbcViscosity(scalar T, scalar Vm, const std::vector<scalar>& zs,
     const scalar xi = viscosityReducingParameter(Tc, Pc, MW);
     const scalar poly = 0.1023 + 0.023364 * rr + 0.058533 * rr * rr
                         - 0.040758 * rr * rr * rr
-                        + 0.0093724 * rr * rr * rr * rr;
+                        + 0.0093324 * rr * rr * rr * rr;
     const scalar muCp = mu0Cp + (std::pow(poly, 4.0) - 1.0e-4) / xi;
     return muCp * 1.0e-3; // cP -> Pa s
 }

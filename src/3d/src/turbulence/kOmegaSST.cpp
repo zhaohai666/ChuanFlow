@@ -128,9 +128,10 @@ void KOmegaSST::solveDissipation(scalar dt)
     }
     fvm::laplacianFace(eqn, diffusionFace(gamma, sigmaW), schemes_.laplacian, -1);
 
-    // cross diffusion (1-F1) 2 sigmaW2 /(betaStar w) grad(w).grad(k): explicit
-    // and floored at zero, so an anti-parallel gradient pair cannot turn it
-    // into a destruction term the linear solver would have to fight
+    // cross diffusion (1-F1) 2 sigmaW2/w grad(w).grad(k) (Menter 2003):
+    // explicit, with the full sign kept -- a negative CD is a legitimate
+    // additional sink of omega in the k-epsilon branch, matching the
+    // reference implementation's signed source
     const Field<Vector> gradW = fvc::grad(diss_, schemes_.grad);
     const Field<Vector> gradK = fvc::grad(k_, schemes_.grad);
 
@@ -139,9 +140,9 @@ void KOmegaSST::solveDissipation(scalar dt)
     {
         const scalar w = std::max(wOld[c], turb::dissFloor);
         eqn.addRhs(static_cast<label>(c), 0, vol[c] * gammaW[c] * strain_[c] * strain_[c]);
-        const scalar cd = (1.0 - f1c[c]) * 2.0 * sigmaW2 / (betaStar * w)
+        const scalar cd = (1.0 - f1c[c]) * 2.0 * sigmaW2 / w
                         * dot(gradW[c], gradK[c]);
-        if (cd > 0) eqn.addRhs(static_cast<label>(c), 0, vol[c] * cd);
+        eqn.addRhs(static_cast<label>(c), 0, vol[c] * cd);
         destr[c] = vol[c] * betaW[c] * w;
     }
     fvm::sp(eqn, destr, 1);

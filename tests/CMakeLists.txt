@@ -70,6 +70,15 @@ add_executable(turbulence_tests unit/turbulenceTests.cpp)
 target_link_libraries(turbulence_tests PRIVATE cf3d)
 add_test(NAME turbulence.unit COMMAND turbulence_tests)
 
+# leastSquares gradient scheme: analytic gradient recovery on the skewed Gmsh
+# tetrahedron cube where the clamped corrected scheme cannot reproduce even a
+# linear field, plus the orthogonal degeneration to Green-Gauss on the hex cube
+add_executable(gradient_tests unit/gradientTests.cpp)
+target_link_libraries(gradient_tests PRIVATE cf3d)
+target_compile_definitions(gradient_tests PRIVATE
+    CF_MESH_DIR="${CMAKE_CURRENT_SOURCE_DIR}/meshes")
+add_test(NAME gradient.leastSquares COMMAND gradient_tests)
+
 add_executable(vof_tests unit/vofTests.cpp)
 target_link_libraries(vof_tests PRIVATE cf3d)
 add_test(NAME vof.unit COMMAND vof_tests)

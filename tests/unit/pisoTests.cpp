@@ -117,6 +117,25 @@ int main()
               "predicted flux is already divergence-free");
     }
 
+    // ---- second corrector carries the corrected flux and contracts the ----
+    // ---- residual (OpenFOAM pisoFoam semantics)                        ----
+    {
+        Channel c(Vector{0.2, H, 0.05}, Vector{2, 10, 1}, NU, Vector{A, 0, 0});
+        PisoControls ctl;
+        ctl.dt = 0.002;
+        ctl.correctors = 2;
+        ctl.continuityTol = 0.0; // never break early: both correctors must run
+        ctl.bodyForce = c.force;
+        const PisoStepResult r =
+            solveTransientIncompressiblePiso(c.mesh, c.U, c.p, c.phi, c.nu, schemes(), ctl);
+        CHECK(r.correctorsUsed == 2 && r.correctorResiduals.size() == 2,
+              "correctors = 2 runs both correctors");
+        CHECK(r.correctorResiduals[1] < r.correctorResiduals[0],
+              "the second corrector shrinks the continuity residual");
+        std::cout << "info: corrector residuals " << r.correctorResiduals[0]
+                  << " -> " << r.correctorResiduals[1] << "\n";
+    }
+
     // ---- steady limit: the discrete parabola of the wall-cell scheme ----
     {
         Channel c(Vector{0.2, H, 0.05}, Vector{2, 10, 1}, NU, Vector{A, 0, 0});

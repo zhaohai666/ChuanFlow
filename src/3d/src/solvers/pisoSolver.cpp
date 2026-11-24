@@ -135,9 +135,16 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
     // ---------------- correctors ----------------
     for (int corr = 1; corr <= ctl.correctors; ++corr)
     {
-        // predicted flux: momentum response, pressure not yet included
-        updatePhiInternal(mesh, HbyA, phi);
-        phi.correctBoundaryFlux(HbyA);
+        if (corr == 1)
+        {
+            // predicted flux: momentum response, pressure not yet included
+            updatePhiInternal(mesh, HbyA, phi);
+            phi.correctBoundaryFlux(HbyA);
+        }
+        // correctors > 1 keep the flux the previous corrector closed with
+        // correctFluxes (OpenFOAM pisoFoam semantics): the next pressure
+        // solve then drives the residual of the remaining divergence down
+        // instead of repeating the first corrector's RHS verbatim
         res.predictedContinuityError = continuityError(mesh, phi);
 
         const Field<scalar> divPhi = fvc::divPhi(mesh, phi.values());
@@ -177,6 +184,7 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
 
         res.correctorsUsed = corr;
         res.continuityError = continuityError(mesh, phi);
+        res.correctorResiduals.push_back(res.continuityError);
         if (!std::isfinite(res.continuityError) || !std::isfinite(pDeltaMax))
         {
             log::error("PISO: diverged in corrector ", corr);

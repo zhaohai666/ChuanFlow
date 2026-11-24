@@ -115,8 +115,11 @@ void assembleLaplacian(fvMatrix& eqn, std::vector<scalar> gammaFace, const std::
             for (int comp = 0; comp < view.nComp; ++comp)
             {
                 auto faceVal = makeFaceValueFn(*msh, view, comp);
+                // the correction's face gradient follows the equation's
+                // declared grad scheme (fvSchemes `grad`); on orthogonal faces
+                // cfVec vanishes and the choice does not matter at all
                 Field<Vector> gCell = fvc::grad(
-                    *msh, x[static_cast<std::size_t>(comp)], faceVal, "linear");
+                    *msh, x[static_cast<std::size_t>(comp)], faceVal, eq.schemes().grad);
 
                 for (label f = 0; f < msh->nFaces(); ++f)
                 {

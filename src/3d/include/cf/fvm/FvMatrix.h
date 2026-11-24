@@ -32,7 +32,7 @@ struct Schemes
     std::string ddt = "steady";       // steady | Euler
     std::string div = "upwind";       // upwind | linear | blend
     std::string laplacian = "corrected"; // none | corrected
-    std::string grad = "corrected";   // linear | corrected
+    std::string grad = "corrected";   // linear | corrected | leastSquares
     scalar blendCoeff = 0.9;          // for div=blend (fraction of central)
     scalar relaxation = 1.0;          // under-relaxation applied after solve
 };

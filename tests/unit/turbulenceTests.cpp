@@ -345,6 +345,49 @@ int main()
         }
     }
 
+    // ---------------- omega production limiter (Menter 2003) ----------------
+    {
+        const scalar g = KOmegaSST::gamma1, w = 100.0;
+        const scalar sSmall = 0.1 * w;   // S/omega below sqrt(c1 betaStar)
+        const scalar sHuge = 20.0 * w;   // strong shear, the cap must bite
+        const scalar cap = KOmegaSST::productionLimit * KOmegaSST::betaStar * g * w * w;
+        CHECK(near(KOmegaSST::omegaProduction(g, sSmall, w), g * sSmall * sSmall, 1e-12),
+              "omega production is gamma S^2 below the Menter cap");
+        CHECK(near(KOmegaSST::omegaProduction(g, sHuge, w), cap, 1e-12),
+              "omega production is capped at 10 betaStar gamma omega^2 in a strong shear layer");
+        CHECK(KOmegaSST::omegaProduction(g, sHuge, w) < g * sHuge * sHuge,
+              "the cap actually bites at large strain");
+        bool bounded = true;
+        for (double ss : {0.0, 1.0, 10.0, 1e3, 1e6})
+        {
+            for (double ww : {1e-8, 1.0, 1e4})
+            {
+                const scalar p = KOmegaSST::omegaProduction(g, ss, ww);
+                bounded = bounded && std::isfinite(p) && p >= 0.0
+                          && p <= KOmegaSST::productionLimit * KOmegaSST::betaStar * g * ww * ww + 1e-12;
+            }
+        }
+        CHECK(bounded, "omega production stays finite and within the cap for all inputs");
+
+        // an over-sheared SST column: without the cap, gamma S^2 outruns the
+        // beta omega^2 sink and omega diverges (the 1D-3D coupled block did
+        // exactly that). With the limiter the field stays finite over 50 steps.
+        Box box(true);
+        constexpr scalar G = 2e5;
+        for (std::size_t c = 0; c < box.U.internalField().size(); ++c)
+            box.U.internalField()[c] = Vector{G * box.yOf(static_cast<label>(c)), 0, 0};
+        auto m = RansModel::create(box.mesh, box.U, box.phi, NU_AIR, Schemes{}, cfg("kOmegaSST"));
+        m->initializeUniform(0.02, 50.0);
+        bool finite = true;
+        for (int i = 0; i < 50; ++i)
+        {
+            m->correctTurbulence(0.01);
+            for (const scalar d : m->dissipation())
+                finite = finite && std::isfinite(d) && d > 0;
+        }
+        CHECK(finite, "SST omega stays finite under an imposed large shear (production cap)");
+    }
+
     // ---------------- near-wall boundary values ----------------
     {
         // (0.2 x 0.02 x 0.02), 5 cells in y -> dy = 0.004, first centre 0.002

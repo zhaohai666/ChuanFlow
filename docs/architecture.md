@@ -803,9 +803,13 @@ owner→neighbour，导致上层行永远收不到距离）。这是正交网格
 SST `a1=0.31, β*=0.09, β1=0.075, β2=0.0828, σk1=0.85, σk2=1, σω1=0.5,
 σω2=0.856`，`γ_i = β_i/β* − σ_ωi·κ²/√β*`（Menter 2003，κ=0.41，
 γ1≈0.5532、γ2≈0.4404），交叉扩散项为 `(1−F1)·2σω2/ω·∇ω·∇k`（保留完整符号），
-F1/F2 为 `tanh(arg^4)` / `tanh(arg²)` 的标准混合，生产项用 Menter 限幅器
-`Pk ≤ 10β*kω`；`kFloor = dissFloor = 1e-12`，湍流方程自带的线性求解设置
-`1e-8 / 2000` 次。
+F1/F2 为 `tanh(arg^4)` / `tanh(arg²)` 的标准混合，两条方程各自带 Menter 2003
+生产上限（OpenFOAM `kOmegaSST.C`，`c1 = 10`）：k 方程 `Pk ≤ 10β*kω`，ω 方程
+`Pω = min(γS², 10β*γω²)`。后者是前者除以 `nut = k/ω` 的同一道限幅——当 Bradshaw
+限幅器把 `nut` 压到 `k/ω` 以下时，显式的 `γS²` 会盖过 ω 的 `βω²` 汇而形成
+正反馈（1D-3D 耦合块曾因此 SIMPLE 发散到 `dp~1e66`）；该上限把它夹回有限范围，
+是 Menter SST 标准实现的第四个要素，不是调参。`kFloor = dissFloor = 1e-12`，
+湍流方程自带的线性求解设置 `1e-8 / 2000` 次。
 
 **case 侧**：`turbulence{ model intensity lengthScale relaxation }`，缺块即
 laminar；`lengthScale ≤ 0` 回落为包围盒对角线的 7%（水力直径经验值）；

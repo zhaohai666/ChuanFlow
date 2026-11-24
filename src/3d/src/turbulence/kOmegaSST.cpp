@@ -88,6 +88,20 @@ Field<scalar> KOmegaSST::kProduction() const
     return p;
 }
 
+scalar KOmegaSST::omegaProduction(scalar gamma, scalar strain, scalar omega)
+{
+    // Menter 2003 omega-equation production with its standard upper bound
+    // (OpenFOAM kOmegaSST.C, c1 = productionLimit = 10):
+    //   P_omega = min(gamma S^2, c1 betaStar gamma omega^2).
+    // In the log layer nut = k/omega and this is exactly the k equation's
+    // Pk <= c1 betaStar k omega divided by nut; where the Bradshaw limiter
+    // cuts nut below k/omega the same cap keeps the explicit gamma S^2 from
+    // outrunning omega's beta omega^2 sink. Both the uncapped and the capped
+    // branch are exercised by turbulenceTests.
+    const scalar cap = productionLimit * betaStar * gamma * omega * omega;
+    return std::min(gamma * strain * strain, cap);
+}
+
 Field<scalar> KOmegaSST::kDiffusivity() const
 {
     const std::size_t nC = static_cast<std::size_t>(mesh_.nCells());
@@ -159,7 +173,8 @@ void KOmegaSST::solveDissipation(scalar dt)
     for (std::size_t c = 0; c < nC; ++c)
     {
         const scalar w = std::max(wOld[c], turb::dissFloor);
-        eqn.addRhs(static_cast<label>(c), 0, vol[c] * gammaW[c] * strain_[c] * strain_[c]);
+        eqn.addRhs(static_cast<label>(c), 0,
+                   vol[c] * omegaProduction(gammaW[c], strain_[c], w));
         const scalar cd = (1.0 - f1c[c]) * 2.0 * sigmaW2 / w
                         * dot(gradW[c], gradK[c]);
         eqn.addRhs(static_cast<label>(c), 0, vol[c] * cd);

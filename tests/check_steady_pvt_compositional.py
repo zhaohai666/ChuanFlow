@@ -43,6 +43,19 @@ R = 8.314462618
 SQRT2 = 1.4142135623730951
 OMEGA_A = 0.45723552892138218
 OMEGA_B = 0.07779607390388846
+
+# PR76 alpha kappa (omega <= 0.491 branch): published PR76 standard constants,
+# see Cantera 3.1 reference https://www.cantera.org/3.1/reference/thermo/species-thermo.html
+PR_KAPPA_BASE = 0.37464
+PR_KAPPA_LINEAR = 1.54226
+PR_KAPPA_QUAD = 0.26992
+
+
+def pr76_kappa(w):
+    """PR76 standard kappa; independent of the chflow kernel constants."""
+    return PR_KAPPA_BASE + PR_KAPPA_LINEAR * w - PR_KAPPA_QUAD * w * w
+
+
 ATM = 101325.0
 ZC = 0.3074
 
@@ -94,10 +107,11 @@ def pr_stable(names, zs, T, p):
     aI, bI = [], []
     for c in names:
         _, Tc, Pc = CT[c]
-        kappa = 0.37464  # methane omega=0.0115: full form below
         # use the real component acentric from components.cpp
         w = {"methane": 0.0115}[c]
-        kappa = 0.37464 + 1.54226 * w - 0.026992 * w * w
+        # PR76 standard kappa at omega=0.0115: the 10x quadratic fix changes
+        # kappa by only 3.2e-5, below the report's rounding floor.
+        kappa = pr76_kappa(w)
         alpha = (1.0 + kappa * (1.0 - math.sqrt(T / Tc))) ** 2
         Rtc = R * Tc
         aI.append(OMEGA_A * Rtc * Rtc / Pc * alpha)

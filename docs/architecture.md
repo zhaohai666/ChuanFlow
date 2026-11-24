@@ -5279,7 +5279,7 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **地形排放封顶（G2 伴生修复）。** 排放按下游可用容量封顶：`V' = min(volume, avail)`，EOS 把下游气窝压到容量不足时余量滞留出口成活动 lump（守恒不丢液、不越 [0,1] 持液率界），下一轮输运腾出空间再排。不可压增量 2 的 case 恒有 `V ≤ avail`，该改动对其逐位无感（`verify.twoFluidTerrainSlug` 复跑绿）。
 
-**回归。** 砂：沉降支复算「迎风输运→隐式沉降交换」逐步递推（入口补砂下 cell 0 弛豫到沉降/补砂稳态 0.15 而非纯衰减）、床增量=移除量 1e-12、薄层 dEff 1e-9；冲蚀孪生 `B_n = B_0(1+dt·erodeRate·(vM/uCrit−1))^(−n)` 复算；dry twin 逐位；4 项拒收。G2：us 代数式从**打印的** p 剖面/pcap/front 每帧重推到 1e-6、钳制不越界、速度随高程变化、平均推进率 ≠ 常量律、`dynamicUs false` twin 逐位精确运动学且 deposits 计满捕获/排放循环、4 项拒收。
+**回归。** 砂：沉降支复算「迎风输运→隐式沉降交换」逐步递推（入口补砂下 cell 0 弛豫到沉降/补砂稳态 0.15 而非纯衰减）、床增量=移除量 1e-12、薄层 dEff 1e-9；冲蚀孪生 `B_n = B_0(1+dt·erodeRate·(vM/uCrit−1))^(−n)` 复算；dry twin 逐位；4 项拒收。G2：us 代数式从**打印的** p 剖面/pcap/front 每帧重推到 1e-6、钳制不越界、速度随高程变化、平均推进率 ≠ 常量律、`dynamicUs false` twin 逐位精确运动学且 deposits 计满捕获/排放循环、4 项拒收。**勘误（2026-11-24，§5.184）**：气相面通量改由恒等式 `gvol = vM − F` 闭合后，原「钳制不越界、速度随高程变化、平均推进率 ≠ 常量律」三条判据物理不可满足（drive 恒非正），已删除并在 checker 头注释说明；注气版 case 定位反转为对抗性驱动——判据改为 us 逐位 0 + max drive 从上报 p 剖面独立重推 < 1 Pa，twin 与 4 项拒收保留。
 
 ### 5.143 G4 关联式族：hagedornBrown / dunsRos 只替换持液率定律
 
@@ -5757,21 +5757,17 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界**。声学层纯诊断（与动量/持液场的双向耦合是显式命名的后续增量）；固定 dt（无自适应）；线性声学不建模激波/非线性有限幅效应。
 
-## 6. 概念映射速查（OpenFOAM → ChuanFlow）
+### 5.184 F1 · 气相面通量按体积恒等式闭合（gvol = vM − F）+ dynamicUs 判据反转
 
-## 6. 概念映射速查（OpenFOAM → ChuanFlow）
+**差距**（2026-11-24 立项）：两流体 `transportStep` 的气相面通量是与液相同一 Godunov 对气相镜像二次方程的**独立解**——镜像解不镜像液相的分支选择，非均匀面上 F + G ≠ vM，离散体积恒等式破缺。后果：EOS 管线沿线被涂上虚假压力伪影（假 cap 超压、假喷出 drive），G2 dynamicUs（§5.142）的「气帽超压喷出」叙事此前正骑在这些伪影上。
 
-### 5.183 E7c · EOS 泄压沿线瞬态声学
+**实现**。气相面通量改为恒等式闭合，按面类型分四支：phaseRates 入口面保留声明的 `vsg`（恒等式逐字成立）、phaseRates 出口面取 junction 分裂（`liquidFluxAt + gasVolumeFluxAt = vM` 对任意闭合成立）、开口出口面保持逐点闭合（`gasVolumeFlux == vM − F` 恒等）、**内部面与 fixedPressure 入口面 `gvol[j] = vM_ − flux[j]`**，sealed 面 vM=0/F=0 恒等式回答 0。镜像 Godunov 解与 `gasCoeffsAt` 删除。质量通量仍按体积通量来向迎风密度（速率边界=注入参考密度、压强边界=ghost 密度、内部=cell 密度）。报告层：EOS 管线（gasR 门控）新增逐面 `face j F G` 行、terrain slug 行新增 `cfront` 列，供 checker 独立重推。`acoustics{}`（§5.183）增 Wood 混合声速 `aModel wood` + `liquidSoundSpeed`：`1/(ρ_w a_w²) = Σ 相体积分数/(ρ_k a_k²)`（Z 加权柔度），纯诊断不回写。
 
-**差距**（E7c，拆分自 E7③，2026-11-24 立项）：两流体 EOS 模式的压力更新是 lumped（单一集总 dp），泄压时沿线压力波传播不解析。
+**判据反转**（注气版 case 定位反转）：`twoFluidTerrainDynamicUs` 改为 phaseRates 注气（vsl 0 / vsg 5e-4）+ sealed 出口——注入是**对抗性驱动**，主动试图压出 cap 超压；判据是修复后恒等式让它做不到：us 逐帧**逐位 0**（120 帧）、max drive 从上报 p 剖面独立重推实测 **−0.00077 Pa**（量化上界 < 1 Pa）、`dynamicUs false` 运动学 twin 与 4 条拒收保留；物理不可满足的 clamp/span 判据删除（原因写进 checker 头注释：drive 恒非正，us 永远到不了 maxSlugVelocity 钳位，正 drive 见证需要发明物理）。`transientSlugTracking/caseGasCap` 改**物理热驱动**（壁 300 K + 350 K 注气，段塞骑在自己的暖脉冲里，`p_cap − p_front = ρG gasR ΔT` 数十 kPa）不再骑伪影。
 
-**实现**。EOS 模式内 opt-in `acoustics{}` 块：线性化 Euler 声学（LeVeque ch.9 显式交错格式——先面 u′ 行、再在新 u 上更新 cell 心 p′ 行，symplectic/leapfrog 配对；注释写明两行同时前向 Euler 会放大故弃用）。**声速零发明**：`a² = (∂p/∂ρ)_T = gasR·T` 是内核自研 EOS（p = ρG·gasR·T）的精确密度导数，ρa² 精确复现 cell EOS 压力；另留声明式 `soundSpeed` 覆盖路径（内核无 cV 不自导 γ，边界已注释）。边界条件：声明端压力释放（p′=0 半控制体积更新）、另一端硬壁（u′=0）。**稳定准则显式化**：`a_max·dt/dx_min ≤ cfl`（默认且硬上限 0.5——开口面半控制体积使显式极限减半，注释写明），违规 cfFatal；twoFluid 无自适应 dt（transient.cpp 有、twoFluid 无），固定 dt 约束已声明。纯诊断层：不回写动量/持液/EOS 密度（分布式动量耦合为 header 命名的 follow-up）；network 模式大声拒收。报告：cell 行 `pA` 键 + `aunode j u` 行（gated）。
+**回归**。新 `verify.transientGasFluxConsistency`：密封恒温 EOS 臂（前缘不变量 + 气存量守恒 + 恒压）、fixedPressure 臂（恒等式逐面 1e-12）、Wood 臂（Z 加权复算）与孪生基线，8 条大声拒收；`check_two_fluid.py` 四模式与 `check_transient_inhibitoreq.py` flow 臂的 Python 复刻同步改恒等式。全量 CTest **214/214**（627.65 s，-E mpiDecomposition）。
 
-**回归**。`verify.transientEosAcoustics` + checker **34 判据**（含 8 条拒收）：波前到达拟合 a_fit=291.97 m/s vs 理论 √(287·300)=293.43（−0.5%）；波前位置 t=0.1/0.25 s 与 L−a·t 差 ≤0.5 cell；硬壁反射周期（方波滞回转变间距）0.695/0.670 s vs 2L/a=0.6816 s（+2.0%/−1.7%）；声速覆盖臂 250 m/s 拟合 246.9（−1.2%）且验证非 EOS 速度；p′=0 边界能流为零 → 无损线性系统**声能守恒不衰减**（推导发现的物理事实，checker 验证有界+守恒）。**twin**：同一二进制下主 case 去 pA/aunode 行 == caseBase == caseDisabled 逐字节；基线对拍用干净 6f6a82b 自建旧二进制跑全部 89 目录 196 个 standing case 文件——成功运行逐字节一致（差异仅 E7c 新算例与 cfFatal 文本内嵌源码行号 +91 行，fatal 文本本身一致）。`transientEosAcoustics|transientSlugMechanics|twoFluid` 合并后 **38/38** 绿。
-
-**边界**。声学层纯诊断（与动量/持液场的双向耦合是显式命名的后续增量）；固定 dt（无自适应）；线性声学不建模激波/非线性有限幅效应。
-
-## 6. 概念映射速查（OpenFOAM → ChuanFlow）
+**边界**。真实产生 cap 超压的喷出律需要 **lump 气相隔断**（段塞本体隔断气通道、cap 压由封闭气体积定价）——未来增量，本批不动喷出律公式本身；恒等式修复只保证「注入压不出 cap 超压」这一对抗性判据成立。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 

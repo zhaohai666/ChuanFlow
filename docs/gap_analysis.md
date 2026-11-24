@@ -1,7 +1,6 @@
 
-| 2026-11-24 | E7c（EOS 泄压沿线声学） | §5.183 | 03284d3 | verify.transientEosAcoustics 34 判据（8 拒收）；196 standing case 基线对拍逐字节 | EOS 模式 `acoustics{}`：线性化 Euler 显式交错格式（先面 u′ 再 cell 心 p′），a²=gasR·T 为内核自研 EOS 精确密度导数（零发明物理）+ 声明式覆盖；释放端 p′=0 半控制体、硬壁 u′=0；CFL≤0.5 显式准则（开口面半控制体使极限减半）违规 cfFatal；波速 −0.5%、反射周期 ±2% 独立重推；声能守恒（无损线性系统不衰减）为推导发现并验证；纯诊断层不回写场 |# ChuanFlow 对标 Pipesim / OLGA / Fluent 能力差异清单
+# ChuanFlow 对标 Pipesim / OLGA / Fluent 能力差异清单
 
-| 2026-11-24 | E 类验收审计（产品愿景真实比对） | — | 见修复 commit | node 143/143 + rust 34/34 | 三层链路审计（Explore agent）发现 4 断链并当轮修复：**P0** `case_templates` 未注册 main.rs generate_handler（模板库死链，一行注册）；**P1-2** E4 点元四设备块无消费引擎——GUI 增 ▶点元 运行入口（引擎键/路径框/E9 持久化/onPointElementsDone 报告行）+ ▶稳态 检测设备块时提示改用 ▶点元（compressor 走稳态原生管键不受影响）；**P1-3** glyph 门槛漏新设备族（改 ALL_DEVICE_FIELDS.some）；**P1-4** beggsBrillPattern 未导入（E5 对账 ReferenceError 被空 catch 吞，补 import）；P2-5 parseTwoFluidFrames 增 E7c aunode 行消费；P2-6 日程面板启动载入对齐 E2 范式。端到端 12/12 + GUI 截图复核（▶点元 按钮渲染、点元真跑 PUMPING r=0.343 resid 1.5e-11） |
 > 本文档记录 ChuanFlow 相对 **Pipesim / OLGA / Fluent** 三款商业软件的现存能力差异，作为"继续排查还有哪些能力没有实现"工作线的单一可信来源。
 >
 > - 每完成一个增量，本文档同步更新：状态列从 `OPEN` → `IN_PROGRESS` → `CLOSED`，并在末尾的"实施日志"里追加一行实测结果。
@@ -310,6 +309,7 @@
 - **成本估计**：2 增量（实测 2）
 - **落点**：architecture.md §5.91（增量 1）、§5.92（增量 2）
 - **README 现状**：`terrain{}` 报低点积液图与段塞起始准则（只读），`slugVelocity` 启用捕获 / 行进 / 卸载循环（密封守恒弛豫振荡器）。
+- **后续增量（2026-11-24 立项，§5.184 命名）**：**lump 气相隔断**——地形段塞 lump 目前不隔断气相通道，气帽超压喷出律（§5.142 dynamicUs / slugTracking gasCap）在修复后的体积恒等式 `gvol = vM − F` 下无法产生真实 cap 超压（注气对抗判据：us 恒逐位 0、drive 恒 < 1 Pa）。真实超压需要段塞本体隔断气通道、cap 压由封闭气体积定价；要做另开增量。
 
 ### D7. 组分 PVT 扩展（LBC 黏度、表面张力、含水、CO₂ / H₂S）
 
@@ -636,3 +636,6 @@
 | 2026-11-23 | E1 收尾（3D 引擎族注册表） | §5.181 | c8b7bcd | node 129/129 + rust 34/34（合并后 142/142） | THREE_D_FAMILY 11 成员（PISO/simpleFoam/VOF/可压缩/标量/DPM/P1/燃烧/LES/熔化/空化）注册 + resolve_three_d_family + three_d_engines 命令；模板库 10→20（engine↔template 双向配对护栏测试固化 §5.172 教训）；startJob('3d') 按模板族成员解析二进制；10 个新成员真实二进制冒烟 rc=0 产 VTU；无 vtk 产出路径 app（cht/ale/adaptiveRefine/dynamicMesh/mixturePbm/qmom/combustionDetailed）有意不接 |
 
 | 2026-11-24 | E7b（Bendiksen 前缘闭合 + 双区制） | §5.182 | fdc41ea | verify.transientSlugMechanics 45 判据；slug/purge/pigging/twoFluid 40/40 | `frontClosure bendiksen`：v_front=C0·v_m+V_d（C0=1.2、V_d=0.35·sinθ·√(gD·Δρ/ρL)，Bendiksen 1984 高速分支 + TUFFP 密度修正，低速分支未实现已声明边界）+ `zoning true`：cell 行 zone 1\|0（cell 中心规则，纯诊断不回写 α）；与 velocityMode/slugVelocity/gasCapTime/maxSlugVelocity 互斥拒收；双 twin 逐字节 + 基线二进制 cmp 对拍 |
+| 2026-11-24 | E7c（EOS 泄压沿线声学） | §5.183 | 03284d3 | verify.transientEosAcoustics 34 判据（8 拒收）；196 standing case 基线对拍逐字节 | EOS 模式 `acoustics{}`：线性化 Euler 显式交错格式（先面 u′ 再 cell 心 p′），a²=gasR·T 为内核自研 EOS 精确密度导数（零发明物理）+ 声明式覆盖；释放端 p′=0 半控制体、硬壁 u′=0；CFL≤0.5 显式准则（开口面半控制体使极限减半）违规 cfFatal；波速 −0.5%、反射周期 ±2% 独立重推；声能守恒（无损线性系统不衰减）为推导发现并验证；纯诊断层不回写场 |
+| 2026-11-24 | E 类验收审计（产品愿景真实比对） | — | 98b216c | node 143/143 + rust 34/34 | 三层链路审计（Explore agent）发现 4 断链并当轮修复：**P0** `case_templates` 未注册 main.rs generate_handler（模板库死链，一行注册）；**P1-2** E4 点元四设备块无消费引擎——GUI 增 ▶点元 运行入口（引擎键/路径框/E9 持久化/onPointElementsDone 报告行）+ ▶稳态 检测设备块时提示改用 ▶点元（compressor 走稳态原生管键不受影响）；**P1-3** glyph 门槛漏新设备族（改 ALL_DEVICE_FIELDS.some）；**P1-4** beggsBrillPattern 未导入（E5 对账 ReferenceError 被空 catch 吞，补 import）；P2-5 parseTwoFluidFrames 增 E7c aunode 行消费；P2-6 日程面板启动载入对齐 E2 范式。端到端 12/12 + GUI 截图复核（▶点元 按钮渲染、点元真跑 PUMPING r=0.343 resid 1.5e-11） |
+| 2026-11-24 | F1（气相面通量体积恒等式修复 + dynamicUs 判据反转） | §5.184 | c26294f | 全量 CTest 214/214（627.65 s，-E mpiDecomposition）；新 verify.transientGasFluxConsistency（恒等式逐面 1e-12 + 前缘不变量 + 气存量守恒 + Wood 臂 + 8 拒收） | 气相面通量 gvol 原是同一 Godunov 对气相镜像二次方程的**独立解**——不镜像液相分支选择，非均匀面 F+G≠vM，EOS 线被涂上虚假压力伪影（假 cap 超压、假喷出 drive）。改为**恒等式闭合**：内部面与 fixedPressure 入口面 `gvol = vM − flux`，phaseRates 入口保留声明 vsg、开口出口逐点闭合、sealed 面恒等式答 0；镜像解与 gasCoeffsAt 删除。报告层：EOS 线逐面 `face j F G` 行（gasR 门控）+ terrain slug `cfront` 列；`acoustics{}` 增 Wood 混合声速 `aModel wood`（Z 加权 1/(ρa²)，纯诊断）。**判据反转（方案 A）**：twoFluidTerrainDynamicUs 保留注气版（vsl 0 / vsg 5e-4 + sealed 出口）但定位反转——注入是对抗性驱动，判据 = 修复后恒等式让它压不出 cap 超压：us 逐位 0（120 帧）、max drive 从上报 p 剖面独立重推 −0.00077 Pa（上界 < 1 Pa）、twin 与 4 拒收保留；物理不可满足的 clamp/span 判据删除（checker 头注释说明）。caseGasCap 改物理热驱动（壁 300 K + 350 K 注气暖脉冲）不再骑伪影；check_two_fluid 四模式与 inhibitorEq flow 臂 Python 复刻同步恒等式。**未来 gap 条目**：真实 cap 超压喷出需 **lump 气相隔断**（段塞本体隔断气通道、cap 压由封闭气体积定价）——另立项，见 D6 节 |

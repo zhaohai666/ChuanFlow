@@ -136,14 +136,13 @@ t_term = (TF - 60.0) * api / GG
 c1 = 4.670e-4 if heavy else 4.677e-4
 c3 = 1.337e-9 if heavy else -1.811e-8
 bob = 1.0 + c1 * rs_scf + c2 * t_term + c3 * rs_scf * t_term
-# dead oil: Standing's bubble point is clamped to 0, and VB's co floors
-# the pb denominator at 300 psia
+# dead oil: Standing's bubble point is clamped to 0; the published VB co is
+# evaluated at the pressure of the state itself (Vazquez & Beggs 1980)
 pb_psia = max(18.2 * ((rs_scf / GG) ** 0.83 * 10.0
                       ** (0.00091 * TF - 0.0125 * api) - 1.4), 0.0)
 check("dead oil has a clamped zero bubble point", pb_psia == 0.0,
       f"pb={pb_psia} psia")
-co = (-1433.0 + 5.0 * rs_scf + 17.2 * TF - 1180.0 * GG + 12.61 * api) \
-     / (1.0e5 * max(pb_psia, 300.0))
+co_num = (-1433.0 + 5.0 * rs_scf + 17.2 * TF - 1180.0 * GG + 12.61 * api)
 mu_dead = 10.0 ** (10.0 ** (3.0324 - 0.02023 * api) * TF ** (-1.163)) - 1.0
 mu_oil = 10.715 * (rs_scf + 100.0) ** (-0.515) \
          * mu_dead ** (5.44 * (rs_scf + 150.0) ** (-0.338)) * 1e-3
@@ -151,7 +150,10 @@ wor = WC / (1.0 - WC) if 0.0 < WC < 0.999 else 0.0
 
 
 def bo_of(p):
-    # above bubble point: Bo = Bob exp[co (pb - p)]
+    # above bubble point: Bo = Bob exp[co(p) (pb - p)] with the published
+    # co evaluated AT p. With pb = 0 the exponent collapses to
+    # -co_num/1e5, independent of p.
+    co = co_num / (1.0e5 * max(p / PSI, 1e-12))
     return bob * math.exp(co * (pb_psia - p / PSI))
 
 

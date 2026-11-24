@@ -142,7 +142,7 @@ def vb_bo(p_psia, rs_scf, pb_psia, gg, api_, tf):
     if p_psia <= pb_psia:
         return bob
     co = (-1433.0 + 5.0 * rs_scf + 17.2 * tf - 1180.0 * gg + 12.61 * api_) \
-         / (1.0e5 * max(pb_psia, 300.0))
+         / (1.0e5 * p_psia)
     return bob * math.exp(co * (pb_psia - p_psia))
 
 

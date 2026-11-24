@@ -58,15 +58,17 @@ double vazquezBeggsBoRbStb(double pPsia, double rsScfStb, double pbPsia,
     const double tTerm = (TF - 60.0) * api / gasGravity;
     const double bob = 1.0 + c1 * rsScfStb + c2 * tTerm + c3 * rsScfStb * tTerm;
     if (pPsia <= pbPsia) return bob;
-    // undersaturated: VB compressibility (1/psi), rs at the bubble point.
-    // The correlation divides by pb; a degenerate bubble point (dead oil,
-    // Rs = 0 gives pb = 0) would blow co up by orders of magnitude, so
-    // floor the denominator into the correlation's fitted range.
+    // undersaturated: Vazquez & Beggs (1980) compressibility, in the
+    // PUBLISHED form: the denominator is the pressure the state is being
+    // evaluated AT, so co is re-priced at every p and
+    // Bo = Bob exp[-co(p) (p - pb)] follows the paper exactly. (The
+    // correlation's fitted range is p well above any degenerate bubble
+    // point; the caller's pressure floor keeps the denominator positive.)
     const double co =
         (-1433.0 + 5.0 * rsScfStb + 17.2 * TF - 1180.0 * gasGravity
          + 12.61 * api)
-        / (1.0e5 * std::max(pbPsia, 300.0));
-    return bob * std::exp(co * (pbPsia - pPsia)); // co < 0, p > pb shrinks
+        / (1.0e5 * pPsia);
+    return bob * std::exp(co * (pbPsia - pPsia)); // p > pb shrinks Bo
 }
 
 double beggsRobinsonDeadOilCp(double api, double TF)

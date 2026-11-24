@@ -531,7 +531,7 @@ class BlackOil:
         if p_psia <= pb:
             return bob
         co = ((-1433 + 5 * rs + 17.2 * tf - 1180 * gg + 12.61 * api)
-              / (1e5 * max(pb, 300.0)))
+              / (1e5 * p_psia))
         return bob * math.exp(co * (pb - p_psia))
 
     def z_dak(self, p_psia):

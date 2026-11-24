@@ -15,7 +15,11 @@ namespace cf
 ///     transition, intermittent, distributed),
 ///   - horizontal liquid holdup HL(0) = a lambda^b / Nfr^c per regime
 ///     (segregated 0.98/0.4846/0.0868, intermittent 0.845/0.5351/0.0173,
-///     distributed 1.065/0.5824/0.0609), transition regime interpolated,
+///     distributed 1.065/0.5824/0.0609); the transition regime blends the
+///     two NEIGHBOURING regimes' complete branch gradients with weight
+///     w = (L3 - Nfr)/(L3 - L2) -- each branch its own holdup, inclination
+///     set, friction multiplier and Ek -- and reports the blend of the
+///     branch holdups, so the L2 / L3 boundaries stay continuous,
 ///   - inclination correction psi = 1 + C(sin 1.8th - sin^3 1.8th / 3),
 ///     C = (1-lambda) ln(d lambda^e Nlv^f Nfr^h) with the published
 ///     uphill/downhill coefficient sets (distributed uphill: C = 0),

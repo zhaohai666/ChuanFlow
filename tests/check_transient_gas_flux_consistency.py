@@ -345,9 +345,15 @@ A0w = case_number(wood_text, "alpha")
 # Wood's homogeneous-mixture sound speed, re-derived from the case text:
 #   1/(rho_m a^2) = alphaL/(rhoL aL^2) + alphaG/(rhoG aG^2)
 # with aG^2 = gasR T (the EOS-exact gas derivative) and rhoG = P0/aG^2.
+# The case's `alpha` is the LIQUID holdup (the kernel weights the
+# compliance by alpha_ for the liquid term and 1-alpha_ for the gas
+# term, twoFluid.cpp acousticsStep), so both lines below use it the
+# same way (2026-11-24 fix: the first version swapped the weights in
+# the compliance only; invisible here because caseWood declares the
+# symmetric alpha 0.5).
 AG2 = GasR * Temp0
 RhoGw = P0 / AG2
-compliance = (1.0 - A0w) / (RhoL * AL * AL) + A0w / (RhoGw * AG2)
+compliance = A0w / (RhoL * AL * AL) + (1.0 - A0w) / (RhoGw * AG2)
 rho_m = A0w * RhoL + (1.0 - A0w) * RhoGw
 A_wood = math.sqrt(1.0 / (compliance * rho_m))
 A_eos = math.sqrt(AG2)

@@ -3012,8 +3012,10 @@ void TwoFluidPipe::acousticsStep(double dt)
 
     // per-cell wave speed and inertia. EOS path (aModel eos, the
     // default): a^2 = (dp/drho)_T = gasR T, the exact density derivative
-    // of the kernel's own gas law p = rhoG gasR T - so rho a^2
-    // reproduces the cell's EOS pressure exactly. Wood path (aModel
+    // of the kernel's own gas law p = rhoG gasR T - so rhoG a^2
+    // reproduces the cell's gas-phase EOS pressure exactly (the
+    // acoustic rows themselves carry the mixture density rho_m as
+    // inertia, not rhoG). Wood path (aModel
     // wood): Wood's homogeneous-mixture sound speed (A. B. Wood, "A
     // Textbook of Sound", 1930; the standard uniform-equilibrium
     // compressibility rule for a mixture),

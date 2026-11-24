@@ -291,6 +291,21 @@ int main(int argc, char** argv)
                 = c.slugTrackingOn && c.slugTracking.zoning
                       ? s.cellZones()
                       : std::vector<int>();
+            // E7c (5.183): the linear acoustic layer's gated report columns
+            // - the cell acoustic pressure rides the cell rows as a `pA`
+            // key and the face acoustic velocities as one `aunode` line per
+            // face - absent unless acoustics{} was declared and enabled.
+            const std::vector<double> pAc
+                = c.acousticsOn ? s.cellAcousticPressure()
+                                : std::vector<double>();
+            const std::vector<double> uAc
+                = c.acousticsOn ? s.faceAcousticVelocity()
+                                : std::vector<double>();
+            // one face acoustic velocity line per face (same idiom as the
+            // node pressure lines), gated on the acoustics{} block
+            if (!uAc.empty())
+                for (std::size_t j = 0; j < uAc.size(); ++j)
+                    log::info("aunode ", j, " u ", num(uAc[j]));
             for (int i = 0; i < s.sections(); ++i)
             {
                 log::info("cell ", i, " alpha ", num(a[i]), " water ",
@@ -300,6 +315,7 @@ int main(int argc, char** argv)
                           sl.empty() ? "" : (" s " + num(sl[i])),
                           zoned.empty()
                               ? "" : (" zone " + std::to_string(zoned[i])),
+                          pAc.empty() ? "" : (" pA " + num(pAc[i])),
                           ep.empty() ? "" : (" p " + num(ep[i])),
                           hy.empty() ? "" : (" h " + num(hy[i])),
                           wx.empty() ? "" : (" wax " + num(wx[i])),

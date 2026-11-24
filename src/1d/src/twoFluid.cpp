@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iomanip>
 #include <limits>
+#include <sstream>
 #include <vector>
 
 #include "cf/common/Error.h"
@@ -276,6 +278,16 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         pigState_.launched = true;
         pigState_.x = pg.startX;
         pigState_.v = pg.pigVelocity;
+    }
+
+    // E7c (5.183): the acoustic field starts at the uniform declared
+    // overpressure with the line at rest (u' = 0 on every face); the vent
+    // opens at t = 0. The state is allocated only on the declared path, so
+    // the undeclared constructor keeps the old footprint verbatim.
+    if (cfg_.acousticsOn)
+    {
+        pA_.assign(n_, cfg_.acoustics.initialGauge);
+        uA_.assign(n_ + 1, 0.0);
     }
 
     if (cfg_.thermalOn)
@@ -2022,6 +2034,7 @@ void TwoFluidPipe::step(double dt)
     thermalStep(dt);
     slugTrackStep(dt); // O2 (5.161): rides the step's final holdup field
     piggingStep(dt); // E6 (5.176): reduced pig rides the final holdup field
+    acousticsStep(dt); // E7c (5.183): linear acoustic layer (report-only)
     vMOld_ = vM_;
     t_ += dt;
 }
@@ -3016,6 +3029,84 @@ void TwoFluidPipe::piggingStep(double dt)
     }
 }
 
+// E7c (5.183): one explicit staggered step of the linear acoustic state.
+// The pair (p', u') solves the linearized Euler acoustics of a quiescent
+// duct (LeVeque ch. 9): dp'/dt = -rho a^2 du'/dx, du'/dt = -(1/rho) dp'/dx.
+// Discretization: u lives on faces, p in cells; the u rows update FIRST on
+// the current p, then the p rows update on the NEW u - the symplectic
+// (leapfrog) pairing that is neutrally stable for a dt/dx <= 1, unlike
+// forward Euler on both rows which amplifies every mode. The open end is
+// pressure-release (ghost p' = 0, its face updates on the half control
+// volume next to the boundary), the closed end pins u' = 0 (a rate or
+// sealed boundary imposes its velocity, so acoustically it is a wall).
+// No write-back: the mean state (momentum, holdup, gas mass) is untouched,
+// the acoustic layer is superposed reporting only.
+void TwoFluidPipe::acousticsStep(double dt)
+{
+    if (!cfg_.acousticsOn) return;
+    const TwoFluidAcoustics& ac = cfg_.acoustics;
+
+    // per-cell wave speed and inertia. EOS path: a^2 = (dp/drho)_T =
+    // gasR T, the exact density derivative of the kernel's own gas law
+    // p = rhoG gasR T - so rho a^2 reproduces the cell's EOS pressure
+    // exactly. Declared path: the case's constant replaces it wholesale.
+    std::vector<double> a2(n_), rho(n_);
+    double aMax = 0.0, dxMin = 1e300;
+    for (int i = 0; i < n_; ++i)
+    {
+        const double a = ac.soundSpeed > 0
+                             ? ac.soundSpeed
+                             : std::sqrt(cfg_.fluid.gasR
+                                         * sectionTemperature(i));
+        a2[i] = a * a;
+        rho[i] = mixtureRhoCell(i);
+        if (a > aMax) aMax = a;
+        if (dxs_[i] < dxMin) dxMin = dxs_[i];
+    }
+    // the stability bound is explicit and loud: a violation is a refusal,
+    // not a silent wobble (there is no adaptive dt on this row - the app
+    // drives fixed dt, so the case must declare one that fits)
+    const double cflNow = aMax * dt / dxMin;
+    if (cflNow > ac.cfl)
+    {
+        std::ostringstream os;
+        os << std::setprecision(6) << cflNow;
+        cfFatal("twoFluid: acoustic CFL violated - a_max dt / dx_min = "
+                + os.str() + " exceeds the declared bound "
+                + std::to_string(ac.cfl) + " - reduce dt");
+    }
+
+    std::vector<double> uNew(n_ + 1, 0.0);
+    // interior faces: centred momentum over the two half cells
+    for (int j = 1; j < n_; ++j)
+    {
+        const double rf = 0.5 * (rho[j - 1] + rho[j]);
+        const double df = 0.5 * (dxs_[j - 1] + dxs_[j]);
+        uNew[j] = uA_[j] - dt * (pA_[j] - pA_[j - 1]) / (rf * df);
+    }
+    if (ac.openAtInlet)
+    {
+        // inlet vents: ghost p' = 0 left of face 0 (half control volume)
+        uNew[0] = uA_[0]
+                - dt * (0.0 - pA_[0]) / (rho[0] * 0.5 * dxs_[0]);
+        uNew[n_] = 0.0; // outlet end is the hard wall
+    }
+    else
+    {
+        // outlet vents: ghost p' = 0 right of face n (half control volume)
+        uNew[n_] = uA_[n_]
+                - dt * (0.0 - pA_[n_ - 1]) / (rho[n_ - 1] * 0.5 * dxs_[n_ - 1]);
+        uNew[0] = 0.0; // inlet end is the hard wall
+    }
+    // cell pressures on the NEW face velocities (the symplectic pairing)
+    std::vector<double> pNew(n_, 0.0);
+    for (int i = 0; i < n_; ++i)
+        pNew[i] = pA_[i]
+                - rho[i] * a2[i] * dt / dxs_[i] * (uNew[i + 1] - uNew[i]);
+    uA_.swap(uNew);
+    pA_.swap(pNew);
+}
+
 namespace
 {
 
@@ -3628,6 +3719,63 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
             cfFatal("twoFluid: pigging needs a positive pigVelocity");
         c.piggingOn = enable;
     }
+
+    if (caseDict.has("acoustics"))
+    {
+        // E7c (5.183): linear along-the-line pressure-wave acoustics for
+        // the EOS mode. The block is opt-in and enable false (or no block
+        // at all) leaves the run byte-identical. Model, source and the
+        // honest applicability boundary live in the TwoFluid.h class
+        // documentation; the declared values are validated here, loudly.
+        const Dictionary& ad = caseDict.getDict("acoustics");
+        bool enable = true;
+        if (ad.has("enable"))
+        {
+            const std::string w = ad.getWord("enable");
+            if (w == "true") enable = true;
+            else if (w == "false") enable = false;
+            else cfFatal("twoFluid: acoustics enable must be true or"
+                         " false");
+        }
+        c.acoustics.initialGauge = ad.getScalarOr("initialGauge", 0.0);
+        if (c.acoustics.initialGauge < 0)
+            cfFatal("twoFluid: acoustics initialGauge must be positive"
+                    " (a negative acoustic overpressure is not a"
+                    " depressurization)");
+        c.acoustics.soundSpeed = ad.getScalarOr("soundSpeed", 0.0);
+        if (c.acoustics.soundSpeed < 0)
+            cfFatal("twoFluid: acoustics soundSpeed must be positive"
+                    " (0 selects the EOS-consistent isothermal speed"
+                    " sqrt(gasR T))");
+        c.acoustics.cfl = ad.getScalarOr("cfl", 0.5);
+        if (c.acoustics.cfl <= 0 || c.acoustics.cfl > 0.5)
+            cfFatal("twoFluid: acoustics cfl must be in (0, 0.5] (the"
+                    " pressure-release end updates its face on a half"
+                    " control volume, which halves the explicit"
+                    " limit)");
+        if (ad.has("openEnd"))
+        {
+            const std::string oe = ad.getWord("openEnd");
+            if (oe == "outlet") c.acoustics.openAtInlet = false;
+            else if (oe == "inlet") c.acoustics.openAtInlet = true;
+            else cfFatal("twoFluid: unknown acoustics openEnd '" + oe
+                         + "' (outlet or inlet)");
+        }
+        if (enable)
+        {
+            // the wave speed is the density derivative of the kernel's
+            // own gas law; without the EOS there is no a to take
+            if (!(c.fluid.gasR > 0))
+                cfFatal("twoFluid: acoustics needs the gas EOS (fluid"
+                        " gasR > 0): the wave speed is the EOS density"
+                        " derivative");
+            if (!(c.acoustics.initialGauge > 0))
+                cfFatal("twoFluid: enabled acoustics needs a positive"
+                        " initialGauge (the linear field vents from"
+                        " it)");
+        }
+        c.acousticsOn = enable;
+    }
 }
 
 } // namespace
@@ -3720,6 +3868,12 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
 
 TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
 {
+    // E7c (5.183): the acoustic layer is a serial-row feature - the
+    // network report has no pA/aunode columns yet, so a network
+    // declaration would run unreported physics. Loud, not silent.
+    if (caseDict.has("acoustics"))
+        cfFatal("twoFluid: acoustics is a serial-row feature; the branch"
+                " network row carries no acoustic report columns yet");
     TwoFluidNetworkCase nc;
     nc.perPipe.networkMode = true;
     loadTwoFluidCommon(caseDict, nc.perPipe);

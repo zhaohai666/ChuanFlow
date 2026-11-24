@@ -1,0 +1,59 @@
+// E7c (5.183) rejection witness: cfl outside the (0, 0.5] window. The
+// pressure-release end updates its boundary face on a HALF control
+// volume, which halves the explicit staggered scheme's stability limit -
+// so the declared bound is hard-capped at 0.5 and 0.75 is refused at
+// load. The checker derives further reject variants from case.dict
+// (bad enable word, non-positive soundSpeed, non-positive initialGauge,
+// unknown openEnd, missing gas EOS, and a dt that violates the declared
+// stability bound at runtime).
+fluid
+{
+    rhoL 1000;
+    rhoG 11.61;
+    muL  0.01;
+    muG  1e-5;
+    gasR 287;
+}
+
+pipe
+{
+    length 100;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 100;
+}
+
+closure
+{
+    model wallis;
+}
+
+initial
+{
+    alpha 0;
+    water 0;
+    temperature 300;
+}
+
+boundaries
+{
+    inlet { type sealed; }
+    outlet { type sealed; }
+}
+
+acoustics
+{
+    enable true;
+    initialGauge 1e6;
+    soundSpeed 0;
+    cfl 0.75;
+    openEnd outlet;
+}
+
+time
+{
+    dt 0.001;
+    endTime 2.0;
+    reportEvery 5;
+}

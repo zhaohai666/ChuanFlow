@@ -172,6 +172,46 @@ namespace cf
 /// serves as the flash reference - a case with neither is refused at load.
 /// The feed temperature is sectionTemperature(i) (the thermal{} field, or
 /// the declared initial temperature when thermal is off).
+/// E7c (5.183): with an acoustics{} block the EOS mode also carries a
+/// linearized along-the-line pressure-wave state - the acoustic dynamics
+/// the lumped mixture momentum cannot resolve (one velocity per pipe, the
+/// thermodynamic p_i is not a local momentum driver, see above). The
+/// subsystem is the standard linear acoustics of a quiescent duct (the
+/// linearized Euler equations with the mean flow dropped - the textbook
+/// pair dp'/dt + rho a^2 du'/dx = 0, du'/dt + (1/rho) dp'/dx = 0, e.g.
+/// LeVeque, "Finite Volume Methods for Hyperbolic Problems", ch. 9): a
+/// cell-centred acoustic pressure p'_i and a face-staggered acoustic
+/// velocity u'_j advanced by the explicit staggered scheme (the u rows
+/// first, then the p rows on the NEW face velocities - the symplectic /
+/// leapfrog pairing that is neutrally stable, unlike forward Euler on
+/// both rows). The wave speed is the EOS-self-consistent derivative of
+/// the kernel's own gas law p = rhoG gasR T: a^2 = (dp/drho)_T =
+/// gasR T, so rho a^2 equals the cell's EOS pressure exactly; a case
+/// that wants an adiabatic or mixture bulk correction instead declares
+/// soundSpeed directly (the kernel carries no cV, so it cannot derive
+/// gamma itself - that boundary is stated, not papered over). The
+/// inertia is the local mixture density (mixtureRhoCell). One end
+/// (declared openEnd) vents to a pressure-release boundary p' = 0 - the
+/// depressurization valve of the scenario - the other end is a hard
+/// wall u' = 0 (a rate boundary imposes its velocity, so it is
+/// acoustically a wall; the mean core may still be sealed, in which
+/// case the acoustic field is the whole story). The field starts at a
+/// uniform declared initialGauge overpressure and vents from t = 0:
+/// the release wave crosses the line in L/a, reflects off the hard
+/// wall, returns in another L/a and the whole signal repeats with the
+/// 4L/a quarter-wave period (events at a fixed cell spaced 2L/a).
+/// APPLICABILITY, stated honestly: this is a LINEAR perturbation layer
+/// superposed on the (unchanged) lumped mean state - it is reported
+/// (pA cell key + aunode face lines) but never feeds back into the
+/// momentum, holdup or EOS density fields (the distributed momentum
+/// coupling is the follow-up the header note above already names), and
+/// it models the wave content only, not the mean blowdown. Stability is
+/// explicit and loud: the declared cfl bound (default 0.5, hard-capped
+/// at 0.5 because the pressure-release end updates its face on a HALF
+/// control volume) is checked against a_max dt / dx_min every step and
+/// a violation is a cfFatal, not a silent wobble. The undeclared path
+/// (no acoustics{} block, or enable false) never touches the new state
+/// and stays byte-identical.
 
 struct TwoFluidFluid
 {
@@ -577,6 +617,28 @@ struct TwoFluidPigState
     double outVol = 0;      // m, cumulative front liquid released at arrival
 };
 
+/// E7c (5.183): linear along-the-line acoustics for the EOS mode (see the
+/// class documentation for the derivation, the source and the honest
+/// applicability boundary). All quantities are declarations - the kernel
+/// carries no property table; the EOS-self-consistent wave speed
+/// a = sqrt(gasR T) is the exact density derivative of the implemented
+/// gas law p = rhoG gasR T (isothermal form), and a declared soundSpeed
+/// replaces it wholesale when the case wants an adiabatic / bulk
+/// correction the kernel cannot derive (no cV is declared).
+struct TwoFluidAcoustics
+{
+    double initialGauge = 0;  // Pa, uniform initial acoustic overpressure
+                              // (> 0 when enabled; the field vents from it)
+    double soundSpeed = 0;    // m/s, declared wave speed (0 = EOS-consistent
+                              // isothermal sqrt(gasR T) per cell)
+    double cfl = 0.5;         // stability bound on a_max dt / dx_min,
+                              // (0, 0.5] (the pressure-release face updates
+                              // on a half control volume)
+    bool openAtInlet = false; // false: the OUTLET end vents (pressure
+                              // release); true: the inlet does. The other
+                              // end is a hard wall u' = 0.
+};
+
 struct TwoFluidPigEvent
 {
     double t = 0;           // s, event time (ARRIVE)
@@ -905,6 +967,11 @@ struct TwoFluidCase
                                  // (pigging{} present); the undeclared path
                                  // is byte-identical
     TwoFluidPigging pigging;
+    bool acousticsOn = false;    // E7c (5.183): linear along-the-line
+                                 // pressure-wave acoustics solved
+                                 // (acoustics{} present and enabled); the
+                                 // undeclared path is byte-identical
+    TwoFluidAcoustics acoustics;
     bool networkMode = false;    // branch-network member: the junction end
                                  // boundary is owned by the TwoFluidNetwork
                                  // (mutated every step), so the constructor
@@ -1126,6 +1193,24 @@ public:
     {
         return pigJournal_;
     }
+    /// E7c (5.183): the linear acoustic pressure perturbation p'(t, x_i)
+    /// per section, Pa (empty unless acoustics{} is declared and enabled).
+    /// A REPORT-only linear perturbation field: it never enters the
+    /// momentum, holdup or EOS density fields, so the reported EOS `p`
+    /// column keeps meaning p = rhoG gasR T exactly. See the class
+    /// documentation for the model boundary.
+    std::vector<double> cellAcousticPressure() const
+    {
+        return cfg_.acousticsOn ? pA_ : std::vector<double>();
+    }
+    /// E7c (5.183): the face-staggered acoustic velocity u'(t, face_j),
+    /// m/s, one entry per face (size sections + 1; face 0 = inlet end,
+    /// face sections = outlet end; empty unless acoustics{} is declared
+    /// and enabled). The velocity the pressure rows were advanced with.
+    std::vector<double> faceAcousticVelocity() const
+    {
+        return cfg_.acousticsOn ? uA_ : std::vector<double>();
+    }
     /// Slug tracking events (GEN/MERGE/OUT) in occurrence order, so the
     /// app can report every event even between two sampled frames.
     const std::vector<TwoFluidSlugTrackEvent>& slugTrackEvents() const
@@ -1300,6 +1385,12 @@ private:
     /// pile the swept liquid ahead, slow on a growing front, release at the
     /// end arc. Reads alpha_ only; the field is untouched.
     void piggingStep(double dt);
+    /// E7c (5.183): advance the linear acoustic state one step (u rows
+    /// first on the current p, then the p rows on the NEW u - the
+    /// symplectic pairing; forward Euler on both rows would be
+    /// unstable). Reads the fields only; no write-back to the mean
+    /// state. Fatals when a_max dt / dx_min exceeds the declared cfl.
+    void acousticsStep(double dt);
     /// Maximal runs of sections with alpha >= alphaThreshold and length >=
     /// minLength, in flow order: the scan slugBodies() reports and the
     /// slug tracking generates from.
@@ -1436,6 +1527,10 @@ private:
     double purgeLastCompleteT_ = 0; // O3: previous COMPLETE (period clock)
     TwoFluidPigState pigState_;   // E6: live reduced pig state
     std::vector<TwoFluidPigEvent> pigJournal_; // E6: ARRIVE events
+    std::vector<double> pA_;      // E7c: cell acoustic pressure perturbation
+                                  // (Pa); allocated only when acoustics on
+    std::vector<double> uA_;      // E7c: face acoustic velocity (m/s), one
+                                  // entry per face (n_ + 1)
     std::vector<double> slip_;    // dynamic closure: vG - vL per section
     std::vector<double> sDotOld_; // last step's ds/dt, the lagged slip
                                   // inertia the mixture momentum feels
@@ -1644,6 +1739,22 @@ private:
 ///   boundaries { inlet { ... zInlet (0.2 0.4 0.4); } }  // inflow mole
 ///                // fractions in the declared component order (composition
 ///                // on; empty = the declared feed z0)
+///   acoustics    // optional (5.183): linear along-the-line pressure-wave
+///                // acoustics for the EOS mode (depressurization waves);
+///                // needs the gas EOS (gasR > 0)
+///   {
+///       enable true;             // false keeps the run byte-identical
+///       initialGauge 1e6;        // Pa, uniform initial acoustic
+///                                // overpressure (> 0 when enabled)
+///       soundSpeed 0;            // m/s, declared wave speed (0 = the
+///                                // EOS-consistent isothermal
+///                                // sqrt(gasR T) per cell)
+///       cfl 0.5;                 // stability bound a_max dt/dx_min,
+///                                // in (0, 0.5]; violations are fatal
+///       openEnd outlet;          // the venting end (outlet or inlet,
+///                                // pressure-release); the other end is
+///                                // a hard wall u' = 0
+///   }
 ///   time { dt 0.25; endTime 30; reportEvery 4; }
 TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict);
 

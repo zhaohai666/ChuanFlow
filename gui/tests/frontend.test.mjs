@@ -6,6 +6,10 @@ import {
 } from '../frontend/dist/flowAssurance.js';
 
 import {
+  parseReservoirLine, wellControlPanel, parseRiskLine, riskPanel,
+  HYDRATE_GRADE, CO2_BAND,
+} from '../frontend/dist/safety.js';
+import {
   validateCaseText,
   toBarHeights,
   toLinePoints,
@@ -2355,4 +2359,158 @@ cell 1 alpha 0.4 water 0.1 pA 6e5
   const keys = slugSeriesKeys(frames);
   assert.ok(keys.includes('pA'));
   assert.ok(!keys.includes('aunode'));
+});
+
+// ---------------------------------------------------------------------------
+// §5.185 井控读数 / §5.187 流动保障读数（GUI 结构化面板）
+// ---------------------------------------------------------------------------
+
+// verbatim kernel lines (tests/cases/transientWellControl, frame t=0.05)
+const WELL_SAMPLE = [
+  '[chflow] transient: 2 nodes, 1 pipes, dt=0.05 endTime=60',
+  '[chflow] t 0',
+  '[chflow] node BH p 37000000 alpha 0.8 hydrate 0',
+  '[chflow] node SURF p 100000 alpha 0 hydrate 0',
+  '[chflow] reservoir RES node BH q 0.1 gasq 0.015 vol 0 gasvol 0 ub 1 dp 5000000 killmud 1427.60269817 sidpp 6696060',
+  '[chflow] pipe WELL Q 0',
+  '[chflow] t 0.05',
+  '[chflow] node BH p 37189968.5445 alpha 0.800080797449 hydrate 0',
+  '[chflow] node SURF p 100000 alpha 0 hydrate 0',
+  '[chflow] reservoir RES node BH q 0.0962006291097 gasq 0.0144300943664 vol 0.00481003145548 gasvol 0.000721504718322 ub 1 dp 4810031.45548 killmud 1427.60269817 sidpp 6696060',
+  '[chflow] pipe WELL Q 0.00121635685099',
+  '[chflow] transient solved: steps=1200',
+].join('\n');
+
+test('safety: parseReservoirLine 逐字段按名取，非法行返回 null', () => {
+  const r = parseReservoirLine(
+    'reservoir RES node 0 q 0.1 gasq 0.015 vol 2.5 gasvol 0.4 ub 1 dp 5000000 '
+    + 'killmud 1427.60269817 sidpp 6696060');
+  assert.equal(r.name, 'RES');
+  // node is a *name* on the transient row (`reservoir RES node BH`), not an index
+  assert.equal(r.node, '0');
+  assert.equal(r.q, 0.1);
+  assert.equal(r.gasq, 0.015);
+  assert.equal(r.vol, 2.5);
+  assert.equal(r.gasvol, 0.4);
+  assert.equal(r.underbalanced, true);
+  assert.equal(r.killMudWeight, 1427.60269817);
+  assert.equal(r.sidpp, 6696060);
+  assert.equal(parseReservoirLine('reservoir RES node 0 q 0.1'), null);
+  assert.equal(parseReservoirLine('node BH p 37000000 alpha 0.8 hydrate 0'), null);
+});
+
+test('workspace: parseTransientOutput 采集 reservoir 行并把名字收进 series', () => {
+  const t = parseTransientOutput(WELL_SAMPLE);
+  assert.deepEqual(t.reservoirNames, ['RES']);
+  assert.equal(t.samples.length, 2);
+  assert.equal(t.samples[0].reservoir.RES.q, 0.1);
+  assert.equal(t.samples[0].reservoir.RES.vol, 0);
+  assert.equal(t.samples[1].reservoir.RES.vol, 0.00481003145548);
+  assert.equal(t.samples[1].reservoir.RES.underbalanced, true);
+  // a case without reservoir{} keeps the key empty so the panel hides
+  const plain = parseTransientOutput([
+    '[chflow] t 0',
+    '[chflow] node A p 200000 alpha 0.5 hydrate 0',
+    '[chflow] pipe P Q 0',
+  ].join('\n'));
+  assert.deepEqual(plain.reservoirNames, []);
+  assert.equal(wellControlPanel(plain), null);
+});
+
+test('safety: wellControlPanel 末帧读数 + 全程峰值气相份额', () => {
+  const p = wellControlPanel(parseTransientOutput(WELL_SAMPLE));
+  assert.equal(p.t, 0.05);
+  assert.equal(p.entries.length, 1);
+  assert.equal(p.underbalanced, true);
+  // 15% at t=0, 15.00% at t=0.05 -> peak is the declared 0.15 share
+  assert.ok(Math.abs(p.peakGasShare - 0.15) < 1e-12);
+  assert.equal(p.peakGasShareAt, 0);
+  const labels = p.rows.map((r) => r.label);
+  assert.ok(labels.some((l) => l.includes('压井密度')));
+  assert.ok(labels.some((l) => l.includes('SIDPP')));
+  assert.ok(labels.some((l) => l.includes('累计侵入')));
+  assert.ok(p.rows.find((r) => r.label.includes('压井密度')).value.includes('kg/m³'));
+  assert.ok(p.summary.includes('峰值气相份额 15.00%'));
+  // 过平衡帧（q≡0）必须报「否」而不是被 q>0 的 peak 逻辑带偏
+  const over = wellControlPanel(parseTransientOutput([
+    '[chflow] t 0',
+    '[chflow] reservoir RES node 0 q 0 gasq 0 vol 0 gasvol 0 ub 0 dp 0 killmud 1427.6 sidpp 6696060',
+  ].join('\n')));
+  assert.equal(over.underbalanced, false);
+  assert.equal(over.peakGasShare, 0);
+});
+
+// verbatim kernel lines (tests/cases/twoFluidRiskReport, last frame)
+const RISK_SAMPLE = [
+  '[chflow] t 20 vm 7.68815 dp 3.88279e+06',
+  '[chflow] cell 0 alpha 0.375 water 0.5 vsl 3 vsg 5 h 0.1 wax 0.5 dEff 0.0707106781187 muEff 0.00232',
+  '[chflow] risk erosion seg 0 vm 8 rhom 351.761899529 velim 6.50430638352 ratio 1.22995436074 over 18 OVER',
+  '[chflow] risk hydrate seg 0 p 2050849.09852 T 301.634574886 Teq 306.962011854 dTsub 5.32743696824 grade 2',
+  '[chflow] risk corrosion co2 164067.927882 h2s 4101.69819704 band 2 sour 1',
+  '[chflow] twoFluid solved: steps=400',
+].join('\n');
+
+test('safety: parseRiskLine 三条通道各自成条，未知行返回 null', () => {
+  const e = parseRiskLine('risk erosion seg 3 vm 8 rhom 351.76 velim 6.5 ratio 1.23 over 18 OVER');
+  assert.equal(e.kind, 'erosion');
+  assert.equal(e.seg, 3);
+  assert.equal(e.over, 18);
+  assert.equal(e.overFlag, true);
+  const h = parseRiskLine('risk hydrate seg 0 p 2.05e6 T 301.6 Teq 306.9 dTsub 5.3 grade 2');
+  assert.equal(h.kind, 'hydrate');
+  assert.equal(h.grade, 2);
+  assert.equal(h.subcool, 5.3);
+  const c = parseRiskLine('risk corrosion co2 164067.9 h2s 4101.7 band 2 sour 1');
+  assert.equal(c.kind, 'corrosion');
+  assert.equal(c.band, 2);
+  assert.equal(c.sour, true);
+  assert.equal(parseRiskLine('risk unknown whatever'), null);
+});
+
+test('workspace: parseTwoFluidFrames 采集 risk 三行（缺省帧保留空壳）', () => {
+  const fr = parseTwoFluidFrames(RISK_SAMPLE);
+  assert.equal(fr.length, 1);
+  assert.equal(fr[0].cells.length, 1);
+  assert.equal(fr[0].risk.erosion.ratio, 1.22995436074);
+  assert.equal(fr[0].risk.hydrate.grade, 2);
+  assert.equal(fr[0].risk.corrosion.sour, true);
+  // a case without riskReport{} prints no risk rows: the shell stays null
+  const plain = parseTwoFluidFrames('[chflow] t 0 vm 0 dp 0\n[chflow] cell 0 alpha 0.5');
+  assert.equal(plain[0].risk.erosion, null);
+  assert.equal(riskPanel(plain), null);
+  assert.equal(riskPanel([]), null);
+});
+
+test('safety: riskPanel 三条读数 + 分级标签 + 告警标志', () => {
+  const p = riskPanel(parseTwoFluidFrames(RISK_SAMPLE));
+  assert.equal(p.t, 20);
+  assert.equal(p.lines.length, 3);
+  assert.ok(p.lines[0].value.includes('Ve 6.504'));
+  assert.ok(p.lines[0].detail.includes('超限 18 段'));
+  assert.equal(p.lines[0].flag, 'warn');
+  assert.ok(p.lines[1].value.includes(HYDRATE_GRADE[2]));
+  assert.equal(p.lines[1].flag, 'warn');
+  assert.ok(p.lines[1].detail.includes('不进 d_eff'));
+  assert.ok(p.lines[2].value.includes(CO2_BAND[2]));
+  assert.ok(p.lines[2].value.includes('含 H₂S'));
+  assert.equal(p.lines[2].flag, 'warn');
+  assert.ok(p.summary.includes('冲蚀比 1.23'));
+  // 低等级不得报成告警：grade 0/1 + band 0 + 无 H2S → ok/note
+  const calm = riskPanel([{ t: 5, risk: {
+    erosion: { seg: 0, vm: 1, rhoM: 500, velim: 10, ratio: 0.1, over: 0 },
+    hydrate: { seg: 0, p: 1e5, T: 300, teq: 290, subcool: -10, grade: 0 },
+    corrosion: { co2Partial: 100, h2sPartial: 0, band: 0, sour: false },
+  } }]);
+  assert.equal(calm.lines[0].flag, 'ok');
+  assert.equal(calm.lines[1].flag, 'ok');
+  assert.equal(calm.lines[2].flag, 'ok');
+  assert.ok(calm.lines[2].value.includes('带 低'));
+});
+
+test('safety: riskPanel 取最后一个带 risk 的帧（末帧无 risk 时回溯）', () => {
+  const frames = parseTwoFluidFrames(RISK_SAMPLE);
+  frames.push({ t: 21, vm: 0, dp: 0, nodeP: [], cells: [],
+    risk: { erosion: null, hydrate: null, corrosion: null } });
+  const p = riskPanel(frames);
+  assert.equal(p.t, 20, 'must fall back to the last frame that carries the rows');
 });

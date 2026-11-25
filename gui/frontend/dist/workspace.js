@@ -613,6 +613,9 @@ export function parseSteadyOutput(out) {
 export function parseTransientOutput(out) {
   const series = {
     nodeNames: [], pipeNames: [], dt: 0, endTime: 0, steps: 0, samples: [],
+    // §5.185: reservoirs declared by `reservoir{}` print one line per frame;
+    // a case without them never fills these, so the well-control panel hides.
+    reservoirNames: [],
   };
   let cur = null;
   for (const raw of out.split('\n')) {
@@ -629,7 +632,7 @@ export function parseTransientOutput(out) {
       if (cur) series.samples.push(cur);
       const t = Number(line.slice(2).trim().split(/\s+/)[0]);
       cur = Number.isFinite(t)
-        ? { t, pressure: {}, alpha: {}, hydrate: {}, flow: {} }
+        ? { t, pressure: {}, alpha: {}, hydrate: {}, flow: {}, reservoir: {} }
         : null;
       continue;
     }
@@ -639,6 +642,27 @@ export function parseTransientOutput(out) {
       cur.pressure[m[1]] = Number(m[2]);
       cur.alpha[m[1]] = Number(m[3]);
       cur.hydrate[m[1]] = Number(m[4]);
+      continue;
+    }
+    // §5.185 well control: `reservoir <name> node <n> q … gasq … vol … gasvol
+    // … ub … dp … killmud … sidpp …` — the whole tail is copied by name so a
+    // later key cannot silently shift the earlier ones.
+    m = /^reservoir (\S+) node (\S+) q (\S+) gasq (\S+) vol (\S+) gasvol (\S+) ub (\d+) dp (\S+) killmud (\S+) sidpp (\S+)$/
+      .exec(line);
+    if (m && cur) {
+      if (!series.reservoirNames.includes(m[1])) series.reservoirNames.push(m[1]);
+      cur.reservoir[m[1]] = {
+        name: m[1],
+        node: m[2],
+        q: Number(m[3]),
+        gasq: Number(m[4]),
+        vol: Number(m[5]),
+        gasvol: Number(m[6]),
+        underbalanced: Number(m[7]) !== 0,
+        dp: Number(m[8]),
+        killMudWeight: Number(m[9]),
+        sidpp: Number(m[10]),
+      };
       continue;
     }
     m = /^pipe (\S+) Q (\S+)$/.exec(line);
@@ -752,6 +776,9 @@ export function parseTwoFluidFrames(out) {
         nodeP: [],
         cells: [],
         aunode: [],
+        // §5.187: the three read-only risk rows (erosion / hydrate /
+        // corrosion), one per frame when the case declares riskReport{}.
+        risk: { erosion: null, hydrate: null, corrosion: null },
       };
       continue;
     }
@@ -759,6 +786,37 @@ export function parseTwoFluidFrames(out) {
     if (am && cur) {
       cur.aunode[Number(am[1])] = Number(am[2]);
       continue;
+    }
+    // §5.187 risk rows: the tail is copied by name, the band indices stay
+    // integers (the kernel's own grades).
+    const erRe = /^risk erosion seg (\d+) vm (\S+) rhom (\S+) velim (\S+) ratio (\S+) over (\d+)/;
+    const hyRe = /^risk hydrate seg (\d+) p (\S+) T (\S+) Teq (\S+) dTsub (\S+) grade (\d+)/;
+    const coRe = /^risk corrosion co2 (\S+) h2s (\S+) band (\d+) sour (\d+)/;
+    if (cur) {
+      let rm = erRe.exec(line);
+      if (rm) {
+        cur.risk.erosion = {
+          seg: Number(rm[1]), vm: Number(rm[2]), rhoM: Number(rm[3]),
+          velim: Number(rm[4]), ratio: Number(rm[5]), over: Number(rm[6]),
+        };
+        continue;
+      }
+      rm = hyRe.exec(line);
+      if (rm) {
+        cur.risk.hydrate = {
+          seg: Number(rm[1]), p: Number(rm[2]), T: Number(rm[3]), teq: Number(rm[4]),
+          subcool: Number(rm[5]), grade: Number(rm[6]),
+        };
+        continue;
+      }
+      rm = coRe.exec(line);
+      if (rm) {
+        cur.risk.corrosion = {
+          co2Partial: Number(rm[1]), h2sPartial: Number(rm[2]),
+          band: Number(rm[3]), sour: Number(rm[4]) !== 0,
+        };
+        continue;
+      }
     }
     const nm = nodeRe.exec(line);
     if (nm && cur) {

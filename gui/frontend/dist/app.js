@@ -35,6 +35,7 @@ import {
   scenarioRowsTransient, scenarioRowsSteady,
   pvtFlashCaseText, parsePvtOutput, pvtCurvesByT, parsePvtCaseDict, PVT_COMPONENTS,
 } from './workspace.js';
+import { wellControlPanel, riskPanel } from './safety.js';
 import {
   templateTarget, isPartialFidelity, isSteadyComparable, THREE_D_FAMILY,
 } from './templates.js';
@@ -1265,6 +1266,60 @@ function onSteadyDone(fullOutput) {
   renderConvergence();
 }
 
+// ---------------------------------------------------------------------------
+// §5.185 / §5.187 readout panels (safety.js folds the kernel lines; this only
+// paints them). Both stay hidden when the case declares neither block.
+// ---------------------------------------------------------------------------
+
+function safetyRowHtml(row) {
+  const flag = row.flag ? ` ${row.flag}` : '';
+  const note = row.note ? `<span class="note">${escAttr(row.note)}</span>` : '';
+  return `<div class="row${flag}"><span class="label">${escAttr(row.label)}</span>` +
+    `<span class="value">${escAttr(row.value)}</span>${note}</div>`;
+}
+
+function renderWellControlPanel(series) {
+  const panel = $('wellControlPanel');
+  if (!panel) return;
+  let p = null;
+  try {
+    p = wellControlPanel(series);
+  } catch (e) {
+    p = null;
+  }
+  if (!p) {
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+    return;
+  }
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<h4>井控读数（储层流入 · §5.185）</h4>' +
+    p.rows.map(safetyRowHtml).join('') +
+    `<div class="summary">${escAttr(p.summary)}</div>`;
+}
+
+function renderRiskPanel(frames) {
+  const panel = $('riskPanel');
+  if (!panel) return;
+  let p = null;
+  try {
+    p = riskPanel(frames);
+  } catch (e) {
+    p = null;
+  }
+  if (!p) {
+    panel.classList.add('hidden');
+    panel.innerHTML = '';
+    return;
+  }
+  panel.classList.remove('hidden');
+  panel.innerHTML = '<h4>流动保障读数（只读 · §5.187）</h4>' +
+    p.lines.map((l) => safetyRowHtml({
+      label: l.label, value: l.value, note: l.detail, flag: l.flag,
+    })).join('') +
+    `<div class="summary">${escAttr(p.summary)}</div>`;
+}
+
 function onTransientDone(fullOutput) {
   const t = parseTransientOutput(fullOutput);
   if (!t.samples.length) {
@@ -1274,6 +1329,7 @@ function onTransientDone(fullOutput) {
   state.transient = t;
   renderCharts();
   renderConvergence();
+  renderWellControlPanel(t);
   setStatus(`瞬态完成：${t.samples.length} 帧，steps=${t.steps}。`, 'ok');
 }
 
@@ -2493,6 +2549,7 @@ function onSlugDone(fullOutput) {
   slider.disabled = false;
   $('slugPlayBtn').disabled = false;
   renderSlugSeries();
+  renderRiskPanel(frames);
   const last = frames.at(-1);
   const withSlug = last.cells.filter((c) => c.s > 0).length;
   renderSlugFrame();

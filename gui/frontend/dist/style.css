@@ -543,3 +543,34 @@ textarea { flex: 1; min-height: 160px; resize: none; }
 .sched-evhead span { padding: 0 2px; }
 .sched-source.off .sched-evs { opacity: 0.4; pointer-events: none; }
 .sched-addrow { margin: 2px 0 0; }
+
+/* ======== flow-assurance / well-control readouts (§5.185 / §5.187) ======== */
+.safety-panel {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel, transparent);
+  font: 11px "SFMono-Regular", Consolas, monospace;
+}
+.safety-panel h4 {
+  margin: 0 0 6px 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.safety-panel .row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  padding: 2px 0;
+  border-bottom: 1px dashed var(--line);
+}
+.safety-panel .row:last-child { border-bottom: none; }
+.safety-panel .row .label { color: var(--muted); flex: 0 0 auto; min-width: 150px; }
+.safety-panel .row .value { flex: 1 1 auto; }
+.safety-panel .row .note { color: var(--muted); flex: 0 0 auto; }
+.safety-panel .row.warn .value { color: #d9534f; }
+.safety-panel .row.note .value { color: #e0a800; }
+.safety-panel .row.ok .value { color: #2f9e44; }
+.safety-panel .summary { margin-top: 6px; color: var(--muted); }

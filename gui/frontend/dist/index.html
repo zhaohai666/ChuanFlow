@@ -299,6 +299,10 @@
               <canvas id="faTimelineCanvas" class="fa-timeline-canvas"></canvas>
             </div>
             <p class="hint" id="slugInfo">持率剖面动画：绿 = 第一相体积分数 alpha，红框 = 段塞单元（s &gt; 0），蓝 = 水（water）。</p>
+            <!-- §5.187: the three read-only risk rows of the two-fluid row.
+                 Hidden unless the case declares riskReport{}; rendered in
+                 onSlugDone from the last frame that carries them. -->
+            <div id="riskPanel" class="safety-panel hidden"></div>
           </section>
 
           <!-- 流型图（P4：Beggs-Brill 图，内核 beggsBrillPattern 真值源） -->
@@ -596,6 +600,10 @@
                 </h3>
                 <div id="monitorTree" class="monitor-tree hidden"></div>
                 <div id="transientChart" class="chart-box"></div>
+                <!-- §5.185: well-control readouts (reservoir inflow / kick /
+                     shut-in kill numbers). Hidden unless the case declares
+                     reservoir{}; rendered in onTransientDone. -->
+                <div id="wellControlPanel" class="safety-panel hidden"></div>
               </div>
             </div>
             <p id="compareStatus" class="hint"></p>

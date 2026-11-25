@@ -20,33 +20,47 @@ KOmegaSST::KOmegaSST(const polyMesh& mesh, volVectorField& U, const surfaceScala
                      scalar nu, const Schemes& schemes, const TurbulenceConfig& cfg)
     : RansModel(mesh, U, phi, nu, schemes, cfg, "omega")
 {
-    scalar v = 0;
-    for (const scalar c : mesh.cellVolumes()) v = std::max(v, c);
-    cellSize_ = std::cbrt(std::max(v, 1e-300));
 }
 
-scalar KOmegaSST::f1(scalar k, scalar omega, scalar y, scalar nu, scalar cellSize)
+scalar KOmegaSST::f1(scalar k, scalar omega, scalar y, scalar nu, scalar cdKw)
 {
     const scalar kk = std::max(k, turb::kFloor);
     const scalar w = std::max(omega, turb::dissFloor);
     const scalar yy = std::max(y, 1e-12);
-    // Menter's three-argument blend: the eddy-viscosity and viscous-sublayer
-    // guards, plus the free-stream guard that needs the near-wall cell size so
-    // F1 does not switch to the epsilon formulation inside a coarse shear layer
-    const scalar arg = std::max(
+    // Menter 1994 (Eq. 10): the outer operator is a MIN, not a max -- the
+    // third argument caps arg1 in the free stream, where the cross-diffusion
+    // guard CD_komega is active, and opens (CD at its floor, the argument
+    // huge) where the gradients vanish so the two wall arguments decide.
+    const scalar cd = std::max(cdKw, 1e-10);
+    const scalar arg = std::min(
         std::max(std::sqrt(kk) / (betaStar * w * yy), 500.0 * nu / (yy * yy * w)),
-        4.0 * sigmaW2 * kk / (w * yy * yy * cellSize));
+        4.0 * sigmaW2 * kk / (cd * yy * yy));
     return std::tanh(std::pow(arg, 4.0));
 }
 
 scalar KOmegaSST::f2(scalar k, scalar omega, scalar y, scalar nu)
 {
-    (void)nu;
     const scalar kk = std::max(k, turb::kFloor);
     const scalar w = std::max(omega, turb::dissFloor);
     const scalar yy = std::max(y, 1e-12);
-    const scalar arg = 2.0 * std::sqrt(kk) / (betaStar * w * yy);
+    // Menter 1994 (Eq. 8): arg2 = max(2 sqrt(k)/(beta* w y), 500 nu/(y^2 w));
+    // the viscous term keeps F2 = 1 in the sublayer on any near-wall spacing
+    const scalar arg = std::max(2.0 * std::sqrt(kk) / (betaStar * w * yy),
+                                500.0 * nu / (yy * yy * w));
     return std::tanh(arg * arg);
+}
+
+Field<scalar> KOmegaSST::cdKOmega() const
+{
+    const Field<Vector> gw = fvc::grad(diss_, schemes_.grad);
+    const Field<Vector> gk = fvc::grad(k_, schemes_.grad);
+    Field<scalar> cd(gw.size());
+    for (std::size_t c = 0; c < cd.size(); ++c)
+    {
+        const scalar w = std::max(diss_.internalField()[c], turb::dissFloor);
+        cd[c] = std::max(2.0 * sigmaW2 / w * dot(gw[c], gk[c]), 1e-10);
+    }
+    return cd;
 }
 
 void KOmegaSST::initializeFields()
@@ -74,14 +88,29 @@ Field<scalar> KOmegaSST::kProduction() const
     return p;
 }
 
+scalar KOmegaSST::omegaProduction(scalar gamma, scalar strain, scalar omega)
+{
+    // Menter 2003 omega-equation production with its standard upper bound
+    // (OpenFOAM kOmegaSST.C, c1 = productionLimit = 10):
+    //   P_omega = min(gamma S^2, c1 betaStar gamma omega^2).
+    // In the log layer nut = k/omega and this is exactly the k equation's
+    // Pk <= c1 betaStar k omega divided by nut; where the Bradshaw limiter
+    // cuts nut below k/omega the same cap keeps the explicit gamma S^2 from
+    // outrunning omega's beta omega^2 sink. Both the uncapped and the capped
+    // branch are exercised by turbulenceTests.
+    const scalar cap = productionLimit * betaStar * gamma * omega * omega;
+    return std::min(gamma * strain * strain, cap);
+}
+
 Field<scalar> KOmegaSST::kDiffusivity() const
 {
     const std::size_t nC = static_cast<std::size_t>(mesh_.nCells());
     const auto& y = cellWallDistance();
+    const Field<scalar> cd = cdKOmega();
     Field<scalar> s(nC);
     for (std::size_t c = 0; c < nC; ++c)
     {
-        const scalar f1c = f1(k_.internalField()[c], diss_.internalField()[c], y[c], nu_, cellSize_);
+        const scalar f1c = f1(k_.internalField()[c], diss_.internalField()[c], y[c], nu_, cd[c]);
         s[c] = f1c * sigmaK1 + (1.0 - f1c) * sigmaK2;
     }
     return s;
@@ -105,11 +134,17 @@ void KOmegaSST::solveDissipation(scalar dt)
     const std::size_t nC = static_cast<std::size_t>(mesh_.nCells());
     const auto& y = cellWallDistance();
 
-    // blend functions of the current field
-    Field<scalar> f1c(nC), sigmaW(nC), gammaW(nC), betaW(nC);
+    // blend functions of the current field; the CD_komega guard of F1's
+    // third argument comes from the same gradients as the cross-diffusion
+    // source below, so they are computed once here
+    const Field<Vector> gradW = fvc::grad(diss_, schemes_.grad);
+    const Field<Vector> gradK = fvc::grad(k_, schemes_.grad);
+    Field<scalar> f1c(nC), cdKw(nC), sigmaW(nC), gammaW(nC), betaW(nC);
     for (std::size_t c = 0; c < nC; ++c)
     {
-        f1c[c] = f1(k_.internalField()[c], wOld[c], y[c], nu_, cellSize_);
+        const scalar wGuard = std::max(wOld[c], turb::dissFloor);
+        cdKw[c] = std::max(2.0 * sigmaW2 / wGuard * dot(gradW[c], gradK[c]), 1e-10);
+        f1c[c] = f1(k_.internalField()[c], wOld[c], y[c], nu_, cdKw[c]);
         sigmaW[c] = f1c[c] * sigmaW1 + (1.0 - f1c[c]) * sigmaW2;
         gammaW[c] = f1c[c] * gamma1 + (1.0 - f1c[c]) * gamma2;
         betaW[c] = f1c[c] * beta1 + (1.0 - f1c[c]) * beta2;
@@ -128,20 +163,21 @@ void KOmegaSST::solveDissipation(scalar dt)
     }
     fvm::laplacianFace(eqn, diffusionFace(gamma, sigmaW), schemes_.laplacian, -1);
 
-    // cross diffusion (1-F1) 2 sigmaW2 /(betaStar w) grad(w).grad(k): explicit
-    // and floored at zero, so an anti-parallel gradient pair cannot turn it
-    // into a destruction term the linear solver would have to fight
-    const Field<Vector> gradW = fvc::grad(diss_, schemes_.grad);
-    const Field<Vector> gradK = fvc::grad(k_, schemes_.grad);
+    // cross diffusion (1-F1) 2 sigmaW2/w grad(w).grad(k) (Menter 2003):
+    // explicit, with the full sign kept -- a negative CD is a legitimate
+    // additional sink of omega in the k-epsilon branch, matching the
+    // reference implementation's signed source. The gradients are the ones
+    // taken above for the F1 guard.
 
     Field<scalar> destr(nC);
     for (std::size_t c = 0; c < nC; ++c)
     {
         const scalar w = std::max(wOld[c], turb::dissFloor);
-        eqn.addRhs(static_cast<label>(c), 0, vol[c] * gammaW[c] * strain_[c] * strain_[c]);
-        const scalar cd = (1.0 - f1c[c]) * 2.0 * sigmaW2 / (betaStar * w)
+        eqn.addRhs(static_cast<label>(c), 0,
+                   vol[c] * omegaProduction(gammaW[c], strain_[c], w));
+        const scalar cd = (1.0 - f1c[c]) * 2.0 * sigmaW2 / w
                         * dot(gradW[c], gradK[c]);
-        if (cd > 0) eqn.addRhs(static_cast<label>(c), 0, vol[c] * cd);
+        eqn.addRhs(static_cast<label>(c), 0, vol[c] * cd);
         destr[c] = vol[c] * betaW[c] * w;
     }
     fvm::sp(eqn, destr, 1);

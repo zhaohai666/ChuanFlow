@@ -224,24 +224,43 @@ int main()
 
     // ---------------- SST blend functions ----------------
     {
-        const scalar nu = NU_AIR, cell = 0.01;
+        const scalar nu = NU_AIR;
+        // Menter 1994 Eqs. 10/8. F1's third argument is capped by the
+        // cross-diffusion guard CD_komega = max(2 sigmaW2/omega grad(w).grad(k),
+        // 1e-10); the near-wall scaling grad ~ field/y gives CD = 2 sigmaW2
+        // k/y^2, for which the cap is exactly 2.0 and the two wall
+        // arguments decide the blend.
+        auto cdOf = [](double kk, double yy)
+        { return 2.0 * KOmegaSST::sigmaW2 * kk / (yy * yy); };
         // near a wall at y = 0.1 mm with the k/omega pair of the log layer
-        const scalar nearWall = KOmegaSST::f1(0.01, 10.0, 1e-4, nu, cell);
+        const scalar nearWall = KOmegaSST::f1(0.01, 10.0, 1e-4, nu, cdOf(0.01, 1e-4));
         // free stream: k = 1e-4 with omega = sqrt(k)/(Cmu^1/4 L), L = 10 mm,
         // measured a third of the domain away from the wall
         const scalar kFree = 1e-4, wFree = 1.83;
-        const scalar f1Mid = KOmegaSST::f1(kFree, wFree, 0.15, nu, cell);
-        const scalar f1Far = KOmegaSST::f1(kFree, wFree, 0.3, nu, cell);
+        const scalar f1Mid = KOmegaSST::f1(kFree, wFree, 0.08, nu, cdOf(kFree, 0.08));
+        const scalar f1Far = KOmegaSST::f1(kFree, wFree, 0.3, nu, cdOf(kFree, 0.3));
         const scalar freeStream = f1Far;
         CHECK(nearWall > 0.999, "F1 = 1 in the near-wall k-omega branch");
         CHECK(freeStream < 0.05, "F1 = 0 in the free-stream k-epsilon branch");
+        // the guard caps DOWN, never up (the old max-nesting did the
+        // opposite): aligned free-stream gradients at L = 10 mm suppress F1
+        // below the unguarded value at the same point, where CD sits at
+        // its floor and the wall arguments decide
+        CHECK(KOmegaSST::f1(kFree, wFree, 0.15, nu, cdOf(kFree, 0.01))
+                  < KOmegaSST::f1(kFree, wFree, 0.15, nu, 1e-10),
+              "F1's cross-diffusion guard suppresses the free-stream blend");
         // the blend switches across the outer layer: F1 is intermediate at
-        // y = 0.15 and falls from there to the free stream
+        // y = 0.08 and falls from there to the free stream
         CHECK(f1Mid > 0.2 && f1Mid < 0.8, "F1 switches inside the outer layer");
-        CHECK(KOmegaSST::f1(kFree, wFree, 0.05, nu, cell) >= f1Mid && f1Mid > f1Far,
+        CHECK(KOmegaSST::f1(kFree, wFree, 0.05, nu, cdOf(kFree, 0.05)) >= f1Mid && f1Mid > f1Far,
               "F1 decreases away from the wall");
         CHECK(KOmegaSST::f2(kFree, wFree, 1e-3, nu) > KOmegaSST::f2(kFree, wFree, 0.3, nu),
               "F2 decreases away from the wall");
+        // the viscous branch 500 nu/(y^2 omega) keeps F2 = 1 in the
+        // sublayer even when the eddy branch is small (the old form dropped
+        // it and let the limiter open there)
+        CHECK(KOmegaSST::f2(1e-8, 100.0, 1e-3, nu) > 0.999,
+              "F2 = 1 in the sublayer via the viscous branch");
 
         CHECK(near(KOmegaSST::f2(0.01, 10.0, 1e-4, nu), 1.0, 1e-12), "F2 = 1 near the wall");
         const scalar f2Far = KOmegaSST::f2(kFree, wFree, 0.3, nu);
@@ -257,7 +276,7 @@ int main()
             {
                 for (double ww : {1e-14, 1e-2, 1e4})
                 {
-                    const scalar a = KOmegaSST::f1(kk, ww, yy, nu, cell);
+                    const scalar a = KOmegaSST::f1(kk, ww, yy, nu, cdOf(kk, yy));
                     const scalar b = KOmegaSST::f2(kk, ww, yy, nu);
                     bounded = bounded && a >= 0 && a <= 1 && b >= 0 && b <= 1;
                     finite = finite && std::isfinite(a) && std::isfinite(b);
@@ -324,6 +343,49 @@ int main()
             CHECK(m->k()[0] > turb::kFloor && m->dissipation()[0] > turb::dissFloor,
                   model + ": production raises k above the floor");
         }
+    }
+
+    // ---------------- omega production limiter (Menter 2003) ----------------
+    {
+        const scalar g = KOmegaSST::gamma1, w = 100.0;
+        const scalar sSmall = 0.1 * w;   // S/omega below sqrt(c1 betaStar)
+        const scalar sHuge = 20.0 * w;   // strong shear, the cap must bite
+        const scalar cap = KOmegaSST::productionLimit * KOmegaSST::betaStar * g * w * w;
+        CHECK(near(KOmegaSST::omegaProduction(g, sSmall, w), g * sSmall * sSmall, 1e-12),
+              "omega production is gamma S^2 below the Menter cap");
+        CHECK(near(KOmegaSST::omegaProduction(g, sHuge, w), cap, 1e-12),
+              "omega production is capped at 10 betaStar gamma omega^2 in a strong shear layer");
+        CHECK(KOmegaSST::omegaProduction(g, sHuge, w) < g * sHuge * sHuge,
+              "the cap actually bites at large strain");
+        bool bounded = true;
+        for (double ss : {0.0, 1.0, 10.0, 1e3, 1e6})
+        {
+            for (double ww : {1e-8, 1.0, 1e4})
+            {
+                const scalar p = KOmegaSST::omegaProduction(g, ss, ww);
+                bounded = bounded && std::isfinite(p) && p >= 0.0
+                          && p <= KOmegaSST::productionLimit * KOmegaSST::betaStar * g * ww * ww + 1e-12;
+            }
+        }
+        CHECK(bounded, "omega production stays finite and within the cap for all inputs");
+
+        // an over-sheared SST column: without the cap, gamma S^2 outruns the
+        // beta omega^2 sink and omega diverges (the 1D-3D coupled block did
+        // exactly that). With the limiter the field stays finite over 50 steps.
+        Box box(true);
+        constexpr scalar G = 2e5;
+        for (std::size_t c = 0; c < box.U.internalField().size(); ++c)
+            box.U.internalField()[c] = Vector{G * box.yOf(static_cast<label>(c)), 0, 0};
+        auto m = RansModel::create(box.mesh, box.U, box.phi, NU_AIR, Schemes{}, cfg("kOmegaSST"));
+        m->initializeUniform(0.02, 50.0);
+        bool finite = true;
+        for (int i = 0; i < 50; ++i)
+        {
+            m->correctTurbulence(0.01);
+            for (const scalar d : m->dissipation())
+                finite = finite && std::isfinite(d) && d > 0;
+        }
+        CHECK(finite, "SST omega stays finite under an imposed large shear (production cap)");
     }
 
     // ---------------- near-wall boundary values ----------------
@@ -556,7 +618,9 @@ int main()
         auto& m = model;
         const scalar k0 = 1.0, w0 = 1e-3;
         m.initializeUniform(k0, w0);
-        CHECK(KOmegaSST::f1(k0, w0, m.cellWallDistance()[0], NU_AIR, model.cellSize()) > 0.999,
+        // a uniform seed has zero gradients, so CD_komega sits at its floor
+        // and F1's free-stream guard stays open
+        CHECK(KOmegaSST::f1(k0, w0, m.cellWallDistance()[0], NU_AIR, m.cdKOmega()[0]) > 0.999,
               "the decay state sits in the k-omega branch");
 
         const scalar dt = 1.0;

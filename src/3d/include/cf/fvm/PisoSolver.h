@@ -43,6 +43,9 @@ struct PisoStepResult
     scalar continuityError = 0;          // after the last correction
     scalar pressureCorrectionMax = 0;
     bool converged = false;              // continuityTol reached
+    /// max|div(phi)| recorded after each corrector, so callers can see the
+    /// residual contract across the corrector loop
+    std::vector<scalar> correctorResiduals;
 };
 
 /// Transient incompressible pressure-velocity coupling (PISO) for

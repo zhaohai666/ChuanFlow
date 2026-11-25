@@ -23,13 +23,18 @@
 // Measured (Ub from the vtu centroids, Pope's law gives 12.98 m/s):
 //                 u_tau    Ub      Ub/u_tau    iterations
 //   piso  kEpsilon  0.6245   11.10   17.8       2000 steps    (-14.5%)
-//   piso  kOmegaSST 0.6245   13.68   21.9       2000 steps    ( +5.4%)
+//   piso  kOmegaSST 0.6245   15.26   24.5       2000 steps    (+17.8%)
 //   simple kEpsilon 0.6245   10.96   17.6        27          (-15.5%)
-//   simple kOmegaSST0.6245   13.78   22.1        39          ( +6.2%)
+//   simple kOmegaSST0.6245   15.26   24.8        40          (+19.3%)
 // The shear itself is right to 4e-4 relative in every run, because it is the
-// balance and not a prediction; the deficit is the friction law read on a mesh
-// that resolves the log layer with eight cells. The checker therefore bounds the
-// bulk velocity at 20% and checks the near-wall closure tightly.
+// balance and not a prediction; the deviation is the friction law read on a
+// mesh that resolves the log layer with eight cells. The corrected Menter-2003
+// gamma1 = 5/9 (~0.5532) raises omega production 2.37x; without the matching
+// Menter production limiter nut collapses to ~0.27 kappa u_tau y and Ub runs
+// to +22.1%. With P_omega = min(gamma S^2, 10 betaStar gamma omega^2) restored
+// (OpenFOAM kOmegaSSTBase.C) nut recovers and Ub settles inside the original
+// 20% mesh band; kEpsilon stays at -15%. Both models keep the tight 20% band
+// and the near-wall closure check -- see checker assertion 6 for the full chain.
 //
 // tests/check_turbulent_channel.py runs this case for both models and both
 // couplings and checks the wall shear against the driving force, the first cell

@@ -718,11 +718,15 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
 
 三个刻在实现里的经验结论（回归历史，勿回退）：
 
-- **多 corrector 当前只重复同一 full-p 不动点**：`HbyA` 与 `rAUf` 每步只形成
-  一次，后续 corrector 从同一个无压力通量重新开始、重新解全 `p`，没有标准
-  PISO 邻点修正，也不降低时间分裂误差；热启动可能继续收紧线性求解，但不是邻点修正。
-  非正交修正仍在 Poisson 内层。不得把上一轮已闭合通量带进下一轮 full-p 方程，否则近似求解
-  `laplacian(rAUf,p) = −div(phi_closed) ≈ 0`，会把物理压力塌回基准值；
+- **多 corrector 有标准 PISO 邻点修正**：`rAUf` 每步只形成一次，但 `HbyA`
+  在每一轮后续 corrector 开头由上一轮修正后的 `U` 重算
+  `H(U) = rhs − A_off·U`——邻居刚修正的速度通过动量非对角元改变本格的无压力响应，
+  这就是 PISO 的邻点修正，因此第二轮确实降低时间分裂误差而不是重复同一 full-p 不动点。
+  重算必须继续使用动量方程装配时的 `grad(p^n)`（不是本轮新解的 `p`），并从同一 `U`
+  边界条件重建 `HbyA` 的 patch / face 值。仍**不得**把上一轮已闭合通量带进下一轮
+  full-p 方程，否则近似求解 `laplacian(rAUf,p) = −div(phi_closed) ≈ 0`，会把物理压力塌回基准值
+  （ac1b343 的教训）；非正交修正仍在 Poisson 内层。`pisoTests` 钉住修正量非零且有界、
+  两种网格上连续性残差只减不增、压力场不塌回 gauge；
 - **必须解全压力 p，不能累加修正量 p'**：同位网格上 `interp(U)` 对
   压力模式是"盲"的（交错场的半格平均相消），累加 `p = Σp'` 会把一个
   钟形压力模态放大（实测每步 1.6~1.7 倍），最终污染动量对角导致发散。
@@ -5893,7 +5897,8 @@ hydrate/corrosion 需要气相 EOS（`gasR > 0`）才能定价压力，否则加
 **实现**。`pipes{P}` 新增 `pigging{}`（`Transient.h` 的 `TransientPiggingConfig` + `TransientPigState` + `TransientPigEvent`，`piggingStep()` 接在 `step()` 的 `commitStep()` 之后）。声明键与离散律（都能从 case 文本独立重推）：
 
 - `startX` / `endX`（0 = 管末）、`u0`（基础迁移速度，> 0）、`blockage β ∈ [0,1)`、`pushEfficiency η ∈ [0,1]`、`frontCapacity C`（m）、`liquidFraction λ ∈ (0,1]`（**集总行没有持液场，液量份额必须声明**——这是降阶模型在这台引擎上的诚实边界）。
-- \[ v_n = u_0\left(1-eta\,\mathrm{clamp}(H_n/C,\,0,\,1)ight),\quad x_{n+1}=\min(x_n+v_n\,dt,\ end) \]
+- \[ v_n = u_0\left(1-\beta\,\mathrm{clamp}(H_n/C,\ 0,\ 1)\right),\quad x_{n+1}=\min(x_n+v_n\,dt,\ end) \]
+ight),\quad x_{n+1}=\min(x_n+v_n\,dt,\ end) \]
   \[ H_{n+1} = H_n + \eta\,\lambda\,|Q_n|\,dt / A \]
   其中 `Q_n` 是**该步自己报出的管线流量**、`A` 是管截面。到 `end` 时 `outVol = H`、`v = 0`、ARRIVE 只记一次，pig 冻结。
 - **无回写**：`H` 是库存、`x` 是 pig 自己的弧长，两者都不进节点、不进动量行、不进任何速率。九条加载期拒收：负 `startX`、`startX ≥ endX`（pig 逆流）、弧长越过管长、`u0` 非正、`blockage` 越界、`pushEfficiency` 越界、`frontCapacity` 非正、`liquidFraction` 越界、以及**耦合管上声明 pig**（那里的流量是伙伴区域的账，pig 会骑一个本管不定价的数）。
@@ -5908,6 +5913,31 @@ hydrate/corrosion 需要气相 EOS（`gasR > 0`）才能定价压力，否则加
 - 八条拒收逐条点名（负 startX、逆流、越过管长、u0 0、blockage 1、η>1、无 frontCapacity、λ=0）。
 
 **边界**。① 这是**降阶运动学**模型：`λ` 是声明而非从场导出（集总行没有 `alpha`）；无旁通流、无密封/卡阻、无弯管阻力、无 pig 前后压差动力学（v 由 `u0` 与堵塞律给，不由动量行解出）。② 两流体侧的 5.178 点模型（吃真实 `alpha` 场）保持不变，两条路径的 `pig` 行格式各自独立。③ 单 pig/管、无收发球筒、无多 pig 编队；时变 `u0`/η 未做。
+
+### 5.191 G7 · 容积式机（PCP）作为 1D 管网的一行
+
+**差距**（用户清单"分离器/射流泵/PCP 入管网联立"）。PCP 此前只有单机卡片（§5.140 的 `pcpPumps{}`，给定两端压力算排量、滑脱、效率）；管网里没有任何一行能带一台容积式机。离心泵（8.81 的 `pumpHead` 曲线族）与压缩机（5.156 的比值族）都是**曲线拟合**，而 PCP 的物理是另一条：**排量减滑脱**。
+
+**实现**。`pipes{P}` 新增 `pcp{}`：
+
+- `displacement V`（m³/rev）、`speed n`（rev/s）、`slip C`（m³/(s·Pa)）。机器的自身律写成一个"头"：
+
+  \[ H(q)=\frac{nV-q}{C\,\rho\,g},\qquad \frac{dH}{dq}=-\frac{1}{C\rho g} \]
+
+  线性、随 q 单调递减——和离心曲线落在**同一个单调分支**里，所以 `equipmentFlow` 的 Illinois 夹逼与死分支一行都不动，只是把 `pumpHeadOf` 换成 `pumpHeadOf + pcpHeadOf`（黑油/PVT 两条路径的 7 个调用点）。\rho 取既有曲线读的那个状态（黑油 `fluid.rho`、PVT `fluid.density(pUp)`），而 **Pascals 里的升压与 \rho 无关**：\(\rho g H=(nV-q)/C\)，head 形式只是为了跟同一族的读数对齐。
+- 一条管太多机器：与 `pumpHead` 同声明拒收（一行一条机器曲线）、与 `pressureRatio`（压缩机）同声明拒收、耦合边拒收（那里的升压是伙伴区域的账）、**黑油网络拒收**（黑油 march 的升压来自 stock-tank 曲线族，滑脱律只在常物性/PVT 充填里开口）。四条参数拒收：`displacement`/`speed`/`slip` 非正。`slip = 0` 单独点名——那是"任何压差下都抱得住"的机器。
+- q > nV 时 H < 0：这是**律本身的话**（机被反驱成制动），不是 case 报错，解析期不拦。
+- 读数：`pipe <name> … dpPump <dp> dpPcp <dp>`。`dpPcp` 只在这台机器自己的账上出现；无 `pcp{}` 的管**不打印**这个 token（`dpPump` 仍是离心曲线的那一份，两者在只有 PCP 时同值）。
+
+**判据**。`verify.steadyNetworkPcp`（**26 判据**，0.34 s，`tests/check_steady_network_pcp.py` + `cases/steadyNetworkPcp/case.dict`）。闭环等压，于是行的差压为 0，速率解的是机器对壁面：\[ R=\frac{128\mu L}{\pi D^4},\quad q^*=\frac{nV}{1+RC},\quad \Delta p=Rq^* \]
+
+- q* 1e-12 级（打印 9.993485260480e-5 vs 解析 9.993485260481e-5）、`dpPcp == -(nV-q)/C`、`-dpPcp == R q*`、`dp = 0`、`dpPump == dpPcp`、Re 重算且 < 2040、v = q/A；
+- **线性性**：速度加倍 ⇒ 速率与升压精确加倍（1e-9）；滑脱加倍 ⇒ 落在 \(nV/(1+2RC)\)；
+- **无机器孪生**：删掉 `pcp{}` 的同文本 case，速率 0、不打印 `dpPcp`——token 是机器的，不是行的；
+- **PVT 充填臂**：\rho(p) march 上滑脱律仍然是 \((nV-q)/C\)（\rho 在 Pascal 里消掉），此处 nV-q 是两个 1e-3 数相减得到的 2.4e-10，约 7 位相消，所以这条判据锚在 1e-6 并写明相消来源；
+- **七条拒收逐条点名**（`displacement` 0、`speed` 0、`slip` 0、+`pumpHead`、+`pressureRatio`、耦合边、黑油网络）。
+
+**边界**。① 排量/滑脱是**声明常数**：只做滑脱随压差线性的这一段，不接 §5.140 卡片里的空化/气侵/温升效率曲线，也不随转速做仿射换算（转速直接给 rev/s）。② 无气液两相（气相下的容积效率是另一套卡片）；无定子/转子弹性、无杆柱扭振（那是 §5.140 的 rod pump 卡）。③ 反驱（q > nV）只作为 H < 0 的读数，不做"泵变涡轮"的功率与温升账。④ 分离器（多出口相分离）与射流泵（需动机流 + 喷嘴/喉部损失系数）仍未进管网：前者要多出口拓扑，后者要动机流，都不在"一行一条机器"的槽位里。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 

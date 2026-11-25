@@ -529,6 +529,21 @@ double pumpHeadOf(const NetworkPipe& p, double q)
     return std::max(h, 0.0);
 }
 
+/// 5.191 (G7): the head a positive-displacement machine adds at rate q.
+/// The machine's law is q = n V - C dp, so at a liquid density rho (taken
+/// where the existing centrifugal curve is read, i.e. at the pipe's upstream
+/// state) its head is
+///   H(q) = (nV - q) / (C rho g).
+/// Linear and decreasing in q, so the rate bracket's monotone branch is the
+/// same one the centrifugal family uses. A pipe without a PCP returns 0 and
+/// every existing number is bit-identical.
+double pcpHeadOf(const NetworkPipe& p, double q, double rho)
+{
+    if (!p.pcpOn) return 0.0;
+    const double ideal = p.pcpSpeed * p.pcpDisplacement;
+    return (ideal - q) / (p.pcpSlip * rho * kGravity);
+}
+
 /// P10 (5.156): the pressure ratio a pipe's compressor reads at rate q. The
 /// curve is the same quadratic family as pumpHeadOf, read in ratio instead
 /// of metres of head. A pipe without a compressor returns 1, so every
@@ -847,14 +862,18 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
                       double dpTotal, double& Hq)
 {
     const bool forward = fluid.rho * kGravity * pipe.elevation
-                       - fluid.rho * kGravity * pumpHeadOf(pipe, 0.0)
+                       - fluid.rho * kGravity
+                             * (pumpHeadOf(pipe, 0.0)
+                                + pcpHeadOf(pipe, 0.0, fluid.rho))
                        - dpTotal <= 0.0;
     auto g = [&](double x) // residual along the chosen branch, |q| = x >= 0
     {
         const double s = forward ? 1.0 : -1.0;
         return s * pipeLossAt(pipe, fluid, x)
              + fluid.rho * kGravity * pipe.elevation
-             - fluid.rho * kGravity * pumpHeadOf(pipe, x) - dpTotal;
+             - fluid.rho * kGravity
+                  * (pumpHeadOf(pipe, x) + pcpHeadOf(pipe, x, fluid.rho))
+            - dpTotal;
     };
 
     // bracket: forward g(0) <= 0, expand to a positive sample; reverse
@@ -862,7 +881,8 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     const double pScale = std::max(std::abs(dpTotal),
                                    fluid.rho * kGravity
                                      * (std::abs(pipe.elevation)
-                                        + pumpHeadOf(pipe, 0.0)));
+                                        + pumpHeadOf(pipe, 0.0)
+                                        + pcpHeadOf(pipe, 0.0, fluid.rho)));
     const double xSeed = std::max(1e-3 * pipeArea(pipe), 1e-8);
     double xLo = 0.0, fLo = g(0.0);
 
@@ -876,7 +896,7 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     // g(0) is the sign that sent them here in the first place.
     if (pipe.yieldStress > 0 && (forward ? fLo >= 0.0 : fLo <= 0.0))
     {
-        Hq = pumpHeadOf(pipe, 0.0);
+        Hq = pumpHeadOf(pipe, 0.0) + pcpHeadOf(pipe, 0.0, fluid.rho);
         return RawFlow();
     }
 
@@ -923,7 +943,8 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     r.reynolds = generalizedReynolds(pipe, fluid, std::abs(r.velocity));
     r.friction = pipeFrictionReport(pipe, fluid, r.reynolds,
                                     std::abs(r.velocity));
-    Hq = pumpHeadOf(pipe, std::abs(r.velocity) * pipeArea(pipe));
+    const double qAbs = std::abs(r.velocity) * pipeArea(pipe);
+    Hq = pumpHeadOf(pipe, qAbs) + pcpHeadOf(pipe, qAbs, fluid.rho);
     return r;
 }
 
@@ -1504,6 +1525,11 @@ void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     out.dpPump = -fluid.rho * kGravity * Hq;
     out.velocity = r.velocity;
     out.flowRate = r.velocity * pipeArea(pipe);
+    // 5.191: the PCP's own share of that rise, reported on the rate this row
+    // actually carries, so a checker can read dpPcp against (nV - q)/C itself.
+    if (pipe.pcpOn)
+        out.dpPcp = -fluid.rho * kGravity
+                  * pcpHeadOf(pipe, out.flowRate, fluid.rho);
     out.reynolds = r.reynolds;
     out.frictionFactor = r.friction;
     out.transition = yieldedTransitionOf(pipe, fluid, std::abs(out.flowRate));
@@ -2324,7 +2350,9 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
     const double massRate = fluid.density(pUp) * qIn;
     const double ds = pipe.length / nSeg;
     const double dz = sinFlow * ds;
-    const double headPerM = pumpHeadOf(pipe, qIn) / pipe.length;
+    const double headPerM =
+        (pumpHeadOf(pipe, qIn) + pcpHeadOf(pipe, qIn, fluid.density(pUp)))
+        / pipe.length;
     const double pFloor = std::max(0.02 * pUp, 1000.0);
     if (thermal && thermal->segmentU
         && static_cast<int>(thermal->segmentU->size()) != nSeg)
@@ -2656,6 +2684,10 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
     out.dpValve = pipe.valveK * fluid.density(pUp) * std::abs(out.velocity)
                 * out.velocity / 2.0;
     out.dpPump = -fluid.density(pUp) * kGravity * pumpHeadOf(pipe, q);
+    // 5.191: the PCP's own account, kept as its own readout so a checker
+    // reads the machine that priced it rather than a sum of two curves.
+    out.dpPcp = -fluid.density(pUp) * kGravity
+              * pcpHeadOf(pipe, q, fluid.density(pUp));
 
     // 5.156 (P10): the compressor's own statement, read from the hydraulic
     // state it was priced with -- never fed back into it (§5.144's passive
@@ -2952,6 +2984,33 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.pumpGasFraction = pd.getScalarOr("pumpGasFraction", 0.0);
         p.pumpIntakePressure = pd.getScalarOr("pumpIntakePressure", 0.0);
         p.coupledResistance = pd.getScalarOr("coupledResistance", 0.0);
+        // 5.191 (G7): the positive-displacement machine. displacement is the
+        // switch (m3/rev); with it the row's machine curve is the machine's
+        // own slip law, so a centrifugal pumpHead on the same pipe is refused
+        // (one row, one machine), as is a compressor and a coupled edge.
+        if (pd.has("pcp"))
+        {
+            const Dictionary& pc = pd.getDict("pcp");
+            p.pcpOn = true;
+            p.pcpDisplacement = pc.getScalarOr("displacement", 0.0);
+            p.pcpSpeed = pc.getScalarOr("speed", 0.0);
+            p.pcpSlip = pc.getScalarOr("slip", 0.0);
+            if (!(p.pcpDisplacement > 0))
+                cfFatal("steadyNetwork: pipe '" + name + "' pcp needs a"
+                        " positive displacement (m3/rev): it is the volume one"
+                        " revolution moves before slip");
+            if (!(p.pcpSpeed > 0))
+                cfFatal("steadyNetwork: pipe '" + name + "' pcp needs a"
+                        " positive speed (rev/s)");
+            if (!(p.pcpSlip > 0))
+                cfFatal("steadyNetwork: pipe '" + name + "' pcp needs a"
+                        " positive slip (m3/(s Pa)): q = nV - C dp, and a zero"
+                        " C is a machine that holds any pressure at any rate");
+            if (p.pumpHead > 0)
+                cfFatal("steadyNetwork: pipe '" + name + "' declares both a"
+                        " pcp and a centrifugal pumpHead: one row carries one"
+                        " machine curve");
+        }
         // Gas-lift valve (5.89, D1 increment 3). The port bore is `diameter`;
         // liftDomePressure is the switch, and addPipe owns the parameter scope.
         p.liftDomePressure = pd.getScalarOr("liftDomePressure", 0.0);
@@ -3409,6 +3468,21 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             cfFatal("steadyNetwork: pipe '" + name + "' is a coupled element:"
                     " its loss is the partner model's, so it cannot carry a"
                     " valve or a pump");
+        // 5.191: a machine curve on a coupled edge would be a second owner of
+        // the same row, and a compressor would be a third.
+        if (p.pcpOn && p.coupledResistance > 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' is a coupled element"
+                    " and declares a pcp: the row's machine rise belongs to the"
+                    " partner region");
+        if (p.pcpOn && net.hasBlackOil)
+            cfFatal("steadyNetwork: pipe '" + name + "' declares a pcp on a"
+                    " black-oil network: the black-oil march prices its lift"
+                    " from the stock-tank curve family, so a displacement"
+                    " machine's slip law is carried by a constant-property or"
+                    " pvt-fill network only");
+        if (p.pcpOn && p.compressorRatio > 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' declares both a pcp and"
+                    " a compressor: one row, one machine");
         if (p.pumpHead > 0 && p.pumpShutoffHead < p.pumpHead)
             cfFatal("steadyNetwork: pipe '" + name + "' has a pump curve that"
                     " rises with rate (pumpShutoffHead < pumpHead)");

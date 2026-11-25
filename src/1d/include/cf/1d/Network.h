@@ -227,6 +227,20 @@ struct NetworkPipe
     double geothermalGradient = 0;  // K/m
     double heatCapacity = 0;        // J/(kg K)
 
+    // 5.191 (G7): a positive-displacement machine (PCP / screw pump) on this
+    // pipe. Its law is the machine's own, not the centrifugal curve above:
+    //   q = n V - C dp    (displacement minus slip),  n rev/s, V m3/rev,
+    //   C m3/(s Pa) the slip conductance,
+    // so the head it adds is H = (nV - q) / (C rho g) and the row's slope
+    // dH/dq = -1/(C rho g) is analytic. A rate above nV makes it a brake
+    // (H < 0) rather than a pump; that is the law's own statement, not a
+    // case error. Refused alongside a centrifugal `pumpHead` (one row, one
+    // machine curve), a compressor, and on a coupled edge.
+    bool pcpOn = false;
+    double pcpDisplacement = 0; // m3/rev
+    double pcpSpeed = 0;        // rev/s
+    double pcpSlip = 0;         // m3/(s Pa)
+
     /// 5.188 (G6b): the layered wall, when `insulation{}` priced U instead of
     /// a declared wallHeatTransfer. The stack is radial from innerRadius
     /// outward, thickness/conductivity one entry per layer, plus an optional
@@ -728,6 +742,7 @@ struct PipeFlowResult
     // and where it came from (0 = the declared constant, 1 = pengRobinson
     // state difference, 2 = SRK's analytic dZ/dT). 0.0 / 0 on every pipe
     // without thermal physics.
+    double dpPcp = 0;           // Pa, the PCP's own contribution (5.191)
     double marchJouleThomson = 0;
     int marchJtMode = 0;
 };

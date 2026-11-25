@@ -2052,6 +2052,18 @@ add_test(
         $<TARGET_FILE:chflow-1d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientNetworkPigging/case.dict)
 
+# G7 (5.191): the positive-displacement machine as a steady NETWORK row. The
+# checker re-derives q* = nV/(1 + R C) against the laminar wall, asserts
+# dpPcp == -(nV - q)/C, the exact linearity in n, the rho(p)-fill arm where
+# density cancels out of the head, the machine-less twin (no token, no rate)
+# and the seven parse-time refusals.
+add_test(
+    NAME verify.steadyNetworkPcp
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_network_pcp.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkPcp/case.dict)
+
 # E7c (5.183): linear along-the-line EOS acoustics - the depressurization
 # pressure-wave transient. The checker re-derives the wave speed
 # (a^2 = gasR T, the exact density derivative of the kernel's own gas law),

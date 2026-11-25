@@ -626,6 +626,8 @@ int main(int argc, char** argv)
                 line += " sigmaOutlet " + num17(f.sigmaOutlet);
             if (f.dpValve != 0) line += " dpValve " + num(f.dpValve);
             if (f.dpPump != 0) line += " dpPump " + num(f.dpPump);
+            // 5.191: the PCP's own rise, on the machine that priced it.
+            if (f.dpPcp != 0) line += " dpPcp " + num(f.dpPcp);
             // 5.156 (P10): the compressor's passive readouts. Absent (ratio
             // 1) on every other path, so no existing line gains a token.
             if (f.compressorRatio != 1)

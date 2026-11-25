@@ -19,6 +19,7 @@
 #include "cf/pvt/HydrateEquilibrium.h"
 #include "cf/pvt/PengRobinson.h"
 #include "cf/pvt/PvtCase.h"
+#include "cf/pvt/Srk.h"
 #include "cf/pvt/SurfaceTension.h"
 #include "cf/pvt/Viscosity.h"
 
@@ -1884,6 +1885,12 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
         th.surfaceTemperature = pipe.surfaceTemperature;
         th.geothermalGradient = pipe.geothermalGradient;
         th.heatCapacity = pipe.heatCapacity;
+        // 5.189: an EOS-derived coefficient needs a composition, and the
+        // black-oil fluid does not carry one (the parser refuses this at
+        // read time; the guard here keeps the invariant local to the march).
+        if (pipe.jouleThomsonFromEos)
+            cfFatal("steadyNetwork: black-oil march cannot price jouleThomson "
+                    "from the EOS: no composition");
         pth = &th;
     }
     const BeggsBrillMarchOut m = marchBeggsBrillPipe(
@@ -1917,6 +1924,12 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     out.marchSegRhoM = m.segRhoM;
     out.marchSegRegime = m.segRegime;
     out.marchSegTemperature = m.segTemperature;
+    // 5.188 (G6b): the profile's own x grid and the coefficient it priced, so
+    // the report can print "at this distance, this p and this T" without
+    // re-deriving the march. Both stay empty / 0 on the isothermal path.
+    out.marchSegX = m.segX;
+    out.marchThermalU = pipe.wallHeatTransfer;
+    out.marchOutletPressure = m.pOutlet;
 
     // conductance dQ/d(dpTotal). One-sided difference probing DEEPER into
     // the live branch: a central difference straddles the static-head knee
@@ -2221,6 +2234,25 @@ void PvtFluid::evaluateAt(double p, double& rhoOut, double& muOut,
     }
 }
 
+// 5.189: the EOS-derived Joule-Thomson coefficient. The composition is the
+// one the case declared; the state is evaluated at the local (T, p). SRK
+// carries its own analytic dZ/dT (srkDzDt). Peng-Robinson has no analytic
+// derivative in this layer, so its branch takes a central difference of the
+// EOS state - documented rather than hidden, and the two routes agree with
+// the thermodynamic definition to what tests/unit/srkTests.cpp pins down.
+double PvtFluid::eosJouleThomson(double T, double p, double cp, bool srk) const
+{
+    const LiveFlashState* st = composition ? composition.get() : liveFlash.get();
+    if (!st || !(cp > 0.0) || !(T > 0.0) || !(p > 0.0)) return 0.0;
+    if (srk) return pvt::srkJouleThomson(st->mix, T, p, cp);
+    const double h = 1e-4 * T;
+    const double dZ = (pvt::pengRobinsonState(st->mix, T + h, p).Z
+                       - pvt::pengRobinsonState(st->mix, T - h, p).Z)
+                      / (2.0 * h);
+    // mass-specific c_p, so the molar volume's M appears (see Srk.h)
+    return pvt::kGasConstant * T * T * dZ / (p * st->mix.molarMass() * cp);
+}
+
 double PvtFluid::density(double p) const
 {
     double rho = 0, mu = 0, sigma = 0;
@@ -2265,6 +2297,10 @@ struct PvtMarchOut
     // 5.144 (G6): outlet temperature of the PASSIVE thermal march; 0 when
     // no SteadyThermal was handed, the isothermal march, bit for bit.
     double temperature = 0;
+    // 5.188 (G6b) / 5.189: the same per-segment profile the black-oil march
+    // publishes, so the thermal report reads the same shape on both paths.
+    // Filled on every march; copied to the result only when thermal is on.
+    std::vector<double> segX, segPressure, segTemperature;
 };
 
 /// pStart (5.156, P10): the pressure the march BEGINS at when a compressor
@@ -2323,6 +2359,9 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         const double dp = rho * kGravity * dz
             + (f * ds / pipe.diameter + pipe.valveK / nSeg) * rho * v * v / 2.0
             - rho * kGravity * headPerM * ds;
+        m.segX.push_back(i * ds);
+        m.segPressure.push_back(p);
+        m.segTemperature.push_back(t);
         const double pOld = p;
         p -= dp;
         const bool hitFloor = !(p > pFloor);
@@ -2549,6 +2588,7 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
     // declared -> null -> the isothermal march, bit for bit.
     SteadyThermal th;
     const SteadyThermal* pth = nullptr;
+    std::function<double(double, double)> jtFn; // 5.189: outlives the march
     if (pipe.thermalOn())
     {
         th.temperatureIn = fluid.temperature;
@@ -2562,6 +2602,16 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
         th.surfaceTemperature = pipe.surfaceTemperature;
         th.geothermalGradient = pipe.geothermalGradient;
         th.heatCapacity = pipe.heatCapacity;
+        // 5.189: the EOS route. jtFn must outlive the march call, so it is
+        // declared in this scope and only its address travels in the struct.
+        if (pipe.jouleThomsonFromEos)
+        {
+            const bool srk = pipe.jouleThomsonEosIsSrk;
+            const double cp = pipe.heatCapacity;
+            jtFn = [&fluid, cp, srk](double T, double p)
+            { return fluid.eosJouleThomson(T, p, cp, srk); };
+            th.jtOfState = &jtFn;
+        }
         pth = &th;
     }
     // D10/D7: the accepted march is replayed once with station capture so a
@@ -2574,6 +2624,29 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
         boostUp ? pUp * compressorRatioOf(pipe, q) : 0.0);
     out.sigmaOutlet = m.sigmaOutlet;
     out.temperature = m.temperature;
+    if (pipe.thermalOn())
+    {
+        // 5.189: the pvt march now carries the same profile the black-oil
+        // march does, so the G6b report is path-independent.
+        out.marchSegX = m.segX;
+        out.marchSegPressure = m.segPressure;
+        out.marchSegTemperature = m.segTemperature;
+        out.marchThermalU = pipe.wallHeatTransfer;
+        out.marchOutletPressure = m.pOutlet;
+    }
+    // 5.189: the coefficient the march actually used at its entry state, and
+    // which route priced it - the number a checker re-derives from the case.
+    if (pipe.thermalOn())
+    {
+        out.marchJtMode = pipe.jouleThomsonFromEos
+                              ? (pipe.jouleThomsonEosIsSrk ? 2 : 1)
+                              : 0;
+        out.marchJouleThomson = pipe.jouleThomsonFromEos
+            ? fluid.eosJouleThomson(fluid.temperature, pUp,
+                                    pipe.heatCapacity,
+                                    pipe.jouleThomsonEosIsSrk)
+            : pipe.jouleThomson;
+    }
     out.flowRate = (forward ? 1.0 : -1.0) * q;
     out.velocity = (forward ? 1.0 : -1.0) * m.velocity;
     out.reynolds = m.reynolds;
@@ -2699,6 +2772,15 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                 if (!comp.has("composition"))
                     cfFatal("steadyNetwork: fluid pvt compositional needs a composition block");
                 const pvt::Mixture mix = pvt::loadComposition(comp.getDict("composition"));
+                // 5.189: the feed is published even on the table path, so a
+                // pipe can price its Joule-Thomson coefficient from the EOS.
+                {
+                    std::shared_ptr<LiveFlashState> feed =
+                        std::make_shared<LiveFlashState>();
+                    feed->mix = mix;
+                    feed->T = comp.getScalarOr("temperature", 0.0);
+                    net.pvtFluid.composition = feed;
+                }
                 if (!comp.has("temperature"))
                     cfFatal("steadyNetwork: fluid pvt compositional needs temperature");
                 const double T = comp.getScalar("temperature");
@@ -2984,10 +3066,41 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         // actually written.
         const bool thermalDeclared =
             pd.has("jouleThomson") || pd.has("wallHeatTransfer")
+            || pd.has("insulation")
             || pd.has("wallHeatTransferSegments") || pd.has("wallModel")
             || pd.has("wallTemperature") || pd.has("surfaceTemperature")
             || pd.has("geothermalGradient") || pd.has("heatCapacity");
-        p.jouleThomson = pd.getScalarOr("jouleThomson", 0.0);
+        // 5.189: `jouleThomson eos` / `jouleThomson eosSrk` asks the fluid's
+        // own equation of state for the coefficient at each segment's state.
+        // It needs a composition, so it is refused on the black-oil and
+        // plain-table paths instead of silently pricing zero.
+        p.jouleThomson = 0.0;
+        p.jouleThomsonFromEos = false;
+        p.jouleThomsonEosIsSrk = false;
+        if (pd.has("jouleThomson"))
+        {
+            if (pd.find("jouleThomson").kind == Dictionary::Kind::word)
+            {
+                const std::string jt = pd.getWord("jouleThomson");
+                if (jt == "eos" || jt == "eosSrk")
+                {
+                    p.jouleThomsonFromEos = true;
+                    p.jouleThomsonEosIsSrk = (jt == "eosSrk");
+                    if (!net.pvtFluid.composition)
+                        cfFatal("steadyNetwork: pipe '" + name
+                                + "' declares jouleThomson " + jt
+                                + " but the fluid has no composition: an "
+                                  "EOS-derived Joule-Thomson needs a "
+                                  "compositional pvt fluid");
+                }
+                else
+                    cfFatal("steadyNetwork: pipe '" + name
+                            + "' unknown jouleThomson '" + jt
+                            + "': give a number in K/Pa, or eos / eosSrk");
+            }
+            else
+                p.jouleThomson = pd.getScalar("jouleThomson");
+        }
         p.wallHeatTransfer = pd.getScalarOr("wallHeatTransfer", 0.0);
         p.wallHeatTransferSegments =
             pd.has("wallHeatTransferSegments")
@@ -3008,7 +3121,67 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.surfaceTemperature = pd.getScalarOr("surfaceTemperature", 0.0);
         p.geothermalGradient = pd.getScalarOr("geothermalGradient", 0.0);
         p.heatCapacity = pd.getScalarOr("heatCapacity", 0.0);
-        if (thermalDeclared)
+        // 5.188 (G6b): a LAYERED wall prices the per-unit-length coefficient
+        // from the stack itself instead of from a declared number:
+        //   U = 1 / ( sum_i ln(r_{i+1}/r_i)/(2 pi k_i) + 1/(2 pi r_out h_o) )
+        // which is the series conductance of the cylindrical shells, plus the
+        // optional outer film. Everything the march reads is therefore
+        // re-derivable from the case text alone (the checker does exactly
+        // that). A missing film is "the outside is at the wall temperature"
+        // and contributes nothing; an explicit zero is refused, because a
+        // declared-but-inert key is the thing this codebase does not carry.
+        const bool insulatedDeclared = pd.has("insulation");
+        if (insulatedDeclared)
+        {
+            const Dictionary& ins = pd.getDict("insulation");
+            p.insulatedLayered = true;
+            p.insulationInnerRadius = ins.getScalarOr("innerRadius", 0.0);
+            p.layerThickness = ins.getScalarList("thickness");
+            p.layerConductivity = ins.getScalarList("conductivity");
+            p.insulationOuterFilm = ins.getScalarOr("outerCoefficient", 0.0);
+            if (!(p.insulationInnerRadius > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name + "' insulation needs a "
+                        "positive innerRadius: the stack is radial from there");
+            if (p.layerThickness.size() != p.layerConductivity.size()
+                || p.layerThickness.empty())
+                cfFatal("steadyNetwork: pipe '" + name + "' insulation needs "
+                        "one conductivity per thickness entry (got "
+                        + std::to_string(p.layerThickness.size()) + " / "
+                        + std::to_string(p.layerConductivity.size()) + ")");
+            for (double d : p.layerThickness)
+                if (!(d > 0.0))
+                    cfFatal("steadyNetwork: pipe '" + name + "' insulation "
+                            "thickness must be positive: a zero shell is no "
+                            "layer");
+            for (double k : p.layerConductivity)
+                if (!(k > 0.0))
+                    cfFatal("steadyNetwork: pipe '" + name + "' insulation "
+                            "conductivity must be positive");
+            if (p.insulationOuterFilm < 0.0)
+                cfFatal("steadyNetwork: pipe '" + name + "' negative "
+                        "insulation outerCoefficient: the film is a positive "
+                        "number or absent");
+            double r = p.insulationInnerRadius;
+            double series = 0.0;
+            for (std::size_t i = 0; i < p.layerThickness.size(); ++i)
+            {
+                const double rNext = r + p.layerThickness[i];
+                series += std::log(rNext / r) / (2.0 * M_PI
+                                                 * p.layerConductivity[i]);
+                r = rNext;
+            }
+            p.insulationOuterRadius = r;
+            if (p.insulationOuterFilm > 0.0)
+                series += 1.0 / (2.0 * M_PI * r * p.insulationOuterFilm);
+            p.wallHeatTransfer = 1.0 / series;
+            if (pd.has("wallHeatTransfer")
+                || pd.has("wallHeatTransferSegments"))
+                cfFatal("steadyNetwork: pipe '" + name + "' declares both "
+                        "insulation and a wallHeatTransfer: the layered stack "
+                        "prices the coefficient, so a declared one is read by "
+                        "nothing");
+        }
+        if (thermalDeclared || insulatedDeclared)
         {
             if (!net.hasBlackOil && !net.hasPvtFluid)
                 cfFatal("steadyNetwork: pipe '" + name + "' declares thermal "
@@ -3026,6 +3199,13 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                             "wallHeatTransferSegments entry: a per-segment "
                             "coefficient is a positive number or zero "
                             "(insulated)");
+            // 5.189: mu = R T^2 /(p c_p) dZ/dT - the EOS route cannot be
+            // priced without the stream's c_p, and a silent zero would be a
+            // declared-but-inert key.
+            if (p.jouleThomsonFromEos && !(p.heatCapacity > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name + "' declares "
+                        "jouleThomson eos without a positive heatCapacity: "
+                        "an EOS-derived Joule-Thomson is R T^2/(p c_p) dZ/dT");
             if (!p.thermalOn())
                 cfFatal("steadyNetwork: pipe '" + name + "' declares thermal "
                         "keys but no heat: a thermal march needs a nonzero "
@@ -3051,7 +3231,8 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                 // every wall key would be read by nothing
                 if (pd.has("wallModel") || pd.has("wallTemperature")
                     || pd.has("surfaceTemperature")
-                    || pd.has("geothermalGradient") || pd.has("heatCapacity"))
+                    || pd.has("geothermalGradient")
+                    || (pd.has("heatCapacity") && !p.jouleThomsonFromEos))
                     cfFatal("steadyNetwork: pipe '" + name + "' declares wall "
                             "keys without any wall exchange: a pure "
                             "Joule-Thomson march reads none of them");

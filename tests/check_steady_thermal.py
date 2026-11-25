@@ -436,7 +436,13 @@ def run_stdout(body, exe=None):
                               text=True, cwd=tmp)
     if proc.returncode != 0:
         raise SystemExit(f"solver failed\n{proc.stdout}\n{proc.stderr}")
-    return proc.stdout
+    # 5.188 (G6b) appended a per-segment `thermal <pipe> pt …` readout on every
+    # thermal pipe. The passivity claims in this checker are about the pipe,
+    # node and solve lines (a declaration may only append a ` T <K>` token), so
+    # that readout is filtered before any byte comparison; its own checker
+    # (check_steady_thermal_profile.py) pins the profile it prints.
+    return "\n".join(l for l in proc.stdout.splitlines()
+                      if not l.startswith("[chflow] thermal "))
 
 
 def run_dict(body):

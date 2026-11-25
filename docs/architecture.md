@@ -5849,6 +5849,43 @@ hydrate/corrosion 需要气相 EOS（`gasR > 0`）才能定价压力，否则加
 
 **边界**。只有稳态 API RP 14E 读数：不做壁厚减薄积分、不做砂粒/液滴冲蚀机理（DNV-RP-O501 等）、不做 de Waard 类电化学腐蚀速率，也不做 CO₂ 相态分配（分压直接取声明的气相摩尔分数×总压）。这两个读数是「速度余量」与「分压带」，不是寿命预测。
 
+### 5.188 G6b · 多层保温的稳态热剖面：分层壳 → U，逐段 P/T 打印
+
+**差距**（§5.144 结尾）。稳态热剖面已经能沿 march 定价温度，但只有两件事没到位：① `U` 只能由调用方声明**一个数**（或 24 段列表），保温层（内衬 + 隔热 + 外护 + 环境膜）的总传热系数每次都要手算填进去，写错一个量级没有任何东西会反对；② march 里的逐段 `p/T`（`segPressure` / `segTemperature`，§5.158 起就有了）**从未输出**——报告只给管线的出口 `T`，拿不到"离入口 300 m 处压力多少、温度多少"。对标 Pipesim 的逐段 P/T 剖面与多层保温定义，这两项都属"已有量、没接出来"。
+
+**实现**。两块，都在稳态管网行。
+- **分层壳**。`pipes{P}` 内的 `insulation{}`：`innerRadius`（内壁半径，m）、`thickness`（每层外扩，m，列表）、`conductivity`（每层导热，W/(m·K)，列表）、可选 `outerCoefficient`（外膜，W/(m²·K)，缺省 = 无膜）。系数按**圆柱壳串联**定价：
+  \[ U = \frac{1}{\sum_i \frac{\ln(r_{i+1}/r_i)}{2\pi k_i} + \frac{1}{2\pi r_{out} h_o}} \]
+  单位是 W/(m·K)（每米管长的总传热系数），直接写入 `wallHeatTransfer`，于是 5.144 的 march 读到的就是这条链的总导热，而不是一个手填数。六条加载期拒收：厚度/导热列表长度不一致、厚度非正、导热非正、缺 `innerRadius`、`outerCoefficient` 为负、以及同时声明 `wallHeatTransfer`（分层与手填二者只能选一，手填那份在被定价后没人读）。
+- **逐段剖面**。`thermal <pipe> pt <k> x <x> p <p> T <T>`（每段**入口**一点，`x = k·ds`）加一行 `thermal <pipe> pt 24 x <L> p <pOut> T <Tout>`（march 自己的出口点），再加一行汇总 `thermal <pipe> u <U> rout <r> pts 24 Tout <T>`。所有数字来自 march 自身的 `segX / segPressure / segTemperature / pOutlet`，app 侧只做打印——打印器算不出新物理，也就不可能和新物理漂移。
+
+**判据**。`verify.steadyThermalProfile`（**24 判据**，`tests/check_steady_thermal_profile.py` + `cases/steadyThermalProfile/{case,caseIsothermal}.dict`，1.4 s）：从 case 文本独立重算 U（0.299793859276 W/(m·K)，r_out = 0.09 m）并与打印的 `u` 对上（1e-12）；用打印的 p 序列逐段重推墙律 `T_{k+1} = T_w + (T_k + jt·Δp − T_w)·exp(−U ds/(ṁ c_p))`（最大相对偏差 **1.35e-12**）；出口 T 用 march 自己的出口 p 重推（1e-12 命中，336.993761079 K）；纯 J-T 臂在打印压力上精确望远镜（1.36e-12）；网格 `x = k·ds`；未声明热学的 P3 一条 `thermal` 行都没有；**等温孪生**（同一网、删掉全部热学键）去掉 ` T <num>` 与 `thermal …` 行后**逐字节相同**；六条拒收逐条点名。
+
+**边界**。① 温度仍是**被动**的：`T` 只沿压力剖面定价，从不回写 `dp`（5.144 的立场没变，本增量只是把 U 的来源和剖面接出来）。② 分层壳里**没有内壁对流膜**（`Cd`/Nu 由流动定，稳态 march 拿不到），外膜是常数；无辐射、无轴向导热、无曲率修正以外的层间温降细节。③ **时变环境温度未做**：环境侧仍只有 `wallModel` 的常量壁温与地温梯度两种（时变需要瞬态热账，属另一格）。④ **J-T 仍由声明给出**，`jouleThomson` 是常数；由 EOS 导出 μ = (T(∂v/∂T)_p − v)/c_p 需要三次方程 EOS 的 ∂Z/∂T 与焓偏离，本轮未做（→ 5.189 已接上）。
+
+### 5.189 G6c · SRK 状态方程与"由 EOS 导出"的焦耳-汤姆逊系数
+
+**差距**（§5.188 边界 ④）。上一轮的 `jouleThomson` 只能是**声明的一个常数**。真实气体沿管线的 μ ＝ (T(∂v/∂T)_p − v)/c_p 随 (T, p) 变，一条 1 km 管线两端可以差几个百分点；把它当常数，等于用一个数替一条曲线。同时 PVT 层只有 Peng-Robinson（PR76）一个三次方程，SRK（Soave-Redlich-Kwong 1972）与其解析导数都缺——而"J-T 由 EOS 导出"这句要求的正是 ∂Z/∂T 这条链。
+
+**实现**。两块。
+
+- **SRK 内核**（`src/pvt/{include/cf/pvt/Srk.h,src/srk.cpp}`，进 `cf_pvt`）。按公开定义式实现：a_i = 0.42748 (R T_c)²/P_c · α、b_i = 0.08664 R T_c/P_c、α = (1 + m(1 − √T_r))²、m = 0.480 + 1.574ω − 0.176ω²；vdW 单流体混合（含 `k_ij`）给出 a_mix、b_mix 以及 **da_mix/dT**。立方写成 SRK 自己的形式
+  \[ Z^3 - Z^2 + (A-B-B^2)Z - AB = 0 \]
+  其临界压缩因子 Z_c = 1/3（这是立方方程的性质，不是拟合表）。根过滤、Gibbs 选根、`EosState`（Z / 摩尔体积 / 密度 / ln φ / gibbs / 两支根）与 PR 路径同构，调用方可以互换而不改变"稳定根"的含义。
+- **解析 ∂Z/∂T 与 μ**。对立方隐式求导：
+  \[ \frac{\partial Z}{\partial T} = -\frac{\left(\frac{dA}{dT} - (1+2B)\frac{dB}{dT}\right)Z - \left(A\frac{dB}{dT} + B\frac{dA}{dT}\right)}{3Z^2 - 2Z + (A - B - B^2)} \]
+  其中 dB/dT = −B/T、dA/dT = p/(R T)² · da_mix/dT − 2A/T。注意 c₁ = A − B − B² 的导数里那个 **1**（少写它会让 μ 偏 18%，本轮第一版就这么错，被有限差分抓住）。质量比热 c_p（J/(kg·K)，1D 热 march 一直在用的形式）下，摩尔体积的 Z 两项相消：
+  \[ \mu = \frac{R T^2}{p M c_p}\frac{\partial Z}{\partial T} \]
+  **M 不能省**：漏掉它 μ 会差 60 倍（甲烷），第一版把 μ 算成 9e-8 K/Pa，量纲上"像"但不物理。`srkJouleThomson` 与 PR 分支都按这条式子给数，两个分支都在 `tests/unit/srkTests.cpp` 里被定义式钉住。
+- **接进管网**。`pipes{P}` 的 `jouleThomson` 现在接受**词**：`jouleThomson eos`（Peng-Robinson）与 `jouleThomson eosSrk`（SRK）。`SteadyThermal` 新增 `jtOfState` 回调（`std::function<double(double T, double p)>`），march 在每个 **段的入口 (T, p)** 上求 μ 再乘该段 Δp——显式、单向、只读已有状态，压力解照旧看不到 T（5.144 的被动立场不变）。EOS 分支要 `heatCapacity`（μ ∝ 1/c_p），纯 J-T 管（无壁面换热）从此允许声明 c_p。四类拒收：无语料组分（blackoil / 纯表）、无正 `heatCapacity`、未知词、以及 blackoil march 上的双保险。
+- **读数**。`thermal <pipe> jt eos|eosSrk mu <入口 μ>`，加逐站 `thermal <pipe> jtpt <k> p <p> T <T> mu <mu>`（24 点）。同时把 **PVT march 的逐段剖面**（`segX/segPressure/segTemperature`）补齐——5.188 的剖面打印此前只在 blackoil 路径有数，PVT 路径打印出 `pts 0`；现在两条路径同形。
+
+**判据**。`pvt.srkUnit`（C++ 单测，20 判据）：临界点 Z = 1/3、100 Pa 的理性气体极限、SRK 与 PR 在极限上一致、**解析 ∂Z/∂T 对状态函数自身的中心差分**（纯甲烷两点 × 两压力、混合物一点，相对 1e-6）、**μ 对定义式 (T(∂v/∂T)_p − v)/c_p 的中心差分**（三个压力 + 混合物，1e-6）、μ > 0（300 K 甲烷膨胀致冷）、2 MPa 的 Z 已在理性值之下。
+
+`verify.steadyJtEos`（**19 判据**，`tests/check_steady_jt_eos.py` + `cases/steadyJtEos/case.dict`，0.12 s）：`jouleThomson eos` 的 P1 与 `eosSrk` 的 P2 各自把 **T_out 精确重算为 T_in + Σ μ_k Δp_k**（对打印的 24 点 μ 与压力网格，偏差 < 1e-9，即"打印的就是 march"）；P2 的**每一站 μ 用 Python 按公开 SRK 常数独立重算**并与 C++ 对上（最差相对 **2.16e-11**）；P1（PR 分支）只钉**同状态 SRK 值的 ±8% 带**（最差 7.7%）并断言二者**不是同一个数**——PR 这一层没有解析导数（分支用状态差分），所以这里不做同一性声明，真正的锚在 C++ 单测；全部 μ > 0 且沿管平滑（相邻相对变化 < 5e-3）；P3（声明常数）不打印任何 `jt` 行；四条拒收逐条点名。
+
+**边界**。① 只有**管网稳态 march** 接了 EOS 的 μ；瞬态热 march 仍读声明常数（那里的 `jouleThomson` 是数，词会直接拒收）。② PR 分支的 μ 走**状态中心差分**（h = 1e-4 T），不是解析导数；两相区内根会换支，差分在该处不可信，而 SRK 分支是解析的、不受此限。③ SRK 内核**没有**接进 PVT 表的生成（`compositional` 的 rho/mu 仍由 PR76 产生），也**没有**饱和压力求解 / 闪蒸的 SRK 版本；SRK 目前是"状态 + 导数 + μ"这一层能力。④ EOS 导出的 μ 只影响温度剖面，**永不影响压力**。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

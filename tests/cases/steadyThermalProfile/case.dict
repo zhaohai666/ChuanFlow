@@ -1,0 +1,61 @@
+// 5.188 (G6b): the steady thermal profile with a LAYERED wall.
+//
+// Same gathering network as steadyNetworkMultiphase (two gas-lifted wells into
+// a manifold, one line to a fixed terminal), with the thermal march declared
+// on two of the three pipes:
+//   P1  layered insulation (two shells + an outer film) + wallTemperature,
+//       so U is priced by the stack instead of declared;
+//   P2  pure Joule-Thomson (no wall), the same readout the 5.144 grammar
+//       already priced;
+//   P3  nothing, the isothermal path, bit for bit.
+// Every thermal pipe prints its per-segment P/T profile (one `thermal <pipe>
+// pt <k> x <x> p <p> T <T>` line per segment inlet) plus one summary line with
+// the coefficient the stack priced and the outer radius it ended on.
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.75;
+        oilDensity     850;
+        gor            80;
+        waterCut       0;
+        temperature    340;
+        surfaceTension 0.025;
+    }
+}
+
+nodes
+{
+    W1 {};
+    W2 {};
+    M {};
+    Outlet { pressure 4.0e6; }
+}
+
+pipes
+{
+    P1 { from W1; to M; length 1200; diameter 0.08; roughness 4.6e-5; elevation 60;
+         jouleThomson 2.5e-6;
+         heatCapacity 2500;
+         wallModel constant;
+         wallTemperature 300;
+         insulation { innerRadius 0.04; thickness (0.03 0.02);
+                      conductivity (0.05 0.03); outerCoefficient 8; }
+    }
+    P2 { from W2; to M; length 1500; diameter 0.08; roughness 4.6e-5; elevation 90;
+         jouleThomson 2.0e-6;
+    }
+    P3 { from M; to Outlet; length 800; diameter 0.1; roughness 4.6e-5; elevation 0; }
+}
+
+sources
+{
+    well1 { node W1; rate 0.004; }
+    well2 { node W2; rate 0.002; }
+}
+
+solve
+{
+    maxIter 100;
+    tol     1e-10;
+}

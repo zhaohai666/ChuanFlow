@@ -1,0 +1,66 @@
+// 5.189: the Joule-Thomson coefficient taken from the fluid's own equation of
+// state instead of a declared constant. `jouleThomson eos` prices mu with
+// Peng-Robinson (central difference of the state, the PR branch of
+// PvtFluid::eosJouleThomson) and `jouleThomson eosSrk` with Soave-Redlich-
+// Kwong's analytic dZ/dT, both at the state the march has actually reached.
+//
+// The feed is a rich gas (methane/ethane 0.8/0.2) at 320 K on a pressure grid
+// that stays single-phase for the LowestGibbs root, so the coefficient is a
+// smooth function of p and the same case can be re-derived by the checker from
+// the published EOS constants. heatCapacity is what an EOS-derived mu needs:
+// mu = R T^2/(p c_p) dZ/dT. A constant-mu pipe (P3) rides the same network to
+// show the declared route is untouched.
+
+fluid
+{
+    pvt
+    {
+        pressure ( 1.0e6 3.0e6 6.0e6 1.2e7 );
+        temperature 320.0;
+
+        compositional
+        {
+            composition { methane 0.8; ethane 0.2; }
+            temperature 320.0;
+            phase stable;
+        }
+    }
+}
+
+nodes
+{
+    W  {}
+    A  {}
+    B  {}
+    T  { pressure 2.0e6; }
+}
+
+pipes
+{
+    P1  // Peng-Robinson mu at every segment's state
+    {
+        from W; to A;
+        length 900; diameter 0.1; roughness 4.6e-5; elevation 0;
+        jouleThomson eos;
+        heatCapacity 2400;
+    }
+
+    P2  // SRK mu, analytic dZ/dT
+    {
+        from A; to B;
+        length 900; diameter 0.1; roughness 4.6e-5; elevation 0;
+        jouleThomson eosSrk;
+        heatCapacity 2400;
+    }
+
+    P3  // the declared-constant route, untouched
+    {
+        from B; to T;
+        length 600; diameter 0.1; roughness 4.6e-5; elevation 0;
+        jouleThomson 2.5e-6;
+    }
+}
+
+sources { feed { node W; rate 0.03; } }
+
+solve { maxIter 100; tol 1e-11; }

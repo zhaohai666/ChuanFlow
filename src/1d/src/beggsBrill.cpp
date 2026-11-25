@@ -205,7 +205,10 @@ double steadyThermalAdvance(const SteadyThermal& th, double t,
                             double pOld, double pNew, int segment,
                             double ds, double sinTheta, double massRate)
 {
-    t += th.jouleThomson * (pNew - pOld);
+    // 5.189: the EOS coefficient, when the fluid can price it, is taken at
+    // the segment INLET state - the same state the explicit march is holding.
+    const double jt = th.jtOfState ? (*th.jtOfState)(t, pOld) : th.jouleThomson;
+    t += jt * (pNew - pOld);
     const double u = th.segmentU ? (*th.segmentU)[segment]
                                  : th.wallHeatTransfer;
     if (u > 0.0 && massRate > 0.0)
@@ -560,6 +563,9 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                   : staticRhoM);
         out.segRegime.push_back(g.regime);
         out.segTemperature.push_back(t);
+        // 5.188 (G6b): absolute position of this point, filled only on a
+        // thermal march so the isothermal path keeps an empty vector.
+        if (thermal) out.segX.push_back(static_cast<double>(i) * ds);
         lastVm = vsl + vsg;
         lastFTp = g.fTp;
         lastRegime = g.regime;

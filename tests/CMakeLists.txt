@@ -56,6 +56,14 @@ target_compile_definitions(pvt_tests PRIVATE
     CF_CASE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/cases")
 add_test(NAME pvt.unit COMMAND pvt_tests)
 
+# 5.189: the SRK cubic and the EOS-derived Joule-Thomson coefficient. The test
+# anchors the EOS's own Zc, the ideal-gas limit, and cross-checks the analytic
+# dZ/dT and mu = R T^2/(p c_p) dZ/dT against finite differences of the state
+# function itself (pure and mixture).
+add_executable(srk_tests unit/srkTests.cpp)
+target_link_libraries(srk_tests PRIVATE cf_pvt)
+add_test(NAME pvt.srkUnit COMMAND srk_tests)
+
 add_executable(piso_tests unit/pisoTests.cpp)
 target_link_libraries(piso_tests PRIVATE cf3d)
 add_test(NAME piso.unit COMMAND piso_tests)
@@ -719,6 +727,30 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkMultiphase/case.dict
         $<TARGET_FILE:chflow-1d-transient>
         $<TARGET_FILE:chflow-1d-nodal>)
+
+# 5.188 (G6b): the layered wall (insulation{} -> U by series conductance) and
+# the per-segment P/T profile printed off the march itself. The checker
+# re-derives U from the radii/k/film, replays the wall law on the printed
+# pressures and holds the outlet to the march's own exit point; the isothermal
+# twin is byte-identical once the thermal readout is stripped, and six inert
+# or impossible layer declarations are refused.
+add_test(
+    NAME verify.steadyThermalProfile
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_thermal_profile.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyThermalProfile/case.dict)
+
+# 5.189: `jouleThomson eos` / `jouleThomson eosSrk` - the coefficient from the
+# fluid's own EOS. Anchors the march's drop as the integral of the printed mu,
+# re-derives every SRK station from the published constants, and pins the four
+# refusals (no composition, no c_p, unknown word, word on a plain table).
+add_test(
+    NAME verify.steadyJtEos
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_jt_eos.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyJtEos/case.dict)
 
 # 5.158 (P18) + 5.159 (P22): the slug-start forecast and the erosion /
 # hydrate / corrosion risk report. Both are pure readouts of the march's

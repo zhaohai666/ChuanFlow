@@ -173,6 +173,10 @@ struct BeggsBrillMarchOut
     std::vector<int> segRegime;         // the regime the gradient priced with
     std::vector<double> segTemperature; // K at the segment inlet; 0 entries
                                         // when no thermal march was declared
+    // 5.188 (G6b): the same points' absolute distance from the pipe inlet
+    // (i * ds), pushed only on a thermal march. Empty on the isothermal path,
+    // so no existing reader sees a new number.
+    std::vector<double> segX;
 };
 
 /// 5.144 (G6): the passive temperature march of a steady pipe. The whole
@@ -181,7 +185,9 @@ struct BeggsBrillMarchOut
 /// pressure profile the hydraulics already produced and cannot move a
 /// single pressure, rate or holdup number. Per march segment, with ds the
 /// segment length and pOld/pNew the segment's inlet/outlet pressures:
-///   T <- T + jouleThomson * (pNew - pOld)
+///   T <- T + mu(T, pOld) * (pNew - pOld)
+/// where mu is the declared constant, or the fluid's own EOS value when
+/// jtOfState is set (5.189); then, where the segment's overall
 /// then, where the segment's overall coefficient per unit length U > 0
 /// (the segmentU list when present, else wallHeatTransfer),
 ///   T <- T_wall + (T - T_wall) * exp(-U ds / (massRate * heatCapacity)),
@@ -205,6 +211,13 @@ struct SteadyThermal
     double surfaceTemperature = 0; // K (geothermal at the inlet datum)
     double geothermalGradient = 0; // K/m of true vertical depth below the inlet
     double heatCapacity = 0;       // J/(kg K), the stream's c_p
+    // 5.189: the EOS-derived Joule-Thomson. When non-null the coefficient at
+    // each segment is evaluated from the fluid's own equation of state at
+    // that segment's inlet (T, p) instead of the constant above, so the march
+    // follows the curve a real gas would instead of one declared number. The
+    // march stays explicit and one-way: the callback sees only the state the
+    // march has already reached, and it can never feed back into pressure.
+    const std::function<double(double T, double p)>* jtOfState = nullptr;
 };
 
 /// 5.144 (G6): one thermal segment step, shared by the black-oil and the

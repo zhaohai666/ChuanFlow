@@ -66,6 +66,18 @@ struct PvtFluid
     void evaluateAt(double p, double& rhoOut, double& muOut,
                     double& sigmaOut) const;
 
+    /// 5.189: the compositional feed, when the case declared one. Held even
+    /// on the table path (where liveFlash is null) so an EOS-derived
+    /// Joule-Thomson has a composition to evaluate against; null on every
+    /// black-oil / plain-table case.
+    std::shared_ptr<LiveFlashState> composition;
+
+    /// 5.189: the Joule-Thomson coefficient from the fluid's own EOS at the
+    /// local (T, p), in K/Pa. `srk` selects Soave-Redlich-Kwong; otherwise
+    /// Peng-Robinson. Returns 0 when no composition was declared, which the
+    /// parser refuses up front so a case cannot silently price zero.
+    double eosJouleThomson(double T, double p, double cp, bool srk) const;
+
     /// Null (the default) => original piecewise-linear table path, every
     /// existing number bit-for-bit unchanged. Non-null => each call flashes
     /// the held composition at the local pressure.
@@ -201,6 +213,12 @@ struct NetworkPipe
     // needed by the wall term through m c_p dT/ds = U (T_wall - T). All
     // zero is the undeclared isothermal march, bit for bit.
     double jouleThomson = 0;
+    /// 5.189: `jouleThomson eos` / `jouleThomson eosSrk` - the coefficient is
+    /// the fluid's own EOS value at each segment's state instead of the
+    /// constant above. Needs a compositional fluid; the parser refuses it
+    /// anywhere else.
+    bool jouleThomsonFromEos = false;
+    bool jouleThomsonEosIsSrk = false;
     double wallHeatTransfer = 0;
     std::vector<double> wallHeatTransferSegments;
     int wallModel = 0;              // 0 constant, 1 geothermal
@@ -209,13 +227,29 @@ struct NetworkPipe
     double geothermalGradient = 0;  // K/m
     double heatCapacity = 0;        // J/(kg K)
 
+    /// 5.188 (G6b): the layered wall, when `insulation{}` priced U instead of
+    /// a declared wallHeatTransfer. The stack is radial from innerRadius
+    /// outward, thickness/conductivity one entry per layer, plus an optional
+    /// outer film coefficient (W/(m2 K), 0 = no film). The per-unit-length
+    /// overall coefficient is the series sum
+    ///   U = 1 / ( sum_i ln(r_{i+1}/r_i)/(2 pi k_i) + [1/(2 pi r_out h_o)] ),
+    /// which is what the thermal march consumes; outerRadius is kept only so
+    /// the report can show the stack it priced.
+    bool insulatedLayered = false;
+    std::vector<double> layerThickness;   // m, outer radius step per layer
+    std::vector<double> layerConductivity; // W/(m K)
+    double insulationInnerRadius = 0;     // m
+    double insulationOuterRadius = 0;     // m
+    double insulationOuterFilm = 0;       // W/(m2 K), 0 = no film
+
     /// 5.144 (G6): does this pipe carry any PRICED thermal physics? A
     /// Joule-Thomson coefficient or a positive wall coefficient anywhere.
     /// Declared-but-inert keys are refused by the parser; this is what the
     /// marches and addPipe scope checks act on.
     bool thermalOn() const
     {
-        if (jouleThomson != 0.0 || wallHeatTransfer > 0.0) return true;
+        if (jouleThomson != 0.0 || jouleThomsonFromEos
+            || wallHeatTransfer > 0.0) return true;
         for (double u : wallHeatTransferSegments)
             if (u > 0.0) return true;
         return false;
@@ -683,6 +717,19 @@ struct PipeFlowResult
     std::vector<double> marchSegRhoM;
     std::vector<int> marchSegRegime;
     std::vector<double> marchSegTemperature;
+    // 5.188 (G6b): the per-segment ABSOLUTE position of the march, filled only
+    // on a thermal pipe: x in metres from the pipe inlet, one entry per
+    // point (the N segment inlets plus the outlet), so a report can print
+    // "p and T at this distance" without re-deriving ds.
+    std::vector<double> marchSegX;
+    double marchThermalU = 0;   // W/(m K) the march actually priced
+    double marchOutletPressure = 0; // Pa, the march's own exit pressure
+    // 5.189: the Joule-Thomson coefficient the march used at its INLET state
+    // and where it came from (0 = the declared constant, 1 = pengRobinson
+    // state difference, 2 = SRK's analytic dZ/dT). 0.0 / 0 on every pipe
+    // without thermal physics.
+    double marchJouleThomson = 0;
+    int marchJtMode = 0;
 };
 
 struct SteadyNetworkResult

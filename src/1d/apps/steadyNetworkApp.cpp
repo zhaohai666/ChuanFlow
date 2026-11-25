@@ -702,6 +702,53 @@ int main(int argc, char** argv)
                               num(rk.h2sPartial), rk.sour ? " SOUR" : " SWEET");
                 }
             }
+            // 5.188 (G6b): the per-segment P/T profile of a thermal pipe, read
+            // off the march that produced the pipe line above. One point per
+            // segment inlet (x measured from the pipe inlet); the pipe line's
+            // own `T` token is the outlet. Neither the anchors nor this
+            // profile is a new physics - the hydraulics never read it.
+            if (pipe.thermalOn()
+                && f.marchSegX.size() == f.marchSegTemperature.size()
+                && f.marchSegX.size() == f.marchSegPressure.size())
+            {
+                for (std::size_t k = 0; k < f.marchSegX.size(); ++k)
+                    log::info("thermal ", f.name, " pt ", k, " x ",
+                              num(f.marchSegX[k]), " p ",
+                              num(f.marchSegPressure[k]), " T ",
+                              num(f.marchSegTemperature[k]));
+                // 5.188: the march's own exit point, so the outlet is read
+                // off the same integration rather than off the node pressure
+                // (which the outer solve may still be a tolerance away from).
+                log::info("thermal ", f.name, " pt ", f.marchSegX.size(), " x ",
+                          num(pipe.length), " p ", num(f.marchOutletPressure),
+                          " T ", num(f.temperature));
+                log::info("thermal ", f.name, " u ", num(f.marchThermalU),
+                          " rout ", num(pipe.insulationOuterRadius),
+                          " pts ", f.marchSegX.size(), " Tout ",
+                          num(f.temperature));
+                // 5.189: when the coefficient came from the EOS, say which EOS
+                // and print the entry-state mu the march used, so the number
+                // is re-derivable from the case without a solver rerun.
+                if (f.marchJtMode != 0)
+                {
+                    log::info("thermal ", f.name, " jt ",
+                              f.marchJtMode == 2 ? "eosSrk" : "eos",
+                              " mu ", num(f.marchJouleThomson));
+                    // 5.189: the coefficient at each segment's own state, the
+                    // same (T, p) the march used. The accumulated drop is the
+                    // trapezoid of these numbers against the p grid, so a
+                    // checker can re-derive T_out and the mu curve apart.
+                    for (std::size_t k = 0; k < f.marchSegX.size(); ++k)
+                        log::info("thermal ", f.name, " jtpt ", k, " p ",
+                                  num(f.marchSegPressure[k]), " T ",
+                                  num(f.marchSegTemperature[k]), " mu ",
+                                  num(net.pvtFluid.eosJouleThomson(
+                                      f.marchSegTemperature[k],
+                                      f.marchSegPressure[k],
+                                      pipe.heatCapacity,
+                                      f.marchJtMode == 2)));
+                }
+            }
         }
         if (anySlugDeclared)
         {

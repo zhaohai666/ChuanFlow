@@ -1,0 +1,26 @@
+// 5.185: OVERBALANCED arm -- the pore pressure sits BELOW every pressure the
+// well reaches (p_res = 30 MPa against a ~36.5 MPa bottomhole state), so the
+// one-sided law q = J max(p_res - p, 0) must stay exactly zero for the whole
+// run: no influx, no gas, and the trajectory must be byte-identical to the
+// same deck with the reservoir{} block deleted (caseNoReservoir.dict).
+fluid { rho 1200; mu 0.05; }
+
+nodes
+{
+    BH   { volume 50; bulkModulus 2.0e9; pressure 3.7e7; liquidFraction 0.8; }
+    SURF { fixedPressure 1.0e5; }
+}
+
+pipes
+{
+    WELL { from BH; to SURF; length 3000; diameter 0.25; roughness 1.0e-4;
+           elevation 3000; valve 120; }
+}
+
+reservoir
+{
+    RES { node BH; pressure 3.0e7; productivityIndex 2.0e-8;
+          gasFraction 0.30; depth 3000; }
+}
+
+time { dt 0.05; endTime 30; reportEvery 1; }

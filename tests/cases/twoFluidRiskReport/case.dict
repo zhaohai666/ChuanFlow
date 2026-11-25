@@ -1,0 +1,67 @@
+// 5.187 (F-class): the transient flow-assurance risk report.
+//
+// Three read-only channels priced off this frame's own sections:
+//   * erosion  -- API RP 14E Ve = C / sqrt(rho_m), worst vm/Ve and over-count;
+//   * hydrate  -- the declared Clausius-Clapeyron line against each section's
+//                 own (p, T): worst subcooling and its K band. This is the
+//                 NON-BLOCKING reading: h never enters d_eff, the bore or the
+//                 viscosity. The case also declares the kinetic hydrate{}
+//                 block, so a growing h is present while the invariants hold;
+//   * corrosion -- CO2/H2S partials at the highest section pressure and bands.
+//
+// The case deliberately also declares the two hydraulics that DO own a
+// diameter and a viscosity (a static wax deposit and an emulsion), so a
+// checker can prove the hydrate fraction is in neither:
+//   d_eff must stay D sqrt(1 - 0.5) (wax only, never wax + h)
+//   muEff must stay muL (1 + 2.5 water)  (water cut only, never + h)
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; cL 2000; cG 2100; gasR 470; }
+
+pipe { length 200; diameter 0.1; roughness 1.0e-4; angleDeg 0; sections 20; }
+
+closure { model wallis; slipVelocity 0.2; }
+
+initial { alpha 0.2; water 0.1; temperature 300; }
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 3.0; vsg 5.0; waterFraction 0.1;
+             waxDepositFraction 0.5; temperature 300; }
+    outlet { type fixedPressure; p 5.0e6; temperature 300; }
+}
+
+thermal { wallHeatTransfer 50; wallModel constant; wallTemperature 300; }
+
+emulsion { model brinkman; muWater 1.0e-3; }
+
+wax
+{
+    meltingTemperature 323.75;
+    fusionEnthalpy 54890;
+    waxFraction 0.5;
+    growthRate 0;
+    dissolutionRate 0;
+    latentHeat 0;
+    initial 0.5;
+    feedback yes;
+    depositRoughness 0;
+}
+
+hydrate
+{
+    curveA 33.0;
+    curveB -5684;
+    growthRate 0.01;
+    dissociationRate 0.05;
+    gasContent 122;
+    latentHeat 4.2e8;
+    initial 0.1;
+}
+
+riskReport
+{
+    erosionC 100;
+    hydrate { Tref 313.4; pRef 3.0e6; dH 47256.4; }
+    corrosion { co2 0.08; h2s 0.002; co2Low 1.0e4; co2High 1.0e5; }
+}
+
+time { dt 0.05; endTime 20; reportEvery 50; }

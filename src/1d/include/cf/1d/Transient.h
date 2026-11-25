@@ -198,6 +198,67 @@ struct TransientEspConfig
     double speedTau = 0;      // s, first-order lag; <= 0 = instantaneous step
 };
 
+// ---- 5.185 (W-class): opt-in well-control reservoir inflow -----------------
+//
+// HONEST BOUNDARIES (a lumped node model of the well, not a multiphase
+// wellbore solver):
+//  * The inflow is one linear productivity-index law at ONE node,
+//    q = J * max(p_res - p_node, 0). Radial Darcy inflow is linearised, the
+//    skin is not modelled, and an OVERBALANCED node takes no leak-off into the
+//    formation (the influx simply stops at zero, it never reverses).
+//  * The influx carries a DECLARED gas volume fraction. The node engine books
+//    volume (liquid inventory + gas filling the rest through the node's
+//    compliance), so it cannot resolve gas expansion/migration up the column,
+//    which is what turns a real kick into a blowout. What is modelled is the
+//    volume account: pit gain, cumulative gas volume, the underbalance drive
+//    and the shut-in pressure build.
+//  * Shut-in is whatever element the case already has (a valve K ramp, an
+//    SSSV, a choke). The reservoir adds no BOP ram, no annular friction and no
+//    surface-pressure control loop.
+//  * The kill-mud and SIDPP readouts are the static definitions:
+//    rho_kill = p_res / (g * depth) and SIDPP = p_res - rho_mud g depth. They
+//    are algebra, not a kill schedule.
+//
+// Grammar (top-level block keyed by reservoir name):
+//   reservoir
+//   {
+//       RES { node BH; pressure 4.0e7; productivityIndex 5e-9;
+//             gasFraction 0.2; depth 3000; }
+//   }
+// One reservoir per node; the node must be free (not fixedPressure), must
+// carry a positive bulkModulus, and must not also be priced by a sources{}
+// entry or a sourceSchedule (one rate account per node).
+struct TransientReservoirConfig
+{
+    std::string name;          // reservoir name (the dictionary key)
+    std::string nodeName;      // free node the reservoir feeds
+    double pressure = 0;       // Pa, pore pressure (> 0)
+    double productivityIndex = 0; // J, m3/(s Pa) (> 0)
+    double gasFraction = 0;    // gas volume fraction of the influx [0,1)
+    double depth = 0;          // m, node TVD (> 0); prices the kill-mud report
+};
+
+/// The well-control readout of one reservoir at the last committed step. Every
+/// field is a report of the state the march actually reached -- the influx law
+/// reads the node pressure, the cumulative volumes are the step's own trapezoid
+/// of that rate (the implicit new-level rate), and the two static numbers are
+/// the definitions above.
+struct ReservoirReadout
+{
+    std::string name;
+    std::string nodeName;
+    double pressure = 0;        // Pa, declared pore pressure
+    double nodePressure = 0;    // Pa, the node's committed pressure
+    double influx = 0;          // m3/s, J max(p_res - p_node, 0)
+    double gasInflux = 0;       // m3/s, influx * gasFraction
+    double volume = 0;          // m3, cumulative volume injected
+    double gasVolume = 0;       // m3, cumulative gas volume injected
+    double underbalance = 0;    // Pa, p_res - p_node (> 0 = underbalanced)
+    bool underbalanced = false; // p_node < p_res
+    double killMudWeight = 0;   // kg/m3, p_res / (g depth)
+    double sidpp = 0;           // Pa, p_res - rho_mud g depth (static)
+};
+
 struct TransientCase
 {
     FluidProperties fluid;
@@ -211,6 +272,8 @@ struct TransientCase
     std::vector<TransientSssvConfig> sssvs;
     std::vector<TransientChokeConfig> chokes;
     std::vector<TransientEspConfig> esps;
+    // 5.185: opt-in well-control reservoir inflows; each targets one free node.
+    std::vector<TransientReservoirConfig> reservoirs;
 };
 
 struct TransientSample
@@ -348,6 +411,11 @@ public:
     double pipeEspSpeed(label k) const;
     double pipeEspHead(label k) const;
 
+    // ---- 5.185: the well-control readout of every declared reservoir, priced
+    // from the committed node pressures. Empty when the case declares none,
+    // so the app prints nothing and the undeclared path is untouched.
+    std::vector<ReservoirReadout> reservoirReadouts() const;
+
     double time() const { return t_; }
     const std::vector<std::string>& nodeNames() const { return net_.nodeNames; }
     const std::vector<std::string>& pipeNames() const;
@@ -440,6 +508,21 @@ private:
         double vL = 0, vH = 0;
         double source = 0, sourceFraction = 0;
         double rate = 0;
+        // 5.185: index into reservoirs_ (-1 = no reservoir feeds this node).
+        int resIdx = -1;
+    };
+
+    // 5.185: one entry per declared reservoir. `active` is the step-entry
+    // latch of the one-sided inflow law (p_node < p_res at the state the step
+    // starts in), exactly the idiom the held-wall latch uses: it keeps the
+    // Newton row differentiable and stops the law from flipping mid-solve.
+    struct ReservoirEntry
+    {
+        std::string name;
+        std::size_t nodeIndex = 0;
+        double pressure = 0, J = 0, gasFraction = 0, depth = 0;
+        bool active = false;
+        double volume = 0, gasVolume = 0; // cumulative m3 injected
     };
 
     OneDNetwork net_; // node names + resolved pipe endpoints (from/to)
@@ -464,6 +547,8 @@ private:
         std::vector<double> eventT, eventRate;
     };
     std::vector<SourceEntry> sourceEntries_;
+    // 5.185: the declared reservoir inflows, in declaration order.
+    std::vector<ReservoirEntry> reservoirs_;
     std::vector<double> p_;  // current node pressures (all nodes)
     std::vector<double> q_;  // current pipe flows
     FluidProperties fluid_;

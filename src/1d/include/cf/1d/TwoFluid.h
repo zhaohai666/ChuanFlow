@@ -920,6 +920,81 @@ struct TwoFluidInhibitorEquilibrium
     bool basisWater = false; // false: w = c; true: w = c / water cut
 };
 
+/// 5.187 (F-class): the transient flow-assurance risk report, the transient
+/// counterpart of the steady `riskReport{}` (5.159 / P22). Three channels,
+/// all READ-ONLY:
+///
+///  * EROSION -- the API RP 14E velocity limit Ve = C / sqrt(rho_m), C in the
+///    published field-unit convention (ft/s at lb/ft3), priced at every
+///    section's own mixture density and read at the worst vm/Ve.
+///  * HYDRATE -- the declared Clausius-Clapeyron dissociation temperature
+///    (Tref, pRef, dH; the same three numbers 5.127 / 5.159 use) against the
+///    section's own temperature, worst subcooling and its K band. This is the
+///    NON-BLOCKING hydrate reading: hydrate fraction h is a transported
+///    thermodynamic field that enters no hydraulic term (see the class doc:
+///    d_eff stays the wax/asphaltene/scale thin-layer law, the liquid
+///    viscosity stays the emulsion law, the bore and the holdup stay as
+///    declared). Formation that DOES move the hydraulics is the kinetic
+///    `hydrate{}` block, whose only charges are the gas mass sink and the
+///    latent heat, never a flow-area or viscosity penalty.
+///  * CORROSION -- the declared CO2/H2S mole fractions at the highest section
+///    pressure against the declared Pa bands, sour at 0.5 psia H2S partial.
+///
+/// Grammar (one optional pipe-level block):
+///   riskReport
+///   {
+///       erosionC 100;
+///       hydrate { Tref 288.15; pRef 3.0e6; dH 60000; }   // optional
+///       corrosion { co2 0.05; h2s 0.001;                   // optional
+///                   co2Low 1.0e4; co2High 1.0e5; }
+///   }
+/// The hydrate and corrosion channels need the gas EOS (they price a
+/// pressure); a case declaring them without `gasR` is refused loudly. No
+/// section of this block is read back by any equation.
+struct TwoFluidRiskConfig
+{
+    bool declared = false;
+    double erosionC = 100.0;      // API RP 14E C factor (> 0)
+    bool hydrateOn = false;       // the three hydrate keys, all or none
+    double hydrateTref = 0;       // K
+    double hydratePRef = 0;       // Pa
+    double hydrateDH = 0;         // J/mol
+    double hydrateLowK = 3.0;     // K bands: NONE < low, LOW < medium, else HIGH
+    double hydrateMediumK = 8.0;
+    bool corrosionOn = false;     // co2 / h2s declared
+    double co2Fraction = 0;       // mole fraction [0,1]
+    double h2sFraction = 0;
+    double co2LowPa = 1e4;        // CO2 partial-pressure bands (Pa)
+    double co2HighPa = 1e5;
+};
+
+struct TwoFluidRiskReadout
+{
+    bool declared = false;
+    std::string pipeName;
+    // erosion
+    int erosionSeg = -1;
+    double erosionVm = 0;         // m/s
+    double erosionRhoM = 0;       // kg/m3 at the worst section
+    double erosionVelim = 0;      // m/s, API RP 14E Ve
+    double erosionRatio = 0;      // vm / Ve
+    int erosionOverCount = 0;     // sections over the limit
+    // hydrate (non-blocking reading)
+    bool hydrateOn = false;
+    int hydrateSeg = -1;
+    double hydrateP = 0;          // Pa at the worst (largest subcooling) section
+    double hydrateT = 0;          // K
+    double hydrateTeq = 0;        // K
+    double hydrateSubcool = 0;    // K, Teq - T (negative = no risk)
+    int hydrateGrade = 0;         // 0 NONE, 1 LOW, 2 MEDIUM, 3 HIGH
+    // corrosion
+    bool corrosionOn = false;
+    double co2Partial = 0;        // Pa at the highest section pressure
+    double h2sPartial = 0;
+    int co2Band = 0;              // 0 LOW, 1 MEDIUM, 2 HIGH
+    bool sour = false;
+};
+
 struct TwoFluidCase
 {
     TwoFluidFluid fluid;
@@ -979,8 +1054,7 @@ struct TwoFluidCase
     bool purgeWaveOn = false;    // distributed purge wave solved
                                  // (purgeWave{} present)
     TwoFluidPurgeWave purgeWave;
-    bool piggingOn = false;      // E6 (5.176): reduced pig tracking solved
-                                 // (pigging{} present); the undeclared path
+    bool piggingOn = false;      // E6 (5.176): reduced pig tracking solved                                 // (pigging{} present); the undeclared path
                                  // is byte-identical
     TwoFluidPigging pigging;
     bool acousticsOn = false;    // E7c (5.183): linear along-the-line
@@ -988,6 +1062,11 @@ struct TwoFluidCase
                                  // (acoustics{} present and enabled); the
                                  // undeclared path is byte-identical
     TwoFluidAcoustics acoustics;
+    // 5.187 (F-class): the transient risk report (erosion / non-blocking
+    // hydrate / corrosion). Pure readout: no equation reads it, so a declared
+    // report is hydraulically inert (the twin regressions witness that).
+    bool riskOn = false;
+    TwoFluidRiskConfig risk;
     bool networkMode = false;    // branch-network member: the junction end
                                  // boundary is owned by the TwoFluidNetwork
                                  // (mutated every step), so the constructor
@@ -1069,6 +1148,23 @@ public:
     /// Hydrate volume fraction of the liquid+hydrate slurry per section;
     /// zeros unless the hydrate{} block is present.
     std::vector<double> cellHydrate() const { return hydrate_; }
+    /// 5.187 (F-class): the TRANSIENT flow-assurance risk readout of this pipe,
+    /// priced from the state the last step left. Three read-only channels,
+    /// exactly the steady P22 report's laws (5.159) applied to a transient
+    /// frame:
+    ///   * erosion -- API RP 14E Ve = C / sqrt(rho_m) in its published field
+    ///     convention, at the section of worst vm/Ve, plus the count of
+    ///     sections over the limit;
+    ///   * hydrate -- the declared Clausius-Clapeyron dissociation line
+    ///     priced at each section's own EOS pressure and temperature, worst
+    ///     subcooling Teq - T and its band (this is the NON-BLOCKING hydrate
+    ///     reading: it enters no hydraulic term);
+    ///   * corrosion -- the declared CO2/H2S mole fractions at the highest
+    ///     section pressure, against the declared Pa bands; sour at the
+    ///     published 0.5 psia = 3447 Pa H2S partial-pressure line.
+    /// Every number is a report: no term of the momentum, holdup, mass or
+    /// energy rows reads it, so a declared report is hydraulically inert.
+    TwoFluidRiskReadout riskReadout() const;
     /// Deposited (solid) wax volume fraction of the liquid per section;
     /// zeros unless the wax{} block is present. The dissolved wax is a
     /// per-cell store, so the checker reads the equilibrium saturation from

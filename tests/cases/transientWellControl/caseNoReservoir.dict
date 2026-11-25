@@ -1,0 +1,19 @@
+// 5.185: the undeclared twin of caseOverbalanced.dict -- the identical deck
+// with the reservoir{} block deleted. The overbalanced reservoir is inert on
+// every step, so this run must reproduce that run's hydraulic lines byte for
+// byte while printing no `reservoir` token at all.
+fluid { rho 1200; mu 0.05; }
+
+nodes
+{
+    BH   { volume 50; bulkModulus 2.0e9; pressure 3.7e7; liquidFraction 0.8; }
+    SURF { fixedPressure 1.0e5; }
+}
+
+pipes
+{
+    WELL { from BH; to SURF; length 3000; diameter 0.25; roughness 1.0e-4;
+           elevation 3000; valve 120; }
+}
+
+time { dt 0.05; endTime 30; reportEvery 1; }

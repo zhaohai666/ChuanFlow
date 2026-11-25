@@ -344,6 +344,33 @@ int main(int argc, char** argv)
                           be.empty() ? "" : (" bed " + num(be[i])),
                           compositionReport(s, i));
             }
+            // 5.187 (F-class): the transient risk report - one erosion line,
+            // plus the hydrate (non-blocking) and corrosion lines when their
+            // channels are declared. Pure readout: absent, nothing prints and
+            // the frame is the untouched pre-5.187 report.
+            if (c.riskOn)
+            {
+                const TwoFluidRiskReadout rk = s.riskReadout();
+                log::info("risk erosion seg ", rk.erosionSeg,
+                          " vm ", num(rk.erosionVm),
+                          " rhom ", num(rk.erosionRhoM),
+                          " velim ", num(rk.erosionVelim),
+                          " ratio ", num(rk.erosionRatio),
+                          " over ", rk.erosionOverCount,
+                          rk.erosionRatio > 1.0 ? " OVER" : " OK");
+                if (rk.hydrateOn)
+                    log::info("risk hydrate seg ", rk.hydrateSeg,
+                              " p ", num(rk.hydrateP),
+                              " T ", num(rk.hydrateT),
+                              " Teq ", num(rk.hydrateTeq),
+                              " dTsub ", num(rk.hydrateSubcool),
+                              " grade ", rk.hydrateGrade);
+                if (rk.corrosionOn)
+                    log::info("risk corrosion co2 ", num(rk.co2Partial),
+                              " h2s ", num(rk.h2sPartial),
+                              " band ", rk.co2Band,
+                              " sour ", rk.sour ? 1 : 0);
+            }
             if (c.slugOn)
             {
                 const std::vector<TwoFluidSlugBody> bodies = s.slugBodies();

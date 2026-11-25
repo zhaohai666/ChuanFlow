@@ -334,10 +334,58 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         nodes_[e.nodeIndex].source = eventTableAt(e.eventT, e.eventRate, 0.0);
     }
 
+    // ---- 5.185: the opt-in well-control reservoirs --------------------------
+    // One linear PI inflow per node. Every mistake is loud: the node must
+    // exist, be free with a positive compliance (an incompressible port has
+    // nowhere to put the influx), carry no other rate account, and the law's
+    // own numbers must be physical.
+    for (const TransientReservoirConfig& rc : c.reservoirs)
+    {
+        const label i = net_.nodeIndex(rc.nodeName);
+        NodeDyn& nd = nodes_[static_cast<std::size_t>(i)];
+        if (nd.fixed)
+            cfFatal("transient: reservoir '" + rc.name + "' feeds node '"
+                    + rc.nodeName + "' which is a fixedPressure port: an"
+                    " inflow boundary needs a free node to build pressure in");
+        if (!(nd.bulk > 0))
+            cfFatal("transient: reservoir '" + rc.name + "' feeds node '"
+                    + rc.nodeName + "' with no bulkModulus: the influx has no"
+                    " compliance to compress");
+        for (const SourceEntry& e : sourceEntries_)
+            if (e.nodeIndex == static_cast<std::size_t>(i))
+                cfFatal("transient: node '" + rc.nodeName + "' is priced by"
+                        " a sources{}/sourceSchedule entry and by reservoir '"
+                        + rc.name + "': one rate account per node");
+        if (nd.resIdx >= 0)
+            cfFatal("transient: node '" + rc.nodeName + "' is fed by two"
+                    " reservoirs: one inflow boundary per node");
+        if (!(rc.pressure > 0))
+            cfFatal("transient: reservoir '" + rc.name + "' needs a positive"
+                    " pressure");
+        if (!(rc.productivityIndex > 0))
+            cfFatal("transient: reservoir '" + rc.name + "' needs a positive"
+                    " productivityIndex");
+        if (!(rc.gasFraction >= 0) || !(rc.gasFraction < 1))
+            cfFatal("transient: reservoir '" + rc.name + "' gasFraction must"
+                    " be in [0,1)");
+        if (!(rc.depth > 0))
+            cfFatal("transient: reservoir '" + rc.name + "' needs a positive"
+                    " depth: the kill-mud weight is p_res / (g depth)");
+        ReservoirEntry e;
+        e.name = rc.name;
+        e.nodeIndex = static_cast<std::size_t>(i);
+        e.pressure = rc.pressure;
+        e.J = rc.productivityIndex;
+        e.gasFraction = rc.gasFraction;
+        e.depth = rc.depth;
+        e.active = nd.pPrev < rc.pressure;
+        nd.resIdx = static_cast<int>(reservoirs_.size());
+        reservoirs_.push_back(e);
+    }
+
     for (const TransientPipeConfig& pc : c.pipes)
     {
-        NetworkPipe geo;
-        geo.name = pc.name;
+        NetworkPipe geo;        geo.name = pc.name;
         geo.fromName = pc.fromName;
         geo.toName = pc.toName;
         geo.length = pc.length;
@@ -533,6 +581,30 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
     for (std::size_t k = 0; k < pipes_.size(); ++k) q_[k] = pipes_[k].qPrev;
 }
 
+std::vector<ReservoirReadout> TransientNetwork::reservoirReadouts() const
+{
+    std::vector<ReservoirReadout> out;
+    out.reserve(reservoirs_.size());
+    for (const ReservoirEntry& r : reservoirs_)
+    {
+        ReservoirReadout o;
+        o.name = r.name;
+        o.nodeName = net_.nodeNames[r.nodeIndex];
+        o.pressure = r.pressure;
+        o.nodePressure = p_[r.nodeIndex];
+        o.influx = std::max(r.J * (r.pressure - p_[r.nodeIndex]), 0.0);
+        o.gasInflux = o.influx * r.gasFraction;
+        o.volume = r.volume;
+        o.gasVolume = r.gasVolume;
+        o.underbalance = r.pressure - p_[r.nodeIndex];
+        o.underbalanced = p_[r.nodeIndex] < r.pressure;
+        o.killMudWeight = r.pressure / (kGravity * r.depth);
+        o.sidpp = r.pressure - fluid_.rho * kGravity * r.depth;
+        out.push_back(o);
+    }
+    return out;
+}
+
 const std::vector<std::string>& TransientNetwork::pipeNames() const
 {
     return pipeNames_;
@@ -615,6 +687,13 @@ double TransientNetwork::solveStep(double dt)
                                       e.reopenStart, e.reopenEnd, tNew);
 
     double maxRel = 0;
+
+    // 5.185: the one-sided inflow law is latched at step entry, the same idiom
+    // the held-wall branch uses. A shut-in well crossing p_res must not have
+    // the law flip under the Newton iterate, and a latched branch keeps the
+    // node row linear in the pressure.
+    for (ReservoirEntry& e : reservoirs_)
+        e.active = nodes_[e.nodeIndex].pPrev < e.pressure;
 
     // 5.49: which yielded pipes the static wall is holding, decided once at the
     // start of the step from the state the step starts in. Latching it here
@@ -762,6 +841,16 @@ double TransientNetwork::solveStep(double dt)
             if (nd.fixed) continue;
             const std::size_t e = nP + static_cast<std::size_t>(nd.unk);
             double sumIn = nd.source;
+            // 5.185: the reservoir's PI inflow, implicit in the node pressure
+            // (q = J (p_res - p) on the latched active branch; zero when the
+            // node is overbalanced at the state the step started in).
+            const int ri = nd.resIdx;
+            const bool resOn = ri >= 0 && reservoirs_[static_cast<std::size_t>(ri)].active;
+            if (resOn)
+            {
+                const ReservoirEntry& r = reservoirs_[static_cast<std::size_t>(ri)];
+                sumIn += r.J * (r.pressure - x[e]);
+            }
             for (std::size_t k = 0; k < nP; ++k)
             {
                 if (pipes_[k].geo.to == static_cast<label>(i)) sumIn += x[k];
@@ -770,6 +859,8 @@ double TransientNetwork::solveStep(double dt)
             const double stor = nd.bulk > 0 ? nd.volume / (nd.bulk * dt) * (x[e] - nd.pPrev) : 0.0;
             r[e] = stor - sumIn;
             if (nd.bulk > 0) J[e][e] = nd.volume / (nd.bulk * dt);
+            if (resOn)
+                J[e][e] += reservoirs_[static_cast<std::size_t>(ri)].J;
             for (std::size_t k = 0; k < nP; ++k)
             {
                 if (pipes_[k].geo.to == static_cast<label>(i)) J[e][k] -= 1.0;
@@ -870,6 +961,20 @@ void TransientNetwork::commitStep()
         NodeDyn& nd = nodes_[i];
         if (nd.fixed) continue; // Dirichlet reservoir: infinite inventory
         nd.vL = oldL[i] + dt * nd.source * nd.sourceFraction;
+        // 5.185: the reservoir's liquid share enters the node's mobile
+        // inventory; the rest of the influx is gas and fills the remaining
+        // node volume through the compliance (the node engine books volume).
+        if (nd.resIdx >= 0)
+        {
+            ReservoirEntry& r = reservoirs_[static_cast<std::size_t>(nd.resIdx)];
+            if (r.active)
+            {
+                const double qIn = std::max(r.J * (r.pressure - nd.pPrev), 0.0);
+                nd.vL += dt * qIn * (1.0 - r.gasFraction);
+                r.volume += dt * qIn;
+                r.gasVolume += dt * qIn * r.gasFraction;
+            }
+        }
         if (nd.vL < -1e-9 * std::max(1.0, nd.volume))
             cfFatal("transient: node '" + net_.nodeNames[i]
                     + "' runs dry - reduce dt");
@@ -1664,6 +1769,40 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
             if (e.speedTau < 0)
                 cfFatal("transient: esp '" + name + "' speedTau must be >= 0");
             c.esps.push_back(e);
+        }
+    }
+
+    // ---- 5.185: the opt-in well-control reservoir inflow -------------------
+    // The node-level wiring (freedom, compliance, one rate account) is checked
+    // by the constructor, which both entry points go through; here the block's
+    // own grammar and numbers are priced, with every mistake loud.
+    if (caseDict.has("reservoir"))
+    {
+        const Dictionary& blk = caseDict.getDict("reservoir");
+        for (const std::string& name : blk.keys())
+        {
+            const Dictionary& rd = blk.getDict(name);
+            TransientReservoirConfig r;
+            r.name = name;
+            r.nodeName = rd.getWord("node");
+            r.pressure = rd.getScalar("pressure");
+            r.productivityIndex = rd.getScalar("productivityIndex");
+            r.gasFraction = rd.getScalarOr("gasFraction", 0.0);
+            r.depth = rd.getScalar("depth");
+            if (!(r.pressure > 0))
+                cfFatal("transient: reservoir '" + name + "' pressure must be"
+                        " positive");
+            if (!(r.productivityIndex > 0))
+                cfFatal("transient: reservoir '" + name
+                        + "' productivityIndex must be positive");
+            if (!(r.gasFraction >= 0) || !(r.gasFraction < 1))
+                cfFatal("transient: reservoir '" + name + "' gasFraction must"
+                        " be in [0,1)");
+            if (!(r.depth > 0))
+                cfFatal("transient: reservoir '" + name + "' depth must be"
+                        " positive (the node's TVD): the kill-mud weight is"
+                        " p_res / (g depth)");
+            c.reservoirs.push_back(r);
         }
     }
     return c;

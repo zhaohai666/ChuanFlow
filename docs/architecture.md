@@ -594,11 +594,13 @@ stdout/退出码；`chuanflow version`。
 ### 5.3 离散算子 `discrete/`
 仿 OpenFOAM 的 fvc/fvm 双命名空间：
 
-- `fvc::grad`：高斯（散度定理）梯度，`linear | corrected`。`linear` 对
-  任何平面面多面体网格精确复现线性场（测试断言到 1e-14）；`corrected`
-  再加两轮非正交补偿，正交网格上等价于 `linear`，斜网格上是一个收敛的
-  近似——粗四面体网格（实测最坏非正交 54°、单元体积比 12:1）上补偿项会
-  放大，需要靠网格质量控制而不是格式；
+- `fvc::grad`：高斯（散度定理）梯度，`linear | corrected`，另有 opt-in 的
+  `leastSquares`。`linear` 只有在面值精确时才精确复现线性场；生产路径的内部面
+  使用有界线性插值，owner 权重为 `1 − clamp(dot(Cf−Co, Cn−Co)/|Cn−Co|²)`，
+  因此强斜网格上仍可能牺牲线性场精度。`corrected` 先重建同一有界面值，再加两轮
+  `Tf += grad_f · (Cf − Cinterp)`：修正量是位移乘梯度，量纲与面值一致；边界面
+  不重复修正，正交面上偏斜向量为零。它是降低非正交误差的近似，不承诺任意网格上
+  线性场机器精度；`leastSquares` 从邻点差分 bootstrap，保留为精确线性场的可选替代；
 - `fvc::interpolate`：有界线性面插值（权重夹到 [0,1]）；
 - `fvc::divPhi`：单元面通量求和（保持广度量纲，不除体积）；
 - `fvm::div`：`upwind / linear / blend`，对 `phi` 组装隐式对流项；
@@ -706,7 +708,7 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
    （OpenFOAM 的 `UEqn.H()*rAU()`），边界按 `constrainHbyA` 处理：速度
    给定的 patch 保留其面值，其余 zeroGradient；
 3. 每个 corrector：`phi = interp(HbyA) & Sf` → 隐式求解**全压力**
-   `laplacian(rAUf, p) = div(phi)`（以 pⁿ 为初值）→ `U = HbyA − rAU grad(p)`
+   `laplacian(rAUf, p) = div(phi)`（以上一轮压力为初值）→ `U = HbyA − rAU grad(p)`
    → `phi −= rAUf SnGrad(p)|Sf|`；
 4. `rAU = V/aDiag`（物理动量响应）。因 `fvm::ddt` 把 `V/dt` 放在对角上，
    `rAU ≤ dt` 天然约束了每次校正，所以 PISO 不需要 SIMPLE 那套欠松弛
@@ -714,8 +716,13 @@ SIMPLE 与 PISO 共用四个算子，保证两种耦合闭合的是**同一个�
 5. 收敛判据：校正后的 `max|div(phi)|`，实测降到 1e-18 量级（机器精度），
    corrector 一次即退出。
 
-两个刻在实现里的经验结论（回归历史，勿回退）：
+三个刻在实现里的经验结论（回归历史，勿回退）：
 
+- **多 corrector 当前只重复同一 full-p 不动点**：`HbyA` 与 `rAUf` 每步只形成
+  一次，后续 corrector 从同一个无压力通量重新开始、重新解全 `p`，没有标准
+  PISO 邻点修正，也不降低时间分裂误差；热启动可能继续收紧线性求解，但不是邻点修正。
+  非正交修正仍在 Poisson 内层。不得把上一轮已闭合通量带进下一轮 full-p 方程，否则近似求解
+  `laplacian(rAUf,p) = −div(phi_closed) ≈ 0`，会把物理压力塌回基准值；
 - **必须解全压力 p，不能累加修正量 p'**：同位网格上 `interp(U)` 对
   压力模式是"盲"的（交错场的半格平均相消），累加 `p = Σp'` 会把一个
   钟形压力模态放大（实测每步 1.6~1.7 倍），最终污染动量对角导致发散。
@@ -1324,12 +1331,12 @@ Navier–Stokes；一阶——没有 MUSCL/TVD 重构，激波宽度就是 `σ`�
 每个 peer 一条连续、索引互相对齐的收发计划：发送只写自己的 owned 槽、接收只写 halo 槽，
 因此没有次序冲突，天然就是 MPI 点对点该搬的东西。
 
-**算子**：`DomainMesh` 带本域的逐面几何（`faceSf`/`faceCentres`/`faceDelta`/`faceOwnerWeight`）
-与 owned 格的体积/质心。这里 `faceDelta` 必须是 `面心 − 全局 owner 质心`，不能是
-`deltaCoeffVec()`（那是 C_n − C_o）——串行 `gaussGrad` 的非正交修正用的就是前者。
+**算子**：`DomainMesh` 带本域的逐面几何（`faceSf`/`faceCentres`/`faceSkew`/`faceOwnerWeight`）
+与 owned 格的体积/质心。`faceSkew = Cf − [Co + clamp(dot(Cf−Co,Cn−Co)/|Cn−Co|²)·(Cn−Co)]`
+由全局 owner→neighbour 几何一次算好，边界面为零；两侧因此看到同一偏斜向量和同一通量。
 `assembledGrad`/`assembledDivPhi` 逐域扫**本域面表**（全局面号升序），对每个格做与串行
 **完全相同**的浮点加序，所以 `gradDev`/`divDev` 是 0 而不是"某个小容差"。corrected
-格式额外需要两次修正pass之间插一次 `exchange(grad)`——串行同意的做法。
+格式额外需要两次修正 pass 之间插一次 `exchange(grad)`——与串行使用相同的两轮修正。
 
 **归约**：`reduceSum/Min/Max` 就是 Allreduce 的替身。app 打印各域 partial 的和/最小/最大
 并与串行同序累加的结果对比（`sumDev/minDev/maxDev`），checker 再从 .vtu 独立重算
@@ -1344,19 +1351,19 @@ Navier–Stokes；一阶——没有 MUSCL/TVD 重构，激波宽度就是 `σ`�
 | `divDev`（分解净出流 vs `fvc::divPhi`） | 恰 0 | 恰 0 |
 | `haloDrift`、`sumDev/minDev/maxDev` | 恰 0 | 恰 0 |
 | 16 域与 1 域写出的场逐格相同 | 恰 0 | 恰 0 |
-| 线性锚场梯度对解析值（checker 自己从 .vtu 算） | 4.8e-14 linear / 7.7e-13 corrected | 不断言，见下 |
+| 线性锚场梯度对解析值（checker 自己从 .vtu 算） | 机器精度（诊断值） | 不断言，见下 |
 | 无散通量 `U=(y,z,0)` 在内区格（**含切缝穿的格**）净出流 | 2.2e-19 | 4.2e-17 |
 | checker 复现的 `domain` 场 + 逐域 owned/halo/internal/coupled/boundary/messages | 全对 | 全对 |
 
-两个场各有分工：**线性**场是"与网格无关的精确性锚"（有界线性插值对线性面值是精确的，
-所以散度和梯度该给出解析答案，切几刀都一样）；**二次**场不是——面插值对二次带 O(dx²)
-误差，边界格上留下 `c₄·dx/4 = 0.0625` 的残差，它的作用是检验"分解逐位复现串行"。
-（一开始把这两个角色混了：串行参照在**所有**面用解析值、域路径只在边界用解析值内部插值，
-于是 1 域也读出 0.0625 的假偏差。）
+两个场各有分工：**线性**场检验串行与分解是否采用完全相同的面值重构和修正，
+但“有界线性插值对线性面值精确”只在中点面等条件下成立，不能作为任意斜网格的
+精度锚；**二次**场进一步暴露面插值误差。两者在这里的硬判据都是“切割不改变结果”，
+解析梯度误差仅作诊断。（早期串行参照在**所有**面用解析值、域路径只在边界用解析值
+内部插值，于是 1 域也读出 `c₄·dx/4 = 0.0625` 的假偏差。）
 
-tet 案例**不**断言精度，只断言"切割不改变精度"：在这 95 个粗四面体上串行 corrected 格式
-连线性场的梯度都复现不了（实测 gradAnalytic ≈ 217，linear 也 5.7），因为斜面让有界权重
-饱和截断——这是格式在该网格上的性质，1 域时就存在。checker 把它作为 note 如实打印。
+tet 案例**不**断言精度，只断言“切割不改变结果”：在这 95 个粗四面体上，生产
+corrected 的线性梯度最大分量误差约 0.52，plain Gauss 约 2.19；修正显著改善但仍不
+精确。这是该网格上面值重构的性质，1 域时就存在，checker 把它作为 note 如实打印。
 
 **本增量的边界**：① 没有传输后端——收发计划、槽位与缓冲区都按 MPI 点对点形状备好了，
 但 `MPI_Isend/Recv`/`Waitall` 与 `MPI_Allreduce` 还没接（需要装 MPI 工具链，属于系统级变更，
@@ -5774,6 +5781,73 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 **回归**。新 `verify.transientGasFluxConsistency`：密封恒温 EOS 臂（前缘不变量 + 气存量守恒 + 恒压）、fixedPressure 臂（恒等式逐面 1e-12）、Wood 臂（Z 加权复算）与孪生基线，8 条大声拒收；`check_two_fluid.py` 四模式与 `check_transient_inhibitoreq.py` flow 臂的 Python 复刻同步改恒等式。全量 CTest **214/214**（627.65 s，-E mpiDecomposition）。
 
 **边界**。真实产生 cap 超压的喷出律需要 **lump 气相隔断**（段塞本体隔断气通道、cap 压由封闭气体积定价）——未来增量，本批不动喷出律公式本身；恒等式修复只保证「注入压不出 cap 超压」这一对抗性判据成立。
+
+### 5.185 W1 · 井控瞬态水库流入：气侵 / 井涌 / 欠平衡（对标 OLGA 核心场景）
+
+**差距**（2026-11-25 立项）：瞬态节点引擎的边界只有 `fixedPressure`、阀门/SSSV/choke 与 `sources{}`，**没有「储层—井筒」耦合**：气侵（储层压力高于井底、气体份额随侵入进入井筒）、井涌（关井后井底压力向孔隙压力恢复）与欠平衡钻进（泥浆密度低于孔隙压力当量、持续侵入）都写不出来。OLGA 的 well-control 场景以「单点 PI 流入 + 井口关断」为核心，本引擎缺这条入口。
+
+**实现**。新增顶层 `reservoir{}` 块，一个储层绑定一个**自由节点**：
+
+```
+q = J * max(p_res − p_node, 0)          // 线性 PI（径向 Darcy 的线性化）
+```
+
+`J` 为 `productivityIndex`，侵入携带声明的气相体积分数 `gasFraction`，`depth` 是该节点 TVD。一步一侧的流入律按**步初闩锁**处理（与 held-wall 同一写法）：步初 `p < p_res` 才激活，激活支对节点压力线性，节点行雅可比加 `J`，因此关井穿越 `p_res` 时律不会在牛顿迭代中翻转；过平衡时 `q` 恒 0（**不回灌储层**，明确边界）。液相份额 `dt·q·(1−fg)` 进入节点可动存量，气相部分由节点可压缩性（`volume/bulkModulus`）记账。报告层逐帧一行 `reservoir <name> node … q gasq vol gasvol ub dp killmud sidpp`；`rho_kill = p_res/(g depth)`、`SIDPP = p_res − rho_mud g depth` 是静态定义（代数读数，不是压井排程）。
+
+**判据/回归**。新 `verify.transientWellControl`（4 个 case 文件 + 42 条判据）：
+
+- 气侵-关井臂逐帧 `q == J·dp`、`gasq == fg·q`、`ub` 标志、压井密度/SIDPP 闭式（相对 1e-11）；
+- **逐步**隐性 Euler 节点行 `(V/K)(p_n − p_{n−1})/dt = q_n − Q_n` 与体积记账 `Δvol = dt·q_n`（1200 步，超出报告 12 位量化底 1e-10 的部分无残差）；
+- 关井后 `(C/dt + J)p' = (C/dt)p + J p_res − Q'` 的**等比几何衰减**逐步成立并收敛到 `p_res`（声明 τ = C/J = 1.25 s），侵入随关井衰减到 1e-3 以下；
+- 欠平衡臂稳态 `q == Q_pipe`（1e-6）、全程 `ub = 1`；
+- 过平衡臂 `q` 恒 0、体积恒 0，且与删除 `reservoir{}` 的孪生**逐字节相同**（未激活的律零计入）；
+- 7 条大声拒收：固定压力节点、与 `sources{}` 同节点、同节点双储层、`gasFraction = 1`、`depth = 0`、`J = 0`、`pressure = 0`。
+
+**界面侧**。`chflow-1d-transient` 的 `reservoir` 行由 `gui/frontend/dist/safety.js` 折成井控面板（末帧读数 + 全程**峰值气相份额**及其时刻），行内每个字段**按名**取（`node` 是节点**名**不是序号）；case 未声明 `reservoir{}` 时 `reservoirNames` 为空、面板隐藏，不做"零值面板"。
+
+**边界**。节点引擎按**体积**记账：气侵气体的膨胀与上移（真实井涌转井喷的关键）不建模；无 BOP 闸板模型（关井用既有 valve/SSSV/choke）；无环空摩阻与井口压力控制回路（除非显式声明 pipes）；过平衡无滤失；SIDPP/SICP 为静态代数。因此对标 OLGA 只覆盖「储层流入 + 关井压力恢复」这一核心场景，不覆盖其漂移通量井筒求解器。
+
+### 5.186 F2 · 水合物无阻塞模型：不入 d_eff、不增黏（流动保障核心）
+
+**差距**：水合物在多相瞬态里同时是热力学相变与**潜在堵塞源**。既有 kinetic `hydrate{}`（5.144）以气体质量汇 + 潜热进入质量/能量行；一旦有人把 `h` 接进 `d_eff` 或乳液黏度，「风险」就悄悄变成「阻塞」，而且从报告上分辨不出来。需要把「无阻塞」写成**可验证的不变量**，而不是口头约定。
+
+**实现**。把 `h` 的定位固定为**输运的浆液体积份额**：它不出现在 `deffForCell`（薄层只由蜡/沥青/垢定价），也不出现在 `liquidViscosityAt`（黏度只由乳液的 Brinkman/Richardson 定价），不改变截面；它唯一的物理电荷是气体质量汇与潜热（改变 p、T），以及耗水。代码注释与 §5.187 的 hydrate 只读通道共同固定这条边界；风险侧（亚冷却度分级）走 5.187，与 kinetic 线互相独立。
+
+**判据/回归**。新 `verify.twoFluidHydrateNonBlocking`：
+
+- 增长臂（h 实测增长到 0.133）逐帧逐段 `dEff == D·sqrt(1 − w_wax)`（w = 0.5；若 h 计入应为 sqrt(1 − 0.6) = 0.0775 而不是实测 0.0707）与 `muEff == muL(1 + 2.5·water cut)`（h 若增黏会偏离），误差 1e-12 量级；
+- `water + h ≤ 1`（h 吃水不吃截面）、`alpha ∈ [0,1]`、h 确实随时间改变（非冻结场，避免空判据）；
+- **被动孪生**（`growthRate = dissociationRate = 0`，h 冻结在 0.1 与 0.5）去掉 h 列后**逐字节相同**：h 大 5 倍不动任何压力、速度、持液率、温度列；唯一例外是逐帧 `thermal:` 能量诊断行（它汇总浆液能量存量，差值 ~1e-10 W 的浮点尘埃），checker 明确排除并写明原因。
+
+**边界**。h 仍进入质量（耗气、耗水）与能量（潜热）账——这不是「无作用」，而是「不阻塞」。真实水合物堵管（颗粒架桥、沉积层生长、传热受限、节流）不在本增量；需要时是独立的阻塞模型，必须显式声明并自带判据。
+
+### 5.187 F3 · 瞬态冲蚀/腐蚀：仅稳态 API RP 14E 读数
+
+**差距**：稳态管网 P22（5.159）已有 `riskReport`，瞬态两流体没有；瞬态最需要的是「哪一帧、哪一段先超速」这类**可审计证据**，但不应引入瞬态壁厚损失或电化学腐蚀速率模型（无数据、不可验证）。
+
+**实现**。管线级 `riskReport{}`，逐帧三条**只读**行：
+
+```
+riskReport
+{
+    erosionC 100;
+    hydrate   { Tref …; pRef …; dH …; }
+    corrosion { co2 …; h2s …; co2Low …; co2High …; }
+    hydrateLowK 3; hydrateMediumK 8;
+}
+```
+
+- `risk erosion seg vm rhom velim ratio over`：`Ve = 0.3048·C/sqrt(rho_m/16.0184634)`（API RP 14E 的 ft/s @ lb/ft³ 约定，与 5.159 同一换算），按段自身混合密度定价，取 `vm/Ve` 最坏段并计数超限段；
+- `risk hydrate seg p T Teq dTsub grade`：声明的 Clausius-Clapeyron 解离线在各段自身 `(p,T)` 定价，取**最大亚冷却度**，按 `hydrateLowK/hydrateMediumK` 分 0–3 级（这就是 5.186 的无阻塞风险侧读数）；
+- `risk corrosion co2 h2s band sour`：最高段压上的 CO₂/H₂S 分压、CO₂ 带与 0.5 psia（3447 Pa）酸线。
+
+hydrate/corrosion 需要气相 EOS（`gasR > 0`）才能定价压力，否则加载期大声拒收；未知键、残缺解离线、`co2 > 1`、带非升序、`erosionC = 0` 全部拒收，分支管网行（`network{}`）声明 `riskReport{}` 同样拒收——网络帧没有 risk 列，会跑的物理必须有人读得到。**没有任何模型字段被写回**。
+
+**判据/回归**。新 `verify.twoFluidRiskReport`（33 条判据 + 8 条拒收）：逐帧从打印的 `(alpha, p, T)` 与 `rho_g = p/(gasR·T)` 独立重推 rho_m、Ve、最坏段、ratio 与超限计数（1e-9）；CC 线 `Teq` 相对 1e-12、分级与最大亚冷却段一致；CO₂/H₂S 分压 1e-12、带与 sour 线；删除 `riskReport{}` 的孪生**逐字节相同**（只读性证明，同时证明 `hydrate{}` 的 h 不受报告影响）。
+
+**界面侧**。三条 `risk …` 行由 `safety.js` 的面板呈现（取最后一个**带 risk 行**的帧，末帧无行时回溯），分级用内核自己的 band 索引（0–3 / 0–2 / sour），详情行里写明"h 不进 d_eff、不增黏（§5.186）"——读数与模型边界在同一个面板上，避免把风险读数当成阻塞证据。
+
+**边界**。只有稳态 API RP 14E 读数：不做壁厚减薄积分、不做砂粒/液滴冲蚀机理（DNV-RP-O501 等）、不做 de Waard 类电化学腐蚀速率，也不做 CO₂ 相态分配（分压直接取声明的气相摩尔分数×总压）。这两个读数是「速度余量」与「分压带」，不是寿命预测。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 

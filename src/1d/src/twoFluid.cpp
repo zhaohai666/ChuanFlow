@@ -13,6 +13,7 @@
 #include "cf/pvt/WaxSolubility.h" // van't Hoff wax saturation (5.96)
 #include "cf/pvt/Components.h" // G1: named components for the feed (5.143)
 #include "cf/pvt/Flash.h"      // G1: per-cell tpFlash diagnostics (5.143)
+#include "cf/pvt/HydrateEquilibrium.h" // 5.186: the declared CC hydrate line
 #include "DenseSolve.h"
 
 namespace cf
@@ -691,9 +692,102 @@ double TwoFluidPipe::mixtureRhoCell(int i) const
     return alpha_[i] * cfg_.fluid.rhoL + (1.0 - alpha_[i]) * rhoG;
 }
 
-std::vector<double> TwoFluidPipe::cellPressure() const
+// 5.187 (F-class): the transient risk report, the transient P22 readout
+// priced off this frame's own sections. PURE REPORT: nothing below writes any
+// model field; every number is recomputed from the state the last step left.
+TwoFluidRiskReadout TwoFluidPipe::riskReadout() const
 {
-    std::vector<double> p(n_, 0.0);
+    TwoFluidRiskReadout r;
+    if (!cfg_.riskOn) return r;
+    const TwoFluidRiskConfig& rk = cfg_.risk;
+    r.declared = true;
+
+    // ---- erosion: API RP 14E at the worst vm / Ve section ----------------
+    // Ve = C / sqrt(rho_m) with C quoted in ft/s at lb/ft3; the SI density
+    // converts with 1 lb/ft3 = 16.0184634 kg/m3 and the result with 0.3048,
+    // the exact conversion 5.159 already uses on the steady march.
+    double best = -1.0;
+    int over = 0;
+    for (int i = 0; i < n_; ++i)
+    {
+        const double rhoM = mixtureRhoCell(i);
+        const double rhoLb = rhoM / 16.0184634;
+        const double velim = rhoLb > 0.0
+                                 ? 0.3048 * rk.erosionC / std::sqrt(rhoLb)
+                                 : 0.0;
+        const double ratio = velim > 0.0 ? std::fabs(vM_) / velim : 0.0;
+        if (ratio > 1.0) ++over;
+        if (ratio > best)
+        {
+            best = ratio;
+            r.erosionSeg = i;
+            r.erosionRhoM = rhoM;
+            r.erosionVm = std::fabs(vM_);
+            r.erosionVelim = velim;
+            r.erosionRatio = ratio;
+        }
+    }
+    r.erosionOverCount = over;
+
+    // ---- hydrate: the NON-BLOCKING reading -------------------------------
+    // The declared dissociation line priced at each section's own EOS
+    // pressure and temperature; the worst is the LARGEST subcooling Teq - T
+    // (formation needs the stream below Teq and the margin grows with it).
+    // h itself never enters: the field is reported, not charged.
+    if (rk.hydrateOn)
+    {
+        r.hydrateOn = true;
+        const std::vector<double> p = cellPressure();
+        double worst = 0.0;
+        bool any = false;
+        for (int i = 0; i < n_; ++i)
+        {
+            if (!(p[i] > 0.0)) continue; // sealed section: no pressure to price
+            const double teq = pvt::hydrateEquilibriumTemperature(
+                p[i], rk.hydrateTref, rk.hydratePRef, rk.hydrateDH);
+            const double t = sectionTemperature(i);
+            const double dts = teq - t;
+            if (!any || dts > worst)
+            {
+                any = true;
+                worst = dts;
+                r.hydrateSeg = i;
+                r.hydrateP = p[i];
+                r.hydrateT = t;
+                r.hydrateTeq = teq;
+                r.hydrateSubcool = dts;
+            }
+        }
+        r.hydrateGrade = r.hydrateSubcool < 0.0
+                             ? 0
+                             : (r.hydrateSubcool < rk.hydrateLowK
+                                    ? 1
+                                    : (r.hydrateSubcool < rk.hydrateMediumK
+                                           ? 2
+                                           : 3));
+    }
+
+    // ---- corrosion: the declared sour fractions at the highest pressure --
+    if (rk.corrosionOn)
+    {
+        r.corrosionOn = true;
+        const std::vector<double> p = cellPressure();
+        double pmax = 0.0;
+        for (int i = 0; i < n_; ++i) pmax = std::max(pmax, p[i]);
+        // Without the gas EOS there is no section pressure at all; the loader
+        // refuses that declaration, so pmax > 0 here by construction.
+        r.co2Partial = rk.co2Fraction * pmax;
+        r.h2sPartial = rk.h2sFraction * pmax;
+        r.co2Band = r.co2Partial < rk.co2LowPa
+                        ? 0
+                        : (r.co2Partial < rk.co2HighPa ? 1 : 2);
+        r.sour = r.h2sPartial >= 3447.0; // 0.5 psia
+    }
+    return r;
+}
+
+std::vector<double> TwoFluidPipe::cellPressure() const
+{    std::vector<double> p(n_, 0.0);
     if (!eosOn()) return p;
     for (int i = 0; i < n_; ++i)
     {
@@ -3807,6 +3901,99 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         }
         c.acousticsOn = enable;
     }
+    // ---- 5.187 (F-class): the transient risk report -----------------------
+    // Three read-only channels, the transient counterpart of the steady P22
+    // `riskReport{}` (5.159). Every key is read loudly; nothing here writes a
+    // model field, so declaring the block cannot move the hydraulics.
+    if (caseDict.has("riskReport"))
+    {
+        const Dictionary& rr = caseDict.getDict("riskReport");
+        static const char* kRiskKeys[] = {
+            "erosionC", "hydrate", "corrosion",
+            "hydrateLowK", "hydrateMediumK"};
+        for (const std::string& k : rr.keys())
+        {
+            bool known = false;
+            for (const char* w : kRiskKeys)
+                if (k == w) { known = true; break; }
+            if (!known)
+                cfFatal("twoFluid: riskReport declares unknown key '" + k
+                        + "': the report reads erosionC, the hydrate line,"
+                          " the sour-gas fractions and their bands");
+        }
+        c.riskOn = true;
+        c.risk.declared = true;
+        if (rr.has("erosionC"))
+        {
+            c.risk.erosionC = rr.getScalar("erosionC");
+            if (!(c.risk.erosionC > 0))
+                cfFatal("twoFluid: riskReport erosionC must be positive: it"
+                        " divides the API RP 14E velocity limit");
+        }
+        c.risk.hydrateLowK = rr.getScalarOr("hydrateLowK", 3.0);
+        c.risk.hydrateMediumK = rr.getScalarOr("hydrateMediumK", 8.0);
+        if (!(c.risk.hydrateLowK > 0)
+            || !(c.risk.hydrateMediumK > c.risk.hydrateLowK))
+            cfFatal("twoFluid: riskReport hydrate bands must be positive and"
+                    " strictly ascending (low < medium)");
+        if (rr.has("hydrate"))
+        {
+            const Dictionary& hb = rr.getDict("hydrate");
+            static const char* kHydKeys[] = {"Tref", "pRef", "dH"};
+            for (const std::string& k : hb.keys())
+            {
+                bool known = false;
+                for (const char* w : kHydKeys)
+                    if (k == w) { known = true; break; }
+                if (!known)
+                    cfFatal("twoFluid: riskReport hydrate declares unknown"
+                            " key '" + k + "' (Tref, pRef, dH)");
+            }
+            c.risk.hydrateTref = hb.getScalar("Tref");
+            c.risk.hydratePRef = hb.getScalar("pRef");
+            c.risk.hydrateDH = hb.getScalar("dH");
+            if (!(c.risk.hydrateTref > 0) || !(c.risk.hydratePRef > 0)
+                || !(c.risk.hydrateDH > 0))
+                cfFatal("twoFluid: riskReport hydrate Tref, pRef and dH must"
+                        " all be positive (one dissociation curve)");
+            if (!(c.fluid.gasR > 0))
+                cfFatal("twoFluid: riskReport hydrate prices the dissociation"
+                        " line at each section's own EOS pressure: declare the"
+                        " gas EOS (fluid gasR > 0)");
+            c.risk.hydrateOn = true;
+        }
+        if (rr.has("corrosion"))
+        {
+            const Dictionary& cb = rr.getDict("corrosion");
+            static const char* kCorKeys[] = {"co2", "h2s", "co2Low", "co2High"};
+            for (const std::string& k : cb.keys())
+            {
+                bool known = false;
+                for (const char* w : kCorKeys)
+                    if (k == w) { known = true; break; }
+                if (!known)
+                    cfFatal("twoFluid: riskReport corrosion declares unknown"
+                            " key '" + k + "' (co2, h2s, co2Low, co2High)");
+            }
+            c.risk.co2Fraction = cb.getScalarOr("co2", 0.0);
+            c.risk.h2sFraction = cb.getScalarOr("h2s", 0.0);
+            if (!(c.risk.co2Fraction >= 0) || !(c.risk.co2Fraction <= 1)
+                || !(c.risk.h2sFraction >= 0) || !(c.risk.h2sFraction <= 1))
+                cfFatal("twoFluid: riskReport corrosion co2/h2s are gas-phase"
+                        " mole fractions and must be in [0,1]");
+            c.risk.co2LowPa = cb.getScalarOr("co2Low", 1e4);
+            c.risk.co2HighPa = cb.getScalarOr("co2High", 1e5);
+            if (!(c.risk.co2LowPa > 0)
+                || !(c.risk.co2HighPa > c.risk.co2LowPa))
+                cfFatal("twoFluid: riskReport corrosion CO2 bands must be"
+                        " positive and strictly ascending (co2Low < co2High)");
+            if (!(c.fluid.gasR > 0))
+                cfFatal("twoFluid: riskReport corrosion prices the CO2/H2S"
+                        " partial pressures at the highest section pressure:"
+                        " declare the gas EOS (fluid gasR > 0)");
+            c.risk.corrosionOn = true;
+        }
+    }
 }
 
 } // namespace
@@ -3905,6 +4092,12 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
     if (caseDict.has("acoustics"))
         cfFatal("twoFluid: acoustics is a serial-row feature; the branch"
                 " network row carries no acoustic report columns yet");
+    // 5.187: the risk report is a serial-row feature for the same reason - the
+    // network frame has no `risk` columns, and a declaration that runs
+    // unreported physics is refused rather than swallowed.
+    if (caseDict.has("riskReport"))
+        cfFatal("twoFluid: riskReport is a serial-row feature; the branch"
+                " network row carries no risk report columns yet");
     TwoFluidNetworkCase nc;
     nc.perPipe.networkMode = true;
     loadTwoFluidCommon(caseDict, nc.perPipe);

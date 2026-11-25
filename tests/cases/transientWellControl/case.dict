@@ -1,0 +1,38 @@
+// 5.185 (W-class): well control -- gas kick taken underbalanced, then shut in.
+//
+// The reservoir block gives the bottomhole node one linear PI inflow
+//     q = J * max(p_res - p_BH, 0)        (m3/s, gas fraction fg)
+// and the node's own compliance V/K turns the shut-in into the classic
+// pressure build:
+//     (V/K) dp/dt = J (p_res - p) - Q_pipe
+// With the valve closed (Q_pipe ~ 0 through a 1e12 K) that is a first-order
+// approach to p_res with the exact discrete ratio
+//     r = C / (C + dt J),   C = V/K.
+//
+// Numbers are chosen so every readout is a clean closed form:
+//   * p_res = 4.2e7 Pa at depth 3000 m -> kill mud = p_res/(g depth) = 1427.6 kg/m3
+//   * mud 1200 kg/m3 -> static SIDPP = p_res - rho g depth = 6.696e6 Pa
+//   * V = 50 m3, K = 2.0e9 Pa, J = 2.0e-8 m3/(s Pa) -> C = 2.5e-8 m3/Pa,
+//     tau = C/J = 1.25 s, per-step ratio r = 0.961538...
+fluid { rho 1200; mu 0.05; }
+
+nodes
+{
+    BH   { volume 50; bulkModulus 2.0e9; pressure 3.7e7; liquidFraction 0.8; }
+    SURF { fixedPressure 1.0e5; }
+}
+
+pipes
+{
+    WELL { from BH; to SURF; length 3000; diameter 0.25; roughness 1.0e-4;
+           elevation 3000; valve 20;
+           valveClose { start 20; end 20; closedK 1.0e12; } }
+}
+
+reservoir
+{
+    RES { node BH; pressure 4.2e7; productivityIndex 2.0e-8;
+          gasFraction 0.15; depth 3000; }
+}
+
+time { dt 0.05; endTime 60; reportEvery 1; }

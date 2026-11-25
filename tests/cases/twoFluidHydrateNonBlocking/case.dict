@@ -1,0 +1,52 @@
+// 5.186: hydrate as a NON-BLOCKING flow-assurance field -- h grows (the
+// kinetic block is live), yet the bore and the viscosity stay owned by the two
+// declarations that actually price them:
+//   * a static wax deposit  -> d_eff = D sqrt(1 - w), w = 0.5 (wax only);
+//   * an emulsion           -> mu = muL (1 + 2.5 water cut) (water only).
+// The hydrate fraction h is a transported SLURRY fraction: it enters neither
+// d_eff nor the viscosity, and its only charges are the gas mass sink and the
+// latent heat (5.144's hydrate kinetics), which never touch the flow area.
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; cL 2000; cG 2100; gasR 470; }
+
+pipe { length 200; diameter 0.1; roughness 1.0e-4; angleDeg 0; sections 20; }
+
+closure { model wallis; slipVelocity 0.2; }
+
+initial { alpha 0.2; water 0.1; temperature 300; }
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 3.0; vsg 5.0; waterFraction 0.1;
+             waxDepositFraction 0.5; temperature 300; }
+    outlet { type fixedPressure; p 5.0e6; temperature 300; }
+}
+
+thermal { wallHeatTransfer 50; wallModel constant; wallTemperature 300; }
+
+emulsion { model brinkman; muWater 1.0e-3; }
+
+wax
+{
+    meltingTemperature 323.75;
+    fusionEnthalpy 54890;
+    waxFraction 0.5;
+    growthRate 0;
+    dissolutionRate 0;
+    latentHeat 0;
+    initial 0.5;
+    feedback yes;
+    depositRoughness 0;
+}
+
+hydrate
+{
+    curveA 33.0;
+    curveB -5684;
+    growthRate 0.01;
+    dissociationRate 0.05;
+    gasContent 122;
+    latentHeat 4.2e8;
+    initial 0.1;
+}
+
+time { dt 0.05; endTime 20; reportEvery 50; }

@@ -1,0 +1,29 @@
+// 5.185: continuous UNDERBALANCED drilling -- the choke stays open for the
+// whole run, so the one-sided inflow law is exercised without a shut-in.
+//
+//   q = J * max(p_res - p_BH, 0)    (m3/s, gas fraction fg = 0.30)
+//   (V/K) dp/dt = q - Q_pipe
+//
+// The well carries the kick to surface through a fixed 120 loss coefficient;
+// the steady state is where the PI inflow exactly feeds the pipe rate.
+fluid { rho 1200; mu 0.05; }
+
+nodes
+{
+    BH   { volume 50; bulkModulus 2.0e9; pressure 3.7e7; liquidFraction 0.8; }
+    SURF { fixedPressure 1.0e5; }
+}
+
+pipes
+{
+    WELL { from BH; to SURF; length 3000; diameter 0.25; roughness 1.0e-4;
+           elevation 3000; valve 120; }
+}
+
+reservoir
+{
+    RES { node BH; pressure 4.2e7; productivityIndex 2.0e-8;
+          gasFraction 0.30; depth 3000; }
+}
+
+time { dt 0.05; endTime 30; reportEvery 1; }

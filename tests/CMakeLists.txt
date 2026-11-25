@@ -70,9 +70,8 @@ add_executable(turbulence_tests unit/turbulenceTests.cpp)
 target_link_libraries(turbulence_tests PRIVATE cf3d)
 add_test(NAME turbulence.unit COMMAND turbulence_tests)
 
-# leastSquares gradient scheme: analytic gradient recovery on the skewed Gmsh
-# tetrahedron cube where the clamped corrected scheme cannot reproduce even a
-# linear field, plus the orthogonal degeneration to Green-Gauss on the hex cube
+# Corrected Gauss face-value skew correction and the opt-in leastSquares
+# alternative: production interpolation on skewed tets, exact degeneration on hexes
 add_executable(gradient_tests unit/gradientTests.cpp)
 target_link_libraries(gradient_tests PRIVATE cf3d)
 target_compile_definitions(gradient_tests PRIVATE
@@ -2433,6 +2432,43 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_gas_flux_consistency.py
         $<TARGET_FILE:chflow-1d-twofluid>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientGasFluxConsistency)
+
+# 5.185 (W-class): the well-control reservoir inflow of the 1D transient
+# kernel. A gas kick taken underbalanced is shut in (exact first-order pressure
+# build and influx decay), a continuous underbalanced arm holds the PI law and
+# the steady balance q == Q_pipe, and an overbalanced arm must charge exactly
+# nothing and reproduce the undeclared twin byte for byte; seven loud refusals.
+add_test(
+    NAME verify.transientWellControl
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_well_control.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientWellControl/case.dict
+        ${CMAKE_CURRENT_BINARY_DIR}/transientWellControl_tmp)
+
+# 5.186 (F-class): hydrate as a NON-BLOCKING flow-assurance field. In the
+# growing arm h moves while d_eff stays D sqrt(1 - wax) and the liquid
+# viscosity stays muL (1 + 2.5 water cut) on every section of every frame; the
+# passive twins (frozen h at 0.1 against 0.5) must print identical hydraulic
+# lines, i.e. h is read by no equation that carries flow.
+add_test(
+    NAME verify.twoFluidHydrateNonBlocking
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_hydrate_nonblocking.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidHydrateNonBlocking/case.dict
+        ${CMAKE_CURRENT_BINARY_DIR}/hydrateNonBlocking_tmp)
+
+# 5.187 (F-class): the transient flow-assurance risk report -- API RP 14E
+# erosion at the worst section, the non-blocking hydrate subcooling bands and
+# the CO2/H2S partials, every frame, byte-inert against the undeclared twin.
+add_test(
+    NAME verify.twoFluidRiskReport
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_risk_report.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidRiskReport/case.dict
+        ${CMAKE_CURRENT_BINARY_DIR}/twoFluidRisk_tmp)
 
 # README M5: Tauri GUI (command-layer Rust unit tests, offline build, and the
 # DOM-free frontend pure-function tests). Only registered when cargo / node

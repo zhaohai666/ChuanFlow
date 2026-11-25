@@ -108,8 +108,20 @@ int main(int argc, char** argv)
                 log::info("node ", s.nodeNames()[i], " p ", num(s.pressure()[i]),
                           " alpha ", num(a[i]), " hydrate ", num(h[i]));
             }
-            const std::vector<double> q = s.pipeFlows();
-            for (std::size_t k = 0; k < q.size(); ++k)
+            // 5.185: the well-control readout, one line per declared reservoir
+            // (absent when the case declares none, so untouched traces print
+            // exactly what they printed before).
+            for (const ReservoirReadout& r : s.reservoirReadouts())
+            {
+                log::info("reservoir ", r.name, " node ", r.nodeName,
+                          " q ", num(r.influx), " gasq ", num(r.gasInflux),
+                          " vol ", num(r.volume), " gasvol ", num(r.gasVolume),
+                          " ub ", r.underbalanced ? 1 : 0,
+                          " dp ", num(r.underbalance),
+                          " killmud ", num(r.killMudWeight),
+                          " sidpp ", num(r.sidpp));
+            }
+            const std::vector<double> q = s.pipeFlows();            for (std::size_t k = 0; k < q.size(); ++k)
             {
                 log::info("pipe ", s.pipeNames()[k], " Q ", num(q[k]));
                 // E7a: report the wellbore element's last-used state, so a

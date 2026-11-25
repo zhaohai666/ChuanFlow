@@ -98,6 +98,9 @@ int main(int argc, char** argv)
         const int nSteps =
             static_cast<int>(std::ceil(tc.endTime / tc.dt - 1e-9));
 
+        // 5.190: the ARRIVE journal cursor, so an event prints once (the app's
+        // own bookkeeping; the kernel journals each arrival exactly once).
+        std::size_t pigEvPrinted = 0;
         auto emit = [&](const TransientNetwork& s)
         {
             log::info("t ", num(s.time()));
@@ -127,6 +130,17 @@ int main(int argc, char** argv)
                 // E7a: report the wellbore element's last-used state, so a
                 // checker can re-derive it from the case text independently.
                 // A case declaring none prints nothing here (untouched exact).
+                // 5.190: the pig's kinematic state on this pipe's arc. One
+                // line per declared pig, nothing on an undeclared case.
+                for (const TransientPigState& pg : s.pigStates())
+                {
+                    if (pg.pipeName != s.pipeNames()[k]) continue;
+                    log::info("pig ", pg.pipeName, " t ", num(s.time()),
+                              " x ", num(pg.x), " v ", num(pg.v),
+                              " front ", num(pg.front), " out ",
+                              num(pg.outVol), " event ",
+                              pg.arrived ? "ARRIVE" : "RUN");
+                }
                 const int wb = s.pipeWellboreKind(static_cast<label>(k));
                 if (wb == 1)
                 {
@@ -168,6 +182,15 @@ int main(int argc, char** argv)
                     log::info("pipe ", s.pipeNames()[k], " static hold ",
                               s.pipeHeld(static_cast<label>(k)) ? 1 : 0);
                 }
+            }
+            // 5.190: the ARRIVE journal, printed once per event (the kernel
+            // journals each arrival exactly once; the cursor is the app's own).
+            for (; pigEvPrinted < s.pigEvents().size(); ++pigEvPrinted)
+            {
+                const TransientPigEvent& e = s.pigEvents()[pigEvPrinted];
+                log::info("pigEvent ", e.pipeName, " ARRIVE t ", num(e.t),
+                          " x ", num(e.x), " v ", num(e.v),
+                          " front ", num(e.front), " out ", num(e.outVol));
             }
         };
 

@@ -1,0 +1,42 @@
+// 5.190 (E6b): the reduced pig on the 1D network transient row. The row is a
+// lumped momentum network - it has no per-cell holdup field - so the pig is a
+// KINEMATIC POINT that reads the pipe's own volumetric rate and a DECLARED
+// liquid share of it:
+//   v = u0 (1 - beta clamp(H/C, 0, 1)),  x += v dt
+//   H += eta * lambda * |Q| dt / A
+// and at the end arc the piled front is released (out = H), the pig freezes.
+// Nothing is written back: an undeclared twin must print the same node and
+// pipe lines, byte for byte.
+//
+// Measured here (tank 5e5 Pa through a 200 m line):
+
+fluid { rho 850; mu 0.02; }
+
+nodes
+{
+    TANK { volume 5; bulkModulus 4.0e7; pressure 5.0e5; liquidFraction 1; }
+    OUT  { fixedPressure 0; }
+}
+
+pipes
+{
+    LINE
+    {
+        from TANK; to OUT;
+        length 200; diameter 0.08;
+        pigging
+        {
+            startX 10;
+            endX 30;
+            u0 12.0;
+            blockage 0.8;
+            pushEfficiency 0.35;
+            frontCapacity 0.9;
+            liquidFraction 0.9;
+        }
+    }
+}
+
+// dt == the reporting interval, so every reported frame is exactly one step
+// and a checker can re-derive the discrete pig law frame by frame.
+time { dt 0.25; endTime 20; reportEvery 1; }

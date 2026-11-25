@@ -5712,7 +5712,7 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **回归**。`verify.transientPigging`（Test #165）+ `check_transient_pigging.py` **30 判据**：逐帧 x/v/H 独立重推（最大误差 4.8e-11 / 5.0e-12 / 5.0e-12）、堆积增量 = η×报告场扫掠积分（9.7e-12）、H/x 单调、前缘增长使 pig 减速、ARRIVE 前 outVol=0、释放量 = 终态堆积量 = 增量之和、全场液相守恒；**三个 twin 逐字节**（删 pig 行 == 零声明 caseBase == enable-false caseDisabled）；blockage-0 臂 v 恒为 u0 且 10 s 精确到达；10 条大声拒收。twoFluid 家族 37/37 绿 ⇒ 未声明路径逐字节不变。实测主 case：t=13.45 s 到达 x=20 m，v≈1.0731，释放 7.4235 m³。
 
-**边界**。pig 不写回 holdup 场（`holdupFront` 是扫掠液体的诊断库存而非 α 再分布）；无旁通流、密封失效、弯管阻力；前缘即 pig 面（无液膜/液塞双区制、无相间滑移）；单 pig、无收发球筒/多 pig 编队。
+**边界**。pig 不写回 holdup 场（`holdupFront` 是扫掠液体的诊断库存而非 α 再分布）；无旁通流、密封失效、弯管阻力；前缘即 pig 面（无液膜/液塞双区制、无相间滑移）；单 pig、无收发球筒/多 pig 编队。（集总管网侧的同类点模型见 5.190：`pigging{}` 进 1D 网络瞬态，`H` 由声明液量份额扫掠，强不变量 = 孪生逐行相同。）
 
 ### 5.179 E7a · 瞬态井筒元件族（SSSV / choke / ESP）
 
@@ -5885,6 +5885,29 @@ hydrate/corrosion 需要气相 EOS（`gasR > 0`）才能定价压力，否则加
 `verify.steadyJtEos`（**19 判据**，`tests/check_steady_jt_eos.py` + `cases/steadyJtEos/case.dict`，0.12 s）：`jouleThomson eos` 的 P1 与 `eosSrk` 的 P2 各自把 **T_out 精确重算为 T_in + Σ μ_k Δp_k**（对打印的 24 点 μ 与压力网格，偏差 < 1e-9，即"打印的就是 march"）；P2 的**每一站 μ 用 Python 按公开 SRK 常数独立重算**并与 C++ 对上（最差相对 **2.16e-11**）；P1（PR 分支）只钉**同状态 SRK 值的 ±8% 带**（最差 7.7%）并断言二者**不是同一个数**——PR 这一层没有解析导数（分支用状态差分），所以这里不做同一性声明，真正的锚在 C++ 单测；全部 μ > 0 且沿管平滑（相邻相对变化 < 5e-3）；P3（声明常数）不打印任何 `jt` 行；四条拒收逐条点名。
 
 **边界**。① 只有**管网稳态 march** 接了 EOS 的 μ；瞬态热 march 仍读声明常数（那里的 `jouleThomson` 是数，词会直接拒收）。② PR 分支的 μ 走**状态中心差分**（h = 1e-4 T），不是解析导数；两相区内根会换支，差分在该处不可信，而 SRK 分支是解析的、不受此限。③ SRK 内核**没有**接进 PVT 表的生成（`compositional` 的 rho/mu 仍由 PR76 产生），也**没有**饱和压力求解 / 闪蒸的 SRK 版本；SRK 目前是"状态 + 导数 + μ"这一层能力。④ EOS 导出的 μ 只影响温度剖面，**永不影响压力**。
+
+### 5.190 E6b · 运动学点模型的清管接进 1D 管网瞬态（不回写任何场）
+
+**差距**（§5.178 边界）。5.178 的 pig 住在**两流体**引擎里，吃的是逐格 `alpha` 场；1D 管网瞬态（`transient.cpp` 的 `TransientNetwork`）是**集总动量网**——每根管只有 `geo/qPrev/inertia`，**没有逐格持液场**，所以 5.178 那套"扫掠 α"的点模型搬不过来。同时"不回写持液场"这句在两流体那边只是注释 + 整行孪生，缺一条**指名道姓的强不变量**判据。
+
+**实现**。`pipes{P}` 新增 `pigging{}`（`Transient.h` 的 `TransientPiggingConfig` + `TransientPigState` + `TransientPigEvent`，`piggingStep()` 接在 `step()` 的 `commitStep()` 之后）。声明键与离散律（都能从 case 文本独立重推）：
+
+- `startX` / `endX`（0 = 管末）、`u0`（基础迁移速度，> 0）、`blockage β ∈ [0,1)`、`pushEfficiency η ∈ [0,1]`、`frontCapacity C`（m）、`liquidFraction λ ∈ (0,1]`（**集总行没有持液场，液量份额必须声明**——这是降阶模型在这台引擎上的诚实边界）。
+- \[ v_n = u_0\left(1-eta\,\mathrm{clamp}(H_n/C,\,0,\,1)ight),\quad x_{n+1}=\min(x_n+v_n\,dt,\ end) \]
+  \[ H_{n+1} = H_n + \eta\,\lambda\,|Q_n|\,dt / A \]
+  其中 `Q_n` 是**该步自己报出的管线流量**、`A` 是管截面。到 `end` 时 `outVol = H`、`v = 0`、ARRIVE 只记一次，pig 冻结。
+- **无回写**：`H` 是库存、`x` 是 pig 自己的弧长，两者都不进节点、不进动量行、不进任何速率。九条加载期拒收：负 `startX`、`startX ≥ endX`（pig 逆流）、弧长越过管长、`u0` 非正、`blockage` 越界、`pushEfficiency` 越界、`frontCapacity` 非正、`liquidFraction` 越界、以及**耦合管上声明 pig**（那里的流量是伙伴区域的账，pig 会骑一个本管不定价的数）。
+- 读数：`pig <pipe> t <t> x <x> v <v> front <H> out <V> event RUN|ARRIVE`（每帧）+ `pigEvent <pipe> ARRIVE t … x … v … front … out …`（到达帧一次，app 侧游标）。
+
+**判据**。`verify.transientNetworkPigging`（**26 判据**，0.31 s，`tests/check_transient_network_pigging.py` + `cases/transientNetworkPigging/case.dict`）。case 让 `dt == reportEvery`，于是**每一帧正好一步**，逐帧重推才可能精确：
+
+- 逐帧 `x`（4.47e-11）、`v`（3.44e-11）、`front`（4.80e-12）、`out`（3.91e-12）与从 case 文本 + 本帧 `Q` 独立重推的离散律对齐；
+- 到达帧在 `x = endX`、`out = front = H`、事件时间等于该帧时间、到达后 `v = 0` 且 `x/front/out` 冻结（63 帧）、`out` 在到达前恒 0、journal 只一条；
+- **强不变量**：删掉 `pigging{}` 的孪生（同一 case 文本）**除 `pig` / `pigEvent` 行外逐行相同**——集总行没有场可以被 pig 扰动，这条判据用相等而不是用注释证明"不回写"；
+- **无阻塞臂**：`blockage 0` 时到达前 `v ≡ u0`（1e-12），到达后 `v = 0`；
+- 八条拒收逐条点名（负 startX、逆流、越过管长、u0 0、blockage 1、η>1、无 frontCapacity、λ=0）。
+
+**边界**。① 这是**降阶运动学**模型：`λ` 是声明而非从场导出（集总行没有 `alpha`）；无旁通流、无密封/卡阻、无弯管阻力、无 pig 前后压差动力学（v 由 `u0` 与堵塞律给，不由动量行解出）。② 两流体侧的 5.178 点模型（吃真实 `alpha` 场）保持不变，两条路径的 `pig` 行格式各自独立。③ 单 pig/管、无收发球筒、无多 pig 编队；时变 `u0`/η 未做。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 

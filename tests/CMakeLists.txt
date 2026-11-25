@@ -2041,6 +2041,17 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientPigging)
 
+# E6b (5.190): the reduced pig on the 1D NETWORK transient row. The case runs
+# dt == reportEvery, so every frame is one step and the checker re-derives
+# x / v / front / out frame by frame; the strong invariant is that the
+# undeclared twin prints byte-identical output once the pig lines are stripped.
+add_test(
+    NAME verify.transientNetworkPigging
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_network_pigging.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientNetworkPigging/case.dict)
+
 # E7c (5.183): linear along-the-line EOS acoustics - the depressurization
 # pressure-wave transient. The checker re-derives the wave speed
 # (a^2 = gasR T, the exact density derivative of the kernel's own gas law),

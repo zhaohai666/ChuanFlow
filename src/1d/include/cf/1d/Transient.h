@@ -109,6 +109,49 @@ struct TransientPipeConfig
     bool valveEventsOn = false;
     std::vector<double> valveEventT; // s, ascending, duplicates = steps
     std::vector<double> valveEventK; // loss coefficients, each >= 0
+
+    // 5.190 (E6b): the pig as a KINEMATIC POINT on this pipe's arc. The
+    // network transient row carries no per-cell holdup field, so the reduced
+    // model reads the one thing the row does have - the pipe's own
+    // volumetric rate - and declares the liquid share of it:
+    //   v = u0 (1 - beta clamp(H/C, 0, 1)),  x += v dt
+    //   H += eta * lambda * |Q| dt / A        (front inventory, m per m2 bore)
+    // At the end arc the piled front is released (outVol = H) and the pig
+    // freezes. Nothing is written back: H is an inventory and the position
+    // is the pig's own; neither reaches a node, a pipe row or a rate.
+    // lambda (liquidFraction) is a declaration because the row carries no
+    // holdup to derive it from - the honest boundary of a reduced model on
+    // a lumped network.
+    bool piggingOn = false;
+    double pigStartX = 0;        // m, launch arc
+    double pigEndX = 0;          // m, arrival arc (0 = the pipe end)
+    double pigVelocity = 0;      // m/s, base migration speed u0 (> 0)
+    double pigBlockage = 0;      // fraction [0,1): v = u0 (1 - beta H/C)
+    double pigPushEfficiency = 0;// fraction [0,1] of swept liquid piled ahead
+    double pigFrontCapacity = 0; // m, front inventory that fully chokes the pig
+    double pigLiquidFraction = 1.0; // [0,1], liquid share of the pipe's rate
+};
+
+/// 5.190: the live pig state a report reads (one per declared pig).
+struct TransientPigState
+{
+    std::string pipeName;
+    bool arrived = false;
+    double x = 0;           // m, arc position
+    double v = 0;           // m/s, the velocity the last step used
+    double front = 0;       // m, swept liquid piled ahead (per m2 of bore)
+    double outVol = 0;      // m, cumulative front released at arrival
+};
+
+/// 5.190: an ARRIVE event, journalled once when the pig reaches its end arc.
+struct TransientPigEvent
+{
+    std::string pipeName;
+    double t = 0;           // s
+    double x = 0;           // m
+    double v = 0;           // m/s, the velocity that carried it there
+    double front = 0;       // m, released inventory
+    double outVol = 0;      // m, cumulative released at the event
 };
 
 /// Multi-segment source schedule (opt-in, top-level
@@ -416,6 +459,11 @@ public:
     // so the app prints nothing and the undeclared path is untouched.
     std::vector<ReservoirReadout> reservoirReadouts() const;
 
+    /// 5.190: the live pig states and the ARRIVE journal. Empty when the
+    /// case declares no pig, so an undeclared run reports nothing new.
+    const std::vector<TransientPigState>& pigStates() const { return pigs_; }
+    const std::vector<TransientPigEvent>& pigEvents() const { return pigEvents_; }
+
     double time() const { return t_; }
     const std::vector<std::string>& nodeNames() const { return net_.nodeNames; }
     const std::vector<std::string>& pipeNames() const;
@@ -478,6 +526,12 @@ private:
         // and the linear-ramp fields above are inert (refused at load time).
         bool valveEventsOn = false;
         std::vector<double> eventT, eventK;
+        // 5.190: the pig's declarations, copied from the config so the step
+        // reads them off the dynamic state (where the ctor's launch also
+        // lives). pigOn false leaves every field inert.
+        bool pigOn = false;
+        double pigStartX = 0, pigEndX = 0, pigU0 = 0;
+        double pigBeta = 0, pigEta = 0, pigCapacity = 0, pigLambda = 1.0;
     };
     // E7a: per-pipe wellbore element state. kind 0 leaves every field inert,
     // so an undeclared case carries no extra term and reads no extra state.
@@ -549,6 +603,13 @@ private:
     std::vector<SourceEntry> sourceEntries_;
     // 5.185: the declared reservoir inflows, in declaration order.
     std::vector<ReservoirEntry> reservoirs_;
+
+    /// 5.190: one live pig per declared block (index into pipes_), plus the
+    /// ARRIVE journal. Both empty on every undeclared case.
+    void piggingStep(double dt);
+    std::vector<TransientPigState> pigs_;
+    std::vector<std::size_t> pigPipe_;   // pipe index per pig
+    std::vector<TransientPigEvent> pigEvents_;
     std::vector<double> p_;  // current node pressures (all nodes)
     std::vector<double> q_;  // current pipe flows
     FluidProperties fluid_;

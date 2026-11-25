@@ -468,6 +468,17 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
             geo.yieldStress = 0;
         }
         net_.addPipe(geo);
+        // 5.190: launch the pig at construction, so the t = 0 report already
+        // shows it at startX with an empty front and v = u0.
+        if (pc.piggingOn)
+        {
+            TransientPigState st;
+            st.pipeName = pc.name;
+            st.x = pc.pigStartX;
+            st.v = pc.pigVelocity;
+            pigs_.push_back(st);
+            pigPipe_.push_back(pipes_.size());
+        }
         PipeDyn d;
         d.geo = net_.pipes.back();
         d.qPrev = pc.initialFlow;
@@ -494,6 +505,14 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         d.gelTime = pc.gelTime;
         d.creepRate = pc.creepRate;
         d.creeps = pc.creepRate > 0;
+        d.pigOn = pc.piggingOn;
+        d.pigStartX = pc.pigStartX;
+        d.pigEndX = pc.pigEndX;
+        d.pigU0 = pc.pigVelocity;
+        d.pigBeta = pc.pigBlockage;
+        d.pigEta = pc.pigPushEfficiency;
+        d.pigCapacity = pc.pigFrontCapacity;
+        d.pigLambda = pc.pigLiquidFraction;
         pipes_.push_back(d);
         pipeNames_.push_back(pc.name);
     }
@@ -993,7 +1012,60 @@ double TransientNetwork::step(double dt)
 {
     const double maxRel = solveStep(dt);
     commitStep();
+    // 5.190: the pig rides the step that was just committed, exactly the
+    // position §5.178's slug layer takes - a readout over the accepted state,
+    // never an input to the next solve.
+    piggingStep(dt);
     return maxRel;
+}
+
+// 5.190 (E6b): one explicit kinematic step of the reduced pig. The discrete
+// law is closed form in the case's own numbers, so a checker re-derives it
+// without marching:
+//   v      = u0 (1 - beta clamp(H/C, 0, 1))
+//   x_{n+1}= min(x_n + v dt, end)
+//   H_{n+1}= H_n + eta * lambda * |Q| dt / A
+//   at x = end: outVol = H, v = 0, ARRIVE journalled once, the pig freezes.
+// Q is the pipe's committed volumetric rate. Nothing here writes a rate,
+// a node or a field.
+void TransientNetwork::piggingStep(double dt)
+{
+    if (pigs_.empty() || !(dt > 0)) return;
+    for (std::size_t i = 0; i < pigs_.size(); ++i)
+    {
+        TransientPigState& st = pigs_[i];
+        if (st.arrived) { st.v = 0.0; continue; }
+        const std::size_t k = pigPipe_[i];
+        const PipeDyn& pd = pipes_[k];
+        const NetworkPipe& geo = pd.geo;
+        const double area = 0.25 * M_PI * geo.diameter * geo.diameter;
+        const double end = pd.pigEndX > 0 ? pd.pigEndX : geo.length;
+        const double q = std::abs(q_[k]);
+        const double choke = pd.pigCapacity > 0
+            ? std::min(1.0, std::max(0.0, st.front / pd.pigCapacity))
+            : 0.0;
+        const double v = pd.pigU0 * (1.0 - pd.pigBeta * choke);
+        double x1 = st.x + v * dt;
+        if (x1 > end) x1 = end;
+        st.front += pd.pigEta * pd.pigLambda * q * dt
+                    / (area > 0 ? area : 1.0);
+        st.x = x1;
+        st.v = v;
+        if (x1 >= end)
+        {
+            st.outVol = st.front;
+            st.arrived = true;
+            st.v = 0.0;
+            TransientPigEvent e;
+            e.pipeName = st.pipeName;
+            e.t = t_;
+            e.x = x1;
+            e.v = v;
+            e.front = st.front;
+            e.outVol = st.outVol;
+            pigEvents_.push_back(e);
+        }
+    }
 }
 
 double TransientNetwork::cflStep(double target, double lo, double hi) const
@@ -1444,6 +1516,61 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
         p.gelTime = pd.getScalarOr("gelTime", 0.0);
         p.creepRate = pd.getScalarOr("creepRate", 0.0);
         p.yieldStress = pd.getScalarOr("yieldStress", 0.0);
+        // 5.190 (E6b): the reduced pig, a kinematic point on this pipe's arc.
+        // Every key is checked here, where the pipe length is already known,
+        // so a launch/arrival arc that lies off the chain is refused by name
+        // rather than by a silent clamp inside the march.
+        if (pd.has("pigging"))
+        {
+            const Dictionary& pgd = pd.getDict("pigging");
+            p.piggingOn = true;
+            p.pigStartX = pgd.getScalarOr("startX", 0.0);
+            p.pigEndX = pgd.getScalarOr("endX", 0.0);
+            p.pigVelocity = pgd.getScalar("u0");
+            p.pigBlockage = pgd.getScalarOr("blockage", 0.0);
+            p.pigPushEfficiency = pgd.getScalarOr("pushEfficiency", 0.0);
+            p.pigFrontCapacity = pgd.getScalarOr("frontCapacity", 0.0);
+            p.pigLiquidFraction = pgd.getScalarOr("liquidFraction", 1.0);
+            const double end = p.pigEndX > 0 ? p.pigEndX : p.length;
+            if (p.pigStartX < 0)
+                cfFatal("transient: pipe '" + name + "' pigs from a negative"
+                        " startX: the arc is measured from the from-end");
+            if (p.pigEndX < 0)
+                cfFatal("transient: pipe '" + name + "' pigs to a negative"
+                        " endX: give the arrival arc, or 0 for the pipe end");
+            if (!(p.pigStartX < end))
+                cfFatal("transient: pipe '" + name + "' launches its pig at"
+                        " startX " + std::to_string(p.pigStartX)
+                        + " but arrives at " + std::to_string(end)
+                        + ": the pig walks upstream");
+            if (p.pigStartX > p.length + 1e-9 || end > p.length + 1e-9)
+                cfFatal("transient: pipe '" + name + "' pigs past the chain end"
+                        " (length " + std::to_string(p.length) + " m)");
+            if (!(p.pigVelocity > 0))
+                cfFatal("transient: pipe '" + name + "' pig needs a positive"
+                        " u0: it is the base migration speed, and a zero one"
+                        " never arrives");
+            if (!(p.pigBlockage >= 0 && p.pigBlockage < 1))
+                cfFatal("transient: pipe '" + name + "' pig blockage is a"
+                        " fraction in [0,1): 1 would stop the pig on any front");
+            if (!(p.pigPushEfficiency >= 0 && p.pigPushEfficiency <= 1))
+                cfFatal("transient: pipe '" + name + "' pig pushEfficiency is"
+                        " a fraction in [0,1]: it cannot sweep more liquid than"
+                        " passes it");
+            if (!(p.pigFrontCapacity > 0))
+                cfFatal("transient: pipe '" + name + "' pig needs a positive"
+                        " frontCapacity: C is the inventory that fully chokes"
+                        " it, so a zero one divides by zero");
+            if (!(p.pigLiquidFraction > 0 && p.pigLiquidFraction <= 1))
+                cfFatal("transient: pipe '" + name + "' pig liquidFraction is"
+                        " a fraction in (0,1]: the transient row carries no"
+                        " holdup field, so the liquid share is declared");
+            if (p.coupledResistance > 0)
+                cfFatal("transient: pipe '" + name + "' is a coupled element"
+                        " and declares a pig: the row's rate belongs to the"
+                        " partner region, so the pig would ride a number this"
+                        " pipe does not price");
+        }
         if (pd.has("valveClose"))
         {
             const Dictionary& vc = pd.getDict("valveClose");

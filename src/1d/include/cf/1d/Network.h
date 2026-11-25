@@ -241,6 +241,34 @@ struct NetworkPipe
     double pcpSpeed = 0;        // rev/s
     double pcpSlip = 0;         // m3/(s Pa)
 
+    // 5.192 (G8): the jet pump as a row -- the slot that carries TWO streams.
+    // A constant-area jet pump hands part of the motive stream's momentum to
+    // an entrained stream, so a row that carries only one rate has nowhere to
+    // put the second. The reduction this row takes is the EDUCATOR reading:
+    // both streams are drawn from the row's own upstream node, so the row's
+    // rate is the combined q_d = q_n + q_s and the machine splits it
+    // internally into the nozzle stream q_n and the entrained q_s = q - q_n.
+    // Mass then closes at both nodes with the one rate the network solves,
+    // which is what a lumped nodal balance can carry; a surface power-fluid
+    // line is a separate mass source, and the steady network has no slot for
+    // one (that is a boundary, not an approximation).
+    //
+    // The rise is the element's own throat balance read as a head
+    //   H(q) = rho v_n^2 / m^2 * [ (m-1-r)^2/(m-1) - F (1+r)^2/2 ],
+    //   r = (q - q_n)/q_n,  m = A_t/A_n,  v_n = q_n/A_n,  F = f L_t/D_t,
+    // which is the same algebra jetPumpSolve prices (mode B: the declared
+    // suction rate) and increasing in q, so the rate bracket keeps its
+    // monotone branch. Outside the element's envelope the head is clamped to
+    // its own two states: r <= 0 is NO-SUCTION (the stall head, the machine
+    // passing its motive stream alone) and H <= 0 is FREE-JET (zero rise at
+    // the entrainment ceiling).
+    bool jetOn = false;
+    double jetMotiveRate = 0;    // m3/s through the nozzle q_n
+    double jetNozzleArea = 0;    // m2, A_n
+    double jetThroatArea = 0;    // m2, A_t > A_n
+    double jetThroatLength = 0;  // m, L_t
+    double jetFrictionFactor = 0;// Darcy f on the throat wall
+
     /// 5.188 (G6b): the layered wall, when `insulation{}` priced U instead of
     /// a declared wallHeatTransfer. The stack is radial from innerRadius
     /// outward, thickness/conductivity one entry per layer, plus an optional
@@ -743,6 +771,9 @@ struct PipeFlowResult
     // state difference, 2 = SRK's analytic dZ/dT). 0.0 / 0 on every pipe
     // without thermal physics.
     double dpPcp = 0;           // Pa, the PCP's own contribution (5.191)
+    double dpJet = 0;           // Pa, the jet pump's own rise (5.192)
+    double jetFlowRatio = 0;    // r = q_s/q_n the row settled on (5.192)
+    int jetState = -1;          // -1 none, 0 PUMPING, 1 NO-SUCTION, 2 FREE-JET
     double marchJouleThomson = 0;
     int marchJtMode = 0;
 };

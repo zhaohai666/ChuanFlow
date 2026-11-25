@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "cf/1d/JetPump.h"
 #include "cf/1d/Network.h"
 #include "cf/1d/Nodal.h"
 #include "cf/common/Dictionary.h"
@@ -628,6 +629,10 @@ int main(int argc, char** argv)
             if (f.dpPump != 0) line += " dpPump " + num(f.dpPump);
             // 5.191: the PCP's own rise, on the machine that priced it.
             if (f.dpPcp != 0) line += " dpPcp " + num(f.dpPcp);
+            // 5.192: the jet pump's own rise, plus its own readout line --
+            // the two streams are only legible if q_n, q_s and r are printed
+            // beside the combined rate on the pipe line.
+            if (f.jetState >= 0) line += " dpJet " + num(f.dpJet);
             // 5.156 (P10): the compressor's passive readouts. Absent (ratio
             // 1) on every other path, so no existing line gains a token.
             if (f.compressorRatio != 1)
@@ -651,6 +656,63 @@ int main(int argc, char** argv)
                                                        : " belowTransition");
             }
             log::info(line);
+            // 5.192 (G8): the jet pump's own line -- the two streams made
+            // explicit. `qd` is the row rate the network solved, `qn` the
+            // declared motive stream it was split by, `qs` the entrained
+            // remainder, `r = qs/qn`. `supply` is the pressure the nozzle
+            // needs upstream (p_s + rho v_n^2/2) read at the row's own
+            // upstream node, so a power-fluid pump can be sized against it;
+            // `rise` is the throat balance's own dp, the same number the
+            // pipe line carries as dpJet.
+            if (f.jetState >= 0)
+            {
+                static const char* jetStateName[] = {"PUMPING", "NO-SUCTION",
+                                                     "FREE-JET"};
+                const double qn = pipe.jetMotiveRate;
+                const double qs = f.flowRate - qn;
+                const double vn = qn / pipe.jetNozzleArea;
+                const double pUp =
+                    res.nodePressure[net.nodeIndex(pipe.fromName)];
+                std::string jline = "jet " + f.name
+                                   + " state " + jetStateName[f.jetState]
+                                   + " m " + num(pipe.jetThroatArea
+                                                 / pipe.jetNozzleArea)
+                                   + " r " + num(f.jetFlowRatio)
+                                   + " vn " + num(vn)
+                                   + " qn " + num(qn) + " qs " + num(qs)
+                                   + " qd " + num(f.flowRate)
+                                   + " rise " + num(-f.dpJet)
+                                   + " supply "
+                                   + num(pUp + 0.5 * net.fluid.rho * vn * vn);
+                // The element solver itself, called at the state the row
+                // settled on: the printed `resid` is ITS momentum balance's
+                // own residual, so the row's rise and the card's rise are
+                // compared rather than asserted by comment. Only inside the
+                // card's envelope, though: the clamped states (no suction,
+                // free jet) sit outside [0, (m-1) q_n] by definition.
+                if (f.jetState == 0)
+                {
+                    JetPump jp;
+                    jp.nozzleArea = pipe.jetNozzleArea;
+                    jp.throatArea = pipe.jetThroatArea;
+                    jp.throatLength = pipe.jetThroatLength;
+                    jp.frictionFactor = pipe.jetFrictionFactor;
+                    jp.fluidDensity = net.fluid.rho;
+                    JetPumpOperation jo;
+                    jo.motiveRate = qn;
+                    jo.imposeSuctionRate = true;
+                    jo.suctionRate = qs;
+                    jo.dischargePressure =
+                        res.nodePressure[net.nodeIndex(pipe.toName)];
+                    const JetPumpSolution js = jetPumpSolve(jp, jo);
+                    jline += " cardRise "
+                           + num(js.dischargePressure - js.suctionPressure)
+                           + " resid " + num(js.momentumResidual)
+                           + " eff " + num(js.efficiency)
+                           + " N " + num(js.headRatio);
+                }
+                log::info(jline);
+            }
             // 5.158 (P18): the slug-start forecast, printed only for a pipe
             // that declared slugPrediction{}; an undeclared case gains not a
             // single byte.

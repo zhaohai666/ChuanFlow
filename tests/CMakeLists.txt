@@ -2064,6 +2064,19 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkPcp/case.dict)
 
+# G8 (5.192): the jet pump as a steady NETWORK row -- the two-stream slot.
+# The checker re-solves R q = H(q) by bisection from the case text, asserts
+# the printed q/r/qs/qn/m/vn/supply against it, cross-checks the rise against
+# jetPumpSolve's own card (`cardRise` + `resid` printed by the app), walks the
+# wall L 10 -> 5 -> 0.01 for monotonicity inside the free-jet ceiling, reads
+# the NO-SUCTION clamp (r = 0, negative qs) and the nine refusals.
+add_test(
+    NAME verify.steadyNetworkJetPump
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_network_jet_pump.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkJetPump/case.dict)
+
 # E7c (5.183): linear along-the-line EOS acoustics - the depressurization
 # pressure-wave transient. The checker re-derives the wave speed
 # (a^2 = gasR T, the exact density derivative of the kernel's own gas law),

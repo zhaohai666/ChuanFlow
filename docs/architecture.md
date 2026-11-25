@@ -5939,6 +5939,38 @@ ight),\quad x_{n+1}=\min(x_n+v_n\,dt,\ end) \]
 
 **边界**。① 排量/滑脱是**声明常数**：只做滑脱随压差线性的这一段，不接 §5.140 卡片里的空化/气侵/温升效率曲线，也不随转速做仿射换算（转速直接给 rev/s）。② 无气液两相（气相下的容积效率是另一套卡片）；无定子/转子弹性、无杆柱扭振（那是 §5.140 的 rod pump 卡）。③ 反驱（q > nV）只作为 H < 0 的读数，不做"泵变涡轮"的功率与温升账。④ 分离器（多出口相分离）与射流泵（需动机流 + 喷嘴/喉部损失系数）仍未进管网：前者要多出口拓扑，后者要动机流，都不在"一行一条机器"的槽位里。
 
+### 5.192 G8 · 射流泵接进 1D 管网（"一行带两条流"的槽位）
+
+**差距**。§5.140 的 `jetPumps{}` 是单机卡片：给定动机率、几何与两端压力，解出吸入比 r。管网里没有任何一行能带它，原因不是缺曲线（曲线就是卡片里的那条），而是**缺槽位**：集总网络的一行只有一个速率，而射流泵按定义有两条流（动机 q_n + 被引射 q_s）。
+
+**降阶**。这一行取的是**引射器读数（eductor reading）**：两条流都从本行自己的上游节点取，于是网络解的速率就是**合流** q_d = q_n + q_s，机器在内部把它劈成开启的动机流 q_n 与被引射的 q_s = q_d − q_n。这样两个节点都只凭一个速率就闭合——这是集总节点账能背的唯一一种写法。地面动力液管线是**独立的 mass source**，稳态网络没有这种槽位（这是边界，不是近似）。
+
+**实现**。`pipes{P}.jetPump{}`：
+
+- `motiveRate q_n`（m³/s）、`nozzleArea A_n`、`throatArea A_t (> A_n)`、`throatLength L_t`、`frictionFactor f`；`nozzleArea` 是开关。
+- 行的升压是卡片自己的定截面喉部动量平衡写成头（对合流速率）：
+
+  \[ H(q)=\frac{v_n^2}{m^2 g}\left[\frac{(m-1-r)^2}{m-1}-\frac{F}{2}(1+r)^2\right],\quad r=\frac{q-q_n}{q_n},\ m=\frac{A_t}{A_n},\ v_n=\frac{q_n}{A_n},\ F=\frac{f L_t}{D_t} \]
+
+  方括号是压力系数，乘以 \(\rho v_n^2/m^2\) 才是 Pa；在头里除掉了 \(g\)，所以读数 `dpJet = -rho g H` 不会把密度算两遍（第一版就是这样错的：把 Pa 当米用，根的 r 落在自由射流边缘 1.639）。这就是 `jetPumpSolve` 的 imposed-rate 模式，不是第二次实现：圆括号里的平方项与摩擦线在卡片里逐项相同。
+- **单调性与钳位**：H 随 q 非增（平方项降、摩擦项升）且有界，钳在元素自己的两个状态——`r ≤ 0` 是 **NO-SUCTION**（失速头，机器只过动机流）、`H ≤ 0` 是 **FREE-JET**（引射上限处零升压）。所以 `equipmentFlow` 的 Illinois 夹逼与死分支一行不改，`machineHeadOf = pumpHeadOf + pcpHeadOf + jetHeadOf` 是唯一的机器头入口（5.191 的 PCP 也走这里）。
+- 读数：管路行加 `dpJet` token（`dpPump` 在只有射流泵时与之同值），并单独打一行
+  `jet <pipe> state PUMPING|NO-SUCTION|FREE-JET m <m> r <r> vn <vn> qn <qn> qs <qs> qd <qd> rise <dp> supply <p_s + rho v_n^2/2> [cardRise <dp> resid <Pa> eff <E> N <N>]`
+  方括号里的是在**同一状态**上调一次 `jetPumpSolve`（mode B，`dischargePressure` 取出口节点）拿到的卡片读数——`resid` 是**卡片自己的**动量残差，`cardRise` 是**卡片自己的**升压，于是行与卡片是相互对照而不是靠注释断言。钳位状态（q_d < q_n 或 H ≤ 0）落在卡片的包络 \([0,(m-1)q_n]\) 之外，那几项不打印：不写自己算不出的数。
+- 九条拒收：`nozzleArea` 非正、`throatArea ≤ nozzleArea`、`motiveRate` 非正、喉长/摩擦为负、**与离心 `pumpHead` / `pcp` / `pressureRatio` / `rodPlungerDiameter` 同声明**（一行一条机器曲线）、耦合边（那里的升压归伙伴区域）、**黑油网络**（动量平衡要一个黑油 march 不交给机器行的混合密度；常物性 / PVT 填两路开口）。
+
+**判据**。`verify.steadyNetworkJetPump`，**37 判据**，0.52 s（`tests/check_steady_network_jet_pump.py` + `cases/steadyNetworkJetPump/case.dict`）。等压闭环 ⇒ 行的差压为 0，平衡就是 \(R q=H(q)\)、\(R=128\mu L/\pi D^4\)，检查器用**二分重新解这根**，再拿打印的每一个数去对：
+
+- q（1e-9）、r = (q_d−q_n)/q_n、rise = 卡片同一 r 处的升压、rise = R q（墙账恒等）、`dpJet`/`dpPump` 同值、dp = 0；
+- **两条流相加**：qs + qn = q_d、qs = q_d − q_n、qn 与 vn 是声明几何、m = A_t/A_n、supply = p_s + rho v_n^2/2（都是 1e-10，因为报告只打 ~12 位有效数字，这条容差就是打印精度，不是放松）；
+- **卡片一致**：`cardRise` 与行升压 1e-9、`resid` 0、`eff = r N`；
+- **壁面单调**：L 10 → 5 → 0.01 m 时 r 单调上升且始终严格小于 \(r_{free}\)（bracket(r_free)=0 由检查器自己解）；每个臂的 q/rise 仍各自对得上自己的根，不是钳位凑出来的；
+- **NO-SUCTION 臂**：μ 0.5 让墙的阻力超过失速头 ⇒ state NO-SUCTION、r = 0、q = H(0)/R（1e-9），且 `qs` 打印为**负**（q_d < q_n，这个降阶的边缘，模型如实报出而不是伪造反向引射）；该臂不打印 `cardRise`/`resid`；
+- **无机器孪生**：同管无 `jetPump{}` 既无 `dpJet` 也无 `jet` 行、等压速率 0；
+- **九条拒收逐条点名**。
+
+**边界**。① 引射器读数是降阶：动机流在本行上游节点取，不是地面动力液；真正的双流拓扑（动机来自另一节点/另一条管线）要 mass source 槽位，未做。② 扩压器按理想处理（卡片本来就如此），无喷嘴损失、无两相声速阻塞、无气相动机。③ 钳位状态（NO-SUCTION / FREE-JET）是**元素的**状态而不是 case 错误，模型照卡片话说；其中 q_d < q_n 时 `qs` 为负，这个降阶在这里到期，读数直接说明到期而不是编一个反向引射。④ 无喉部长径比修正、无空化/磨损、无射流泵的功率账（`supply` 只给出动力液泵需要多大的吸入压力）。⑤ 判据里没有 FREE-JET 求解臂：正的压力平衡永远把根留在 bracket > 0 一侧，那个钳位是**守卫**而不是可达状态，所以不假装测过它。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

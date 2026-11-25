@@ -1,0 +1,56 @@
+// 5.192 (G8): a jet pump as a row of the 1D network -- the "one row, two
+// streams" slot.
+//
+// A constant-area jet pump hands part of the motive stream's momentum to an
+// entrained stream, so a row that carries a single rate has nowhere to put
+// the second one. The reduction this row takes is the EDUCATOR reading: both
+// streams are drawn from the row's own upstream node, so the rate the nodal
+// balance solves is the COMBINED q_d = q_n + q_s, and the machine splits it
+// internally into the declared nozzle stream q_n and the entrained q_s =
+// q_d - q_n. Mass closes at both nodes on that one rate, which is what a
+// lumped nodal balance can carry.
+//
+// The rise is the element's own constant-area throat balance (Thornhcser
+// 1955; Karassik ch. 41) written as a head over q_d:
+//
+//   H(q) = rho v_n^2/m^2 [ (m-1-r)^2/(m-1) - F (1+r)^2/2 ],
+//   r = (q - q_n)/q_n,  m = A_t/A_n,  v_n = q_n/A_n,  F = f L_t/D_t,
+//
+// which is exactly what jetPumpSolve prices in its imposed-rate mode. It is
+// non-increasing in q, bounded, and clamped at the element's own two states
+// (r <= 0 NO-SUCTION at the stall head, H <= 0 FREE-JET at the ceiling), so
+// the rate bracket keeps the family's monotone branch.
+//
+// This arm is the closed loop at equal node pressures: the row's differential
+// is zero, so the machine's rise must equal the wall's drop exactly,
+//   R q* = H(q*),  R = 128 mu L/(pi D^4),
+// with rho 850, mu 0.1, L 5, D 0.05, q_n 8e-4, A_n 1e-4, A_t 4e-4,
+// L_t 0.2, f 0.02 (m = 4, F = 0.177238...). The root sits inside the
+// envelope (r ~ 0.8), so the printed state is PUMPING and Re stays laminar.
+// P2 is the same pipe with no machine: no `dpJet` token and no rate.
+//
+// verified by tests/check_steady_network_jet_pump.py
+// (ctest verify.steadyNetworkJetPump).
+
+fluid
+{
+    rho 850; mu 0.1;
+}
+
+nodes
+{
+    Suction   { pressure 1.0e5; }
+    Discharge { pressure 1.0e5; }
+    NodeA     { pressure 1.0e5; }
+    NodeB     { pressure 1.0e5; }
+}
+
+pipes
+{
+    J1 { from Suction; to Discharge; length 5; diameter 0.05; roughness 0;
+         jetPump { motiveRate 8.0e-4; nozzleArea 1.0e-4; throatArea 4.0e-4;
+                   throatLength 0.2; frictionFactor 0.02; } }
+    P2 { from NodeA; to NodeB; length 5; diameter 0.05; roughness 0; }
+}
+
+solve { maxIter 100; tol 1e-12; }

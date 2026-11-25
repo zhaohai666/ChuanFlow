@@ -544,6 +544,63 @@ double pcpHeadOf(const NetworkPipe& p, double q, double rho)
     return (ideal - q) / (p.pcpSlip * rho * kGravity);
 }
 
+/// 5.192 (G8): a jet pump's row law -- the "one row, two streams" slot.
+/// The machine's rise is its own constant-area throat balance, written as a
+/// head over the row's combined rate q = q_n + q_s:
+///   H(q) = rho v_n^2 / m^2 * [ (m-1-r)^2/(m-1) - F (1+r)^2/2 ],
+///   r = (q - q_n)/q_n, m = A_t/A_n, v_n = q_n/A_n, F = f L_t/D_t.
+/// This is the algebra jetPumpSolve prices in its imposed-rate mode, not a
+/// curve fit: r is what the row's own rate leaves for entrainment once the
+/// declared motive stream has taken q_n. It is non-increasing in q (the
+/// bracket term falls, the friction term grows), bounded, and clamped at the
+/// element's two own states: r <= 0 is NO-SUCTION (the stall head, motive
+/// stream alone) and H <= 0 is FREE-JET (no rise at the entrainment ceiling).
+/// So the rate bracket's monotone branch is the family's, unchanged.
+struct JetRow
+{
+    double head = 0;   // m of the combined stream
+    double ratio = 0;  // r, clamped to the element's envelope
+    int state = -1;    // -1 undeclared, 0 PUMPING, 1 NO-SUCTION, 2 FREE-JET
+};
+
+JetRow jetRowOf(const NetworkPipe& p, double q, double rho)
+{
+    JetRow r;
+    if (!p.jetOn) return r;
+    const double m = p.jetThroatArea / p.jetNozzleArea;
+    const double vn = p.jetMotiveRate / p.jetNozzleArea;
+    const double dt = std::sqrt(4.0 * p.jetThroatArea / M_PI);
+    const double fLine = p.jetFrictionFactor * p.jetThroatLength / dt;
+
+    double ratio = (q - p.jetMotiveRate) / p.jetMotiveRate;
+    if (ratio < 0.0) ratio = 0.0;
+    if (ratio > m - 1.0) ratio = m - 1.0;
+    const double s = m - 1.0 - ratio;
+    // The bracket is a pressure coefficient: rho v_n^2/m^2 times it is the
+    // Pa the throat hands over. It is divided by rho g here so the row law
+    // speaks the same unit as pumpHeadOf, and the readout dpJet can charge
+    // -rho g H without pricing the density twice.
+    double head = vn * vn / (m * m * kGravity)
+                * (s * s / (m - 1.0)
+                   - 0.5 * fLine * (1.0 + ratio) * (1.0 + ratio));
+    r.ratio = ratio;
+    r.head = head;
+    r.state = head <= 0.0 ? 2 : (ratio <= 0.0 ? 1 : 0);
+    return r;
+}
+
+double jetHeadOf(const NetworkPipe& p, double q, double rho)
+{
+    return jetRowOf(p, q, rho).head;
+}
+
+/// 5.191/5.192: every machine a row can carry, in one place -- the bracket,
+/// the dead branch and the readouts all read the same sum.
+double machineHeadOf(const NetworkPipe& p, double q, double rho)
+{
+    return pumpHeadOf(p, q) + pcpHeadOf(p, q, rho) + jetHeadOf(p, q, rho);
+}
+
 /// P10 (5.156): the pressure ratio a pipe's compressor reads at rate q. The
 /// curve is the same quadratic family as pumpHeadOf, read in ratio instead
 /// of metres of head. A pipe without a compressor returns 1, so every
@@ -863,16 +920,14 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
 {
     const bool forward = fluid.rho * kGravity * pipe.elevation
                        - fluid.rho * kGravity
-                             * (pumpHeadOf(pipe, 0.0)
-                                + pcpHeadOf(pipe, 0.0, fluid.rho))
+                             * machineHeadOf(pipe, 0.0, fluid.rho)
                        - dpTotal <= 0.0;
     auto g = [&](double x) // residual along the chosen branch, |q| = x >= 0
     {
         const double s = forward ? 1.0 : -1.0;
         return s * pipeLossAt(pipe, fluid, x)
              + fluid.rho * kGravity * pipe.elevation
-             - fluid.rho * kGravity
-                  * (pumpHeadOf(pipe, x) + pcpHeadOf(pipe, x, fluid.rho))
+             - fluid.rho * kGravity * machineHeadOf(pipe, x, fluid.rho)
             - dpTotal;
     };
 
@@ -881,8 +936,7 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     const double pScale = std::max(std::abs(dpTotal),
                                    fluid.rho * kGravity
                                      * (std::abs(pipe.elevation)
-                                        + pumpHeadOf(pipe, 0.0)
-                                        + pcpHeadOf(pipe, 0.0, fluid.rho)));
+                                        + machineHeadOf(pipe, 0.0, fluid.rho)));
     const double xSeed = std::max(1e-3 * pipeArea(pipe), 1e-8);
     double xLo = 0.0, fLo = g(0.0);
 
@@ -896,7 +950,7 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     // g(0) is the sign that sent them here in the first place.
     if (pipe.yieldStress > 0 && (forward ? fLo >= 0.0 : fLo <= 0.0))
     {
-        Hq = pumpHeadOf(pipe, 0.0) + pcpHeadOf(pipe, 0.0, fluid.rho);
+        Hq = machineHeadOf(pipe, 0.0, fluid.rho);
         return RawFlow();
     }
 
@@ -944,7 +998,7 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     r.friction = pipeFrictionReport(pipe, fluid, r.reynolds,
                                     std::abs(r.velocity));
     const double qAbs = std::abs(r.velocity) * pipeArea(pipe);
-    Hq = pumpHeadOf(pipe, qAbs) + pcpHeadOf(pipe, qAbs, fluid.rho);
+    Hq = machineHeadOf(pipe, qAbs, fluid.rho);
     return r;
 }
 
@@ -1530,6 +1584,15 @@ void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
     if (pipe.pcpOn)
         out.dpPcp = -fluid.rho * kGravity
                   * pcpHeadOf(pipe, out.flowRate, fluid.rho);
+    // 5.192: the jet pump's own rise, its entrainment ratio and its state --
+    // all read from the one JetRow the row law already priced.
+    if (pipe.jetOn)
+    {
+        const JetRow jr = jetRowOf(pipe, out.flowRate, fluid.rho);
+        out.dpJet = -fluid.rho * kGravity * jr.head;
+        out.jetFlowRatio = jr.ratio;
+        out.jetState = jr.state;
+    }
     out.reynolds = r.reynolds;
     out.frictionFactor = r.friction;
     out.transition = yieldedTransitionOf(pipe, fluid, std::abs(out.flowRate));
@@ -2351,8 +2414,7 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
     const double ds = pipe.length / nSeg;
     const double dz = sinFlow * ds;
     const double headPerM =
-        (pumpHeadOf(pipe, qIn) + pcpHeadOf(pipe, qIn, fluid.density(pUp)))
-        / pipe.length;
+        machineHeadOf(pipe, qIn, fluid.density(pUp)) / pipe.length;
     const double pFloor = std::max(0.02 * pUp, 1000.0);
     if (thermal && thermal->segmentU
         && static_cast<int>(thermal->segmentU->size()) != nSeg)
@@ -2688,6 +2750,13 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
     // reads the machine that priced it rather than a sum of two curves.
     out.dpPcp = -fluid.density(pUp) * kGravity
               * pcpHeadOf(pipe, q, fluid.density(pUp));
+    if (pipe.jetOn)
+    {
+        const JetRow jr = jetRowOf(pipe, q, fluid.density(pUp));
+        out.dpJet = -fluid.density(pUp) * kGravity * jr.head;
+        out.jetFlowRatio = jr.ratio;
+        out.jetState = jr.state;
+    }
 
     // 5.156 (P10): the compressor's own statement, read from the hydraulic
     // state it was priced with -- never fed back into it (§5.144's passive
@@ -3009,6 +3078,40 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             if (p.pumpHead > 0)
                 cfFatal("steadyNetwork: pipe '" + name + "' declares both a"
                         " pcp and a centrifugal pumpHead: one row carries one"
+                        " machine curve");
+        }
+        // 5.192 (G8): the jet pump. `nozzleArea` is the switch. The row
+        // carries the COMBINED stream (q_d = q_n + q_s) and the machine
+        // splits it, so the entrained share is q - q_n and the other stream
+        // has nowhere else to come from on a lumped nodal balance.
+        if (pd.has("jetPump"))
+        {
+            const Dictionary& jd = pd.getDict("jetPump");
+            p.jetOn = true;
+            p.jetMotiveRate = jd.getScalarOr("motiveRate", 0.0);
+            p.jetNozzleArea = jd.getScalarOr("nozzleArea", 0.0);
+            p.jetThroatArea = jd.getScalarOr("throatArea", 0.0);
+            p.jetThroatLength = jd.getScalarOr("throatLength", 0.0);
+            p.jetFrictionFactor = jd.getScalarOr("frictionFactor", 0.0);
+            if (!(p.jetNozzleArea > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name + "' jetPump needs a"
+                        " positive nozzleArea: it is the bore the motive"
+                        " stream is accelerated through, and the switch");
+            if (!(p.jetThroatArea > p.jetNozzleArea))
+                cfFatal("steadyNetwork: pipe '" + name + "' jetPump needs"
+                        " throatArea > nozzleArea: the annulus A_t - A_n is"
+                        " what the entrained stream comes in through, and the"
+                        " throat balance divides by m - 1");
+            if (!(p.jetMotiveRate > 0.0))
+                cfFatal("steadyNetwork: pipe '" + name + "' jetPump needs a"
+                        " positive motiveRate: with no jet there is no"
+                        " momentum to hand to the entrained stream");
+            if (p.jetThroatLength < 0.0 || p.jetFrictionFactor < 0.0)
+                cfFatal("steadyNetwork: pipe '" + name + "' jetPump throat"
+                        " length and friction factor are non-negative");
+            if (p.pumpHead > 0 || p.pcpOn || p.rodPlungerDiameter > 0)
+                cfFatal("steadyNetwork: pipe '" + name + "' declares a"
+                        " jetPump beside another machine: one row carries one"
                         " machine curve");
         }
         // Gas-lift valve (5.89, D1 increment 3). The port bore is `diameter`;
@@ -3483,6 +3586,22 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         if (p.pcpOn && p.compressorRatio > 0)
             cfFatal("steadyNetwork: pipe '" + name + "' declares both a pcp and"
                     " a compressor: one row, one machine");
+        // 5.192: the same two constraints the pcp row carries -- the partner
+        // region owns a coupled edge's rise, and the black-oil march prices
+        // lift from the stock-tank curve family, so a momentum-handing
+        // machine only has a constant-property or pvt-fill row to live in.
+        if (p.jetOn && p.coupledResistance > 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' is a coupled element"
+                    " and declares a jetPump: the row's machine rise belongs"
+                    " to the partner region");
+        if (p.jetOn && p.compressorRatio > 0)
+            cfFatal("steadyNetwork: pipe '" + name + "' declares a jetPump"
+                    " beside a compressor: one row carries one machine curve");
+        if (p.jetOn && net.hasBlackOil)
+            cfFatal("steadyNetwork: pipe '" + name + "' declares a jetPump on a"
+                    " black-oil network: the momentum balance would have to be"
+                    " priced on a mixture density the black-oil march does not"
+                    " hand a machine row (constant-property or pvt fill only)");
         if (p.pumpHead > 0 && p.pumpShutoffHead < p.pumpHead)
             cfFatal("steadyNetwork: pipe '" + name + "' has a pump curve that"
                     " rises with rate (pumpShutoffHead < pumpHead)");

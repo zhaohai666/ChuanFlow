@@ -94,7 +94,11 @@ detail {
         model kOmegaSST;
         intensity 0.05;
         lengthScale 1.4e-3;
-        relaxation 0.7;
+        // The network seeds this nonlinear block at five times its converged
+        // resistance. At 0.7 the corrected closure diverges to non-finite
+        // pressure on this overshoot; 0.3 rides it without changing the interface
+        // tolerance or the block convergence gates.
+        relaxation 0.3;
     }
 
     schemes {

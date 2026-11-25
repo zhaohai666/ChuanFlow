@@ -88,18 +88,19 @@ Field<scalar> KOmegaSST::kProduction() const
     return p;
 }
 
-scalar KOmegaSST::omegaProduction(scalar gamma, scalar strain, scalar omega)
+scalar KOmegaSST::omegaProduction(scalar gamma, scalar strain, scalar omega,
+                                  scalar f2)
 {
-    // Menter 2003 omega-equation production with its standard upper bound
-    // (OpenFOAM kOmegaSST.C, c1 = productionLimit = 10):
-    //   P_omega = min(gamma S^2, c1 betaStar gamma omega^2).
-    // In the log layer nut = k/omega and this is exactly the k equation's
-    // Pk <= c1 betaStar k omega divided by nut; where the Bradshaw limiter
-    // cuts nut below k/omega the same cap keeps the explicit gamma S^2 from
-    // outrunning omega's beta omega^2 sink. Both the uncapped and the capped
-    // branch are exercised by turbulenceTests.
-    const scalar cap = productionLimit * betaStar * gamma * omega * omega;
-    return std::min(gamma * strain * strain, cap);
+    // OpenFOAM kOmegaSSTBase.C / Menter 2003 consistent production:
+    //   P_omega = gamma min(S^2, (c1/a1) betaStar omega
+    //                      max(a1 omega, F2 S)).
+    // The F2 S branch is required when the Bradshaw limiter makes
+    // nut = a1 k/max(a1 omega, F2 S) smaller than k/omega.
+    const scalar s = std::max(strain, 0.0);
+    const scalar w = std::max(omega, turb::dissFloor);
+    const scalar bradshaw = std::max(a1 * w, f2 * s);
+    const scalar cap = productionLimit / a1 * betaStar * w * bradshaw;
+    return gamma * std::min(s * s, cap);
 }
 
 Field<scalar> KOmegaSST::kDiffusivity() const
@@ -139,12 +140,13 @@ void KOmegaSST::solveDissipation(scalar dt)
     // source below, so they are computed once here
     const Field<Vector> gradW = fvc::grad(diss_, schemes_.grad);
     const Field<Vector> gradK = fvc::grad(k_, schemes_.grad);
-    Field<scalar> f1c(nC), cdKw(nC), sigmaW(nC), gammaW(nC), betaW(nC);
+    Field<scalar> f1c(nC), f2c(nC), cdKw(nC), sigmaW(nC), gammaW(nC), betaW(nC);
     for (std::size_t c = 0; c < nC; ++c)
     {
         const scalar wGuard = std::max(wOld[c], turb::dissFloor);
         cdKw[c] = std::max(2.0 * sigmaW2 / wGuard * dot(gradW[c], gradK[c]), 1e-10);
         f1c[c] = f1(k_.internalField()[c], wOld[c], y[c], nu_, cdKw[c]);
+        f2c[c] = f2(k_.internalField()[c], wOld[c], y[c], nu_);
         sigmaW[c] = f1c[c] * sigmaW1 + (1.0 - f1c[c]) * sigmaW2;
         gammaW[c] = f1c[c] * gamma1 + (1.0 - f1c[c]) * gamma2;
         betaW[c] = f1c[c] * beta1 + (1.0 - f1c[c]) * beta2;
@@ -174,7 +176,7 @@ void KOmegaSST::solveDissipation(scalar dt)
     {
         const scalar w = std::max(wOld[c], turb::dissFloor);
         eqn.addRhs(static_cast<label>(c), 0,
-                   vol[c] * omegaProduction(gammaW[c], strain_[c], w));
+                   vol[c] * omegaProduction(gammaW[c], strain_[c], w, f2c[c]));
         const scalar cd = (1.0 - f1c[c]) * 2.0 * sigmaW2 / w
                         * dot(gradW[c], gradK[c]);
         eqn.addRhs(static_cast<label>(c), 0, vol[c] * cd);

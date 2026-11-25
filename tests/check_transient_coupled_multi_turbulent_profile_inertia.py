@@ -619,12 +619,13 @@ def main():
          f"{tot} sub-iterations and {2 * tot} block solves (recorded-count fingerprint)")
 
     # ============ 10. the ramp: shape doubles the relaxation, source sets its order
+    shares = {}
     for a in ARMS:
-        note(close(value(E(a, 1, 0), "q") / Q_IN, SHARE_L1[a], 2e-5),
-             f"{a}: the split arrives at the parallel branch as "
-             f"{value(E(a, 1, 0), 'q') / Q_IN:.6f} -- the tables AND the shape for "
-             "THAT edge are what the branch sees (SHARE_L1 recorded-number "
-             "fingerprint; gamma shifts the split)")
+        shares[a] = value(E(a, 1, 0), "q") / Q_IN
+        note(close(shares[a], SHARE_L1[a], 2e-5),
+             f"{a}: the split arrives at the parallel branch as {shares[a]:.6f} -- "
+             "the tables AND the shape for THAT edge are what the branch sees "
+             "(SHARE_L1 recorded-number fingerprint; gamma shifts the split)")
     taus = {}
     for a in ARMS:
         taus[a] = decay(a, 0)[0]
@@ -640,12 +641,12 @@ def main():
             f"the shaped inlet roughly doubles the relaxation time "
             f"(x{taus['p_net'] / taus['f_net']:.2f}, x{taus['p_region'] / taus['f_region']:.2f}), "
             "so the ramp is shaped by the entry profile and ordered by the inertance")
-    require(SHARE_L1["f_net"] < SHARE_L1["f_region"] < SHARE_L1["f_slab"]
-            and SHARE_L1["p_net"] < SHARE_L1["p_region"],
+    require(shares["f_net"] < shares["f_region"] < shares["f_slab"]
+            and shares["p_net"] < shares["p_region"],
             f"and the first step still goes more through the edge whose row resists "
-            f"acceleration less: flat {SHARE_L1['f_net']:.6f} / "
-            f"{SHARE_L1['f_region']:.6f} / {SHARE_L1['f_slab']:.6f}, shaped "
-            f"{SHARE_L1['p_net']:.6f} / {SHARE_L1['p_region']:.6f}")
+            f"acceleration less: flat {shares['f_net']:.6f} / "
+            f"{shares['f_region']:.6f} / {shares['f_slab']:.6f}, shaped "
+            f"{shares['p_net']:.6f} / {shares['p_region']:.6f}")
 
     # ============ 11. the partner is still a partner, in both shapes
     for a in ARMS:
@@ -784,6 +785,7 @@ def main():
     # flat arms' fields re-converge at slightly different rates). Drop the strict
     # per-step monotonicity to a bounded drift and keep the physics: small
     # residue, below rate spread, collapses strongly by the end.
+    dpconv_l1 = " / ".join("%.3f" % value(E(a, 1, 0), "dpConv") for a in FLAT)
     require(max(coeff_spread) < 0.08
             and all(coeff_spread[k] < rate_spread[k] for k in range(N_STEPS))
             and all(coeff_spread[k + 1] < coeff_spread[k] * 1.5 + 0.003
@@ -791,11 +793,13 @@ def main():
             and coeff_spread[-1] < coeff_spread[0] / 8,
             f"on the free edge the SAME coefficient is table-blind too, and the trajectory "
             f"is the only way in: dpConv itself spans {acct_spread[0] * 100:.1f}% at level 1 "
-            f"(7.632 / 9.157 / 15.044 Pa), but the rate itself spans {rate_spread[0] * 100:.1f}% "
+            f"({dpconv_l1} Pa), "
+            f"but the rate itself spans {rate_spread[0] * 100:.1f}% "
             f"there, and after dividing by q^2 the residue is {coeff_spread[0] * 100:.2f}% "
             f"-- smaller than the rate spread at every one of the eight levels, and itself "
-            f"collapsing monotonically {coeff_spread[0] * 100:.2f}% -> "
-            f"{coeff_spread[-1] * 100:.2f}% as the three arms' trajectories converge")
+            f"collapsing with bounded step-to-step drift from "
+            f"{coeff_spread[0] * 100:.2f}% to {coeff_spread[-1] * 100:.2f}% as "
+            "the three arms' trajectories converge")
     ratio_flat_shaped = abs(per_q[("p_net", "X2", 8)]) / per_q[("f_net", "X2", 8)]
     # gamma1 fix: the flat/shaped account ratio falls from >3.5x to ~2.35x as
     # the shaped profile's convected excess shrinks with beta rising toward the

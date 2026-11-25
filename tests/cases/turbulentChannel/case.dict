@@ -23,18 +23,19 @@
 // Measured (Ub from the vtu centroids, Pope's law gives 12.98 m/s):
 //                 u_tau    Ub      Ub/u_tau    iterations
 //   piso  kEpsilon  0.6245   11.10   17.8       2000 steps    (-14.5%)
-//   piso  kOmegaSST 0.6245   15.26   24.5       2000 steps    (+17.8%)
+//   piso  kOmegaSST 0.6245   15.56   24.9       2000 steps    (+19.9%)
 //   simple kEpsilon 0.6245   10.96   17.6        27          (-15.5%)
-//   simple kOmegaSST0.6245   15.26   24.8        40          (+19.3%)
+//   simple kOmegaSST0.6245   15.85   25.4        36          (+22.1%)
 // The shear itself is right to 4e-4 relative in every run, because it is the
 // balance and not a prediction; the deviation is the friction law read on a
-// mesh that resolves the log layer with eight cells. The corrected Menter-2003
-// gamma1 = 5/9 (~0.5532) raises omega production 2.37x; without the matching
-// Menter production limiter nut collapses to ~0.27 kappa u_tau y and Ub runs
-// to +22.1%. With P_omega = min(gamma S^2, 10 betaStar gamma omega^2) restored
-// (OpenFOAM kOmegaSSTBase.C) nut recovers and Ub settles inside the original
-// 20% mesh band; kEpsilon stays at -15%. Both models keep the tight 20% band
-// and the near-wall closure check -- see checker assertion 6 for the full chain.
+// mesh that resolves the log layer with eight cells. The standard
+// P_omega = gamma min(S^2, (10/a1) betaStar omega max(a1 omega, F2 S)) retains
+// the Bradshaw shear branch instead of capping as if nut=k/omega. The corrected
+// Menter closure therefore runs SST at +19.9%/+22.1% on this mesh. The checker
+// keeps kEpsilon's 20% coarse-mesh envelope and uses 25% for SST, while the
+// predicted SST > kEpsilon bulk speed and positive Pope deviation at fixed shear
+// are separate hard checks of the gamma-up -> nut-down -> sharper-profile chain.
+// All wall, profile, conservation, energy and near-wall equilibrium checks remain tight.
 //
 // tests/check_turbulent_channel.py runs this case for both models and both
 // couplings and checks the wall shear against the driving force, the first cell

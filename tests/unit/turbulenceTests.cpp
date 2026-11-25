@@ -347,27 +347,40 @@ int main()
 
     // ---------------- omega production limiter (Menter 2003) ----------------
     {
-        const scalar g = KOmegaSST::gamma1, w = 100.0;
-        const scalar sSmall = 0.1 * w;   // S/omega below sqrt(c1 betaStar)
-        const scalar sHuge = 20.0 * w;   // strong shear, the cap must bite
-        const scalar cap = KOmegaSST::productionLimit * KOmegaSST::betaStar * g * w * w;
-        CHECK(near(KOmegaSST::omegaProduction(g, sSmall, w), g * sSmall * sSmall, 1e-12),
+        const scalar g = KOmegaSST::gamma1, w = 100.0, k = 0.02;
+        const scalar sSmall = 0.1 * w;   // F2 S < a1 omega: uncapped branch
+        const scalar sHuge = 20.0 * w;   // F2 S > a1 omega: Bradshaw branch
+        const scalar cap = g * KOmegaSST::productionLimit / KOmegaSST::a1
+                         * KOmegaSST::betaStar * w * std::max(KOmegaSST::a1 * w, sHuge);
+        CHECK(near(KOmegaSST::omegaProduction(g, sSmall, w, 1.0), g * sSmall * sSmall, 1e-12),
               "omega production is gamma S^2 below the Menter cap");
-        CHECK(near(KOmegaSST::omegaProduction(g, sHuge, w), cap, 1e-12),
-              "omega production is capped at 10 betaStar gamma omega^2 in a strong shear layer");
-        CHECK(KOmegaSST::omegaProduction(g, sHuge, w) < g * sHuge * sHuge,
+        CHECK(near(KOmegaSST::omegaProduction(g, sHuge, w, 1.0), cap, 1e-12),
+              "omega production uses the standard F2 S Bradshaw limiter branch");
+        CHECK(KOmegaSST::omegaProduction(g, sHuge, w, 1.0) < g * sHuge * sHuge,
               "the cap actually bites at large strain");
+        const scalar nutBradshaw = KOmegaSST::a1 * k / sHuge;
+        const scalar oldCap = g * KOmegaSST::productionLimit * KOmegaSST::betaStar * w * w;
+        CHECK(nutBradshaw < k / w
+                  && KOmegaSST::omegaProduction(g, sHuge, w, 1.0) > oldCap,
+              "the Bradshaw branch is active and is not capped as if nut equalled k/omega");
         bool bounded = true;
         for (double ss : {0.0, 1.0, 10.0, 1e3, 1e6})
         {
             for (double ww : {1e-8, 1.0, 1e4})
             {
-                const scalar p = KOmegaSST::omegaProduction(g, ss, ww);
-                bounded = bounded && std::isfinite(p) && p >= 0.0
-                          && p <= KOmegaSST::productionLimit * KOmegaSST::betaStar * g * ww * ww + 1e-12;
+                for (double f2 : {0.0, 0.5, 1.0})
+                {
+                    const scalar p = KOmegaSST::omegaProduction(g, ss, ww, f2);
+                    const scalar bound = g * KOmegaSST::productionLimit / KOmegaSST::a1
+                        * KOmegaSST::betaStar * ww
+                        * std::max(KOmegaSST::a1 * ww, f2 * ss);
+                    const bool finiteBound = std::isfinite(p) && p >= 0.0
+                        && p <= bound * (1.0 + 1e-12) + 1e-30;
+                    bounded = bounded && finiteBound;
+                }
             }
         }
-        CHECK(bounded, "omega production stays finite and within the cap for all inputs");
+        CHECK(bounded, "omega production stays finite and within the standard cap for all inputs");
 
         // an over-sheared SST column: without the cap, gamma S^2 outruns the
         // beta omega^2 sink and omega diverges (the 1D-3D coupled block did

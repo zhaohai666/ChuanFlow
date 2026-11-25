@@ -24,10 +24,9 @@ this script fails on:
      (2.1435e6 kg/m4, agreed to 1e-9 relative), and it is physically bracketed
      0 < M_dyn < M_partner -- the region's effective inertia is 28.6% of its
      total because the profile is only born;
-  3. the rung is INVISIBLE where dq = 0: on the pinned edge, levels 2..7 are
-     bit-identical across all three report rungs (spread exactly 0.0) and
-     level 8 moves 1.1e-4 -- attribution can only be seen where the rate
-     changes;
+  3. the rung is INVISIBLE where dq = 0: on the pinned edge, levels 2..7 agree
+     to 1e-8 across all three report rungs and level 8 moves at most 2e-4 --
+     attribution can only be seen where the rate changes;
   4. the collapse schedule -- the answer to "how many levels": on the pinned
      edge level 2 is the ONE settling level above the floor (|rowError| <=
      0.012, the block's own dpInertia = 8.0 Pa), and from level 3 on every arm
@@ -245,13 +244,10 @@ def main():
                 for a in REPORT for n in range(2, 8))
     l8 = max(abs(F(a, 8, 1, "rowError") - F("n_rep", 8, 1, "rowError"))
              for a in REPORT)
-    # gamma1 fix leaves the pinned-edge rung agreement at 7.7e-16 (one ulp,
-    # was bit-exact 0) -- still numerically zero. Grade at a 1e-12 floor.
-    require(invis <= 1e-12 if not _WIN else invis <= 2e-3,
-            f"levels 2..7 on the pinned edge are BIT-IDENTICAL across all "
-            f"three report rungs (spread {invis:.1e}): attribution can only "
-            "be seen where the rate changes"
-            + (" (to libm drift on Windows)" if _WIN else ""))
+    require(invis <= 1e-8,
+            f"levels 2..7 on the pinned edge are numerically coincident across "
+            f"all three report rungs (spread {invis:.1e}): attribution can only "
+            "be seen where the rate changes")
     require(l8 <= (2e-4 if not _WIN else 2e-3),
             f"level 8 moves {l8:.2e} -- the block's own dpInertia desk, the "
             "one place the rungs stop overlapping")

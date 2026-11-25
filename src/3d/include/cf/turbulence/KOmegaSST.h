@@ -40,13 +40,13 @@ public:
     static constexpr scalar sqrtBetaStar = 0.3; // sqrt(0.09), exact in decimal
     static constexpr scalar gamma1 = beta1 / betaStar - sigmaW1 * turb::kappa * turb::kappa / sqrtBetaStar;
     static constexpr scalar gamma2 = beta2 / betaStar - sigmaW2 * turb::kappa * turb::kappa / sqrtBetaStar;
-    /// Menter's production limiters (Menter 2003 / OpenFOAM kOmegaSST.C):
-    /// the k equation caps Pk <= 10 betaStar k w; the omega equation caps its
-    /// production at 10 betaStar gamma w^2 -- the same cap divided by nut,
-    /// which stops omega's gamma S^2 / nut positive feedback in a strong
-    /// shear layer or stagnation region. Exposed for the unit tests.
+    /// Menter's production limiters (Menter 2003 / OpenFOAM kOmegaSSTBase.C):
+    /// the k equation caps Pk <= 10 betaStar k w; the omega equation caps
+    /// gamma S^2 at (10/a1) betaStar gamma w max(a1 w, F2 S), which remains
+    /// consistent when the Bradshaw limiter makes nut < k/w.
     static constexpr scalar productionLimit = 10.0;
-    static scalar omegaProduction(scalar gamma, scalar strain, scalar omega);
+    static scalar omegaProduction(scalar gamma, scalar strain, scalar omega,
+                                  scalar f2);
 
     /// blend functions, exposed for the unit tests. `cdKw` is Menter's
     /// cross-diffusion guard CD_komega = max(2 sigmaW2/omega grad(w).grad(k),

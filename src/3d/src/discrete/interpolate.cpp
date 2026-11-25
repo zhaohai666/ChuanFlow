@@ -19,8 +19,8 @@ scalar ownerWeight(const polyMesh& mesh, label face)
     const auto& d = mesh.deltaCoeffVec()[static_cast<std::size_t>(face)];
     const scalar d2 = dot(d, d);
     if (d2 <= 0) cfFatal("interpolate: zero face distance");
-    const scalar w = dot(mf - cp, d) / d2;
-    return std::min(1.0, std::max(0.0, w)); // bounded linear
+    const scalar neighbourWeight = dot(mf - cp, d) / d2;
+    return 1.0 - std::clamp(neighbourWeight, 0.0, 1.0);
 }
 
 } // namespace
@@ -32,6 +32,19 @@ Field<scalar> makeInternalOwnerWeights(const polyMesh& mesh)
         w[static_cast<std::size_t>(f)] = ownerWeight(mesh, f);
     });
     return w;
+}
+
+Field<Vector> makeFaceSkewVectors(const polyMesh& mesh, const Field<scalar>& ownerWeights)
+{
+    Field<Vector> skew(static_cast<std::size_t>(mesh.nFaces()), Vector::zero());
+    backend::parallelFor(mesh.nInternalFaces(), [&](label f) {
+        const std::size_t u = static_cast<std::size_t>(f);
+        const auto& co = mesh.cellCentres()[static_cast<std::size_t>(mesh.owner()[u])];
+        const auto& cn = mesh.cellCentres()[static_cast<std::size_t>(mesh.neighbour()[u])];
+        const scalar neighbourWeight = 1.0 - ownerWeights[u];
+        skew[u] = mesh.faceCentres()[u] - (co + neighbourWeight * (cn - co));
+    });
+    return skew;
 }
 
 /// Face-value function for the unknown of an equation: internal faces use

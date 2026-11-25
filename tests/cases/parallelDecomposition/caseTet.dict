@@ -7,11 +7,11 @@
 // cell a zero net out-flux across a cut.
 //
 // What is NOT asserted here is the accuracy of the gradient. On 95 tetrahedra of
-// a unit cube the serial corrected scheme does not reproduce even a linear
-// field's gradient (it reports gradAnalytic ~5.7 linear / ~217 corrected),
-// because the bounded owner weights clamp on these skewed faces -- a property of
-// the scheme on this mesh, present at one domain and therefore owed only to the
-// scheme, not to the cut. The checker reads that number as a note and holds the
+// a unit cube the production corrected scheme still does not reproduce a
+// linear field's gradient exactly (gradAnalytic is about 0.52, versus 2.19 for
+// plain Gauss), because bounded face reconstruction on these skewed cells is
+// approximate. That error is present at one domain and therefore belongs to
+// the scheme, not to the cut. The checker reads that number as a note and holds the
 // decomposition to what it can promise: the very same (bad) gradient, bit for
 // bit, for 1, 3, 7 and 13 domains.
 mesh

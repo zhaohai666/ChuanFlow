@@ -115,7 +115,10 @@ void interpolate(const polyMesh& mesh, const Field<scalar>& cellData,
 
 Field<scalar> interpolate(const volScalarField& T);
 
-/// Gauss gradient; scheme "linear" or "corrected" (two correction passes).
+/// Gauss gradient; "linear" uses the supplied face values, while "corrected"
+/// reconstructs bounded internal face values and adds two grad_f dot skew_f
+/// corrections. Boundary faces use the supplied callback in both Gauss schemes;
+/// "leastSquares" is an opt-in gradient reconstruction from cell values.
 Field<Vector> grad(const volScalarField& T, const std::string& scheme);
 Field<Vector> grad(const polyMesh& mesh, const Field<scalar>& data,
                    const std::function<scalar(label face, const Field<scalar>&)>& faceValueOf,
@@ -131,6 +134,10 @@ Field<scalar> divPhi(const polyMesh& mesh, const Field<scalar>& phi);
 
 /// Per-face bounded linear weight of the owner cell (internal faces only).
 Field<scalar> makeInternalOwnerWeights(const polyMesh& mesh);
+
+/// Face centre minus the bounded owner-neighbour interpolation point; boundary
+/// entries are zero. Shared by serial and decomposed corrected gradients.
+Field<Vector> makeFaceSkewVectors(const polyMesh& mesh, const Field<scalar>& ownerWeights);
 
 /// Face-transmissibility coefficient of a cell-centred diffusion coefficient:
 /// harmonic mean across internal faces (the rule fvm::laplacian uses), owner

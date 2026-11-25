@@ -1,5 +1,7 @@
+#include <algorithm>
 #include <cmath>
 #include <functional>
+#include <vector>
 
 #include "cf/common/Error.h"
 #include "cf/fvm/FvMatrix.h"
@@ -18,13 +20,27 @@ void gaussGrad(const polyMesh& mesh, const Field<scalar>& data,
     gradT.assign(static_cast<std::size_t>(nC), Vector::zero());
     const auto& vol = mesh.cellVolumes();
     const auto& sf = mesh.faceSf();
+    const label nInt = mesh.nInternalFaces();
+    const auto& owner = mesh.owner();
+    const auto& nbr = mesh.neighbour();
+
+    Field<Vector> faceSkew;
+    if (corrected) faceSkew = makeFaceSkewVectors(mesh, ow);
+
+    const auto reconstructedFaceValue = [&](label f, const std::size_t u) -> scalar
+    {
+        if (corrected && f < nInt)
+            return ow[u] * data[static_cast<std::size_t>(owner[u])]
+                 + (1.0 - ow[u]) * data[static_cast<std::size_t>(nbr[u])];
+        return faceValueOf(f, data);
+    };
 
     // pass 0: V * grad = sum Tf * Sf
     Field<Vector> sum(static_cast<std::size_t>(nC), Vector::zero());
     for (label f = 0; f < mesh.nFaces(); ++f)
     {
         const std::size_t u = static_cast<std::size_t>(f);
-        const Vector flux = sf[u] * faceValueOf(f, data);
+        const Vector flux = sf[u] * reconstructedFaceValue(f, u);
         sum[static_cast<std::size_t>(mesh.owner()[u])] += flux;
         if (f < mesh.nInternalFaces())
         {
@@ -39,8 +55,7 @@ void gaussGrad(const polyMesh& mesh, const Field<scalar>& data,
 
     if (!corrected) return;
 
-    // correction passes: V*grad = sum [Tf*Sf - Cf*(grad_f . dhat)]
-    // with d = faceCentre - ownerCellCentre, Cf = Sf - (Sf.dhat)dhat
+    // Add grad_f dot (Cf - Cinterp): a face value, with dimensions of T.
     for (int pass = 0; pass < 2; ++pass)
     {
         std::vector<Vector> gradFace(static_cast<std::size_t>(mesh.nFaces()));
@@ -64,12 +79,9 @@ void gaussGrad(const polyMesh& mesh, const Field<scalar>& data,
         {
             const std::size_t u = static_cast<std::size_t>(f);
             const Vector sfv = sf[u];
-            const Vector d = mesh.faceCentres()[u] - mesh.cellCentres()[static_cast<std::size_t>(mesh.owner()[u])];
-            const scalar dm = mag(d);
-            if (dm <= 0) cfFatal("grad: degenerate face-cell distance");
-            const Vector dh = d / dm;
-            const Vector cfVec = sfv - dh * dot(sfv, dh);
-            const Vector flux = sfv * faceValueOf(f, data) - cfVec * dot(gradFace[u], dh);
+            scalar tf = reconstructedFaceValue(f, u);
+            if (f < nInt) tf += dot(gradFace[u], faceSkew[u]);
+            const Vector flux = sfv * tf;
             sum[static_cast<std::size_t>(mesh.owner()[u])] += flux;
             if (f < mesh.nInternalFaces())
             {

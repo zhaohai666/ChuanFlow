@@ -135,6 +135,12 @@ int main()
             ctl.correctors = correctors;
             ctl.continuityTol = 0.0; // never break early
             ctl.bodyForce = c.force;
+            Field<Vector> cellForce(static_cast<std::size_t>(c.mesh.nCells()), Vector::zero());
+            const auto& cc = c.mesh.cellCentres();
+            for (label cell = 0; cell < c.mesh.nCells(); ++cell)
+                cellForce[static_cast<std::size_t>(cell)].x =
+                    c.force.x * (1.0 + 0.5 * cc[static_cast<std::size_t>(cell)].x / 0.2);
+            ctl.cellForce = &cellForce;
             const PisoStepResult r = solveTransientIncompressiblePiso(
                 c.mesh, c.U, c.p, c.phi, c.nu, schemes(), ctl);
             scalar pMax = 0;
@@ -163,18 +169,20 @@ int main()
         // grow (the ac1b343 carry-over instead drove p to the gauge here)
         CHECK(two.second.correctorResiduals[1] <= two.second.correctorResiduals[0] + 1e-18,
               "the second corrector does not grow the continuity residual (orthogonal)");
+        CHECK(two.second.pressureCorrectionMax < 1e-8 * one.second.pressureCorrectionMax,
+              "the second corrector is a full-pressure fixed point (orthogonal)");
         CHECK(two.first > 0.5 * one.first,
               "the second corrector does not collapse the pressure (orthogonal)");
 
         const auto sOne = run(sheared, 1);
         const auto sTwo = run(sheared, 2);
         CHECK(sTwo.second.correctorsUsed == 2, "the sheared mesh runs both correctors");
-        // the non-idle case: on a non-orthogonal mesh the first corrector
-        // leaves a real residual (the predicted flux does not close it), and
-        // the second corrector re-predicts and re-solves to shrink it. This
-        // is the contraction the orthogonal mesh cannot show.
+        // An x-dependent force gives both meshes a real pressure field. The
+        // second corrector solves the same full-pressure equation, not a
+        // neighbour correction; its warm start may still tighten the linear
+        // solve on the non-orthogonal mesh.
         CHECK(sTwo.second.correctorResiduals[1] < sTwo.second.correctorResiduals[0],
-              "the second corrector shrinks the continuity residual (non-orthogonal)");
+              "the repeated full-pressure solve shrinks the non-orthogonal residual");
         // and the refined pressure must stay a real field, not collapse to
         // the gauge the way the carry-over made it
         CHECK(sTwo.first > 0.5 * sOne.first && sTwo.first < 2.0 * sOne.first,

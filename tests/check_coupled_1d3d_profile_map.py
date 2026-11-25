@@ -401,12 +401,21 @@ def main():
         require(close(lo, hi, 1e-4),
                 f"{n}: two starting coefficients three times apart land on one "
                 f"resistance ({lo:.6e} / {hi:.6e})")
-    require(close(value(blocks["mixed"]["X1"], "dpPa"),
-                  value(blocks["parab"]["X1"], "dpPa"), 1e-12)
-            and close(arms["mixed"]["edges"]["X1"][1],
-                      arms["parab"]["edges"]["X1"][1], 1e-12),
+    # The two arms differ only in what the *series* edge's inlet is given, so the
+    # parallel edge's block and rate must land on the same numbers. They no
+    # longer coincide bit for bit: the block's bounded-owner-weight + skew face
+    # rule makes the two arms' iteration paths differ in their last digits, and
+    # the outer loop stops at its own budget - so the claim is stated against
+    # that budget (declared outer tolerance 1e-4; measured here is printed).
+    _rel = lambda a, b: abs(a - b) / abs(b)
+    _dp_rel = _rel(value(blocks["mixed"]["X1"], "dpPa"),
+                   value(blocks["parab"]["X1"], "dpPa"))
+    _q_rel = _rel(arms["mixed"]["edges"]["X1"][1], arms["parab"]["edges"]["X1"][1])
+    require(_dp_rel <= 1e-6 and _q_rel <= 1e-6,
             "the edge fed a parabola does not care that its partner's inlet changed: "
-            "mixed X1 is parab X1 to the last bit")
+            f"mixed X1 reproduces parab X1 to {_dp_rel:.1e} relative on the block's "
+            f"drop and {_q_rel:.1e} on its rate - 1% of the declared outer "
+            "tolerance (1e-4), with nothing beyond the two arms' stopping paths")
     require(close(arms["mixed"]["edges"]["X2"][1], arms["flat_lo"]["edges"]["X2"][1], 1e-9)
             and close(value(blocks["mixed"]["X2"], "betaImposed"), 1.0, 1e-12),
             "and the edge fed a plug is the flat arm's edge, with its own shape")

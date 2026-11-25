@@ -376,12 +376,27 @@ def main():
             f"an edge's row answers only to its own declaration: charging X2 leaves the "
             f"untouched X1 bit-identical to the reporting arm in all {len(FIELDS)} "
             "printed fields at all 8 levels")
-    same = {f: max(abs(value(E("c_both", n, 0), f) - value(E("c_free", n, 0), f))
-                   for n in range(1, N_STEPS + 1)) for f in FIELDS}
-    require(all(v == 0.0 for v in same.values()),
+    # The *priced* fields of the shared edge must land on the same numbers
+    # across arms; `residual` is the negotiation's own stopping metric, so it
+    # records where the pass stopped rather than what was priced. With the
+    # bounded-owner-weight / skew face rule the two arms' last bits differ
+    # (worst measured 1.3e-8 relative), where before the rule changed they
+    # coincided exactly: the claim is locality, not last-bit equality.
+    loc = [f for f in FIELDS if f != "residual"]
+    sameRel = {f: max(abs(value(E("c_both", n, 0), f) - value(E("c_free", n, 0), f))
+                      / (1e-12 + max(abs(value(E("c_both", n, 0), f)),
+                                    abs(value(E("c_free", n, 0), f))))
+                      for n in range(1, N_STEPS + 1)) for f in loc}
+    sameRes = max(abs(value(E("c_both", n, 0), "residual")
+                      - value(E("c_free", n, 0), "residual"))
+                  for n in range(1, N_STEPS + 1))
+    worstSame = max((sameRel[f], f) for f in loc)
+    require(worstSame[0] <= 1e-7 and sameRes <= 0.05 * TOL,
             f"and the same holds with the shared edge already charged: X1, charged in "
-            f"c_both and in c_free alike, is bit-identical across them too -- the table "
-            "is read per edge, never per arm")
+            f"c_both and in c_free alike, agrees across them in all {len(loc)} priced "
+            f"fields (worst {worstSame[1]} at {worstSame[0]:.1e} relative) and the "
+            f"stopping metric to {sameRes:.1e} Pa ({sameRes / TOL * 100:.2f}% of TOL) "
+            "-- the table is read per edge, never per arm")
 
     # ===== 7. the free edge: a real trajectory, a small one
     qMove = [abs(value(E("c_free", n, 0), "q") / value(E("c_off", n, 0), "q") - 1.0)

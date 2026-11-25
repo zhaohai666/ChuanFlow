@@ -131,9 +131,9 @@ public:
     const Field<Vector>& cellCentres() const { return cellCentres_; }
     const Field<Vector>& faceSf() const { return sf_; }
     const Field<Vector>& faceCentres() const { return faceCentres_; }
-    /// face centre minus the *global owner* centre: the non-orthogonal lever,
-    /// identical on both sides of a face so each side computes the same flux.
-    const Field<Vector>& faceDelta() const { return delta_; }
+    /// Face centre minus its bounded owner-neighbour interpolation point;
+    /// zero on boundaries and identical on both sides of an internal face.
+    const Field<Vector>& faceSkew() const { return faceSkew_; }
     /// bounded interpolation weight of the global owner.
     const Field<scalar>& faceOwnerWeight() const { return ownerWeight_; }
 
@@ -147,7 +147,7 @@ private:
     Field<Vector> cellCentres_;
     Field<Vector> sf_;
     Field<Vector> faceCentres_;
-    Field<Vector> delta_;
+    Field<Vector> faceSkew_;
     Field<scalar> ownerWeight_;
 };
 

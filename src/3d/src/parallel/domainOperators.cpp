@@ -73,18 +73,11 @@ void accumulateFaceSums(const DomainSet& ds,
         for (std::size_t k = 0; k < static_cast<std::size_t>(dm.nFaces()); ++k)
         {
             const Vector sfv = dm.faceSf()[k];
-            const scalar tf = faceValueAt(dm, k, lt, faceValue);
-            Vector flux = sfv * tf;
-            if (corrected)
-            {
-                const Vector dvec = dm.faceDelta()[k];
-                const scalar dmag = mag(dvec);
-                if (dmag <= 0) cfFatal("assembledGrad: degenerate face-cell distance");
-                const Vector dh = dvec / dmag;
-                const Vector cfVec = sfv - dh * dot(sfv, dh);
-                flux = sfv * tf - cfVec * dot(faceGradAt(dm, k, lg), dh);
-            }
+            scalar tf = faceValueAt(dm, k, lt, faceValue);
             const DomainFace& df = dm.faces()[k];
+            if (corrected && df.peer >= 0)
+                tf += dot(faceGradAt(dm, k, lg), dm.faceSkew()[k]);
+            const Vector flux = sfv * tf;
             if (df.sign > 0) dst[static_cast<std::size_t>(df.cell)] += flux;
             else dst[static_cast<std::size_t>(df.cell)] -= flux;
         }

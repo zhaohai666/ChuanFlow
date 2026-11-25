@@ -248,10 +248,10 @@ DomainMesh::DomainMesh(const Decomposition& dec, label domain)
     const label nF = static_cast<label>(faces_.size());
     sf_.assign(static_cast<std::size_t>(nF), Vector::zero());
     faceCentres_.assign(static_cast<std::size_t>(nF), Vector::zero());
-    delta_.assign(static_cast<std::size_t>(nF), Vector::zero());
-    ownerWeight_.assign(static_cast<std::size_t>(nF), 0.0);
-
     const Field<scalar> ow = makeInternalOwnerWeights(mesh);
+    const Field<Vector> globalSkew = makeFaceSkewVectors(mesh, ow);
+    faceSkew_.assign(static_cast<std::size_t>(nF), Vector::zero());
+    ownerWeight_.assign(static_cast<std::size_t>(nF), 0.0);
     const label nInt = mesh.nInternalFaces();
     for (std::size_t k = 0; k < faces_.size(); ++k)
     {
@@ -259,10 +259,7 @@ DomainMesh::DomainMesh(const Decomposition& dec, label domain)
         const std::size_t u = static_cast<std::size_t>(f);
         sf_[k] = mesh.faceSf()[u];
         faceCentres_[k] = mesh.faceCentres()[u];
-        // The non-orthogonal lever is measured from the *global owner* centre,
-        // so both sides of a face see the same one and compute the same flux;
-        // a rank could only do that if the lever came with the face.
-        delta_[k] = faceCentres_[k] - mesh.cellCentres()[static_cast<std::size_t>(mesh.owner()[u])];
+        faceSkew_[k] = globalSkew[u];
         ownerWeight_[k] = (f < nInt) ? ow[u] : 1.0;
     }
 }

@@ -37,7 +37,7 @@ import {
 } from './workspace.js';
 import { wellControlPanel, riskPanel } from './safety.js';
 import {
-  templateTarget, isPartialFidelity, isSteadyComparable, THREE_D_FAMILY,
+  templateTarget, isPartialFidelity, isSteadyComparable, THREE_D_FAMILY, COUPLED_FAMILY,
 } from './templates.js';
 import {
   REGIME_NAMES, REGIME_COLORS, mapPoint, regimeHit, regimeMapDrawCommands,
@@ -92,6 +92,9 @@ const DEFAULT_3D_EXE =
 // `three_d_engines` resolve beats these at startup, exactly like the 8
 // pre-existing engine keys.
 const DEFAULT_3D_FAMILY_DIR = '/Users/haizai/project/ChuanFlow/build/src/3d/apps';
+// Coupling engine family developer-tree defaults; the Rust `coupled_engines`
+// resolve beats these at startup, same contract as the 3D family.
+const DEFAULT_COUPLED_FAMILY_DIR = '/Users/haizai/project/ChuanFlow/build/src/coupling/apps';
 const THREE_D_VTU = '/tmp/chflow_gui_3d_field.vtu';
 const DEFAULT_COUPLED_CASE =
   '/Users/haizai/project/ChuanFlow/tests/cases/coupled1d3d/case.dict';
@@ -173,9 +176,11 @@ const ENGINES_STORE_KEY = 'chflow.engines.v1';
 // E1 (§5.181): the 3D engine family rides the same persisted store — one
 // key per family member, aligned with the pre-existing 8-key style.
 const THREE_D_FAMILY_KEYS = THREE_D_FAMILY.map((e) => e.key);
+const COUPLED_FAMILY_KEYS = COUPLED_FAMILY.map((e) => e.key);
 const ENGINES_KEYS = [
   'steady', 'pointElements', 'transient', 'coupled', 'coupledCase', 'twofluid', 'nodal', 'pvt', 'threeD',
   ...THREE_D_FAMILY_KEYS.filter((k) => k !== 'threeD'),
+  ...COUPLED_FAMILY_KEYS.filter((k) => k !== 'coupled'),
 ];
 const ENGINE_INPUT_IDS = {
   steady: 'exePath',
@@ -205,9 +210,17 @@ const engines = {
 for (const e of THREE_D_FAMILY) {
   if (e.key !== 'threeD') engines[e.key] = `${DEFAULT_3D_FAMILY_DIR}/${e.bin}`;
 }
+// coupling family per-member defaults; the steady single-edge `coupled` key
+// keeps the original DEFAULT_COUPLED_EXE above.
+for (const e of COUPLED_FAMILY) {
+  if (e.key !== 'coupled') engines[e.key] = `${DEFAULT_COUPLED_FAMILY_DIR}/${e.bin}`;
+}
 // which family member the next ▶ 3D run submits to (set by template load /
 // the dictionary-page family selector; defaults to PISO)
 let active3DEngine = 'threeD';
+// which coupling member the next ▶ 耦合 run submits to (set by template load;
+// defaults to the steady single-edge coupled engine)
+let activeCoupledEngine = 'coupled';
 
 // E9: restore engine paths persisted from a previous session (settings beat
 // hardcoded developer defaults; the backend resolve beats both below).
@@ -1159,6 +1172,7 @@ async function startJob(label, caseText_, isPath = false) {
     : label === 'transient' ? engines.transient
     : label === 'slug' ? engines.twofluid
     : label === '3d' ? (engines[active3DEngine] || engines.threeD)
+    : label === 'coupled' ? (engines[activeCoupledEngine] || engines.coupled)
     : engines.coupled;
   let casePath;
   if (label === 'coupled') {
@@ -3498,9 +3512,12 @@ async function loadTemplate(entry) {
     return;
   }
   if (target.kind === 'coupled') {
+    activeCoupledEngine = target.engine || 'coupled';
     $('coupledCasePath').value = entry.path;
+    $('coupledExePath').value = engines[activeCoupledEngine] || engines.coupled;
+    const famLabel = (COUPLED_FAMILY.find((e) => e.key === activeCoupledEngine) || {}).label || activeCoupledEngine;
     switchTab('coupled');
-    setStatus(`已载入模板「${entry.name}」：点「▶ 运行耦合」求解。`, 'ok');
+    setStatus(`已载入模板「${entry.name}」：点「▶ 运行耦合」提交耦合族引擎（${famLabel}）求解。`, 'ok');
     return;
   }
   if (target.kind === 'nodal') {
@@ -4567,6 +4584,16 @@ reflectEngines();
   } catch (err) {
     console.warn('three_d_engines failed:', err);
   }
+  // Coupling family binaries + case paths from the Rust `coupled_engines`
+  // resolve; an older backend without the command keeps the dev-tree defaults.
+  try {
+    const fam = await invoke('coupled_engines') || [];
+    for (const e of fam) {
+      if (COUPLED_FAMILY_KEYS.includes(e.key) && e.exe) engines[e.key] = e.exe;
+    }
+  } catch (err) {
+    console.warn('coupled_engines failed:', err);
+  }
   populate3DEngineSelect();
   $('threeDExePath').value = engines[active3DEngine] || engines.threeD;
   persistEngines();
@@ -4633,7 +4660,10 @@ async function reconcileRegimeBoundaries() {
     const v = e.target.value.trim();
     if (id === 'exePath') engines.steady = v;
     if (id === 'transientExePath') engines.transient = v;
-    if (id === 'coupledExePath') engines.coupled = v;
+    if (id === 'coupledExePath') {
+      // edits the active coupling family member (mirrors the 3D exe box)
+      engines[activeCoupledEngine] = v;
+    }
     if (id === 'twofluidExePath') engines.twofluid = v;
     if (id === 'nodalExePath') engines.nodal = v;
     if (id === 'pvtExePath') engines.pvt = v;

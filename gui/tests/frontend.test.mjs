@@ -96,6 +96,7 @@ import {
   isPartialFidelity,
   isSteadyComparable,
   THREE_D_FAMILY,
+  COUPLED_FAMILY,
 } from '../frontend/dist/templates.js';
 import {
   beggsBrillPattern,
@@ -644,9 +645,9 @@ test('workspace: parseTwoFluidFrames 帧与逐格键值', () => {
 // ---------------------------------------------------------------------------
 
 test('templates: 模板目标页与保真度标注', () => {
-  assert.equal(TEMPLATE_IDS.length, 20);
+  assert.equal(TEMPLATE_IDS.length, 23);
   assert.deepEqual(templateTarget('twoFluidTerrainSlug'), { tab: 'slug', kind: 'slug' });
-  assert.deepEqual(templateTarget('coupled1d3d'), { tab: 'coupled', kind: 'coupled' });
+  assert.deepEqual(templateTarget('coupled1d3d'), { tab: 'coupled', kind: 'coupled', engine: 'coupled' });
   assert.deepEqual(templateTarget('nodalVogel'), { tab: 'nodal', kind: 'nodal' });
   assert.deepEqual(templateTarget('pvtFlash'), { tab: 'pvt', kind: 'pvt' });
   assert.deepEqual(templateTarget('steadyEquipmentPump'), { tab: 'canvas', kind: 'dict' });
@@ -2329,6 +2330,54 @@ test('templates: 3D 族覆盖全部接入 app（10 个新成员）', () => {
     assert.equal(e.template, tpl);
     assert.ok(e.label && e.label.length > 0);
   }
+});
+
+// ---------------------------------------------------------------------------
+// 1D↔3D 耦合引擎族注册表与模板配对（steady/transient × single/multi-edge）
+// ---------------------------------------------------------------------------
+
+test('templates: 耦合族键唯一且模板与引擎一一配对', () => {
+  const keys = COUPLED_FAMILY.map((e) => e.key);
+  assert.equal(new Set(keys).size, keys.length, 'coupled family keys must be unique');
+  assert.equal(new Set(COUPLED_FAMILY.map((e) => e.bin)).size, keys.length, 'coupled family binaries must be unique');
+  assert.equal(keys[0], 'coupled', 'steady single-edge leads the family');
+  // every coupling member drives exactly one registered template, and that
+  // template targets the member back (engine <-> template pairing)
+  for (const e of COUPLED_FAMILY) {
+    assert.ok(TEMPLATE_IDS.includes(e.template), `template ${e.template} registered`);
+    const target = templateTarget(e.template);
+    assert.equal(target.kind, 'coupled');
+    assert.equal(target.engine, e.key);
+    assert.equal(target.tab, 'coupled');
+    assert.ok(e.label && e.label.length > 0);
+  }
+  // every coupled-kind template comes from the family (no orphan coupled templates)
+  for (const id of TEMPLATE_IDS) {
+    const t = templateTarget(id);
+    if (t.kind === 'coupled') {
+      assert.ok(COUPLED_FAMILY.some((e) => e.key === t.engine), `${id} engine ${t.engine} in family`);
+    }
+  }
+});
+
+test('templates: 耦合族覆盖全部 4 个接入耦合引擎', () => {
+  assert.equal(COUPLED_FAMILY.length, 4);
+  const expected = {
+    coupled: 'coupled1d3d',
+    coupledTransient: 'transientCoupled1d3d',
+    coupledMulti: 'coupled1d3dMulti',
+    coupledTransientMulti: 'transientCoupledMulti1d3d',
+  };
+  for (const [key, tpl] of Object.entries(expected)) {
+    const e = COUPLED_FAMILY.find((x) => x.key === key);
+    assert.ok(e, `family member ${key} present`);
+    assert.equal(e.template, tpl);
+    assert.ok(e.bin && e.bin.length > 0);
+  }
+  // the four binaries split along steady/transient × single/multi-edge
+  assert.equal(COUPLED_FAMILY.find((e) => e.key === 'coupledTransient').bin, 'chflow-coupled-1d3d-transient');
+  assert.equal(COUPLED_FAMILY.find((e) => e.key === 'coupledMulti').bin, 'chflow-coupled-1d3d-multi');
+  assert.equal(COUPLED_FAMILY.find((e) => e.key === 'coupledTransientMulti').bin, 'chflow-coupled-1d3d-transient-multi');
 });
 
 // ---------------------------------------------------------------------------

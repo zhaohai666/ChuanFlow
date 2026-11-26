@@ -38,6 +38,24 @@ const THREE_D_BY_TEMPLATE = new Map(
   THREE_D_FAMILY.map((e) => [e.template, e.key]),
 );
 
+/**
+ * The 1D↔3D coupling engine family, mirrored from the Rust COUPLED_FAMILY
+ * registry. Splits along steady/transient × single-edge/multi-edge; each row
+ * pairs a persistent engine key with its binary and the verified CTest case
+ * that drives it. The Rust `coupled_engines` command and the node guard test
+ * keep both sides from drifting.
+ */
+export const COUPLED_FAMILY = [
+  { key: 'coupled', bin: 'chflow-coupled-1d3d', template: 'coupled1d3d', label: '1D↔3D 稳态单边耦合（单 3D 块对接）' },
+  { key: 'coupledTransient', bin: 'chflow-coupled-1d3d-transient', template: 'transientCoupled1d3d', label: '1D↔3D 瞬态单边耦合（时间步进单块）' },
+  { key: 'coupledMulti', bin: 'chflow-coupled-1d3d-multi', template: 'coupled1d3dMulti', label: '1D↔3D 稳态多边耦合（多耦合边同台）' },
+  { key: 'coupledTransientMulti', bin: 'chflow-coupled-1d3d-transient-multi', template: 'transientCoupledMulti1d3d', label: '1D↔3D 瞬态多边耦合（逐边惰性/形状项开关）' },
+];
+
+const COUPLED_BY_TEMPLATE = new Map(
+  COUPLED_FAMILY.map((e) => [e.template, e.key]),
+);
+
 export const TEMPLATE_IDS = [
   'steadyNetwork',
   'steadyEquipmentValve',
@@ -46,6 +64,8 @@ export const TEMPLATE_IDS = [
   'transientBlowdown',
   'twoFluidTerrainSlug',
   'coupled1d3d',
+  // coupling family templates beyond the pre-existing steady single-edge case
+  ...COUPLED_FAMILY.filter((e) => e.key !== 'coupled').map((e) => e.template),
   'nodalVogel',
   'pvtFlash',
   'startedChannel',
@@ -56,7 +76,7 @@ export const TEMPLATE_IDS = [
 /** Which tab a template opens into and how it feeds the workspace. */
 export function templateTarget(id) {
   if (id === 'twoFluidTerrainSlug') return { tab: 'slug', kind: 'slug' };
-  if (id === 'coupled1d3d') return { tab: 'coupled', kind: 'coupled' };
+  if (COUPLED_BY_TEMPLATE.has(id)) return { tab: 'coupled', kind: 'coupled', engine: COUPLED_BY_TEMPLATE.get(id) };
   if (id === 'nodalVogel') return { tab: 'nodal', kind: 'nodal' };
   if (id === 'pvtFlash') return { tab: 'pvt', kind: 'pvt' };
   if (THREE_D_BY_TEMPLATE.has(id)) return { tab: 'dict', kind: '3d', engine: THREE_D_BY_TEMPLATE.get(id) };

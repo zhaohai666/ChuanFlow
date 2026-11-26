@@ -6,6 +6,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::default_engines,
             commands::three_d_engines,
+            commands::coupled_engines,
             commands::case_templates,
             commands::run_case,
             commands::run_case_text,

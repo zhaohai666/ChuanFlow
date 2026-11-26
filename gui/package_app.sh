@@ -69,15 +69,19 @@ done
 merge_universal "$APP/Contents/Resources/bin/chflow-pvt" \
     "$ROOT/build-arm64/src/pvt/apps/chflow-pvt" \
     "$ROOT/build/src/pvt/apps/chflow-pvt"
-merge_universal "$APP/Contents/Resources/bin/chflow-coupled-1d3d" \
-    "$ROOT/build-arm64/src/coupling/apps/chflow-coupled-1d3d" \
-    "$ROOT/build/src/coupling/apps/chflow-coupled-1d3d"
+for exe in chflow-coupled-1d3d chflow-coupled-1d3d-transient \
+           chflow-coupled-1d3d-multi chflow-coupled-1d3d-transient-multi; do
+    merge_universal "$APP/Contents/Resources/bin/$exe" \
+        "$ROOT/build-arm64/src/coupling/apps/$exe" \
+        "$ROOT/build/src/coupling/apps/$exe"
+done
 
 cp "$ROOT"/tests/cases/coupled1d3d/case.dict \
    "$APP/Contents/Resources/cases/coupled1d3d.dict"
 for tpl in steadyNetwork steadyEquipmentValve steadyEquipmentPump \
            steadyNetworkMultiphase transientBlowdown twoFluidTerrainSlug \
-           nodalVogel pvtFlash; do
+           nodalVogel pvtFlash transientCoupled1d3d coupled1d3dMulti \
+           transientCoupledMulti1d3d; do
     cp "$ROOT/tests/cases/$tpl/case.dict" "$APP/Contents/Resources/cases/$tpl.dict"
 done
 

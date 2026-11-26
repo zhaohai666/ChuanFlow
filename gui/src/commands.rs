@@ -1257,6 +1257,64 @@ pub fn three_d_engines() -> Vec<ThreeDEngineEntry> {
     resolve_three_d_family()
 }
 
+/// E1 (§5.181): the 1D↔3D coupling engine family registry. Same row layout as
+/// THREE_D_FAMILY: (frontend engine key, binary name, case id, human label).
+/// The four members split along steady/transient × single-edge/multi-edge:
+///   coupled               steady, one 3D block (the pre-existing default coupled)
+///   coupledTransient      transient, one 3D block
+///   coupledMulti          steady, several coupled edges on one shared run
+///   coupledTransientMulti transient × multi-edge, per-edge inertance/shape terms
+/// Every row pairs a coupled app with an engine-verified CTest case under
+/// tests/cases/<case_id>/case.dict.
+pub const COUPLED_FAMILY: &[(&str, &str, &str, &str)] = &[
+    ("coupled", "chflow-coupled-1d3d", "coupled1d3d", "1D↔3D 稳态单边耦合（单 3D 块对接）"),
+    ("coupledTransient", "chflow-coupled-1d3d-transient", "transientCoupled1d3d", "1D↔3D 瞬态单边耦合（时间步进单块）"),
+    ("coupledMulti", "chflow-coupled-1d3d-multi", "coupled1d3dMulti", "1D↔3D 稳态多边耦合（多耦合边同台）"),
+    ("coupledTransientMulti", "chflow-coupled-1d3d-transient-multi", "transientCoupledMulti1d3d", "1D↔3D 瞬态多边耦合（逐边惰性/形状项开关）"),
+];
+
+/// Resolve a named coupling engine binary (packaged Resources/bin first,
+/// developer tree second) - the coupling twin of `resolve_three_d_engine_named`.
+pub fn resolve_coupled_engine_named(bin_name: &str) -> String {
+    let packaged = std::env::current_exe().ok().and_then(|exe| {
+        exe.ancestors()
+            .find(|a| a.file_name().map(|n| n == "Contents").unwrap_or(false))
+            .map(|c| c.join("Resources/bin").join(bin_name))
+            .filter(|p| p.exists())
+    });
+    match packaged {
+        Some(p) => p.to_string_lossy().into_owned(),
+        None => {
+            let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .join("build/src/coupling/apps")
+                .join(bin_name);
+            dev.to_string_lossy().into_owned()
+        }
+    }
+}
+
+/// E1 (§5.181): the full coupling family with resolved binary and case paths.
+pub fn resolve_coupled_family() -> Vec<ThreeDEngineEntry> {
+    COUPLED_FAMILY
+        .iter()
+        .map(|(key, bin, case_id, label)| ThreeDEngineEntry {
+            key: (*key).to_string(),
+            label: (*label).to_string(),
+            exe: resolve_coupled_engine_named(bin),
+            case_id: (*case_id).to_string(),
+            case_path: resolve_case_path(case_id).to_string_lossy().into_owned(),
+        })
+        .collect()
+}
+
+/// Frontend hook: the coupling engine family (key / label / exe / case path).
+#[tauri::command]
+pub fn coupled_engines() -> Vec<ThreeDEngineEntry> {
+    resolve_coupled_family()
+}
+
 /// Frontend hook: the default engine paths for this installation
 /// (packaged Resources/bin first, developer tree second):
 /// [steady, transient, coupled-1d3d, coupled template case, two-fluid, nodal, pvt, 3d piso].
@@ -1288,7 +1346,10 @@ pub fn resolve_case_templates() -> Vec<TemplateEntry> {
         ("steadyNetworkMultiphase", "稳态黑油多相集输（Beggs-Brill）"),
         ("transientBlowdown", "瞬态放空（罐排空 2x2 解析）"),
         ("twoFluidTerrainSlug", "地形段塞（捕集-行进-卸载弛豫振荡）"),
-        ("coupled1d3d", "1D↔3D 耦合（网络嵌 SIMPLE 块）"),
+        ("coupled1d3d", "1D↔3D 稳态单边耦合（网络嵌单 3D 块）"),
+        ("transientCoupled1d3d", "1D↔3D 瞬态单边耦合（时间步进单块）"),
+        ("coupled1d3dMulti", "1D↔3D 稳态多边耦合（多耦合边同台）"),
+        ("transientCoupledMulti1d3d", "1D↔3D 瞬态多边耦合（逐边惰性/形状项开关）"),
         ("nodalVogel", "节点分析（Vogel IPR × Beggs-Brill 垂直举升）"),
         ("pvtFlash", "PVT 闪蒸（烃组分 + 黏度/表面张力）"),
         ("startedChannel", "3D 通道启动（PISO，体积力驱动 + VTU 场）"),
@@ -1910,8 +1971,10 @@ mod tests {
     #[test]
     fn case_templates_resolve_to_existing_verified_cases() {
         let templates = resolve_case_templates();
-        // E1 (§5.181): 10 pre-existing + 10 new 3D family templates.
-        assert_eq!(templates.len(), 20);
+        // E1 (§5.181): 10 pre-existing + 10 new 3D family templates + 3 new
+        // coupling family templates (transient single-edge / steady multi-edge /
+        // transient multi-edge; the steady single-edge coupled1d3d predates them).
+        assert_eq!(templates.len(), 23);
         for t in &templates {
             assert!(
                 Path::new(&t.path).exists(),
@@ -1982,6 +2045,60 @@ mod tests {
         // the default 3D resolve still points at PISO (frontends persist it)
         assert!(resolve_default_3d_engine().ends_with("chflow-piso-foam"));
         assert!(resolve_three_d_engine_named("chflow-simple-foam").ends_with("chflow-simple-foam"));
+    }
+
+    /// E1 (§5.181): every coupling family member must resolve a non-empty
+    /// binary (developer tree or packaged layout) and its engine-verified
+    /// case dict must exist on disk.
+    #[test]
+    fn coupled_family_resolves_binaries_and_verified_cases() {
+        let family = resolve_coupled_family();
+        assert_eq!(family.len(), COUPLED_FAMILY.len());
+        assert_eq!(family.len(), 4);
+        // keys are unique and the steady single-edge entry leads the family
+        let mut keys: Vec<&str> = family.iter().map(|e| e.key.as_str()).collect();
+        assert_eq!(keys[0], "coupled");
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), COUPLED_FAMILY.len(), "coupled family keys must be unique");
+        let bins: Vec<&str> = COUPLED_FAMILY.iter().map(|(_, bin, ..)| *bin).collect();
+        let mut sorted_bins = bins.to_vec();
+        sorted_bins.sort_unstable();
+        sorted_bins.dedup();
+        assert_eq!(sorted_bins.len(), bins.len(), "coupled family binaries must be unique");
+        for e in &family {
+            let (_, bin, _, _) = COUPLED_FAMILY
+                .iter()
+                .find(|(k, ..)| *k == e.key)
+                .unwrap();
+            assert!(!e.exe.is_empty(), "coupled family member {} resolved no binary", e.key);
+            assert!(e.exe.ends_with(bin), "{} exe {} does not end with {bin}", e.key, e.exe);
+            assert!(
+                Path::new(&e.case_path).exists(),
+                "coupled family case {} must exist: {}",
+                e.case_id,
+                e.case_path
+            );
+            assert!(e.case_path.ends_with(&format!("{}/case.dict", e.case_id)));
+            assert!(!e.label.is_empty());
+        }
+        let steady = family.iter().find(|e| e.key == "coupled").unwrap();
+        assert!(steady.exe.ends_with("chflow-coupled-1d3d"));
+        assert!(steady.case_path.ends_with("coupled1d3d/case.dict"));
+    }
+
+    /// E1 (§5.181): every coupling family case id must be registered as a
+    /// template so the template menu and the coupling family cannot drift.
+    #[test]
+    fn coupled_family_cases_are_all_registered_templates() {
+        let templates = resolve_case_templates();
+        let ids: Vec<&str> = templates.iter().map(|t| t.id.as_str()).collect();
+        for (key, _bin, case_id, _label) in COUPLED_FAMILY {
+            assert!(
+                ids.contains(case_id),
+                "coupled family engine {key} case {case_id} missing from template registry"
+            );
+        }
     }
 
     #[test]

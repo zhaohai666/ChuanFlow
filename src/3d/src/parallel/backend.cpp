@@ -14,15 +14,4 @@ const char* name()
 #endif
 }
 
-Kind kind()
-{
-#if defined(CF_WITH_KOKKOS)
-    return Kind::Kokkos;
-#elif defined(CF_WITH_OPENMP)
-    return Kind::OpenMP;
-#else
-    return Kind::CpuSerial;
-#endif
-}
-
 } // namespace cf::backend

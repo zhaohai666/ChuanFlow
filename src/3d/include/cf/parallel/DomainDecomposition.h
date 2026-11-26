@@ -76,7 +76,6 @@ public:
         std::vector<label> slots;
     };
     const std::vector<Message>& sendPlan(label d) const { return send_[d]; }
-    const std::vector<Message>& recvPlan(label d) const { return recv_[d]; }
     /// Receive slots of `d` coming from `peer`, or null when there is no such
     /// message. Index-matched with the sender's send list by construction.
     const Message* recvFrom(label d, label peer) const;

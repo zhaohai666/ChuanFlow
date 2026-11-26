@@ -58,42 +58,7 @@ T mag2(const Vector3<T>& v) { return dot(v, v); }
 template<typename T>
 T mag(const Vector3<T>& v) { return std::sqrt(dot(v, v)); }
 
-/// Dyadic product a_i b_j (used for non-orthogonal correction weights).
-template<typename T>
-struct Tensor3
-{
-    T xx{}, xy{}, xz{};
-    T yx{}, yy{}, yz{};
-    T zx{}, zy{}, zz{};
-
-    static Tensor3 outer(const Vector3<T>& a, const Vector3<T>& b)
-    {
-        return {a.x * b.x, a.x * b.y, a.x * b.z,
-                a.y * b.x, a.y * b.y, a.y * b.z,
-                a.z * b.x, a.z * b.y, a.z * b.z};
-    }
-
-    Vector3<T> operator&(const Vector3<T>& v) const
-    {
-        return {xx * v.x + xy * v.y + xz * v.z,
-                yx * v.x + yy * v.y + yz * v.z,
-                zx * v.x + zy * v.y + zz * v.z};
-    }
-
-    T trace() const { return xx + yy + zz; }
-};
-
-/// Double contraction A:B of two tensors (== dot(A&v-ish sum)); returns sum_ij A_ij B_ij.
-template<typename T>
-T doubleContract(const Tensor3<T>& a, const Tensor3<T>& b)
-{
-    return a.xx * b.xx + a.xy * b.xy + a.xz * b.xz
-         + a.yx * b.yx + a.yy * b.yy + a.yz * b.yz
-         + a.zx * b.zx + a.zy * b.zy + a.zz * b.zz;
-}
-
 using Vector = Vector3<scalar>;
-using Tensor = Tensor3<scalar>;
 
 inline std::ostream& operator<<(std::ostream& os, const Vector& v)
 {

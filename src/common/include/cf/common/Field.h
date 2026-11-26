@@ -1,6 +1,5 @@
 #pragma once
 
-#include <algorithm>
 #include <numeric>
 #include <span>
 #include <vector>
@@ -27,20 +26,6 @@ template<typename T>
 T sum(const Field<T>& f)
 {
     return std::accumulate(f.begin(), f.end(), T{});
-}
-
-/// L2 norm of the field values (vector components summed).
-inline scalar l2Norm(const Field<scalar>& f)
-{
-    return std::sqrt(std::inner_product(f.begin(), f.end(), f.begin(), 0.0));
-}
-
-/// Max abs value.
-inline scalar lInfNorm(const Field<scalar>& f)
-{
-    scalar m = 0;
-    for (const auto v : f) m = std::max(m, std::abs(v));
-    return m;
 }
 
 } // namespace cf

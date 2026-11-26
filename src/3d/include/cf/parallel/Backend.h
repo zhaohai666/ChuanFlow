@@ -10,20 +10,10 @@
 namespace cf::backend
 {
 
-/// Compile-time selected parallel backend. The canonical CPU serial member is
-/// the reference every other member must agree with, index by index.
-enum class Kind
-{
-    CpuSerial,
-    OpenMP,
-    Kokkos,
-};
-
 /// Human-readable name of the backend compiled into this translation unit.
 /// Defined in src/3d/src/parallel/backend.cpp (kept out of the header so the
 /// build configuration has exactly one owner).
 const char* name();
-Kind kind();
 
 /// Invoke f(i) exactly once for every i in [0, n), in ascending index order
 /// on the serial backend. The loop is intentionally index-based (not a pair

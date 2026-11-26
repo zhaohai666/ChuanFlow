@@ -324,3 +324,13 @@ export function parseBlackoil(caseText) {
   if (!bo) return null;
   return parseBodyKv(bo.body).kv;
 }
+
+/**
+ * Whether `fluid {}` already declares a `pvt {}` sub-block. The kernel refuses
+ * blackoil and pvt together (network.cpp:3040-3041); the panel uses this to
+ * warn before the user fills the blackoil form.
+ */
+export function fluidHasPvt(caseText) {
+  const fluid = sectionSpan(caseText, 'fluid');
+  return fluid ? /\bpvt\s*\{/.test(fluid.body) : false;
+}

@@ -30,6 +30,7 @@ import {
   parsePipeEntry,
   applyBlackoil,
   parseBlackoil,
+  fluidHasPvt,
 } from '../frontend/dist/dictBlocks.js';
 
 // Kernel keys copied verbatim from the source reads:
@@ -295,4 +296,88 @@ test('拒绝: blackoil 油密度非正 / 含水率越界', () => {
 test('拒绝: 未知块 id 被拒绝（不静默写坏字典）', () => {
   assert.throws(() => applyPipeBlock(BASE_STEADY, 'P1', 'nope', {}), /unknown/);
   assert.throws(() => flowAssuranceBlockLines('nope', {}), /unknown/);
+});
+
+// ---------------------------------------------------------------------------
+// Panel contract: the property panel backfills from the parsed dictionary,
+// edits one value, writes back through the same apply helper, then re-parses.
+// These mirror app.js renderPipeDictGroups / renderBlackoilGroup without a
+// DOM: parse -> mutate -> apply -> parse again, adjacent keys untouched.
+// ---------------------------------------------------------------------------
+
+test('面板往返: correlations 回填 → 改定律 → 写回，几何键保留', () => {
+  const seeded = applyPipeBlock(BASE_STEADY, 'P1', 'correlations',
+    { correlation: 'beggsBrill' });
+  let parsed = parsePipeEntry(seeded, 'P1');
+  assert.equal(parsed.correlation, 'beggsBrill');
+  // panel edits: switch law and add the HB Griffith flag
+  const next = applyPipeBlock(seeded, 'P1', 'correlations', {
+    correlation: 'hagedornBrown',
+    hbGriffith: 'true',
+  });
+  parsed = parsePipeEntry(next, 'P1');
+  assert.equal(parsed.correlation, 'hagedornBrown');
+  assert.equal(parsed.hbGriffith, 'true');
+  // adjacent geometry / source keys survive verbatim
+  assert.equal(parsed.from, 'A');
+  assert.equal(parsed.to, 'B');
+  assert.equal(parsed.length, '100');
+  assert.equal(parsed.diameter, '0.05');
+});
+
+test('面板往返: rheology 回填 → 改 n/K → 写回，几何键保留', () => {
+  const seeded = applyPipeBlock(BASE_STEADY, 'P1', 'rheology',
+    { flowIndex: 0.5, consistency: 1.0 });
+  let parsed = parsePipeEntry(seeded, 'P1');
+  assert.equal(parsed.flowIndex, '0.5');
+  assert.equal(parsed.consistency, '1');
+  const next = applyPipeBlock(seeded, 'P1', 'rheology', {
+    flowIndex: 0.7, consistency: 2.0, yieldStress: 0.05,
+  });
+  parsed = parsePipeEntry(next, 'P1');
+  assert.equal(parsed.flowIndex, '0.7');
+  assert.equal(parsed.consistency, '2');
+  assert.equal(parsed.yieldStress, '0.05');
+  assert.equal(parsed.from, 'A');
+  assert.equal(parsed.length, '100');
+});
+
+test('面板往返: blackoil 回填 → 改 GOR → 写回，rho/mu 保留', () => {
+  const seeded = applyBlackoil('fluid { rho 850; mu 0.1; }\n',
+    { ...FIXTURES.blackoil });
+  let bo = parseBlackoil(seeded);
+  assert.equal(bo.oilDensity, '850');
+  const next = applyBlackoil(seeded, { ...FIXTURES.blackoil, gor: 120 });
+  bo = parseBlackoil(next);
+  assert.equal(bo.gor, '120');
+  assert.equal(bo.oilDensity, '850');
+  assert.match(next, /\brho 850/);
+  assert.match(next, /\bmu 0.1/);
+});
+
+test('新增: 管段原本无本块键，写回是新增而不是覆盖相邻键', () => {
+  const out = applyPipeBlock(BASE_STEADY, 'P1', 'rheology',
+    { flowIndex: 0.5, consistency: 1.0 });
+  const parsed = parsePipeEntry(out, 'P1');
+  for (const k of ['from', 'to', 'length', 'diameter']) {
+    assert.ok(parsed[k] !== undefined, `相邻键 ${k} 被覆盖`);
+  }
+  assert.equal(parsed.flowIndex, '0.5');
+  assert.equal(parsed.consistency, '1');
+});
+
+test('新增: fluid 原本无 blackoil，写回是新增子块而不是冲掉 rho/mu', () => {
+  const out = applyBlackoil('fluid { rho 850; mu 0.1; }\n',
+    { oilDensity: 850, gor: 80 });
+  assert.match(out, /\brho 850/);
+  assert.match(out, /\bmu 0.1/);
+  const bo = parseBlackoil(out);
+  assert.equal(bo.oilDensity, '850');
+  assert.equal(bo.gor, '80');
+});
+
+test('互斥提示: fluidHasPvt 识别 pvt 子块，blackoil 不算 pvt', () => {
+  assert.equal(fluidHasPvt('fluid { rho 850; }\n'), false);
+  assert.equal(fluidHasPvt('fluid { pvt { pressure 1e6; }\n }\n'), true);
+  assert.equal(fluidHasPvt('fluid { blackoil { oilDensity 850; }\n }\n'), false);
 });

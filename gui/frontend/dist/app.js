@@ -63,6 +63,10 @@ import {
 import {
   parseSchedules, pipeNames, applySchedules, esdPreset, timelineSvg,
 } from './scheduleEditor.js';
+import {
+  PIPE_BLOCKS, parsePipeEntry, applyPipeBlock,
+  BLACKOIL_SPEC, parseBlackoil, applyBlackoil, fluidHasPvt,
+} from './dictBlocks.js';
 
 // ---------------------------------------------------------------------------
 // state
@@ -447,6 +451,145 @@ function numInput(label, value, family, onApply) {
   return wrap;
 }
 
+// E2b: dictionary-level structured blocks that live outside the drag model
+// (per-pipe correlations/rheology, nested fluid.blackoil). They read/write
+// the raw case dictionary text directly, mirroring the flow-assurance panel;
+// the model serializer does not carry these keys, so afterModelChange() must
+// not be called here (it would reserialize from the model and drop them).
+
+function dictFieldInput(f, value) {
+  if (f.kind === 'word' && f.options) {
+    const sel = document.createElement('select');
+    const blank = document.createElement('option');
+    blank.value = '';
+    blank.textContent = '—';
+    sel.append(blank);
+    for (const opt of f.options) {
+      const o = document.createElement('option');
+      o.value = opt;
+      o.textContent = opt;
+      sel.append(o);
+    }
+    sel.value = value ?? '';
+    return sel;
+  }
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.spellcheck = false;
+  input.value = value ?? '';
+  return input;
+}
+
+function collectDictValues(fields, inputs) {
+  const values = {};
+  for (const f of fields) {
+    const el = inputs[f.key];
+    if (el && el.value.trim() !== '') values[f.key] = el.value.trim();
+  }
+  return values;
+}
+
+/** Per-pipe correlations + rheology groups in the selected pipe's panel. */
+function renderPipeDictGroups(p) {
+  const entry = parsePipeEntry(caseText.value, p.name) || {};
+  for (const blockId of Object.keys(PIPE_BLOCKS)) {
+    const spec = PIPE_BLOCKS[blockId];
+    const head = document.createElement('p');
+    head.className = 'note';
+    head.textContent = `${spec.label}（留空 = 未设置）：`;
+    propsEl.appendChild(head);
+    const inputs = {};
+    for (const f of spec.fields) {
+      const wrap = document.createElement('label');
+      wrap.className = 'pfield';
+      const span = document.createElement('span');
+      span.textContent = f.hint || f.key;
+      const el = dictFieldInput(f, entry[f.key]);
+      inputs[f.key] = el;
+      wrap.append(span, el);
+      propsEl.appendChild(wrap);
+    }
+    const apply = () => {
+      const values = collectDictValues(spec.fields, inputs);
+      try {
+        caseText.value = applyPipeBlock(caseText.value, p.name, blockId,
+          Object.keys(values).length ? values : null);
+        renderProps();
+      } catch (e) {
+        setStatus(`${spec.label}：${e.message}`, 'error');
+      }
+    };
+    for (const el of Object.values(inputs)) el.addEventListener('change', apply);
+    const row = document.createElement('div');
+    row.className = 'prow';
+    const clear = document.createElement('button');
+    clear.textContent = '清除本块';
+    clear.addEventListener('click', () => {
+      try {
+        caseText.value = applyPipeBlock(caseText.value, p.name, blockId, null);
+        renderProps();
+      } catch (e) {
+        setStatus(`${spec.label}：${e.message}`, 'error');
+      }
+    });
+    row.appendChild(clear);
+    propsEl.appendChild(row);
+  }
+}
+
+/** fluid.blackoil group in the fluid panel; warns on the pvt mutex. */
+function renderBlackoilGroup() {
+  const head = document.createElement('p');
+  head.className = 'note';
+  head.textContent = '黑油 PVT（fluid.blackoil{}，留空 = 未设置）：';
+  propsEl.appendChild(head);
+  if (fluidHasPvt(caseText.value)) {
+    const warn = document.createElement('p');
+    warn.className = 'note';
+    warn.style.color = '#e0a800';
+    warn.textContent = '当前 fluid 已声明 pvt{}：blackoil 与 pvt 互斥，内核将拒绝同时声明，请先清除 pvt。';
+    propsEl.appendChild(warn);
+    return;
+  }
+  const bo = parseBlackoil(caseText.value) || {};
+  const inputs = {};
+  for (const f of BLACKOIL_SPEC.fields) {
+    const wrap = document.createElement('label');
+    wrap.className = 'pfield';
+    const span = document.createElement('span');
+    span.textContent = f.hint || f.key;
+    const el = dictFieldInput(f, bo[f.key]);
+    inputs[f.key] = el;
+    wrap.append(span, el);
+    propsEl.appendChild(wrap);
+  }
+  const apply = () => {
+    const values = collectDictValues(BLACKOIL_SPEC.fields, inputs);
+    try {
+      caseText.value = applyBlackoil(caseText.value,
+        Object.keys(values).length ? values : null);
+      renderProps();
+    } catch (e) {
+      setStatus(`blackoil：${e.message}`, 'error');
+    }
+  };
+  for (const el of Object.values(inputs)) el.addEventListener('change', apply);
+  const row = document.createElement('div');
+  row.className = 'prow';
+  const clear = document.createElement('button');
+  clear.textContent = '清除 blackoil';
+  clear.addEventListener('click', () => {
+    try {
+      caseText.value = applyBlackoil(caseText.value, null);
+      renderProps();
+    } catch (e) {
+      setStatus(`blackoil：${e.message}`, 'error');
+    }
+  });
+  row.appendChild(clear);
+  propsEl.appendChild(row);
+}
+
 // E4 device field labels + display unit families (null = raw SI number).
 const DEVICE_FIELD_META = {
   jetNozzleArea: ['喷嘴面积 An (m²)', null],
@@ -560,6 +703,9 @@ function renderProps() {
       state.model = setPipeFields(state.model, p.id, { elevation: v });
       afterModelChange();
     }));
+
+    // E2b: per-pipe correlations / rheology, dictionary-level blocks.
+    renderPipeDictGroups(p);
 
     // inline equipment (network.cpp pipe keys), 0 = absent
     const devHead = document.createElement('p');
@@ -728,6 +874,8 @@ function renderProps() {
       state.model = setFluid(state.model, { mu: v });
       afterModelChange();
     }));
+    // E2b: nested fluid.blackoil PVT declaration.
+    renderBlackoilGroup();
     return;
   }
 

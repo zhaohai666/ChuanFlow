@@ -656,6 +656,30 @@ int main(int argc, char** argv)
                                                        : " belowTransition");
             }
             log::info(line);
+            // 5.193 (G9): a surveyed arc, stated back as the numbers the
+            // march was charged for: the integral the survey claims (`dz`),
+            // the span of sin(theta) the 24 segments actually sampled
+            // (`sinmin` / `sinmax`), and then one point per segment so a
+            // checker can re-derive every gravity term without a solver rerun.
+            if (pipe.surveyOn)
+            {
+                const std::vector<double> ssin = surveySegSinOf(pipe, 24);
+                double smin = 1.0, smax = -1.0;
+                for (double v : ssin)
+                {
+                    smin = std::min(smin, v);
+                    smax = std::max(smax, v);
+                }
+                log::info("survey ", f.name, " dz ", num(surveyElevationOf(pipe)),
+                          " sinmin ", num(smin), " sinmax ", num(smax),
+                          " st ", static_cast<int>(pipe.surveyMd.size()),
+                          " seg ", static_cast<int>(ssin.size()));
+                const double dsSeg = pipe.length / static_cast<double>(ssin.size());
+                for (std::size_t k = 0; k < ssin.size(); ++k)
+                    log::info("surveypt ", f.name, " k ", static_cast<int>(k),
+                              " md ", num((static_cast<double>(k) + 0.5) * dsSeg),
+                              " sin ", num(ssin[k]));
+            }
             // 5.192 (G8): the jet pump's own line -- the two streams made
             // explicit. `qd` is the row rate the network solved, `qn` the
             // declared motive stream it was split by, `qs` the entrained

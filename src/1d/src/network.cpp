@@ -1007,6 +1007,56 @@ RawFlow equipmentFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
 
 } // namespace
 
+/// 5.193 (G9): the survey's own vertical drop. theta is linear in measured
+/// depth between stations, so each interval integrates in closed form:
+///   dz_i = integral ( cos(th1) - cos(th2) ) / (th2 - th1)   (th2 != th1)
+///        = sin(th1) * ds                                     (th2 == th1)
+/// with th in radians and ds = md[i+1] - md[i]. No numerical quadrature and
+/// no sampling error: the number the pipe is then charged for is the integral
+/// the survey states, not a grid's guess at it.
+double surveyElevationOf(const NetworkPipe& p)
+{
+    if (!p.surveyOn) return p.elevation;
+    double dz = 0.0;
+    for (std::size_t i = 0; i + 1 < p.surveyMd.size(); ++i)
+    {
+        const double ds = p.surveyMd[i + 1] - p.surveyMd[i];
+        const double th1 = p.surveyInclDeg[i] * M_PI / 180.0;
+        const double th2 = p.surveyInclDeg[i + 1] * M_PI / 180.0;
+        dz += (std::abs(th2 - th1) < 1e-12)
+                  ? std::sin(th1) * ds
+                  : (std::cos(th1) - std::cos(th2)) / (th2 - th1) * ds;
+    }
+    return dz;
+}
+
+/// 5.193 (G9): sin(theta) at each march segment's midpoint. The survey is
+/// piecewise-linear in md, so a midpoint is the honest sample of an arc that
+/// bends inside the segment (and the average of sin over a linear-theta
+/// interval, by the same closed form above, is within a per-mille of it).
+std::vector<double> surveySegSinOf(const NetworkPipe& p, int nSeg)
+{
+    if (!p.surveyOn)
+        return std::vector<double>(static_cast<std::size_t>(nSeg),
+                                   p.elevation / std::max(p.length, 1e-300));
+    std::vector<double> s(static_cast<std::size_t>(nSeg));
+    const double ds = p.length / static_cast<double>(nSeg);
+    std::size_t k = 0;
+    for (int i = 0; i < nSeg; ++i)
+    {
+        const double mid = (i + 0.5) * ds;
+        while (k + 2 < p.surveyMd.size() && mid >= p.surveyMd[k + 1]) ++k;
+        const double m0 = p.surveyMd[k], m1 = p.surveyMd[k + 1];
+        const double f = (m1 > m0) ? (mid - m0) / (m1 - m0) : 0.0;
+        const double th = (p.surveyInclDeg[k]
+                           + f * (p.surveyInclDeg[k + 1]
+                                  - p.surveyInclDeg[k])) * M_PI / 180.0;
+        s[static_cast<std::size_t>(i)] = std::sin(th);
+    }
+    return s;
+}
+
+
 /// The friction drop (Pa, positive) a wall law resists at an imposed rate
 /// magnitude: Churchill on the Metzner-Reed number when no threshold is
 /// declared -- so Newtonian and power-law share one line, one function, and one
@@ -1840,12 +1890,17 @@ double twoPhaseRateForDrop(const NetworkPipe& pipe,
     choked = false;
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
     const double pFloor = std::max(0.02 * pUp, 1000.0);
+    // 5.193 (G9): a surveyed pipe prices its gravity segment by segment; the
+    // undeclared pipe hands nullptr and keeps the single slope, bit for bit.
+    const std::vector<double> segSinVec =
+        pipe.surveyOn ? surveySegSinOf(pipe, 24) : std::vector<double>();
+    const std::vector<double>* segSin = pipe.surveyOn ? &segSinVec : nullptr;
     auto g = [&](double q)
     {
         const BeggsBrillMarchOut m = marchBeggsBrillPipe(
             fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness,
             sinFlow, 24, liquidRheology, pipe.flowPattern, sigmaOfP,
-            pipe.correlation);
+            pipe.correlation, nullptr, false, segSin);
         // choked marches return the floor shortfall: continuous with the
         // unchoked branch (there pOutlet -> pFloor) and correctly scaled
         // for the secant, unlike a fixed sentinel
@@ -1982,10 +2037,12 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
                     "from the EOS: no composition");
         pth = &th;
     }
+    const std::vector<double> segSinVec =
+        pipe.surveyOn ? surveySegSinOf(pipe, 24) : std::vector<double>();
     const BeggsBrillMarchOut m = marchBeggsBrillPipe(
         fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness, sinFlow,
         24, liquidRheology, pipe.flowPattern, sigmaOfP, pipe.correlation,
-        pth);
+        pth, false, pipe.surveyOn ? &segSinVec : nullptr);
     out.flowRate = forward ? q : -q;
     out.velocity = m.vmOutlet * (forward ? 1.0 : -1.0);
     out.holdup = m.holdupOutlet;
@@ -2040,11 +2097,14 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
         // below the static head the law is flat at zero flow; probe just
         // past the knee so Newton still gets a usable slope pointing the
         // residual downhill
+        const std::vector<double> segSinVec =
+            pipe.surveyOn ? surveySegSinOf(pipe, 24) : std::vector<double>();
         const BeggsBrillMarchOut dead =
             marchBeggsBrillPipe(fluid, 0.0, pUp, pipe.length, pipe.diameter,
                                 pipe.roughness, sinFlow, 24,
                                 liquidRheology, pipe.flowPattern, sigmaOfP,
-                                pipe.correlation);
+                                pipe.correlation, nullptr, false,
+                                pipe.surveyOn ? &segSinVec : nullptr);
         const double deficit = pLow - dead.pOutlet; // missing pressure
         if (deficit > 0.0)
         {
@@ -2412,7 +2472,13 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
     const double massRate = fluid.density(pUp) * qIn;
     const double ds = pipe.length / nSeg;
-    const double dz = sinFlow * ds;
+    // 5.193 (G9): the march reads the pipe's own survey when it has one, so a
+    // build section and a lateral each pay their own gravity. Without a
+    // survey this is the pipe's single slope for every segment -- the
+    // pre-survey path bit for bit.
+    const std::vector<double> segSinVec =
+        pipe.surveyOn ? surveySegSinOf(pipe, nSeg) : std::vector<double>();
+    const std::vector<double>* segSin = pipe.surveyOn ? &segSinVec : nullptr;
     const double headPerM =
         machineHeadOf(pipe, qIn, fluid.density(pUp)) / pipe.length;
     const double pFloor = std::max(0.02 * pUp, 1000.0);
@@ -2446,7 +2512,9 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         m.sigmaOutlet = sigma;
         if (stations && fluid.liveFlash)
             stations->push_back(PvtFlashStation{p, rho, mu, sigma});
-        const double dp = rho * kGravity * dz
+        const double sinI = segSin ? (*segSin)[static_cast<std::size_t>(i)]
+                                   : sinFlow;
+        const double dp = rho * kGravity * sinI * ds
             + (f * ds / pipe.diameter + pipe.valveK / nSeg) * rho * v * v / 2.0
             - rho * kGravity * headPerM * ds;
         m.segX.push_back(i * ds);
@@ -2459,7 +2527,7 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         // 5.144 (G6): the passive thermal step, shared with the black-oil
         // march so the two paths price the same law.
         if (thermal)
-            t = steadyThermalAdvance(*thermal, t, pOld, p, i, ds, sinFlow,
+            t = steadyThermalAdvance(*thermal, t, pOld, p, i, ds, sinI,
                                      massRate);
         if (hitFloor)
         {
@@ -3722,6 +3790,100 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                         + " m but the pipe's elevation is "
                         + std::to_string(p.elevation)
                         + " m: the trajectory must end where the pipe does");
+        }
+        // 5.193 (G9): the well-trajectory survey. `md` is the switch: with it
+        // the pipe stops stating ONE slope and states an inclination per
+        // measured depth, which is what a directional well actually delivers
+        // and what the gravity term has to be priced on. The shape is checked
+        // here rather than trusted, because every one of these defects would
+        // otherwise reach the march as a plausible-looking number:
+        //   - md not starting at 0 or not ending at length: the survey covers
+        //     a different hole than the pipe;
+        //   - md not monotone: an interval would be walked backwards;
+        //   - unequal list lengths: a station would borrow its neighbour's
+        //     inclination;
+        //   - |inclination| > 90: an angle from horizontal cannot leave the
+        //     half-plane, and sin(theta) would fold back;
+        //   - a declared elevation beside a survey that disagrees: two
+        //     statements of one arc, exactly the ambiguity 5.158 refuses in
+        //     the terrain trajectory;
+        //   - a survey beside a slugPrediction trajectory: the same, on the
+        //     second grammar;
+        //   - a survey on a coupled edge (its drop is the partner's own
+        //     statement, so the gravity here would be read by nothing);
+        //   - `md` alone with no inclination list, and inclination with no md.
+        if (pd.has("survey"))
+        {
+            const Dictionary& sv = pd.getDict("survey");
+            for (const std::string& k : sv.keys())
+                if (k != "md" && k != "inclination")
+                    cfFatal("steadyNetwork: pipe '" + name + "' survey declares"
+                            " unknown key '" + k + "': a survey is md and"
+                            " inclination");
+            p.surveyOn = true;
+            p.surveyMd = sv.getScalarList("md");
+            p.surveyInclDeg = sv.getScalarList("inclination");
+            if (p.surveyMd.size() < 2 || p.surveyInclDeg.size() < 2)
+                cfFatal("steadyNetwork: pipe '" + name + "' survey needs at"
+                        " least two stations: one station states no arc");
+            if (p.surveyMd.size() != p.surveyInclDeg.size())
+                cfFatal("steadyNetwork: pipe '" + name + "' survey has "
+                        + std::to_string(p.surveyMd.size()) + " measured depths"
+                        " but " + std::to_string(p.surveyInclDeg.size())
+                        + " inclinations: one angle per station");
+            if (std::fabs(p.surveyMd.front()) > 1e-12)
+                cfFatal("steadyNetwork: pipe '" + name + "' survey starts at md"
+                        " " + std::to_string(p.surveyMd.front())
+                        + " m: a survey of this pipe starts at 0");
+            if (std::fabs(p.surveyMd.back() - p.length)
+                > 1e-9 * std::max(std::fabs(p.length), 1.0))
+                cfFatal("steadyNetwork: pipe '" + name + "' survey ends at md "
+                        + std::to_string(p.surveyMd.back()) + " m but the pipe"
+                        " is " + std::to_string(p.length)
+                        + " m: the survey lays the pipe's own arc out");
+            for (std::size_t i = 0; i + 1 < p.surveyMd.size(); ++i)
+                if (!(p.surveyMd[i + 1] > p.surveyMd[i]))
+                    cfFatal("steadyNetwork: pipe '" + name + "' survey md is"
+                            " not monotone at station " + std::to_string(i + 1)
+                            + " (" + std::to_string(p.surveyMd[i]) + " -> "
+                            + std::to_string(p.surveyMd[i + 1])
+                            + " m): measured depth only grows");
+            for (double a : p.surveyInclDeg)
+                if (!(a >= -90.0 && a <= 90.0))
+                    cfFatal("steadyNetwork: pipe '" + name + "' survey"
+                            " inclination " + std::to_string(a)
+                            + " deg is outside [-90, 90]: it is an angle from"
+                            " horizontal");
+            if (p.coupledResistance > 0)
+                cfFatal("steadyNetwork: pipe '" + name + "' is a coupled edge"
+                        " with a survey: its drop is the partner's own"
+                        " statement, so the surveyed gravity would be read by"
+                        " nothing");
+            if (pd.has("slugPrediction"))
+                cfFatal("steadyNetwork: pipe '" + name + "' declares both a"
+                        " survey{} and a slugPrediction trajectory: two"
+                        " statements of one arc, and the trajectory grammar"
+                        " already carries the inclination");
+            const double dz = surveyElevationOf(p);
+            if (pd.has("elevation"))
+            {
+                if (std::fabs(dz - p.elevation)
+                    > 1e-9 * std::max(std::fabs(p.elevation), 1.0))
+                    cfFatal("steadyNetwork: pipe '" + name + "' survey rises"
+                            " to " + std::to_string(dz)
+                            + " m but the declared elevation is "
+                            + std::to_string(p.elevation)
+                            + " m: the survey is the arc, so the elevation is"
+                            " what it integrates to");
+            }
+            else
+            {
+                // No declared elevation: the survey's integral IS the pipe's
+                // elevation, so every downstream reader (single-phase
+                // equipmentFlow, the buoyancy of the fills, the report) sees
+                // the arc the survey describes.
+                p.elevation = dz;
+            }
         }
         if (pd.has("riskReport"))
         {

@@ -470,13 +470,20 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        int forcedRegime,
                                        const std::function<double(double)>* sigmaOfP,
                                        int correlation,
-                                       const SteadyThermal* thermal)
+                                       const SteadyThermal* thermal,
+                                       bool griffithBranches,
+                                       const std::vector<double>* segSin)
 {
     BeggsBrillMarchOut out;
     if (thermal && thermal->segmentU
         && static_cast<int>(thermal->segmentU->size()) != std::max(segments, 1))
         cfFatal("beggsBrill: SteadyThermal segmentU needs exactly one entry "
                 "per march segment");
+    // 5.193 (G9): a survey hands one sin(theta) per segment; a length that
+    // disagrees with the grid would silently price some segments with the
+    // wrong gravity, so it is refused rather than sampled loosely.
+    if (segSin && static_cast<int>(segSin->size()) != std::max(segments, 1))
+        cfFatal("beggsBrill: segSin needs exactly one entry per march segment");
     const double pFloor = std::max(0.02 * pInPa, 1000.0);
     const double ds = length / static_cast<double>(std::max(segments, 1));
     const double area = 0.25 * M_PI * diameter * diameter;
@@ -494,10 +501,17 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
     int lastRegime = 0;
     int lastRegimeMap = 0;
     double lastL1 = 0, lastL2 = 0, lastL3 = 0, lastL4 = 0;
-    const double angleDeg = std::asin(std::clamp(sinTheta, -1.0, 1.0))
-                          * 180.0 / M_PI;
     for (int i = 0; i < segments; ++i)
     {
+        // 5.193 (G9): the segment's own inclination when a survey supplied
+        // one, the pipe's single slope otherwise. Everything below -- the
+        // Beggs-Brill angle, the static branch and the thermal step -- reads
+        // this one value, so a surveyed pipe cannot price gravity one way in
+        // the gradient and another way in the march.
+        const double sinI = segSin ? (*segSin)[static_cast<std::size_t>(i)]
+                                   : sinTheta;
+        const double angleDeg = std::asin(std::clamp(sinI, -1.0, 1.0))
+                              * 180.0 / M_PI;
         const pvt::BlackOilState st = pvt::evaluateBlackOil(fluid, p);
         double rhoL = 0, muL = 0;
         pvt::blackOilLiquid(fluid, st, rhoL, muL);
@@ -541,7 +555,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                               / vT;
             staticRhoM = rhoM;
             BeggsBrillOut s;
-            s.dpPerMeter = kGravity * sinTheta * rhoM;
+            s.dpPerMeter = kGravity * sinI * rhoM;
             s.holdup = st.bo / vT;
             s.lambdaL = st.bo / vT;
             s.regime = 3;
@@ -589,7 +603,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
         // are done. With thermal null this is the isothermal march, bit
         // for bit - the pressure numbers above never saw t.
         if (thermal)
-            t = steadyThermalAdvance(*thermal, t, pOld, p, i, ds, sinTheta,
+            t = steadyThermalAdvance(*thermal, t, pOld, p, i, ds, sinI,
                                      out.massRate);
         if (hitFloor)
         {

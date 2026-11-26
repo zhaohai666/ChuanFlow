@@ -5971,6 +5971,67 @@ ight),\quad x_{n+1}=\min(x_n+v_n\,dt,\ end) \]
 
 **边界**。① 引射器读数是降阶：动机流在本行上游节点取，不是地面动力液；真正的双流拓扑（动机来自另一节点/另一条管线）要 mass source 槽位，未做。② 扩压器按理想处理（卡片本来就如此），无喷嘴损失、无两相声速阻塞、无气相动机。③ 钳位状态（NO-SUCTION / FREE-JET）是**元素的**状态而不是 case 错误，模型照卡片话说；其中 q_d < q_n 时 `qs` 为负，这个降阶在这里到期，读数直接说明到期而不是编一个反向引射。④ 无喉部长径比修正、无空化/磨损、无射流泵的功率账（`supply` 只给出动力液泵需要多大的吸入压力）。⑤ 判据里没有 FREE-JET 求解臂：正的压力平衡永远把根留在 bracket > 0 一侧，那个钳位是**守卫**而不是可达状态，所以不假装测过它。
 
+### 5.193 G9 · 井轨迹测斜接进稳态水力（分段重力，不再是整根管一个 sin）
+
+**差距**。在此之前，一根管只能陈述**一个**坡度：`elevation`/`length`，或 slug 预报读的那套地形 `trajectory{}`。于是造斜段与水平段共用一条直线——"流体从一口斜井里爬上来"这件事，水力账里根本不存在。真实的定向井交付的是**测斜数据**：一串（测深 md，井斜角）站。
+
+**语法**。
+
+```
+pipes{P}
+{
+    from A; to B;
+    length 1200; diameter 0.1; roughness 4.6e-5;
+    survey
+    {
+        md          ( 0 400 800 1200 );
+        inclination ( 70 50 20 0 );
+    }
+}
+```
+
+`md` 是开关，米，**单调增**、首站 0、末站正是管长；`inclination` 是与水平面的夹角（度，正 = 上行），|θ| ≤ 90。站间井斜**按 md 线性**（telescoped survey：不带方位角，因为水力只读垂向投影 sinθ，方位角对它没有意义），阶跃没有意义。**`elevation` 从声明变成结论**：不声明时由测斜自身的积分给出；声明了就按 §5.158 的口径校验一致性，不一致直接拒收，而不是悄悄覆盖。
+
+**弧长积分是闭式的**，不是数值求积：
+
+\[ \Delta z=\int_0^L\sin\theta(s)\,ds=\sum_i\frac{\cos\theta_i-\cos\theta_{i+1}}{\theta_{i+1}-\theta_i}\,ds_i \]
+
+（单站区间退化为 \(\sin\theta\,ds\)，即 `surveyElevationOf`）。判据里打印的 `dz` 就是这个闭式积分，所以"管子到底爬了多高"是可复算的数，不是网格的猜测。
+
+**实现**。两处 march 都按**自己那一段的 sinθ** gravity：
+
+- 黑油 march `marchBeggsBrillPipe` 新增末位可选参数 `segSin`（每段一个 sinθ，长度不等于 `segments` 直接拒收）；`angleDeg`、静态分支 \(\rho_m g\sin\theta\) 与热步 `steadyThermalAdvance` 全部改读这一个 `sinI`——因为 Beggs-Brill 对井斜读了**两处**（高度项与 holdup/流型分支），只改一处 会在另一处露出。
+- PVT march `marchPvtPipe` 本来就把整根管当参数收，于是它直接读本行自己的 `survey{}`（`surveySegSinOf`），`dz` 由 `sinFlow*ds` 换成 `sinI*ds`，热步同样。
+- 未声明 `survey{}` 时 `segSin` 传 `nullptr`、`sinFlow` 仍是 `elevation/length`：**旧路径逐位不变**（这是 `P3`/`P4`、`O2`/`O4` 两组孪生判据所测的东西）。
+- 单相常物性路径不必分段：它的重力项只有 \(\rho g\,\Delta z\) 一项，而 Δz 已是测斜的积分，所以它天然正确。
+
+**读数**。`survey <pipe> dz <m> sinmin <..> sinmax <..> st <站数> seg <段数>`，随后每段一行 `surveypt <pipe> k <k> md <段中点> sin <sinθ>`——24 段一个不少，于是检查器无需重跑求解器即可复算每一个重力项。
+
+**拒收**（十条）：
+
+1. `md` 与 `inclination` 长度不等；
+2. `md` 首站不是 0；
+3. `md` 末站不等于管长；
+4. `md` 不单调；
+5. `|inclination| > 90`；
+6. 声明了 `elevation` 但与积分不符；
+7. `survey{}` 里出现未知键（白名单：md / inclination）；
+8. 只有一站（一站陈述不了弧）；
+9. 耦合边上的 `survey{}`（那里的差压是伙伴区域的话，这里的重力会被谁都不读）；
+10. `survey{}` 与 `slugPrediction` 的 `trajectory{}` 同声明（同一条弧两套陈述）。
+
+**判据**。`verify.steadyNetworkSurvey`，**70 判据**，0.29 s（`tests/check_steady_network_survey.py` + `cases/steadyNetworkSurvey/{case.dict,caseBlackOil.dict}`）。五个族：
+
+- **S1 弧就是测斜的**：`dz` 对上闭式积分（谈到打印精度 1e-10 以内，打印只有 12 位有效数字）；`sinmin`/`sinmax` 是 24 个打印样本自己的界；每个 `surveypt` 落在段中点且 sin 值等于把井斜按 md 线性插值到该点的正弦。
+- **S2 march 就是按这些段定价的**：用 case 自己的 rho/mu 表、同一 Churchill、同一上游密度定质量流量，把整条 24 段 march 在 Python 里重跑一遍并二分出落在固定低压侧的速率——打印的 `Q` 必须对上（1e-9）。这一条让"分段"本身成为可伪证的，而不是只证声明被读进来了。
+- **S3 对合被接受、不对称不被接受**：P1（70→50→20→0）与 P2（0→20→50→70）的 `dz` 必须相等（1e-15，闭式积分对端点对称），速率却必须**不同**（陡段分别在稠密端与稀薄端，本例 2.40%）；P5 是 P1 的弧倒着走（负井斜），`dz` 必须精确为 −dz(P1)，速率必须快过两条上行弧。
+- **S4 单坡度的两种写法**：P3 用 `survey{}` 写一个井斜、P4 用 `elevation` 写同一个积分，Q/v/Re/f/dp 必须一致到 1e-12——两者唯一的差别是 march 收到一个 sin 还是 24 个相同的 sin。
+- **S5 语法被拒**：十条逐条点名。
+
+黑油那条 march 上同样是两组孪生（O2 用 12° 的 `survey{}`、O4 用 `elevation`，Q/v/HL/λ/Nfr 1e-12 一致），外加一条只有黑油能给的判据：**常数均值孪生不能顶替变弧**（O3 的变弧与 O2 的 12° 均值速率差 0.99%），即"弧是测斜、不是它的平均"在 Beggs-Brill 上也成立。
+
+**边界**。① 站间井斜按 md **线性**插值，不是最小曲率法（后者要方位角）；方位角不携带，因为水力只用 sinθ。② 段内 sinθ 取**段中点**采样，不是段内 sin 的积分平均（两者差在千分之几量级；`dz` 用的是闭式积分，不受这个采样影响）。③ 只有稳态两条 march 读测斜；瞬态的几何仍在网格上，本格不动。④ `survey{}` 与地形 `trajectory{}` 互斥：同一条弧不写两套。⑤ 分层保温的时变环境温度、温度反馈 PVT 仍 OPEN，与本格无关。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

@@ -2077,6 +2077,24 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkJetPump/case.dict)
 
+# G9 (5.193): the well-trajectory SURVEY -- inclination against measured depth
+# instead of one slope per pipe. The checker integrates the declared arc in
+# closed form (dz = sum (cos th_i - cos th_{i+1})/(th_{i+1}-th_i) ds), re-derives
+# sin(theta) at every march segment midpoint and every printed surveypt, restates
+# the whole 24-segment pvt march from the case's own rho/mu table + Churchill
+# friction and bisects the rate onto the fixed low-side pressure (printed Q to
+# 1e-9), then asserts the two twin pairs (single-slope survey == declared
+# elevation, to 1e-12, on both the pvt and the black-oil march), the reversed-arc
+# asymmetry (same dz to 1e-15, rates differ ~2.4%), the downhill mirror (dz
+# exactly negated, fastest arc) and ten named refusals.
+add_test(
+    NAME verify.steadyNetworkSurvey
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_network_survey.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkSurvey/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkSurvey/caseBlackOil.dict)
+
 # E7c (5.183): linear along-the-line EOS acoustics - the depressurization
 # pressure-wave transient. The checker re-derives the wave speed
 # (a^2 = gasR T, the exact density derivative of the kernel's own gas law),

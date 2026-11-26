@@ -227,6 +227,12 @@ double steadyThermalAdvance(const SteadyThermal& th, double t,
                             double pOld, double pNew, int segment,
                             double ds, double sinTheta, double massRate);
 
+/// 5.193 (G9): segSin, when given, carries sin(theta) per march segment --
+/// one entry per segment, in the march's own order along the pipe. Absent, the
+/// scalar sinTheta prices every segment, which is the pre-survey path bit for
+/// bit. It exists because a directional well's inclination changes along the
+/// measured depth, and the Beggs-Brill gradient reads the inclination TWICE:
+/// in the elevation term and in the published holdup / pattern branches.
 BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        double qoStd, double pInPa,
                                        double length, double diameter,
@@ -236,6 +242,8 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
                                        int forcedRegime = -1,
                                        const std::function<double(double)>* sigmaOfP = nullptr,
                                        int correlation = 0,
-                                       const SteadyThermal* thermal = nullptr);
+                                       const SteadyThermal* thermal = nullptr,
+                                       bool griffithBranches = false,
+                                       const std::vector<double>* segSin = nullptr);
 
 } // namespace cf

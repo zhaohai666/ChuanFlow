@@ -1,0 +1,88 @@
+// 5.193 (G9): the same survey grammar on the BLACK-OIL march.
+//
+// The tabulated-property case (case.dict) prices the survey through the PVT
+// march; this one through Beggs-Brill, which reads the inclination in a second
+// place -- the published holdup and flow-pattern branches -- so a survey that
+// only reached the gravity term would be caught here and not there.
+//
+// O1 and O3 are the same arc walked in opposite directions (30 -> 10 -> 0 and
+// 0 -> 10 -> 30 degrees): identical vertical drop (256.3989167652556 m, the
+// statistics of the closed-form integral), identical length, bore and pressure
+// drop, so the reported rate differs only because the inclination the holdup
+// law sees changes along the way.
+//
+// O2 and O4 are the single-slope pair: O2 states one inclination as a survey
+// (12 degrees, two stations) and O4 states the survey's own integral as
+// `elevation`. The two must agree to the last digits -- the sole difference is
+// whether the march is handed one sin or 24 identical ones -- which is what
+// makes the segmentation itself, rather than the physics, falsifiable.
+
+fluid
+{
+    blackoil
+    {
+        gasGravity     0.75;
+        oilDensity     850;
+        gor            80;
+        waterCut       0;
+        temperature    340;
+        surfaceTension 0.025;
+    }
+}
+
+nodes
+{
+    A  { pressure 6.0e6; }
+    B  { pressure 4.0e6; }
+    C  { pressure 6.0e6; }
+    D  { pressure 4.0e6; }
+    E  { pressure 6.0e6; }
+    F  { pressure 4.0e6; }
+    G  { pressure 6.0e6; }
+    H  { pressure 4.0e6; }
+}
+
+pipes
+{
+    O1  // steep first
+    {
+        from A; to B;
+        length 1200; diameter 0.1; roughness 4.6e-5;
+        survey
+        {
+            md ( 0 600 1200 );
+            inclination ( 30 10 0 );
+        }
+    }
+
+    O3  // the same arc reversed
+    {
+        from C; to D;
+        length 1200; diameter 0.1; roughness 4.6e-5;
+        survey
+        {
+            md ( 0 600 1200 );
+            inclination ( 0 10 30 );
+        }
+    }
+
+    O2  // one inclination of 12 degrees, stated as a survey
+    {
+        from E; to F;
+        length 1200; diameter 0.1; roughness 4.6e-5;
+        survey
+        {
+            md ( 0 1200 );
+            inclination ( 12 12 );
+        }
+    }
+
+    O4  // the same arc as a declared elevation
+    {
+        from G; to H;
+        length 1200; diameter 0.1; roughness 4.6e-5;
+        elevation 249.4940289813112;
+    }
+}
+
+solve { maxIter 100; tol 1e-10; }

@@ -505,7 +505,40 @@ struct NetworkPipe
     /// apps read it back and hand it to the 3D detailed block, which turns it
     /// into a per-face apparent viscosity. Absent on an uncoupled pipe.
     Rheology partnerRheology;
+
+    // 5.193 (G9): a WELL-TRAJECTORY SURVEY. Until now a pipe could only state
+    // one slope for its whole arc (`elevation`/length, or the terrain
+    // `trajectory{}` the slug forecast reads), so a build section and a
+    // horizontal lateral were both priced as if the fluid fell down one
+    // straight line. A survey states inclination against MEASURED DEPTH, the
+    // way a directional well is actually delivered:
+    //     survey { md (0 500 1000 ...); inclination (0 42 88 ...); }
+    // md is metres along the hole, monotone, from 0 to the pipe's length;
+    // inclination is degrees from horizontal, positive uphill. Between
+    // stations the inclination is taken LINEAR IN MD (a telescoped survey:
+    // azimuth is not carried, because hydraulics never read it -- only the
+    // vertical projection sin(theta) does), and the march then prices its own
+    // gravity segment by segment instead of one sin for the whole line.
+    // `elevation` stops being a declaration and becomes a consequence: absent
+    // it, the survey's own integral supplies it, and a declared one that
+    // disagrees is refused rather than quietly overridden.
+    bool surveyOn = false;
+    std::vector<double> surveyMd;       // m, monotone, 0 .. length
+    std::vector<double> surveyInclDeg;  // deg from horizontal, + uphill
 };
+
+/// 5.193 (G9): the vertical drop a survey's own integral states,
+///     dz = integral_0^L sin(theta(s)) ds,
+/// exact per survey interval (theta linear in s, so sin(theta(s)) integrates
+/// to (cos(th1) - cos(th2))/(th2 - th1) and the theta = 0 interval to
+/// sin(th) ds). Absent a survey this is `p.elevation`, bit for bit.
+double surveyElevationOf(const NetworkPipe& p);
+
+/// 5.193 (G9): sin(theta) at the MIDPOINT of each of nSeg equal march
+/// segments, i.e. the gravity term the march should charge for segment k.
+/// Absent a survey this is nSeg copies of elevation/length -- the constant
+/// path the marches had before, bit for bit.
+std::vector<double> surveySegSinOf(const NetworkPipe& p, int nSeg);
 
 /// Steady single-phase node-model pipeline network (the M1 "SteadySolver"
 /// core): unknowns are node pressures, each pipe carries a flow-rate/pressure

@@ -1,0 +1,103 @@
+// 5.193 (G9): a WELL-TRAJECTORY SURVEY feeding the steady hydraulic march.
+//
+// The fluid is a rich gas whose density falls by a factor of ~3 across the two
+// megapascal of drawdown, so the gravity bill depends on WHERE the steep
+// inclination sits relative to the dense end -- which is exactly the thing a
+// single slope for the whole arc cannot express.
+//
+// P1 and P2 are the same arc walked in opposite directions: inclination
+// 70 -> 50 -> 20 -> 0 degrees against md for P1, 0 -> 20 -> 50 -> 70 for P2. Their
+// vertical drops are IDENTICAL (the closed-form integral over a linear
+// inclination is symmetric in its endpoints) and so are their lengths, bores
+// and pressure drops, so any difference in the reported rate or outlet
+// pressure is the per-segment gravity term and nothing else.
+//
+// P3 is a constant-inclination survey (30 degrees, two stations) and P4 is the
+// same pipe with the survey's own integral declared as `elevation`: the two
+// must agree to the last digits, because the sole difference is whether the
+// march is handed one sin or 24 identical ones.
+
+// A tabulated fill whose density triples across the drawdown, so the gravity
+// bill genuinely depends on where the steep inclination sits relative to the
+// dense end -- and so the checker can re-derive every number from the table
+// alone (marching the same 24 segments, the same Churchill friction, the same
+// clamped linear rho(p)/mu(p) lookups).
+fluid
+{
+    pvt
+    {
+        pressure ( 1.0e6 2.0e6 3.0e6 4.0e6 );
+        rho ( 12.0 24.0 36.0 48.0 );
+        mu ( 1.2e-5 1.4e-5 1.6e-5 1.8e-5 );
+        temperature 320.0;
+    }
+}
+
+nodes
+{
+    A  { pressure 3.0e6; }
+    B  { pressure 1.0e6; }
+    C  { pressure 3.0e6; }
+    D  { pressure 1.0e6; }
+    E  { pressure 3.0e6; }
+    F  { pressure 1.0e6; }
+    G  { pressure 3.0e6; }
+    H  { pressure 1.0e6; }
+    I  { pressure 3.0e6; }
+    J  { pressure 1.0e6; }
+}
+
+pipes
+{
+    P1  // steep first, shallow last: the dense gas pays the steep climb
+    {
+        from A; to B;
+        length 1200; diameter 0.1; roughness 4.6e-5;
+        survey
+        {
+            md ( 0 400 800 1200 );
+            inclination ( 70 50 20 0 );
+        }
+    }
+
+    P2  // the same arc reversed
+    {
+        from C; to D;
+        length 1200; diameter 0.1; roughness 4.6e-5;
+        survey
+        {
+            md ( 0 400 800 1200 );
+            inclination ( 0 20 50 70 );
+        }
+    }
+
+    P3  // one inclination, stated as a survey
+    {
+        from E; to F;
+        length 1200; diameter 0.1; roughness 4.6e-5;
+        survey
+        {
+            md ( 0 1200 );
+            inclination ( 30 30 );
+        }
+    }
+
+    P4  // the same arc as a declared elevation, no survey
+    {
+        from G; to H;
+        length 1200; diameter 0.1; roughness 4.6e-5; elevation 600;
+    }
+
+    P5  // P1's arc inverted: the same hole walked downhill
+    {
+        from I; to J;
+        length 1200; diameter 0.1; roughness 4.6e-5;
+        survey
+        {
+            md ( 0 400 800 1200 );
+            inclination ( -70 -50 -20 0 );
+        }
+    }
+}
+
+solve { maxIter 100; tol 1e-11; }

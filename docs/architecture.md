@@ -1308,7 +1308,7 @@ Navier–Stokes；一阶——没有 MUSCL/TVD 重构，激波宽度就是 `σ`�
 散度定理逐格成立，真正的 multidim 激波（斜激波、马赫盘）还没算例；也没和不可压层或 1D
 两流体共享状态（`pvt` 的真实气体 `c(p,T)` 还没接进 `primitives()`）。
 
-## 5.17 区域分解与 halo 交换 `parallel/DomainDecomposition.h` + `src/parallel/`（M3：并行首增量）
+## 5.17 区域分解与 halo 交换 `parallel/DomainDecomposition.h` + `src/parallel/`（M3：分解拓扑首增量）
 
 对标 OpenFOAM 的 `decomposePar` + `processorMesh` + `Pstream`，但**不绑定任何传输后端**：
 本增量交付的是分解拓扑、耦合面消息计划与全局归约——MPI（或任何别的后端）只负责把
@@ -4995,11 +4995,11 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界。** 仅对界面阻力 `C`、仅 `vM=0` 的 dynamic-slip 密封柱闭式成立；湍流/两相持液率/含闪蒸的两流体动量斜率（`twoFluid.cpp:810` 有限差分、`flash.cpp:89` 迭代）需隐函数定理改造，非本格；参数面只有 `C`，噪声自由合成观测、无协方差加权/多工况联标；Godunov 在激波/声点切分支，伴随与 tangent 微分同一活动分支、在分支边界的零测集外与 FD 一致。
 
-### 5.119 真实 MPI halo 传输：按 Decomposition 计划 Sendrecv（A11 第一格）
+### 5.119 真实 MPI halo 传输（仅验证 app 内）：按 Decomposition 计划 Sendrecv（A11 第一格）
 
-> **状态（2026-11-19 复核更正）**：本格原审计基于工作树里的 `src/3d/apps/mpiApp.cpp` + `tests/check_mpi.py`，后来发现该 app 调用**不存在**的 `parallel::domainGradDivide` / `domainGradAccumulate` / `domainDivPhiAccumulate`，源码编译不过；早前"ranks [1,2,3,5,7,8,16] PASS"是**陈旧二进制**造成的误判，不纳入交付。真实传输实现收敛到 `src/3d/apps/mpiTransport.h`，由 §5.122 的 `chflow-mpi-linear-solver` 实际使用并验证；`mpiApp.cpp` / `check_mpi.py` / `tests/cases/mpiDecomposition/` 不注册、不提交。传输正确性由 §5.122 见证；已提交 b677821，全量回归 **176/176（911.08 s）通过**。
+> **状态（2026-11-19 复核更正）**：本格原审计基于工作树里的 `src/3d/apps/mpiApp.cpp` + `tests/check_mpi.py`，后来发现该 app 调用**不存在**的 `parallel::domainGradDivide` / `domainGradAccumulate` / `domainDivPhiAccumulate`，源码编译不过；早前"ranks [1,2,3,5,7,8,16] PASS"是**陈旧二进制**造成的误判，不纳入交付。真实传输实现收敛到 `src/3d/apps/mpiTransport.h`，由 §5.122 的 `chflow-mpi-linear-solver` 实际使用并验证；`mpiApp.cpp` / `check_mpi.py` / `tests/cases/mpiDecomposition/` **已废弃/未入库**，不注册、不提交（现存分解测试为 `verify.parallelDecomposition[/Tet]`，单进程）。传输正确性由 §5.122 见证；已提交 b677821，全量回归 **176/176（911.08 s）通过**。
 
-**这一格从哪来。** §5 的三维并行首增量只做了与传输后端无关的区域分解核（递归坐标中位数切片、halo 槽位、收发计划、Allreduce），本机当时无 `mpirun/mpi.h` 所以收发缓冲按 Isend/Recv 形状备好但未接真实传输。本格把那条串口 copy-loop 换成真正的 MPI 消息。本机现已有 MPICH 4.2.3（`/Users/haizai/opt/mpich-4.2.3`，用户环境提供、非本次安装），`CMakeCache.txt` 的 `MPIEXEC_EXECUTABLE` 已指向它。
+**这一格从哪来。** §5 的三维分解拓扑首增量只做了与传输后端无关的区域分解核（递归坐标中位数切片、halo 槽位、收发计划、Allreduce），本机当时无 `mpirun/mpi.h` 所以收发缓冲按 Isend/Recv 形状备好但未接真实传输。本格把那条串口 copy-loop 换成真正的 MPI 消息（仅用于 §5.122 线性求解对照 app，流动求解器仍单进程）。本机现已有 MPICH 4.2.3（`/Users/haizai/opt/mpich-4.2.3`，用户环境提供、非本次安装），`CMakeCache.txt` 的 `MPIEXEC_EXECUTABLE` 已指向它。
 
 **机理。** `src/3d/apps/mpiTransport.h`：按 `Decomposition` 的 index-matched 消息计划，每个 peer 一条 `MPI_Sendrecv`，发送方 owned 槽位 ↔ 接收方 halo 槽位逐一对齐（标量 1 分量、矢量 3 分量），`MPI_Allreduce` 做 `reduceSum/Min/Max`；`cf3d` 库本身保持 MPI-free，MPI 只在验证 app 里。该头文件不依赖任何不存在的 API，是 §5.122 分布式 matvec 的 halo 通道。
 
@@ -5023,9 +5023,9 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **判据。** `tests/cases/steadyPvtFlash/case.dict` + `check_steady_pvt_flash.py`（纯 stdlib 独立实现 PR flash / Rachford-Rice / LBC / WK / Churchill）：24 站 rho/mu/sigma 独立重推 <1e-8、march 重放、逐站 sigma 随压力变化、粗/细网格（75/600 段）收敛到同一物理量（W=4355060.6）、零声明孪生逐位、5 条拒收。CTest `verify.steadyPvtFlash`。**边界**：均相无滑移（无相滑移/持液率反馈）；只进稳态 1D march 不进瞬态两流体；组分/parachor/温度为声明输入。**状态（2026-11-19 回填）**：已提交 b677821，全量回归 **176/176（911.08 s）通过**。
 
-### 5.122 跨域矩阵求解：分布式 CSR 的 CG（A11 第二格）
+### 5.122 对照 app：图-Laplacian 分布式 CSR 的 CG（A11 第二格）
 
-**这一格从哪来。** §5.119 的 MPI app 只验了 stencil 与归约，不含线性系统；早前工作树里的 `mpiApp.cpp` 是编译不过的半成品（调用不存在的 `domainGradDivide` 等），已废弃。本格做真正的分布式线性求解。
+**这一格从哪来。** §5.119 的 MPI app 只验了 stencil 与归约，不含线性系统；早前工作树里的 `mpiApp.cpp` 是编译不过的半成品（调用不存在的 `domainGradDivide` 等），已废弃。本格在对照 app 内做分布式线性求解（图-Laplacian 测试系统；非流动求解器并行）。
 
 **机理。** `chflow-mpi-linear-solver`（`src/3d/apps/mpiLinearSolverApp.cpp`）一 rank 一域：各 rank 建同一全局网格与确定性分解，组装同一个**图-Laplacian CSR**（对角 = 邻接面数 + shift 保证 SPD，内部面给 owner/neighbour ±1 耦合），各自只拥有 `dec.cells(rank)` 那些行。对角预条件 CG 逐步跑，唯一变化是 matvec = `mpi::exchange` 做 halo 交换 + 本地 CSR product，点积/范数 = `MPI_Allreduce`。rank 0 用 `cf::solveCG` 在同一个全局 CSR 上跑串行参照，再 gather 分布式解逐点比。右端 `b = A·x_exact`（x_exact 是 case 声明的多项式场），解析解独立可得。
 
@@ -5041,7 +5041,7 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 ### 5.124 PETSc 稀疏求解后端（D13 第二格，可选）
 
-**这一格从哪来。** 同 §5.123，补工业级分布式求解后端。PETSc 是编译库，本机环境（Homebrew 自带 sandbox-exec 与执行沙箱嵌套冲突、pip 编译 petsc4py 超时）装不上。
+**这一格从哪来。** 同 §5.123，补工业级稀疏求解后端。PETSc 是编译库，本机环境（Homebrew 自带 sandbox-exec 与执行沙箱嵌套冲突、pip 编译 petsc4py 超时）装不上。
 
 **机理。** `solveWithBackend(..., LinearBackend::PETSc)` 分支：`MatCreateSeqAIJ` + 逐 triplet `MatSetValues` 装配同一 CSR，`KSPGMRES` + `PCILU` 求解，`KSPGetConvergedReason`/迭代数填 `SolverReport`，测同一 CSR 的 inf-norm 残差。`CHFLOW_WITH_PETSC` option 用 `find_package(PETSc QUIET)`，找到才编译（`cf_common` 加 include/link），找不到 WARNING + 自动 OFF（**实测该降级行为**，本机即如此），与 HDF5/Kokkos 同惯例。`chflow-solver-backend` 在 PetscInitialize/Finalize 之间跑并打印结果，checker 在有库机器上会额外校验 PETSc 收敛/与 native 交叉差 <1e-6。
 
@@ -5212,9 +5212,9 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界。** 剖切为平面保留单侧（盒剖切/曲面待增量）；矢量为选择层（按模着色/流线另格）；扫描为稳态并行（瞬态扫描另格，G3）；设备 glyph 为静态图标（参数实时联动曲线另格）；DMG 未做公证（ad-hoc 签名首次打开需右键绕 Gatekeeper）。
 
-### 5.136 PETSc 分布式线性求解对照（M6/A11）：PETSc 自身 MPI 机器 vs 自研分布式 CG
+### 5.136 PETSc 分布式线性求解对照 app（M6/A11）：PETSc MPI 路径 vs 自研分布式 CG（图-Laplacian 测试系统）
 
-> **状态（2026-11-20）**：同一 16384 格图-Laplacian 系统上，两条真正独立的分布式求解路径交叉全绿（np=1/2/4，`verify.petscDistributed` 2.94 s）。PETSc 3.23.4 MPI 版（MPICH 4.2.3，`/tmp/petsc-mpi-install`）真实编译 + 实跑。code 28f1c1d。
+> **状态（2026-11-20）**：同一 16384 格图-Laplacian 对照系统上，两条独立的分布式求解路径（均为对照 app，非流动方程组）交叉全绿（np=1/2/4，`verify.petscDistributed` 2.94 s）。PETSc 3.23.4 MPI 版（MPICH 4.2.3，`/tmp/petsc-mpi-install`）真实编译 + 实跑。code 28f1c1d。
 
 **动机。** §5.122 的 A11 对照是「自研分布式 CG vs 自研串行 solveCG」；本节把对照升级为「PETSc 自己的 MPI 机器 vs 自研分布式 CG」——两套分解（PETSc 默认连续块分区 vs 自研坐标中位数 Decomposition，刻意不同）、两套实现，交叉的才是真正独立的两条分布式路径。
 
@@ -6213,7 +6213,7 @@ pipes{P}
 | `T` 的 `buoyancyForce = beta*(T-Tn)*g`（`BoussinesqBaseForce`） | `EnergyModel::buoyancyForce()` = `−beta (T − tRef) gravity`（只含偏差项，参考静水由 `force` 自己带或被 `pRgh` 开关吸收进 `p_rgh = p − force·x`；偏差力本身不能被吸收，压住它要 buoyantFoam 式浮力修正通量，未做） |
 | `decomposePar` + `decomposeParDict`（`hierarchical`/`simple`） | `cf::parallel::Decomposition`（`src/3d/src/parallel/domainDecomposition.cpp`：递归坐标中位数排序 + 连续切片，case.dict 的 `decompose{ domains (…); }`，见 5.17） |
 | `processorPolyMesh` / `growPatch` 的 coupled 面与 `/neighbour` patch | `Decomposition::faces(d)` 里的 `cf::parallel::DomainFace{face, cell, peer, sign}` + 惰性 halo 槽（`slot = nCells(d) + idx`）；`cf::parallel::DomainMesh` 的 rank-local 几何 |
-| `Pstream::gather/scatter`（`processorLduInterface` 的 send/recv） | `cf::parallel::exchange(dec, local)`（每 peer 一段连续、收发同序的槽位计划 `sendPlan/recvPlan`）；MPI 传输后端尚未接 |
+| `Pstream::gather/scatter`（`processorLduInterface` 的 send/recv） | `cf::parallel::exchange(dec, local)`（每 peer 一段连续、收发同序的槽位计划 `sendPlan/recvPlan`）；MPI 传输后端尚未接入 `cf3d` 库——MPI_Sendrecv/Allreduce 仅出现在 §5.119/§5.122/§5.136 的线性求解对照 app |
 | `Pstream::sum/min/max`（`gsum`/`gMin`） | `cf::parallel::reduceSum/reduceMin/reduceMax`（同 `Allreduce` 语义的进程内归约） |
 | `PstreamOps` 作用在 `fvc::grad` / `fvc::div` 的 halo 上 | `cf::parallel::assembledGrad` / `assembledDivPhi`（逐域按全局面序重放串行表达式，因此与串行 `fvc::` **逐位相同**，见 5.17） |
 | Fluent **system coupling** / OLGA **embedded detailed section**（管网一条边的内部换成 3D 区，界面上交换压降↔速率） | `cf::coupling::solveCoupled1d3d`（`src/coupling`：界面上的 Gauss–Seidel + 常数松弛，`couple{ edge seeds relax tolerance }`，见 5.18） |

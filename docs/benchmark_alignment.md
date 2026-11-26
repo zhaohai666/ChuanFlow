@@ -92,13 +92,13 @@
 | F11 | 动网格（smoothing/remeshing/sliding/6DOF） | ALE/GCL 几何核（§5.109）+ `dynamicMesh{}` 相对面通量 `phi_rel=(U−U_mesh)·Sf` + GCL 精确体积修正 + 6DOF 的 2 自由度刚体子集（力向平动 + 单轴面外转动，RK4），均匀标量移动网格精确不变 | ✅（刚体子集） | §5.109 / D8 增量 8；§5.168；§5.169 |
 | F12 | 相变（熔化/凝固/空化） | 均相输运空化（ZGB 源项 + 隐式 alpha + 混合密度进压力修正，内置 venturi）+ 焓-孔隙率熔化/凝固（表观热容 + Darcy 阻尼 + 前沿报告），各自带独立回归 | ✅ | §5.165/§5.166；§5.167 |
 | F13 | 网格：多面体、Gmsh/OpenFOAM 导入、自适应 | blockMesh + Gmsh msh + OpenFOAM ASCII polyMesh 导入（§5.112）+ 自适应加密 `adapt{}`：梯度判据 + dyadic slab 共形细化 + 深度封顶 + 解析积分守恒，均匀孪生不加密 | ✅（slab 子集） | §5.112；§5.168；§5.169 |
-| F14 | 并行（MPI 大规模、GPU） | MPI 域分解（逐位复现串行算子）+ 分布式 CSR CG（np=1/2/4 实跑）+ **PETSc 自身 MPI 机器对照**（MatCreateAIJ + KSPCG，16384 格 np=1/2/4 双路径交叉全绿）+ Eigen/PETSc/Kokkos 后端（GPU：仅 Kokkos 接口契约，默认关闭，无 CUDA/HIP 实现，待 GPU 机器） | ✅（CPU/MPI）/ 🟡（GPU） | M3/M6 条目；§5.119/§5.122/§5.123/§5.124/§5.136 |
+| F14 | 并行（MPI 大规模、GPU） | 分解拓扑 + 验证级 halo（单进程逐域算子逐位对照串行，§5.17）；MPI 仅限线性求解对照 app：图-Laplacian 分布式 CSR CG（np=1/2/4 实跑，§5.122）+ **PETSc+MPI 对照**（MatCreateAIJ + KSPCG，16384 格 np=1/2/4 双路径交叉全绿，§5.136）；**流动求解器未做 MPI 并行**，整网格装配与求解单进程；Eigen/PETSc/Kokkos 后端（GPU：仅 Kokkos 接口契约，默认关闭，无 CUDA/HIP 实现，待 GPU 机器） | ✅（仅线性求解对照）/ 🟡（GPU；流动求解器未并行） | M3/M6 条目；§5.119/§5.122/§5.123/§5.124/§5.136 |
 | F15 | system coupling（与 1D 网络耦合） | 1D↔3D 耦合全矩阵（见 O16），含 Fluent velocity-inlet 剖面对标 | ✅ | §5.18–§5.39；概念映射第 6 节 |
 | F16 | 后处理：等值线/矢量/流线/report definitions/CFD-Post | GUI Canvas 彩虹色图 + 剖切/矢量/流线/等值面/CSV（§5.135/§5.138/§5.152/§5.153）+ `contour.js` marching squares 等值线层（截面栅格化、闭合环、剖面带） | ✅ | §5.133–§5.153；§5.168；§5.169 |
 | F17 | 监控（残差/通量/自定义 monitor） | GUI 收敛监控 + report definitions（§5.139）+ `monitor.js` 按迭代在线 MONITOR 流（ITER/MONITOR 行乱序拒绝、对数刻度、滚动窗口、多序列画线） | ✅ | §5.133/§5.139；§5.168；§5.169 |
 | F18 | Case 管理与参数化（Workbench parameter set） | 批量扫描/模板/工况管理器（§5.134/§5.148/§5.150）+ `paramsets.js` 参数集：版本化 JSON 往返、同键冲突检测、稳态/瞬态激活替换，工作树挂多个参数集 | ✅ | §5.134/§5.148/§5.150；§5.168；§5.169 |
 
-小结：✅ 16 项 / 🟡 1 项 / ❌ 0 项（F6 回调改 🟡：1D 两流体已有、3D Euler-Euler 未实现；F14 双打标：CPU/MPI ✅、GPU 🟡 仅 Kokkos 接口契约待 GPU 机器；F4 按 LES 子集关闭、F10 按两步机理子集关闭、F11 按 2 自由度刚体子集关闭、F13 按 slab 子集关闭）。
+小结：✅ 16 项 / 🟡 1 项 / ❌ 0 项（F6 回调改 🟡：1D 两流体已有、3D Euler-Euler 未实现；F14 双打标：CPU/MPI ✅ 仅限线性求解对照 app、GPU 🟡 仅 Kokkos 接口契约待 GPU 机器，流动求解器未并行；F4 按 LES 子集关闭、F10 按两步机理子集关闭、F11 按 2 自由度刚体子集关闭、F13 按 slab 子集关闭）。
 
 ---
 

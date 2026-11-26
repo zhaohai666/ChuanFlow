@@ -148,8 +148,9 @@ gui/package_app.sh && open "gui/dist/ChuanFlow GUI.app"
 cd gui && cargo test && cd ..
 node --test gui/tests/frontend.test.mjs
 
-# 三维区域分解首增量：同一个块按 1/2/3/5/7/8/16 域各切一次、逐域跑显式算子，
-# 每次域数写一份**全局单元序**的 vtu。check_parallel.py 从 vtu 的几何自己重跑
+# 三维分解拓扑首增量（单进程验证 app）：同一个块按 1/2/3/5/7/8/16 域各切一次、逐域跑显式算子，
+# 每次域数写一份**全局单元序**的 vtu。该 app 在单进程内建 Decomposition/DomainSet，exchange 是同进程
+# copy-loop；分解算子与串行逐位对照，无 MPI 传输后端。check_parallel.py 从 vtu 的几何自己重跑
 # 同一套坐标中位数分解，断言分区性与面数重装配、分解算子与串行逐位相等、
 # halo 值不漂移、归约等于串行的 sum/min/max，以及不同域数写出的场一模一样
 ./build/src/3d/apps/chflow-3d-parallel tests/cases/parallelDecomposition/case.dict
@@ -2415,8 +2416,8 @@ app 每 `reportEvery` 步报 `mass / mom / energy / impulse / pmin / pmax / cfl`
 `check_euler.py` 既断言 `mom + impulse = mom(0)`，也用 Python 重放同一套 HLLC 递推与写出的场
 逐格比对（1e-9）。CFL 越界（`dt·amax/dxMin > 1`）与非有限状态都直接报错，不做回退。
 
-**三维区域分解**（`chflow-3d-parallel`）不读 `schemes{}`/`patches{}`：它把网格切成
-1、2、3、5…个域，逐域跑显式 Gauss 算子，所以字典里只有网格、域数、两个测试多项式场
+**三维分解拓扑**（`chflow-3d-parallel`，单进程验证 app）不读 `schemes{}`/`patches{}`：它在单进程内把网格切成
+1、2、3、5…个域，逐域跑显式 Gauss 算子（分解算子与串行 `fvc::grad`/`fvc::divPhi` 逐位对照，exchange 是同进程 copy-loop，无传输后端），所以字典里只有网格、域数、两个测试多项式场
 和验收阈值。`field{}` 的两个键都是十个系数
 `T = c0 + c1x + c2y + c3z + c4x² + c5y² + c6z² + c7xy + c8yz + c9zx`——
 `linear` 把 c4..c9 置零，是**精确性锚点**（有界线性插值对线性场精确，Gauss 和给出解析梯度）；

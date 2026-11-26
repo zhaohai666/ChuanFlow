@@ -2095,6 +2095,25 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkSurvey/case.dict
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkSurvey/caseBlackOil.dict)
 
+# G6d (5.194): the temperature that the march has already reached reprices
+# rho and mu inside the march, so the mass flux is booked at the entry state
+# and the rate itself moves. The checker re-derives every printed station
+# rho (PR gas root) and mu (LBC) at that station's own (p, T) from the case's
+# own component table, restates the whole 24-segment march from those printed
+# (p, T) pairs plus Churchill friction (floor and early return included) and
+# bisects the rate onto the fixed low-side pressure (printed Q to 1e-9, both
+# the coupled line and the snapshot twin), asserts m = rhoIn Q, the outlet
+# closure rho v A = m, the outlet Reynolds self-consistency, the frozen twin
+# pair (temperatureFeedback false == the block absent, every token to 1e-15)
+# and the four loud rejections (non-boolean word, no live flash, no heat at
+# all, black oil).
+add_test(
+    NAME verify.steadyNetworkPvtFeedback
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_network_pvt_feedback.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/steadyNetworkPvtFeedback/case.dict)
+
 # E7c (5.183): linear along-the-line EOS acoustics - the depressurization
 # pressure-wave transient. The checker re-derives the wave speed
 # (a^2 = gasR T, the exact density derivative of the kernel's own gas law),

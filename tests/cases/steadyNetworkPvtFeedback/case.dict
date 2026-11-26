@@ -1,0 +1,71 @@
+// 5.194 (G6d): TEMPERATURE FEEDBACK on the pvt march -- the march's own T
+// reprices rho/mu, and the repriced fluid moves dp, so T is no longer passive.
+//
+// The feed is a light gas (methane 0.95 / ethane 0.05) below its dew point
+// envelope at 330 K, so every station flashes single-phase (the checker's
+// PR+LBC re-derivation rests on that) and its density is simply p M/(Z R T):
+// cooling the stream raises its density, raises its velocity, and raises its
+// friction.
+//
+// FB  feedback ON  -- properties at each segment's own (p, T)
+// NO  feedback OFF -- the same declaration, the same geometry, the same wall,
+//     the feed's single 330 K snapshot (the pre-5.194 path, bit for bit)
+//
+// Both lines see the same fixed node pressures, so their rates differ ONLY
+// through the coupling. attrib[] is a third line with no thermal block at all,
+// which is what a feedback declaration must not silently fall back to.
+
+fluid
+{
+    pvt
+    {
+        pressure ( 0.5e6 1.0e6 2.0e6 3.0e6 4.0e6 );
+        temperature 330.0;
+
+        compositional
+        {
+            composition { methane 0.95; ethane 0.05; }
+            temperature 330.0;
+            liveFlash true;
+        }
+    }
+}
+
+nodes
+{
+    A { pressure 3.0e6; }
+    B { pressure 1.0e6; }
+    C { pressure 3.0e6; }
+    D { pressure 1.0e6; }
+    E { pressure 3.0e6; }
+    F { pressure 1.0e6; }
+}
+
+pipes
+{
+    FB
+    {
+        from A; to B;
+        length 800; diameter 0.05; roughness 1.0e-5; elevation 0;
+        wallHeatTransfer 200; wallTemperature 260; heatCapacity 2400;
+        jouleThomson eosSrk;
+        temperatureFeedback true;
+    }
+
+    NO
+    {
+        from C; to D;
+        length 800; diameter 0.05; roughness 1.0e-5; elevation 0;
+        wallHeatTransfer 200; wallTemperature 260; heatCapacity 2400;
+        jouleThomson eosSrk;
+        temperatureFeedback false;
+    }
+
+    attrib
+    {
+        from E; to F;
+        length 800; diameter 0.05; roughness 1.0e-5; elevation 0;
+    }
+}
+
+solve { maxIter 100; tol 1e-11; }

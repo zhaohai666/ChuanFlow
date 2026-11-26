@@ -656,6 +656,14 @@ int main(int argc, char** argv)
                                                        : " belowTransition");
             }
             log::info(line);
+            // 5.194 (G6d): the entry state a feedback march booked its mass at,
+            // and that mass itself -- so a checker closes rho v A = m from the
+            // case text and the station readouts without trusting an internal.
+            if (f.marchTemperatureFeedback)
+                log::info("pvtfb ", f.name, " Tin ",
+                          num(net.pvtFluid.temperature), " rhoIn ",
+                          num17(f.marchEntryDensity), " m ",
+                          num17(f.marchMassRate));
             // 5.193 (G9): a surveyed arc, stated back as the numbers the
             // march was charged for: the integral the survey claims (`dz`),
             // the span of sin(theta) the 24 segments actually sampled

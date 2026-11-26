@@ -2323,7 +2323,7 @@ double lbcOfPhase(const pvt::Mixture& mix, double T, double molarVolume)
 } // namespace
 
 void PvtFluid::evaluateAt(double p, double& rhoOut, double& muOut,
-                          double& sigmaOut) const
+                          double& sigmaOut, double T) const
 {
     sigmaOut = 0.0;
     if (!liveFlash)
@@ -2333,8 +2333,11 @@ void PvtFluid::evaluateAt(double p, double& rhoOut, double& muOut,
         return;
     }
 
+    // 5.194 (G6d): the state temperature. T <= 0 is the feed's own temperature,
+    // i.e. exactly the pre-feedback call every existing case makes.
     const LiveFlashState& lf = *liveFlash;
-    const pvt::FlashResult r = pvt::tpFlash(lf.mix, lf.T, p);
+    const double tState = (T > 0.0) ? T : lf.T;
+    const pvt::FlashResult r = pvt::tpFlash(lf.mix, tState, p);
     if (!(r.liquidMassDensity > 0.0) || !(r.vapourMassDensity > 0.0))
         cfFatal("pvtLiveFlash: non-positive flash phase density at p="
                 + std::to_string(p));
@@ -2364,8 +2367,8 @@ void PvtFluid::evaluateAt(double p, double& rhoOut, double& muOut,
     liq.setFractions(r.liquidComposition);
     pvt::Mixture vap = lf.mix;
     vap.setFractions(r.vapourComposition);
-    const double muL = lbcOfPhase(liq, lf.T, r.liquid.molarVolume);
-    const double muV = lbcOfPhase(vap, lf.T, r.vapour.molarVolume);
+    const double muL = lbcOfPhase(liq, tState, r.liquid.molarVolume);
+    const double muV = lbcOfPhase(vap, tState, r.vapour.molarVolume);
     muOut = wL * muL + wV * muV;
     if (!(rhoOut > 0.0) || !(muOut > 0.0))
         cfFatal("pvtLiveFlash: non-positive rho/mu at p=" + std::to_string(p));
@@ -2458,6 +2461,22 @@ struct PvtMarchOut
 /// rate stays booked at the REAL pUp density (the machine takes what the node
 /// holds), which is the declared simplification of this increment. 0 = no
 /// machine: the march starts at pUp and every existing number is bit for bit.
+/// 5.194 (G6d): the density the march books its mass rate at -- the ENTRY
+/// state, not the table's. Without the switch this is `fluid.density(pUp)`,
+/// the pre-feedback path bit for bit. With it the entry state is (pUp, T_in),
+/// because that is the state the stream actually arrives in and the mass it
+/// carries is fixed there: a feedback march whose inlet mass used the table's
+/// single-temperature density would book a mass the pipe never sees.
+double pvtEntryDensity(const NetworkPipe& pipe, const PvtFluid& fluid,
+                       double pUp, const SteadyThermal* thermal)
+{
+    if (!pipe.pvtTemperatureFeedback) return fluid.density(pUp);
+    double rhoIn = 0.0, muIn = 0.0, sgIn = 0.0;
+    fluid.evaluateAt(pUp, rhoIn, muIn, sgIn,
+                     thermal ? thermal->temperatureIn : 0.0);
+    return rhoIn;
+}
+
 PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
                          double qIn, double pUp, double sinFlow, int nSeg,
                          std::vector<PvtFlashStation>* stations = nullptr,
@@ -2470,7 +2489,11 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         cfFatal("pvtMarch: pipe '" + pipe.name + "' declares a rectangular "
                 "duct: the PVT march is a circular-bore correlation chain");
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
-    const double massRate = fluid.density(pUp) * qIn;
+    // 5.194 (G6d): the conserved mass rate is booked at the ENTRY state; the
+    // feedback switch is what makes that state (pUp, T_in) instead of the
+    // table's single-temperature density.
+    const double rhoEntry = pvtEntryDensity(pipe, fluid, pUp, thermal);
+    const double massRate = rhoEntry * qIn;
     const double ds = pipe.length / nSeg;
     // 5.193 (G9): the march reads the pipe's own survey when it has one, so a
     // build section and a lateral each pay their own gravity. Without a
@@ -2479,8 +2502,7 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
     const std::vector<double> segSinVec =
         pipe.surveyOn ? surveySegSinOf(pipe, nSeg) : std::vector<double>();
     const std::vector<double>* segSin = pipe.surveyOn ? &segSinVec : nullptr;
-    const double headPerM =
-        machineHeadOf(pipe, qIn, fluid.density(pUp)) / pipe.length;
+    const double headPerM = machineHeadOf(pipe, qIn, rhoEntry) / pipe.length;
     const double pFloor = std::max(0.02 * pUp, 1000.0);
     if (thermal && thermal->segmentU
         && static_cast<int>(thermal->segmentU->size()) != nSeg)
@@ -2495,7 +2517,14 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         // path evaluateAt returns exactly pvtLookup(pressure,rho/mu,p), so
         // this is bit-for-bit the original march.
         double rho = 0, mu0 = 0, sigma = 0;
-        fluid.evaluateAt(p, rho, mu0, sigma);
+        // 5.194 (G6d): with the switch the properties are evaluated at the
+        // temperature the march has REACHED (the segment's own inlet T, from
+        // the previous step's advance), which is what makes this a coupled
+        // march. Without it T reads 0 and the feed's snapshot is used, bit for
+        // bit. The stage temperature is the one the previous segment left, so
+        // the coupling is the same first-order Euler the rest of the march is.
+        const double tState = pipe.pvtTemperatureFeedback ? t : 0.0;
+        fluid.evaluateAt(p, rho, mu0, sigma, tState);
         const double v = massRate / (rho * area);
         // 5.76 (A5 increment 2): the PVT table supplies the pressure-
         // dependent Newtonian baseline; a declared rheology reprices it on
@@ -2548,7 +2577,8 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
 /// expanding bracket finds it, unlike the U-shaped two-phase gradient.
 double pvtRateForDrop(const NetworkPipe& pipe, const PvtFluid& fluid,
                       double pUp, double pLow, double sinFlow, bool& choked,
-                      bool boostUp = false)
+                      bool boostUp = false,
+                      const SteadyThermal* thermal = nullptr)
 {
     choked = false;
     const double pFloor = std::max(0.02 * pUp, 1000.0);
@@ -2564,7 +2594,7 @@ double pvtRateForDrop(const NetworkPipe& pipe, const PvtFluid& fluid,
         const double start = boostUp ? pUp * pr : 0.0;
         const double target = boostUp ? pLow : pLow * pr;
         const PvtMarchOut m =
-            marchPvtPipe(pipe, fluid, q, pUp, sinFlow, 24, nullptr, nullptr,
+            marchPvtPipe(pipe, fluid, q, pUp, sinFlow, 24, nullptr, thermal,
                          start);
         // floor-crossing marches return the floor shortfall: continuous
         // with the unchoked branch and correctly scaled for the secant
@@ -2736,14 +2766,12 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
         (forward ? 1.0 : -1.0) * pipe.elevation / pipe.length;
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
 
-    bool choked = false;
-    const double q =
-        pvtRateForDrop(pipe, fluid, pUp, pLow, sinFlow, choked, boostUp);
-
-    // 5.144 (G6): the PASSIVE thermal march, same story as the black-oil
-    // path - the rate solve above never saw a temperature and the accepted
-    // march prices T on the pressure profile it already computed. Nothing
-    // declared -> null -> the isothermal march, bit for bit.
+    // 5.144 (G6): the steady temperature march. Its T is PASSIVE unless
+    // 5.194's feedback switch is on -- and when it is, the RATE SOLVE reads it
+    // too (rho/mu at the reached T move dp), so the struct has to be built
+    // before the rate solve instead of after it. Building it earlier cannot
+    // move an answer by itself: T reaches dp only through the feedback switch,
+    // and the unswitched march never reads `thermal` for a property.
     SteadyThermal th;
     const SteadyThermal* pth = nullptr;
     std::function<double(double, double)> jtFn; // 5.189: outlives the march
@@ -2772,6 +2800,17 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
         }
         pth = &th;
     }
+    bool choked = false;
+    const double q = pvtRateForDrop(pipe, fluid, pUp, pLow, sinFlow, choked,
+                                    boostUp, pth);
+    // 5.194 (G6d): the entry state the march booked its mass rate at, and that
+    // mass itself -- printed so a checker can close rho v A = m from the case
+    // text and the station readouts alone.
+    const double rhoEntry = pvtEntryDensity(pipe, fluid, pUp, pth);
+    out.marchTemperatureFeedback = pipe.pvtTemperatureFeedback;
+    out.marchEntryDensity = pipe.pvtTemperatureFeedback ? rhoEntry : 0.0;
+    out.marchMassRate = pipe.pvtTemperatureFeedback ? rhoEntry * q : 0.0;
+
     // D10/D7: the accepted march is replayed once with station capture so a
     // checker can read the per-station rho/mu/sigma the march actually used.
     // 5.156: with a compressor at the entry end the replay starts at the
@@ -2811,17 +2850,22 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
     out.frictionFactor = m.friction;
     out.choked = choked || !m.ok;
     out.dpFriction = dp; // gravity and the property variation are in the march
-    out.dpValve = pipe.valveK * fluid.density(pUp) * std::abs(out.velocity)
+    // 5.194: with the feedback switch the row's own entry density is the one at
+    // (pUp, T_in), the same state the march booked its mass at, so a machine
+    // cannot be priced at a density the pipe never sees. Without the switch
+    // this is fluid.density(pUp), bit for bit.
+    const double rhoRow = pipe.pvtTemperatureFeedback ? rhoEntry
+                                                      : fluid.density(pUp);
+    out.dpValve = pipe.valveK * rhoRow * std::abs(out.velocity)
                 * out.velocity / 2.0;
-    out.dpPump = -fluid.density(pUp) * kGravity * pumpHeadOf(pipe, q);
+    out.dpPump = -rhoRow * kGravity * pumpHeadOf(pipe, q);
     // 5.191: the PCP's own account, kept as its own readout so a checker
     // reads the machine that priced it rather than a sum of two curves.
-    out.dpPcp = -fluid.density(pUp) * kGravity
-              * pcpHeadOf(pipe, q, fluid.density(pUp));
+    out.dpPcp = -rhoRow * kGravity * pcpHeadOf(pipe, q, rhoRow);
     if (pipe.jetOn)
     {
-        const JetRow jr = jetRowOf(pipe, q, fluid.density(pUp));
-        out.dpJet = -fluid.density(pUp) * kGravity * jr.head;
+        const JetRow jr = jetRowOf(pipe, q, rhoRow);
+        out.dpJet = -rhoRow * kGravity * jr.head;
         out.jetFlowRatio = jr.ratio;
         out.jetState = jr.state;
     }
@@ -2859,7 +2903,8 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
     {
         bool ch2 = false;
         const double qDeep = pvtRateForDrop(
-            pipe, fluid, pUp, std::max(pLow - h, 1.0), sinFlow, ch2, boostUp);
+            pipe, fluid, pUp, std::max(pLow - h, 1.0), sinFlow, ch2, boostUp,
+            pth);
         c = (qDeep - q) / h;
     }
     if (!(c > 0.0))
@@ -2868,7 +2913,7 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
         // zero-rate boost so the Jacobian reads the same law the rate solve
         // solved. A bare pipe's boost is 1.0 and this is the old code.
         const PvtMarchOut dead = marchPvtPipe(
-            pipe, fluid, 0.0, pUp, sinFlow, 24, nullptr, nullptr,
+            pipe, fluid, 0.0, pUp, sinFlow, 24, nullptr, pth,
             boostUp ? pUp * pr0 : 0.0);
         const double deficit = (boostUp ? pLow : pLow * pr0) - dead.pOutlet;
         if (deficit > 0.0)
@@ -2876,7 +2921,7 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
             bool ch2 = false;
             const double probeLow = std::max(dead.pOutlet - 0.01 * pUp, 1.0);
             const double qProbe = pvtRateForDrop(
-                pipe, fluid, pUp, probeLow, sinFlow, ch2, boostUp);
+                pipe, fluid, pUp, probeLow, sinFlow, ch2, boostUp, pth);
             c = qProbe / std::max(pLow - probeLow, 1.0);
         }
         if (!(c > 0.0)) c = 1e-6; // keep the network Jacobian nonsingular
@@ -3299,7 +3344,8 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
             || pd.has("insulation")
             || pd.has("wallHeatTransferSegments") || pd.has("wallModel")
             || pd.has("wallTemperature") || pd.has("surfaceTemperature")
-            || pd.has("geothermalGradient") || pd.has("heatCapacity");
+            || pd.has("geothermalGradient") || pd.has("heatCapacity")
+            || pd.has("temperatureFeedback");
         // 5.189: `jouleThomson eos` / `jouleThomson eosSrk` asks the fluid's
         // own equation of state for the coefficient at each segment's state.
         // It needs a composition, so it is refused on the black-oil and
@@ -3351,6 +3397,45 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         p.surfaceTemperature = pd.getScalarOr("surfaceTemperature", 0.0);
         p.geothermalGradient = pd.getScalarOr("geothermalGradient", 0.0);
         p.heatCapacity = pd.getScalarOr("heatCapacity", 0.0);
+        // 5.194 (G6d): the feedback switch. `temperatureFeedback true` turns
+        // the passive temperature march into a coupled one: every segment
+        // prices its rho/mu/sigma at the T the march has reached, and the mass
+        // rate is booked at (pUp, T_in). It is refused wherever the fluid
+        // cannot answer a (T, p) question, because there it would be a
+        // declaration read by nothing:
+        //   - a tabulated pvt table is ONE temperature's snapshot (rho(p), mu(p)),
+        //     and inverting a temperature out of it would be inventing a model;
+        //   - the black-oil layer is isothermal by construction (its density /
+        //     viscosity correlations never see T).
+        // `false` is accepted and means the quiet default, exactly like
+        // `false` above: the key exists to be stated, not to be guessed.
+        p.pvtTemperatureFeedback = false;
+        if (pd.has("temperatureFeedback"))
+        {
+            const std::string fb = pd.getWord("temperatureFeedback");
+            if (fb == "true") p.pvtTemperatureFeedback = true;
+            else if (fb == "false") p.pvtTemperatureFeedback = false;
+            else
+                cfFatal("steadyNetwork: pipe '" + name + "' temperatureFeedback"
+                        " must be true or false");
+            if (p.pvtTemperatureFeedback)
+            {
+                if (net.hasBlackOil)
+                    cfFatal("steadyNetwork: pipe '" + name + "' declares "
+                            "temperatureFeedback on a black-oil network: the "
+                            "black-oil layer is isothermal by construction "
+                            "(rho and mu are functions of p at the stream's "
+                            "one declared temperature), so the switch would "
+                            "be read by nothing");
+                if (!net.pvtFluid.liveFlash)
+                    cfFatal("steadyNetwork: pipe '" + name + "' declares "
+                            "temperatureFeedback on a fluid without a live "
+                            "flash: a tabulated rho(p)/mu(p) table is one "
+                            "temperature's snapshot, so re-pricing it at the "
+                            "marched T would be inventing a temperature "
+                            "model; declare compositional{ liveFlash true; }");
+            }
+        }
         // 5.188 (G6b): a LAYERED wall prices the per-unit-length coefficient
         // from the stack itself instead of from a declared number:
         //   U = 1 / ( sum_i ln(r_{i+1}/r_i)/(2 pi k_i) + 1/(2 pi r_out h_o) )

@@ -63,8 +63,13 @@ struct PvtFluid
     double surfaceTension(double p) const;
     /// Evaluate rho/mu/sigma at p from ONE flash when liveFlash is set (the
     /// march calls this once per station); otherwise table lookup + sigma 0.
+    /// 5.194 (G6d): the optional T is the STATE temperature -- the flash, and
+    /// the LBC viscosity that rides on the flash's own molar volume, are
+    /// evaluated at (T, p) instead of at the feed's single temperature. T <= 0
+    /// means "the feed's temperature", which is the pre-feedback path bit for
+    /// bit and the only state a single-temperature table has.
     void evaluateAt(double p, double& rhoOut, double& muOut,
-                    double& sigmaOut) const;
+                    double& sigmaOut, double T = 0.0) const;
 
     /// 5.189: the compositional feed, when the case declared one. Held even
     /// on the table path (where liveFlash is null) so an EOS-derived
@@ -226,6 +231,20 @@ struct NetworkPipe
     double surfaceTemperature = 0;  // K (geothermal at the inlet datum)
     double geothermalGradient = 0;  // K/m
     double heatCapacity = 0;        // J/(kg K)
+
+    /// 5.194 (G6d): TEMPERATURE FEEDBACK -- the march's own T reprices the
+    /// fluid. Until now the temperature march was PASSIVE: it priced T along
+    /// the pressure profile and nothing read the result back, so rho and mu
+    /// were always the feed's single-temperature snapshot. With this switch
+    /// (thermal{ temperatureFeedback true; }) every segment evaluates its
+    /// rho/mu/sigma at (p, T) with the T the march has reached, and the mass
+    /// rate is booked at the entry state (pUp, T_in). That is a COUPLED
+    /// march: T now moves dp, and dp moves T, which is why this needs a
+    /// statement in the case rather than being always on. Only the
+    /// compositional live-flash path can honour it -- a tabulated rho(p)/mu(p)
+    /// table is one temperature's snapshot, and the black-oil layer is
+    /// isothermal -- so the parser refuses it there instead of pretending.
+    bool pvtTemperatureFeedback = false;
 
     // 5.191 (G7): a positive-displacement machine (PCP / screw pump) on this
     // pipe. Its law is the machine's own, not the centrifugal curve above:
@@ -809,6 +828,12 @@ struct PipeFlowResult
     int jetState = -1;          // -1 none, 0 PUMPING, 1 NO-SUCTION, 2 FREE-JET
     double marchJouleThomson = 0;
     int marchJtMode = 0;
+    /// 5.194 (G6d): did the march price properties at its own T, and at what
+    /// entry state did it book the mass rate? Both are zero / false on every
+    /// pipe without the switch, so no existing readout moves.
+    bool marchTemperatureFeedback = false;
+    double marchEntryDensity = 0; // kg/m3 at (pUp, T_in)
+    double marchMassRate = 0;     // kg/s, the march's conserved quantity
 };
 
 struct SteadyNetworkResult

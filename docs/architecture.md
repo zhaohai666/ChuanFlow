@@ -4667,6 +4667,8 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 
 **本增量的边界**：① **报表层**：LBC 黏度目前由 `chflow-pvt` 报告并经 checker 核实，**尚未接进 1D 摩擦 march**（黑油 / PVT 表驱动行仍用各自的 `mu(p)`）；把组分黏度接进管网摩擦是后续增量。② **临界体积取 PR `Zc = 0.3074`** 而非表格 / 调参值——这是 EOS 自洽的可自推选择，标准 LBC 常用表格 `Vc`（甚至按实测纯组分黏度调参）；便捷重载因此与用表格 Vcs 的 worked example 数值不同（核心函数显式接受 Vcs 故仍能复现该 example），调参 `Vc` 留待后续。③ **表面张力仍只有常量**（黑油 `surfaceTension = 0.03`），parachor / Weinaug-Katz 组分表面张力是 D7 增量 2；含水 / 酸气组分扩展是增量 3。④ 纯 LBC 形式（Whitson-Brulé 现代形式，气液同一残余多项式），不含原始 1964 的气相表格压力修正（该修正在现代形式里被弃用以免气液黏度不连续）。⑤ `viscosity{}` 缺席即不报黏度、flash 一位不动，且全仓库只有本 case 声明 LBC（`grep -rl "model lbc" tests/cases/` 命中一支），不可能扰动任何既有数字——`-E mpiDecomposition` 排除后跑满 **146/146**。
 
+**边界②的修复（2026-11-25）**：临界体积不再只能由 PR `Zc = 0.3074` 反算。`viscosity{}` 新增可选 `criticalVolumes (...)` 列表（m³/mol，组成顺序）——声明后用表格值，缺失时逐位保留历史 PR-Zc 回退。1D `compositional{}` 的同一列表同时喂给 `liveFlash` 与预计算表两条黏度路径。`model` 词由死字段改为大声拒收（未知词即 cfFatal）。共享 API 新增 `lbcCriticalVolumes(mix, zc = 0.3074)`，便捷重载 `lbcViscosity(mix,T,p,pref,Vcs)` 接受可选的声明 Vcs（空指针 = 旧路径逐位不变）。新 `verify.pvtLbcCriticalVolumes` 用 Whitson-Brulé worked example 已发表的甲烷/乙烷/丙烷表格 Vc（98.6/145.5/200 cm³/mol）独立重推每相黏度、证明相对 PR-Zc 孪生确有移动，并对长度不符 / 非正 Vc / 未知 model 三条大声拒收；既有 `verify.pvtLbc` 逐字节保持。
+
 **成本**：新单元 `Viscosity.h`（44 行，三入口 + 完整公式推导文档）+ `viscosity.cpp`（92 行，Stiel-Thodos + Kay 平均 + Herning-Zipperer + 残余多项式 + PR 便捷重载），`pvtApp.cpp` +37（gated 相黏度报表），`src/pvt/CMakeLists.txt` +1，1 case（27 行）+ `check_pvt_lbc.py`（~210 行，公式自核实 + 内核重推 + 物理锚 + gated twin）+ 1 条 `add_test`（`verify.pvtLbc`，Test #143），**本增量 CTest 145 → 146**（`-E mpiDecomposition` 后跑满 **146/146**，见 `docs/gap_analysis.md` §6 实施日志）。**D7 保持 IN_PROGRESS**（余增量 2 组分表面张力、增量 3 含水 / 酸气）。
 
 ### 5.94 组分 PVT 第一次有了表面张力（D7 增量 2）：Weinaug-Katz parachor 的界面张力由相态解出
@@ -5308,11 +5310,17 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **只替换持液率块。** 两条定律替换 `beggsBrillDpDs` 的水平持液率 + 倾角修正块，其余一切不动：流型图照常评估并上报（regime/L1..L4/transitionWeight 与 §5.85 同源），摩擦倍率 S(y=λ/HL²)、提升项（ρS 随 HL 走）、Ek 加速项与 24 段 march 读的还是同一批数。变的是 HL，进而变 ρS、y 与 dp——物理确实动了（锚点算例 P3：BB 0.5018 → HLB 0.3869（落到无滑移下限）→ DR 0.9353，dp 83.7→88.7→74.4 kPa）。倾角修正是 BB 自己的定律，替换后不再适用；黏度读 PVT 值——§5.76 的流变学仍只定价摩擦项。
 
+**Ek 密度修复（2026-11-25）**：`beggsBrillDpDs` 的加速项此前写 `Ek = vsg vm ρ_s / p`，把滑动（就地）密度误用到动能修正里——发表律（Standard Handbook of Petroleum & Natural Gas Engineering Eq. 4.52–4.54；Brill & Beggs 1991，亦见 Petroleum Production Systems 的 Beggs-Brill 节）明确区分两密度：**提升项用 ρ_s = ρL HL + ρG(1−HL)**，而**摩擦项与 Ek 都用无滑移密度 ρ_n = ρ_m = ρL λ + ρG(1−λ)**。把 ρ_s 塞进 Ek 是常见的二次简化（PIPESIM 改写等），不是发表式；ρ_s 只该出现在提升项。现改为 `Ek = vsg vm ρ_m / p`，两套网格、三种关联式与 nodal 侧共六份独立 checker 同步重推；解析金锚 `dp_t` 由 2.6861370122741586 微调到 2.6861356332381296 Pa/m（相对 5e-7，因为 Ek 本身很小），`verify.nodalLateral` 四支总流量按新物理重标定（相对 ~1e-4），其余判据与拒收逐位保留。`Ek` 不读黏度，故 §5.76 的流变学声明仍只动摩擦项。
+
 **语法与拒收。** 词形式（数字会静默别名 regime 索引，拒收）；未知词大声拒收。作用域：`correlation != 0` 需黑油两相 march（单相/常数属性拒收）；与 `flowPattern` 同管冲突拒收（flowPattern 选的是 BB 自己的区律，替换后无律可选）；气举阀/有杆泵管拒收（列入既有开关冲突清单）；transient 行与 nodal 井块各有一条大声拒收（它们没有 BB 持液率块可替换）。
 
 **回归（`tests/check_steady_correlations.py`）。** 显式默认孪生逐字节；水平锚点上 HLB/DR 各臂由 Python 独立重推 24 段 march（PVT、图、定律、摩擦全链），出口 HL/λ 到 1e-8、dp 到 1e-5、落压到 1e-6，L1..L4 仍是公布边界、oRegime 仍是图的裁决（无 FORCED 足迹）；HLB 无滑移下限成立；与 BB 孪生比 HL/dp 确实移动；5 条拒收（未知词、单相、flowPattern 冲突、transient、nodal）+ 单相上 `correlation beggsBrill;` 是无操作孪生。
 
 **边界。** HLB 是垂直流的发表重述，本增量把它按原样用于任意倾角（提升项仍按几何 sinθ 计价）；DR 只含区 1/区 2 骨架与无滑移上限，区 3 湍流持液率与区 4 雾状流不在；σ=0 的暴露与 BB 的 Nlv 相同，未新增防护。
+
+**Griffith 泡状 / 雾状分支补齐（2026-11-25）**：Whitson 2017 重述只转写了中段持液率图，经典 Hagedorn-Brown 方法在泡状流与雾状流各有一支 Griffith 律，原实现缺这两支。管块新增 opt-in `hbGriffith true;`（只与 `correlation hagedornBrown;` 共存，其余组合大声拒收；缺席 / false 逐位不变）。**泡状**：`λ_g < L_B = max(1.071 − 0.2218 v_m²/D, 0.13)`（v_m ft/s、D ft，Orkiszewski 1967 / Standard Handbook §4.6），Griffith & Wallis 1961 泡滑移 `H_g = ½[(1+v_m/v_s) − √((1+v_m/v_s)² − 4 v_sg/v_s)]`、`v_s = 0.8 ft/s`，`H_L = 1 − H_g`。**雾状**：`N_GV > L_M = 75 + 84 N_LV^0.75`（Duns-Ros 场单位群）时取区 III 无滑移 `H_L = λ_L`。两支之间仍走 Whitson 中段图。^{[1]} 新 `verify.steadyHbGriffith` 由打印的 `v` / `lambda` 独立重推泡状滑移式并钉住 L_B 判决、雾状无滑移下限、与纯 Whitson 图的数值差异、孪生逐字节与三条拒收。
+
+> [1] 与 §5.143 的架构口径一致，本增量**只替换持液率块**：Griffith 原法的分区摩擦律（泡状用液相 Re、雾状用气相 Re）尚未接进 `beggsBrillDpDs` 的 BB 摩擦倍率 S(y)；重力提升与 E_k 仍走 BB 的 ρ_s / ρ_m 口径。这是显式声明的简化，不是论文原法的完整复现。
 
 ### 5.144 G6 稳态热 march：被动温度读数（Joule-Thomson + 壁面换热）
 
@@ -5774,6 +5782,8 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 
 **边界**。声学层纯诊断（与动量/持液场的双向耦合是显式命名的后续增量）；固定 dt（无自适应）；线性声学不建模激波/非线性有限幅效应。
 
+**补记（2026-11-25，默认声速修为两相）**：原版 `aModel` 默认 `eos`（每格 `a²=gasR·T`）在两相 EOS 泄压线上仍是**纯气声速**——气相柔度之外还要液体柔度，波速被高估数倍（50/50 水/气线上 √(287·300)=293.4 m/s 对比 Wood 混合 ≈62.8 m/s）。默认 `aModel` 改为 `twoPhase`：`1/(ρ_m a²) = α_L/(ρ_L a_L²) + α_G/(ρ_G gasR T)`，气相柔度仍是内核 EOS 的精确密度导数；未声明 `liquidSoundSpeed` 时液体取不可压（`a_L→∞`、该项为零），内核不发明液体 EOS；声明了则用完整 Wood 柔度。纯气格 `α_L=0` 精确退化回 `√(gasR T)`，所以 §5.183 全气算例逐字节不变；纯液格 `α_G=0` 且未声明 `a_L` 时大声拒收（不可压极限没有有限波速）。旧纯气路径保留为 opt-in `aModel eos`；`aModel wood` 仍是**必须声明 a_L** 的完整 Wood 律，`soundSpeed` 仍整体覆盖。`verify.transientGasFluxConsistency` 的 `caseWoodBase` 孪生判据由「默认骑 EOS 速度」改为「默认骑从 case 文本独立重推的 twoPhase 混合速度」（拟合 60.6 vs 重推 62.8，容差 8% 覆盖报告采样量子），并新增「远低于纯气速度」判据；`verify.transientEosAcoustics` 全气臂保持逐字节通过。
+
 ### 5.184 F1 · 气相面通量按体积恒等式闭合（gvol = vM − F）+ dynamicUs 判据反转
 
 **差距**（2026-11-24 立项）：两流体 `transportStep` 的气相面通量是与液相同一 Godunov 对气相镜像二次方程的**独立解**——镜像解不镜像液相的分支选择，非均匀面上 F + G ≠ vM，离散体积恒等式破缺。后果：EOS 管线沿线被涂上虚假压力伪影（假 cap 超压、假喷出 drive），G2 dynamicUs（§5.142）的「气帽超压喷出」叙事此前正骑在这些伪影上。
@@ -6030,7 +6040,54 @@ pipes{P}
 
 黑油那条 march 上同样是两组孪生（O2 用 12° 的 `survey{}`、O4 用 `elevation`，Q/v/HL/λ/Nfr 1e-12 一致），外加一条只有黑油能给的判据：**常数均值孪生不能顶替变弧**（O3 的变弧与 O2 的 12° 均值速率差 0.99%），即"弧是测斜、不是它的平均"在 Beggs-Brill 上也成立。
 
-**边界**。① 站间井斜按 md **线性**插值，不是最小曲率法（后者要方位角）；方位角不携带，因为水力只用 sinθ。② 段内 sinθ 取**段中点**采样，不是段内 sin 的积分平均（两者差在千分之几量级；`dz` 用的是闭式积分，不受这个采样影响）。③ 只有稳态两条 march 读测斜；瞬态的几何仍在网格上，本格不动。④ `survey{}` 与地形 `trajectory{}` 互斥：同一条弧不写两套。⑤ 分层保温的时变环境温度、温度反馈 PVT 仍 OPEN，与本格无关。
+**边界**。① 站间井斜按 md **线性**插值，不是最小曲率法（后者要方位角）；方位角不携带，因为水力只用 sinθ。② 段内 sinθ 取**段中点**采样，不是段内 sin 的积分平均（两者差在千分之几量级；`dz` 用的是闭式积分，不受这个采样影响）。③ 只有稳态两条 march 读测斜；瞬态的几何仍在网格上，本格不动。④ `survey{}` 与地形 `trajectory{}` 互斥：同一条弧不写两套。⑤ 分层保温的时变环境温度仍 OPEN，与本格无关。
+
+### 5.194 G6d · 温度反馈进 PVT（march 里已到达的 T 去定价 rho/mu，速率本身随之移动）
+
+**差距**。§5.188 把 T 剖面算出来了，§5.189 让 μ 也按 T 定价——但两者都发生在**已经解出速率之后**：热步是**被动**的，它沿压力剖面读壁温，从不回过头去改 \(\rho\)、\(\mu\)，所以 dp 与 Q 都没看见温度。真实的气井不是这样：沿程冷却 70 K，密度近乎翻倍，同一个质量流量在末段的体积流量与摩阻完全不同。本格把这条回路闭上。
+
+**语法**。
+
+```
+pipes{P}
+{
+    from A; to B;
+    length 800; diameter 0.05; roughness 1e-5;
+    thermal { temperatureFeedback true; temperature 330; ambient 285.7; u 24.4; }
+}
+```
+
+`temperatureFeedback` 是布尔开关（`true`/`false`，**必须**是这两个词），缺省 `false`——即旧路径逐位不变。
+
+**语义**。打开之后：
+
+- 每个 march 段用**已到达的 T**（该段入口那一点的 T，由热步给出）去评估 \(\rho\)、\(\mu\)、\(\sigma\)：`PvtFluid::evaluateAt(p, rho, mu, sigma, T)` 新增末位温度参数，`T <= 0` 退回 feed 温度（供所有旧调用点逐位不变）。
+- **质量流量在入口态记账**：\(m=\rho(p_{up},T_{in})\,q\)，全程**恒定**。这是这条回路的物理内容——管内是定质量流，不是定体积流；体积流量 \(v=m/(\rho A)\) 随 \(\rho\) 变，摩阻随之变。
+- 因此速率求解本身必须重排：`solvePipeFlowPvt` 里原来"先二分速率、再算热剖面"的顺序**反过来**了——热剖面（`SteadyThermal`）先建，再把它穿进速率求解（`pvtRateForDrop` 新增末位 `const SteadyThermal*`），march 里每一段都在**当次迭代的 T** 上重定 rho/mu。收敛后再用同一份热剖面做死的 march 与机器/阀/射流读数（那边改用入口行的 `rhoRow`，不再读单点 `fluid.density`）。
+
+**只有 compositional 的 `liveFlash` 路径兑现**。表格式 \(\rho(p)/\mu(p)\) 是**单温度快照**，没有温度维；黑油层按构造等温。这两种情形声明 `temperatureFeedback true` 直接拒收——而不是"声明被接受但静默无效"，那是比不支持更坏的事。
+
+**读数**。新增一行 `pvtfb <pipe> Tin <T> rhoIn <rho> m <mass>`（仅反馈打开的行打印）——入口态的三个数就摆在报告里，检查器不必猜。
+
+**数值**（case：methane 0.95 / ethane 0.05，p 0.5–4 MPa，feed 330 K，三条管线 A/C/E 3.0 MPa → B/D/F 1.0 MPa，L 800 / D 0.05 / rough 1e-5 / elevation 0，24 段）：
+
+| 行 | 开关 | Q (m³/s) | 末站 rho | 末站 Re |
+|---|---|---|---|---|
+| FB | `true` | 0.055829871944 | 9.3238411577（T 259.928 K） | 2755092.34037 |
+| NO | `false` | 0.0485060902772 | 7.1616552951（T 330 K） | 1965005.62097 |
+| attrib | 无 thermal 块 | 0.0485060902772 | 同上，逐位相同 | 同上 |
+
+反馈把速率**抬高 15.09%**：气体冷却后密度变大、同质量流的体积流量变小、摩阻变小，于是同样的 2 MPa 差压能过更多体积流量（按入口态记）。末站密度差 30.19% 是这条回路唯一不能省掉的证据——温度真的进了状态。
+
+**判据**。`verify.steadyNetworkPvtFeedback`，**30 判据**，0.74 s（`tests/check_steady_network_pvt_feedback.py` + `cases/steadyNetworkPvtFeedback/case.dict`）。五个族：
+
+- **P1 站态就是它的 (p, T)**：每个打印站的 \(\rho\) 是对该站自己的 (p, T) 的 PR 气体根（最大根），\(\mu\) 是同一状态上的 LBC；FB 的独立重推 2.5e-12、NO 的 4.4e-16。热剖面必须有 **24 段 + 出口 = 25 点**。末站确实冷下去 > 50 K，且冷态的密度与常温孪生差 > 5%。
+- **P2 march 就是按这些站态定价的**：用打印出来的 (p, T) 对、同一 Churchill、入口态质量流量，把整条 march 在 Python 里重跑并二分速率落在固定低压侧，打印的 `Q` 必须对上（1e-9），两条线各一次。重推里包含**地板与提前返回**（p 低于 `max(0.02 p_up, 1000)` 即停）——舍掉它，march 在低压端会外插到负压，残差不再单调，二分就会收敛到无意义的数（这是本格调试里真实踩过的坑）。
+- **P3 质量记在入口态**：`rhoIn` 等于 \(PR(p_{up},T_{in})\)，`Tin` 等于 feed 温度，\(m=\rho_{in}Q\)（1e-12）；出口处 \(\rho v A = m\)（1e-12，即全程质量守恒穿过重定价）；出口 Re/摩擦就是末站自己的 \(\rho,\mu,v\)。
+- **P4 开关的另一个方向**：`false` 与"整块缺席"在 Q/v/Re/f/dp 上逐位一致（1e-15），且缺席的行既不打印热剖面也不打印入口态，但**照样**在 feed 温度上闪蒸、站态与 NO 逐位相同——"不反馈"不等于"不传热"，两件事被分开钉住。
+- **P5 语法被拒**（四条，rc≠0 且命中关键词）：非布尔词；流体没有 `liveFlash`（表格快照）；整条管线无热源（没有 `thermal{}` 块，反馈无从谈起）；黑油网络。
+
+**边界**。① 反馈的温度是**该段入口**的 T，不是段内平均或隐式耦合的温度——与 §5.188 的热步同一口径（准稳态逐段），所以这里的反馈是**一步**闭合，不是段内自洽迭代。② 质量流量按入口态记账意味着出口体积流量必然大于入口：这是定质量流的结论，不是舍入。③ 只有 `liveFlash` 路径兑现；表格与黑油拒收（见上）。④ 瞬态网络与 twoFluid 路径不读这个开关。⑤ 多层保温的**时变环境温度**（壁温随时钟走）仍 OPEN。
 
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 

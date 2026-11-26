@@ -301,7 +301,7 @@ class BlackOil:
                                         + 3.182) - 0.0523)
                     s = min(s, 7.0)
                 f_b = fns * math.exp(s)
-                ek = vsg * vm * rhos / max(p, 1000.0)
+                ek = vsg * vm * rhom / max(p, 1000.0)
                 return f_b, (f_b * rhom * vm * vm / (2 * D)) / max(1 - ek, 0.1)
 
             if r == 1:
@@ -413,7 +413,7 @@ def _branch_gradient(lam, nfr, vsl, vsg, rhol, rhog, mul, mug, D, rough,
         s = ly / (ly * (ly * (0.01853 * ly * ly - 0.8725) + 3.182) - 0.0523)
     s = min(s, 7.0)
     f_b = fns * math.exp(s)
-    ek = vsg * vm * rho_s / max(p_pa, 1000.0)
+    ek = vsg * vm * rho_m / max(p_pa, 1000.0)
     return f_b, (f_b * rho_m * vm * vm / (2 * D)) / max(1 - ek, 0.1)
 
 
@@ -469,7 +469,7 @@ for lam_c in (0.05, 0.1, 0.2, 0.4, 0.6, 0.9):
 #        HL_t   = w*HL_seg + (1-w)*HL_int          = 0.7851991476453372
 #        branch S on y = lambda/HL^2, fns = 0.022536993703394008 (Re 35794.98)
 #        f_t    = w*f_seg + (1-w)*f_int            = 0.029805001869711356
-#        dp_t   = w*dp_seg + (1-w)*dp_int          = 2.6861370122741586 Pa/m
+#        dp_t   = w*dp_seg + (1-w)*dp_int          = 2.6861356332381296 Pa/m
 #      ----
 vm_a = math.sqrt(0.05 * G * 0.05)
 w_a, hl_a, f_a, dp_a = transition_blend(
@@ -482,7 +482,7 @@ check("anchor: blended transition holdup",
 check("anchor: blended transition fTp",
       near(f_a, 0.029805001869711356, 1e-12), f"{f_a!r}")
 check("anchor: blended transition gradient",
-      near(dp_a, 2.6861370122741586, 1e-12), f"{dp_a!r}")
+      near(dp_a, 2.6861356332381296, 1e-12), f"{dp_a!r}")
 
 
 # ---- run the solver and parse its readout ----

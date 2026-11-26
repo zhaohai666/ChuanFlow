@@ -1,0 +1,30 @@
+// LBC critical-volume declaration witness: same feed / pressures as pvtLbc,
+// but the `viscosity` block declares TABULATED critical volumes (m3/mol, feed
+// order - the Whitson & Brule 2000 worked example values) instead of asking
+// the kernel to back-calculate Vc from PR's universal Zc = 0.3074. The
+// checker re-derives mu from the reported phase state with these same Vcs,
+// verifies it differs from the PR-Zc twin, and refuses malformed declarations.
+
+temperature 300.0;
+
+pressures (1.0e6 4.0e6 1.2e7);
+
+composition
+{
+    methane   0.40;
+    ethane    0.30;
+    propane   0.30;
+}
+
+solve
+{
+    tol 1.0e-12;
+    maxIter 500;
+    bubblePoint yes;
+}
+
+viscosity
+{
+    model lbc;
+    criticalVolumes (9.86e-5 1.455e-4 2.0e-4); // methane/ethane/propane, m3/mol
+}

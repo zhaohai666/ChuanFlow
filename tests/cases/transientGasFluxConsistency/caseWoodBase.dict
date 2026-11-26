@@ -1,10 +1,10 @@
-// Gas-flux consistency Wood byte-identity twin: caseWood.dict WITHOUT
-// the aModel wood / liquidSoundSpeed declarations - the default aModel
-// eos path verbatim. The opt-in model must not move the default path:
-// this run rides the EOS speed sqrt(287 300) ~ 293.4 m/s (the checker
-// verifies the front arrivals differ from the wood arm's by the full
-// speed ratio), and the manual baseline diff proves it byte-identical
-// to the pre-fix binary modulo the additive `face` lines.
+// Gas-flux consistency Wood twin: caseWood.dict WITHOUT the aModel wood /
+// liquidSoundSpeed declarations. The default aModel twoPhase path now rides
+// Wood's homogeneous-mixture speed with an incompressible liquid, ~62.8 m/s
+// for this 50/50 line - five times slower than the old pure-gas EOS default
+// sqrt(287 300) ~ 293.4 m/s. The declared liquidSoundSpeed 1200 in caseWood
+// changes the liquid compliance by <1e-6, so both arms ride the same wave
+// speed; the checker re-derives the default speed from this case's text.
 
 fluid
 {
@@ -48,7 +48,7 @@ acoustics
 {
     enable true;
     initialGauge 1e6;
-    soundSpeed 0;    // 0 = the EOS-consistent isothermal sqrt(gasR T)
+    soundSpeed 0;    // 0 = the default twoPhase Wood mixture speed
     cfl 0.5;
     openEnd outlet;
 }

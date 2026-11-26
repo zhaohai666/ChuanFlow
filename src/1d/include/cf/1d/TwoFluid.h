@@ -184,13 +184,18 @@ namespace cf
 /// velocity u'_j advanced by the explicit staggered scheme (the u rows
 /// first, then the p rows on the NEW face velocities - the symplectic /
 /// leapfrog pairing that is neutrally stable, unlike forward Euler on
-/// both rows). The wave speed is the EOS-self-consistent derivative of
-/// the kernel's own gas law p = rhoG gasR T: a^2 = (dp/drho)_T =
-/// gasR T, so rho a^2 equals the cell's EOS pressure exactly; a case
-/// that wants an adiabatic or mixture bulk correction instead declares
-/// soundSpeed directly (the kernel carries no cV, so it cannot derive
-/// gamma itself - that boundary is stated, not papered over). The
-/// inertia is the local mixture density (mixtureRhoCell). One end
+/// both rows). The default wave speed is Wood's homogeneous-mixture
+/// speed: the gas compliance is the EOS-self-consistent derivative of
+/// the kernel's own gas law p = rhoG gasR T (aG^2 = (dp/drho)_T =
+/// gasR T, so rhoG aG^2 is the cell's EOS pressure), and the liquid
+/// compliance uses a declared liquidSoundSpeed or, absent one, an
+/// incompressible liquid (zero compliance - the kernel carries no liquid
+/// EOS and invents none); a pure-gas cell degenerates to sqrt(gasR T)
+/// exactly. The legacy pure-gas path remains selectable as aModel eos,
+/// the full mixture law with a required aL as aModel wood, and a declared
+/// soundSpeed replaces any model wholesale (the kernel carries no cV, so
+/// it cannot derive gamma itself - that boundary is stated, not papered
+/// over). The inertia is the local mixture density (mixtureRhoCell). One end
 /// (declared openEnd) vents to a pressure-release boundary p' = 0 - the
 /// depressurization valve of the scenario - the other end is a hard
 /// wall u' = 0 (a rate boundary imposes its velocity, so it is
@@ -631,12 +636,18 @@ struct TwoFluidAcoustics
                               // (> 0 when enabled; the field vents from it)
     double soundSpeed = 0;    // m/s, declared wave speed (0 = the model
                               // path below per cell)
-    std::string aModel = "eos"; // wave-speed model: "eos" = the exact
-                              // density derivative of the kernel's own
-                              // gas law, a^2 = gasR T per cell (default,
-                              // byte-identical to the undeclared path);
-                              // "wood" = Wood's homogeneous-mixture sound
-                              // speed (see acousticsStep)
+    std::string aModel = "twoPhase"; // wave-speed model:
+                              // "twoPhase" (default) = Wood's homogeneous
+                              // mixture speed, a^-2 = rho_m [alpha/(rhoL aL^2)
+                              // + (1-alpha)/(rhoG gasR T)], with the EOS-exact
+                              // gas compliance; absent a declared liquidSoundSpeed
+                              // the liquid is taken incompressible (aL -> inf,
+                              // zero liquid compliance) so no property table is
+                              // invented. Pure-gas cells give exactly sqrt(gasR T).
+                              // "eos" = the legacy pure-gas derivative
+                              // a^2 = gasR T on EVERY cell; "wood" = the full
+                              // Wood mixture speed with a declared aL required
+                              // (see acousticsStep)
     double liquidSoundSpeed = 0; // m/s, the LIQUID phase sound speed aL
                               // for aModel wood - declared, never derived
                               // (the kernel invents no liquid EOS)
@@ -1876,8 +1887,8 @@ private:
 ///       initialGauge 1e6;        // Pa, uniform initial acoustic
 ///                                // overpressure (> 0 when enabled)
 ///       soundSpeed 0;            // m/s, declared wave speed (0 = the
-///                                // EOS-consistent isothermal
-///                                // sqrt(gasR T) per cell)
+///                                // model path: default twoPhase Wood
+///                                // mixture speed, or aModel eos/wood)
 ///       cfl 0.5;                 // stability bound a_max dt/dx_min,
 ///                                // in (0, 0.5]; violations are fatal
 ///       openEnd outlet;          // the venting end (outlet or inlet,

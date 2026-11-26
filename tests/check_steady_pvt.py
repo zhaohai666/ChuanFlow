@@ -135,7 +135,23 @@ def march(name, q, p_up, nseg=NSEG):
         re = rho * v * D / mu
         f = churchill(re, eps / D)
         v_out, re_out, f_out = v, re, f
-        p -= rho * G * dz + (f * ds / D) * rho * v * v / 2.0
+        dp = rho * G * dz + (f * ds / D) * rho * v * v / 2.0
+        # 5.197: the march also pays the momentum-flux increase of the
+        # expanding fill, p_out = p - dp - (m/A)^2 (1/rho_out - 1/rho), with
+        # rho_out from the same table at the segment's outlet pressure. Four
+        # passes: the same fixed point the solver runs.
+        g2 = mass * mass / (area * area)
+        p_out = p - dp
+        for _ in range(4):
+            rho_out = interp(RHO_TAB, p_out)
+            if not rho_out > 0.0:
+                break
+            p_try = p - dp - g2 * (1.0 / rho_out - 1.0 / rho)
+            if abs(p_try - p_out) <= 1e-12 * max(1.0, abs(p_out)):
+                p_out = p_try
+                break
+            p_out = p_try
+        p = p_out
     return p, v_out, re_out, f_out
 
 

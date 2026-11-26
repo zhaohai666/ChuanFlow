@@ -231,7 +231,22 @@ def march(length, diameter, roughness, q, p_up, sin_list, nseg=SEGMENTS):
         f = churchill(r * v * diameter / m, roughness / diameter)
         dp = (r * G * sin_list[i] * ds
               + f * ds / diameter * r * v * v / 2.0)
-        p -= dp
+        # the march also pays the momentum-flux increase of the expanding
+        # fill (5.197): p_out = p - dp - (m/A)^2 (1/rho_out - 1/rho), with
+        # rho_out taken from the same table at the segment's outlet pressure.
+        # four passes, the same fixed point the solver runs.
+        g2 = mass * mass / (area * area)
+        p_out = p - dp
+        for _ in range(4):
+            rho_out = lookup(p_out)[0]
+            if rho_out <= 0.0:
+                break
+            p_try = p - dp - g2 * (1.0 / rho_out - 1.0 / r)
+            if abs(p_try - p_out) <= 1e-12 * max(1.0, abs(p_out)):
+                p_out = p_try
+                break
+            p_out = p_try
+        p = p_out
         if not p > floor:
             return floor
     return p

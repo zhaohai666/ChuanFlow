@@ -68,7 +68,16 @@ int main(int argc, char** argv)
                 }
                 else
                 {
-                    U.setPatchValue(patch, pd.getWordOr("UType", "zeroGradient"), Vector::zero());
+                    // a wall patch is a no-slip wall unless the case says
+                    // otherwise: the old zeroGradient default silently turned
+                    // it into a free-slip wall.
+                    const bool isWall
+                        = mesh.patches()[static_cast<std::size_t>(patch)].type
+                          == "wall";
+                    U.setPatchValue(patch,
+                                    isWall ? "fixedValue"
+                                           : pd.getWordOr("UType", "zeroGradient"),
+                                    Vector::zero());
                 }
                 if (pd.has("p"))
                 {

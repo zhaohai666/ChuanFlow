@@ -587,7 +587,23 @@ def march(name, q, p_up):
         re = r_ * v * g["diameter"] / interp(MU_TAB, p)
         f = churchill(re, g["roughness"] / g["diameter"])
         out = (v, re, f)
-        p -= r_ * G * dz + (f * ds / g["diameter"]) * r_ * v * v / 2.0
+        dp = r_ * G * dz + (f * ds / g["diameter"]) * r_ * v * v / 2.0
+        # 5.197: the march also pays the momentum-flux increase of the
+        # expanding fill, p_out = p - dp - (m/A)^2 (1/rho_out - 1/rho), with
+        # rho_out from the same table at the segment's outlet pressure. Four
+        # passes: the same fixed point the solver runs.
+        g2 = mass * mass / (area * area)
+        p_out = p - dp
+        for _ in range(4):
+            rho_out = rho(p_out)
+            if not rho_out > 0.0:
+                break
+            p_try = p - dp - g2 * (1.0 / rho_out - 1.0 / r_)
+            if abs(p_try - p_out) <= 1e-12 * max(1.0, abs(p_out)):
+                p_out = p_try
+                break
+            p_out = p_try
+        p = p_out
     return p, out
 
 

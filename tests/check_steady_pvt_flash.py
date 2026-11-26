@@ -400,6 +400,12 @@ if m and len(py_props) == 24:
     ds = L / 24
     close("station 0 pressure == upstream node", pressures[0], node_w, 1e-11)
     mass = py_props[0]["rho"] * Q
+    # Downstream-node density, re-flashed on the feed temperature: this case
+    # declares no thermal block, so the march stays isothermal at the feed T
+    # (kernel tState = 0 falls back to lf.T). The app prints no node density
+    # column (SteadyNetworkResult carries nodePressure only), so it is priced
+    # here from the same independent flash rather than read off stdout.
+    rho_node = props(names, zs, T, node_t, parachors)["rho"]
     for i in range(24):
         rho = py_props[i]["rho"]
         mu = py_props[i]["mu"]
@@ -407,7 +413,14 @@ if m and len(py_props) == 24:
         reyn = rho * vv * D / mu
         ff = churchill(reyn, eps / D)
         dpseg = (ff * ds / D) * rho * vv * vv / 2.0
-        p_next = pressures[i] - dpseg
+        # 5.197: the march also pays the momentum-flux increase of the
+        # expanding fill. rho_out is the converged outlet state: the next
+        # station's own flash for segments 0..22, the downstream node's flash
+        # for the last segment (its outlet is the node, whose density the
+        # window does not print).
+        rho_out = py_props[i + 1]["rho"] if i < 23 else rho_node
+        accel = mass * mass / (area * area) * (1.0 / rho_out - 1.0 / rho)
+        p_next = pressures[i] - dpseg - accel
         if i < 23:
             close(f"segment {i} lands on next station p", p_next,
                   pressures[i + 1], 1e-8)

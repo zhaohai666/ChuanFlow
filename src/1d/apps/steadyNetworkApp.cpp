@@ -614,7 +614,14 @@ int main(int argc, char** argv)
             }
             else
             {
-                line += " Re " + num(f.reynolds) + " f "
+                // Re is re-derived by the steady checkers from the station
+                // table (rho, mu) and the mass balance. A 12-significant-digit
+                // print carries a half-ulp relative error around 9.1e-13 on a
+                // Reynolds number this size, which leaves no headroom under the
+                // 1e-12 self-consistency check; emit round-trip precision
+                // (num17) for it. f keeps num(): its own checks sit at 1e-10
+                // or looser, and the twin/equality parsers compare it bitwise.
+                line += " Re " + num17(f.reynolds) + " f "
                       + num(f.frictionFactor);
             }
             line += " dp " + num(f.dpTotal);

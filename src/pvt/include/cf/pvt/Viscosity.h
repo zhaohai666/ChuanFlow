@@ -34,11 +34,20 @@ scalar lbcViscosity(scalar T, scalar Vm, const std::vector<scalar>& zs,
                     const std::vector<scalar>& Pcs,
                     const std::vector<scalar>& Vcs);
 
-/// EOS-consistent convenience: the PR76 molar volume supplies Vm and PR's
-/// universal critical compressibility (Zc = 0.3074) supplies the critical
-/// volume Vc_i = Zc R Tc_i / Pc_i, so the reduced density needs no tabulated
-/// critical volumes. `pref` selects the phase root (Liquid / Vapor).
+/// The critical volumes LBC needs, in the mixture's component order [m3/mol].
+/// With no declaration the PR76 universal compressibility Zc = 0.3074 gives
+/// Vc_i = Zc R Tc_i / Pc_i (the historical fallback, kept bit-for-bit);
+/// callers that have TABULATED critical volumes should pass them explicitly
+/// instead of back-calculating them from PR's Zc. `zc` overrides the fallback
+/// compressibility when no table is supplied.
+std::vector<scalar> lbcCriticalVolumes(const Mixture& mix, scalar zc = 0.3074);
+
+/// EOS-consistent convenience: the PR76 molar volume supplies Vm. `pref`
+/// selects the phase root (Liquid / Vapor). `Vcs`, when non-null, are the
+/// declared/tabulated critical volumes in component order; null keeps the
+/// PR-Zc fallback above, so every undeclared case is bit-identical.
 scalar lbcViscosity(const Mixture& mix, scalar T, scalar p,
-                    RootPreference pref = RootPreference::LowestGibbs);
+                    RootPreference pref = RootPreference::LowestGibbs,
+                    const std::vector<scalar>* Vcs = nullptr);
 
 } // namespace cf::pvt

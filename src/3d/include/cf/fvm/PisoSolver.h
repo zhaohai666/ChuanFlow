@@ -60,11 +60,14 @@ struct PisoStepResult
 /// on the momentum diagonal, rAU <= dt bounds every correction, so no
 /// under-relaxation is needed (unlike steady SIMPLE, which is Jacobi-scaled and
 /// lag-limited - see SimpleSolver.h). Time accuracy is first order (Euler ddt).
-/// HbyA and rAUf are formed once per step: later correctors repeat the same
-/// full-pressure fixed point rather than implementing neighbour corrections,
-/// so they recheck continuity but do not reduce the time-splitting error.
-/// Non-orthogonal correction work stays inside the Poisson solve
-/// (`ctl.nonOrthCorrectors`).
+/// rAUf is formed once per step; HbyA is rebuilt from the velocity the
+/// previous corrector corrected at the top of every later corrector. That is
+/// the standard PISO neighbour correction: a second corrector sees the
+/// neighbours' pressure corrections through the momentum off-diagonal and so
+/// reduces the time-splitting error, rather than re-solving the same fixed
+/// point. The closed flux is never carried into the next full-p equation (that
+/// would invert L(p) ~ 0 and collapse p). Non-orthogonal correction work stays
+/// inside the Poisson solve (`ctl.nonOrthCorrectors`).
 /// Solving for p rather than accumulating a correction p' is what keeps this
 /// collocated arrangement usable: p' accumulation feeds a bell-shaped pressure
 /// mode that the interpolated gradient is blind to, while here the pressure

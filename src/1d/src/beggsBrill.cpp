@@ -70,6 +70,48 @@ double hagedornBrownHoldup(double vsl, double vsg, double lambda,
     return std::max(psi * y3, lambda);
 }
 
+// 2026-11-25: the Griffith bubble / mist branches of the classic vertical
+// Hagedorn-Brown method, which the Whitson 2017 restatement above does NOT
+// carry (it only transcribes the middle holdup chart). Transcription from
+// Orkiszewski (1967, JPT) and the Standard Handbook of Petroleum & Natural
+// Gas Engineering, Sec. 4.6: bubble when the gas content lambda_g is below
+// L_B = max(1.071 - 0.2218 v_m^2/D, 0.13) [v_m ft/s, D ft], with the
+// Griffith & Wallis (1961) bubble holdup
+//   H_g = 0.5[(1 + v_m/v_s) - sqrt((1+v_m/v_s)^2 - 4 v_sg/v_s)], v_s = 0.8 ft/s
+// and H_L = 1 - H_g; mist above the Duns-Ros L_M = 75 + 84 N_LV^0.75 boundary
+// takes the Region-III no-slip holdup H_L = lambda. In between, return -1 to
+// keep the Whitson chart. All inputs SI; the published correlations are field
+// unit, so the exact ft conversions are applied here. The friction / elevation
+// coupling remains Beggs-Brill's (the G4 architecture replaces ONLY the holdup
+// block) - that boundary is stated, not papered over.
+double griffithBranchHoldup(double vsl, double vsg, double lambda,
+                            double rhoL, double sigma, double d)
+{
+    if (!(vsg > 0.0) || !(vsl > 0.0)) return -1.0;
+    const double vm = vsl + vsg;
+    const double ft = 3.28083989501312;
+    const double vmFt = vm * ft, dFt = d * ft, vsgFt = vsg * ft;
+    const double gasContent = vsg / vm;
+    const double lb = std::max(1.071 - 0.2218 * vmFt * vmFt / dFt, 0.13);
+    if (gasContent < lb)
+    {
+        const double vs = 0.8; // ft/s, Griffith & Wallis bubble slip velocity
+        const double r = vmFt / vs;
+        const double disc = (1.0 + r) * (1.0 + r) - 4.0 * vsgFt / vs;
+        if (!(disc > 0.0)) return lambda;
+        const double hg = 0.5 * ((1.0 + r) - std::sqrt(disc));
+        return std::min(std::max(1.0 - hg, lambda), 1.0);
+    }
+    // the Duns-Ros liquid / gas velocity groups in the published field units
+    const double rhoLb = rhoL / 16.0184634;
+    const double sigDyn = sigma * 1000.0;
+    const double nlv = 1.938 * vsl * ft * std::pow(rhoLb / sigDyn, 0.25);
+    const double ngv = 1.938 * vsgFt * std::pow(rhoLb / sigDyn, 0.25);
+    const double lm = 75.0 + 84.0 * std::pow(nlv, 0.75);
+    if (ngv > lm) return lambda; // mist: Duns-Ros Region III no-slip
+    return -1.0;                 // the middle chart prices everything else
+}
+
 // 5.143 (G4) law 2: the Duns & Ros liquid holdup region skeleton (API
 // Bulletin 34, Vol I, Section C; Duns & Ros, BRP 1963). PROVENANCE WARNING:
 // this is a transcription of the PUBLISHED SKELETON - the no-slip multiplier
@@ -364,8 +406,23 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
         // the liquid viscosity read here is the PVT one - the rheology
         // increment (5.76) reprices the friction term only, exactly as it
         // does on the Beggs-Brill path.
-        hl = hagedornBrownHoldup(in.vsl, in.vsg, lambda, in.rhoL, in.muL,
-                                 in.sigma, in.diameter, in.pPa);
+        if (in.griffithBranches)
+        {
+            // Opt-in classic vertical method: Griffith bubble / mist branches
+            // before (or instead of) the Whitson middle chart. -1 means
+            // neither branch applies and the chart stays in force.
+            const double gb = griffithBranchHoldup(
+                in.vsl, in.vsg, lambda, in.rhoL, in.sigma, in.diameter);
+            hl = gb < 0.0
+                ? hagedornBrownHoldup(in.vsl, in.vsg, lambda, in.rhoL, in.muL,
+                                      in.sigma, in.diameter, in.pPa)
+                : gb;
+        }
+        else
+        {
+            hl = hagedornBrownHoldup(in.vsl, in.vsg, lambda, in.rhoL, in.muL,
+                                     in.sigma, in.diameter, in.pPa);
+        }
     }
     else if (in.correlation == 2)
     {
@@ -432,7 +489,13 @@ BeggsBrillOut beggsBrillDpDs(const BeggsBrillIn& in)
         fTpB = fNs * std::exp(s);
         const double ele = kGravity * sinTheta * rhoS;
         const double fric = fTpB * rhoM * vm * vm / (2.0 * in.diameter);
-        const double ek = in.vsg * vm * rhoS / pEk;
+        // E_k uses the NO-SLIP density rho_n = rho_m, the same density as the
+        // friction term - NOT the in-situ/slip density rho_s used by the
+        // elevation head (Standard Handbook of Petroleum & Natural Gas
+        // Engineering Eq. 4.52-4.54; Brill & Beggs 1991). Using rho_s here is
+        // a common secondary simplification (PIPESIM rewrite) that mixes the
+        // two density definitions; the published correlation keeps them apart.
+        const double ek = in.vsg * vm * rhoM / pEk;
         return (ele + fric) / std::max(1.0 - ek, 0.1);
     };
 
@@ -540,6 +603,7 @@ BeggsBrillMarchOut marchBeggsBrillPipe(const pvt::BlackOilFluid& fluid,
         in.liquidRheology = liquidRheology;
         in.forcedRegime = forcedRegime;
         in.correlation = correlation;
+        in.griffithBranches = griffithBranches;
 
         BeggsBrillOut g;
         double staticRhoM = 0.0; // only the dead-line branch fills this

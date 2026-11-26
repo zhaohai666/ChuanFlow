@@ -68,8 +68,9 @@ aModel wood + liquidSoundSpeed 1200):
   * the reported acoustic fronts ride a_wood, NOT the EOS gas speed
     293.4 m/s (first arrivals at probe cells match (L - x)/a_wood);
   * the hard-wall gauge hysteresis transitions are spaced 2L/a_wood;
-  * the undeclared twin (caseWoodBase.dict, default aModel eos) rides
-    the EOS speed - the opt-in model does not touch the default path.
+  * the undeclared twin (caseWoodBase.dict, default aModel twoPhase) rides
+    the Wood mixture speed with an incompressible liquid - the default
+    path is a two-phase speed, NOT the pure-gas sqrt(gasR T).
 
 rejections (>= 6, loud cfFatal): aModel wood without liquidSoundSpeed
 (caseRejectWood.dict), wood + declared soundSpeed (mutually exclusive),
@@ -395,8 +396,20 @@ check("Wood arm: the wall gauge first flips sign at the quarter-wave "
       "time L/a_wood", t_cross if t_cross is not None else 0.0,
       half, 0.05)
 
-# undeclared twin rides the EOS speed
+# The undeclared twin rides the DEFAULT twoPhase Wood mixture speed. With
+# no declared liquidSoundSpeed the liquid is incompressible (zero liquid
+# compliance), so the speed is re-derived from the case text alone as
+#   1/(rho_m a^2) = alphaG/(rhoG gasR T),  rho_m = alphaL rhoL + alphaG rhoG
+# For this 50/50 line that is ~62.8 m/s - the same as the declared Wood arm
+# (the liquid compliance at aL = 1200 m/s is negligible) and five times
+# SLOWER than the pure-gas EOS speed. This is the fix for the old default
+# that rode sqrt(gasR T) even on a two-phase depressurization line.
 base_wood_text = open(os.path.join(CASEDIR, "caseWoodBase.dict")).read()
+B_alpha = case_number(base_wood_text, "alpha")
+B_gas = 1.0 - B_alpha
+B_compliance = B_gas / (RhoGw * AG2)  # incompressible liquid: no aL term
+B_rho_m = B_alpha * RhoL + B_gas * RhoGw
+A_default = math.sqrt(1.0 / (B_compliance * B_rho_m))
 bw_frames = parse(run_raw(os.path.join(CASEDIR, "caseWoodBase.dict")))
 bpts = []
 for i in probes:
@@ -408,9 +421,11 @@ bsy = sum(p[1] for p in bpts)
 bsxx = sum(p[0] ** 2 for p in bpts)
 bsxy = sum(p[0] * p[1] for p in bpts)
 bslope = (len(bpts) * bsxy - bsx * bsy) / (len(bpts) * bsxx - bsx * bsx)
-check("Wood undeclared twin: the default aModel eos path rides the EOS "
-      "gas speed (the opt-in model leaves it verbatim)",
-      1.0 / bslope, A_eos, 0.05)
+check("default acoustics path rides the twoPhase Wood mixture speed "
+      "(not the pure-gas EOS speed)",
+      1.0 / bslope, A_default, 0.05)
+check("default twoPhase speed is far below the pure-gas EOS speed",
+      A_eos / (1.0 / bslope), A_eos / A_default, 0.05)
 
 # ================= rejection witnesses =================================
 expect_fatal("wood without liquidSoundSpeed",

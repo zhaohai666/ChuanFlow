@@ -482,7 +482,22 @@ def march(pipe, q, p_up, sin_flow, p_start=0.0, nseg=24):
         f = churchill(r * v * pipe["diameter"] / m,
                       pipe["roughness"] / pipe["diameter"])
         dp = r * 9.80665 * dz + f * ds / pipe["diameter"] * r * v * v / 2.0
-        p -= dp
+        # 5.197: the march also pays the momentum-flux increase of the
+        # expanding fill, p_out = p - dp - (m/A)^2 (1/rho_out - 1/rho), with
+        # rho_out from the same table at the segment's outlet pressure. Four
+        # passes: the same fixed point the solver runs.
+        g2 = mass_rate * mass_rate / (area * area)
+        p_out = p - dp
+        for _ in range(4):
+            r_out = lookup(p_out, p_table, rho_table)
+            if not r_out > 0.0:
+                break
+            p_try = p - dp - g2 * (1.0 / r_out - 1.0 / r)
+            if abs(p_try - p_out) <= 1e-12 * max(1.0, abs(p_out)):
+                p_out = p_try
+                break
+            p_out = p_try
+        p = p_out
         if not p > p_floor:
             return p_floor, False
     return p, True

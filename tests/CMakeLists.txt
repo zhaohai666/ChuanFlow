@@ -2295,6 +2295,26 @@ add_test(
         $<TARGET_FILE:chflow-pvt>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtLbc/case.dict)
 
+# LBC critical volumes: a declared TABULATED list must replace the historical
+# PR-Zc back-calculation; the PR-Zc twin and malformed declarations guard both
+# paths. Independent checker, not a mirror of the C++ kernel.
+add_test(
+    NAME verify.pvtLbcCriticalVolumes
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_lbc_vc.py
+        $<TARGET_FILE:chflow-pvt>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtLbcVc/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtLbc/case.dict)
+
+# Classic Hagedorn-Brown Griffith bubble / mist holdup branches (2026-11-25).
+# The checker re-derives the bubble slip relation from the printed v/lambda
+# and verifies the mist no-slip floor, twin byte-identity and loud refusals.
+add_test(
+    NAME verify.steadyHbGriffith
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_steady_hb_griffith.py
+        $<TARGET_FILE:chflow-1d-steady>)
+
 # D7 increment 2 (5.94): Weinaug-Katz compositional surface tension. The checker
 # validates the equation against the published chemicals worked examples and
 # re-derives sigma from the declared parachors and the reported PR phase state,

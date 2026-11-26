@@ -200,10 +200,24 @@ def main():
             f"C(kappa=2/3) = {cfb23:.6f} to 1e-9 -- e absent never runs the "
             "solve and stays on the 5.73 branch")
     for nm in ("EccZero", "EccEps"):
+        # Q, v and f are still compared to the bit. Re carries a 1e-9 relative
+        # bound instead: this criterion used to ask for exact equality on all
+        # four, and it only held because Re was printed at 12 significant
+        # digits -- that rounded both members to 5.68210284900 and erased the
+        # response an e/gap = 1e-6 offset actually produces. At full precision
+        # the residual is 7.3e-10 relative, which is the first-order response
+        # of the 1e-6 perturbation itself (EccZero stays bit-identical to
+        # EccConc and EccMicro walks continuously to its 0.002 answer), so
+        # 1e-9 is where the physics puts the boundary; Q/v/f keep the exact
+        # comparison they pass.
         same = all(value(pipes[nm], k) == value(pipes["EccConc"], k)
-                   for k in ("Q", "v", "Re", "f"))
+                   for k in ("Q", "v", "f"))
+        rn = value(pipes[nm], "Re")
+        rc = value(pipes["EccConc"], "Re")
+        same = same and abs(rn - rc) <= 1e-9 * max(abs(rn), abs(rc))
         require(same,
-                f"{nm}: Q/v/Re/f are IDENTICAL to EccConc -- an absent "
+                f"{nm}: Q/v/f are IDENTICAL to EccConc and Re agrees to 1e-9 "
+                f"(got {rn:.17g} against {rc:.17g}) -- an absent "
                 "eccentricity, a declared 0 and an offset below the grid "
                 "(e/gap = 1e-6) are the same bore")
 

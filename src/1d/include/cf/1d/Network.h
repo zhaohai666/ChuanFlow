@@ -203,6 +203,12 @@ struct NetworkPipe
     // Beggs-Brill's own regime laws) is refused alongside a non-zero value.
     int correlation = 0;
 
+    // 2026-11-25: with correlation hagedornBrown, opt into the Griffith
+    // bubble / mist holdup branches of the classic vertical method (the
+    // Whitson restatement alone carries only the middle chart). Absent or
+    // false keeps every existing Hagedorn-Brown number bit-for-bit.
+    bool hbGriffith = false;
+
     // 5.144 (G6): the PASSIVE steady temperature march. None of these
     // numbers feeds the pressure solution - they price the outlet
     // temperature along the march the hydraulics already ran - so a

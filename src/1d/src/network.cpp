@@ -1900,7 +1900,7 @@ double twoPhaseRateForDrop(const NetworkPipe& pipe,
         const BeggsBrillMarchOut m = marchBeggsBrillPipe(
             fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness,
             sinFlow, 24, liquidRheology, pipe.flowPattern, sigmaOfP,
-            pipe.correlation, nullptr, false, segSin);
+            pipe.correlation, nullptr, pipe.hbGriffith, segSin);
         // choked marches return the floor shortfall: continuous with the
         // unchoked branch (there pOutlet -> pFloor) and correctly scaled
         // for the secant, unlike a fixed sentinel
@@ -1993,21 +1993,50 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     if (!(pipe.length > 0) || !(pipe.diameter > 0))
         return true;
 
-    const bool forward = dp >= 0.0; // flow from -> to when pFrom is higher
-    const double pUp = std::max(pFrom, pTo);
-    const double pLow = std::min(pFrom, pTo);
-    const double sinFlow =
-        (forward ? 1.0 : -1.0) * pipe.elevation / pipe.length;
-
-    bool choked = false;
     // 5.76 (A5 increment 2): the case's liquid rheology is the one the
     // black-oil march prices on the mixture wall rate. The three
     // wall-law fields stay on the pipe (no new grammar); every consumer
     // in this function sees the same declaration.
     const Rheology liquidRheology{
         pipe.flowIndex, pipe.consistency, pipe.yieldStress};
-    const double q = twoPhaseRateForDrop(pipe, fluid, pUp, pLow, sinFlow,
-                                         choked, liquidRheology, sigmaOfP);
+
+    const double sinFwd = pipe.elevation / pipe.length;
+    bool forward = dp >= 0.0; // flow from -> to when pFrom is higher
+    bool choked = false;
+    double q = 0.0;
+    if (dp >= 0.0)
+    {
+        q = twoPhaseRateForDrop(pipe, fluid, pFrom, pTo, sinFwd, choked,
+                                liquidRheology, sigmaOfP);
+    }
+    else
+    {
+        // A pressure difference alone cannot express a downhill
+        // gravity-driven line. Price both directions once and let the
+        // direction with the larger feasible rate carry the pipe; the old
+        // high-to-low choice survives whenever the pressure head wins.
+        bool chokedF = false, chokedB = false;
+        const double qF = twoPhaseRateForDrop(pipe, fluid, pFrom, pTo,
+                                              sinFwd, chokedF,
+                                              liquidRheology, sigmaOfP);
+        const double qB = twoPhaseRateForDrop(pipe, fluid, pTo, pFrom,
+                                              -sinFwd, chokedB,
+                                              liquidRheology, sigmaOfP);
+        forward = qF > qB;
+        if (forward)
+        {
+            q = qF;
+            choked = chokedF;
+        }
+        else
+        {
+            q = qB;
+            choked = chokedB;
+        }
+    }
+    const double pUp = forward ? pFrom : pTo;
+    const double pLow = forward ? pTo : pFrom;
+    const double sinFlow = forward ? sinFwd : -sinFwd;
 
     // 5.144 (G6): the PASSIVE thermal march rides the pressure profile the
     // hydraulics above already produced. Nothing declared -> null pointer ->
@@ -2042,7 +2071,7 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
     const BeggsBrillMarchOut m = marchBeggsBrillPipe(
         fluid, q, pUp, pipe.length, pipe.diameter, pipe.roughness, sinFlow,
         24, liquidRheology, pipe.flowPattern, sigmaOfP, pipe.correlation,
-        pth, false, pipe.surveyOn ? &segSinVec : nullptr);
+        pth, pipe.hbGriffith, pipe.surveyOn ? &segSinVec : nullptr);
     out.flowRate = forward ? q : -q;
     out.velocity = m.vmOutlet * (forward ? 1.0 : -1.0);
     out.holdup = m.holdupOutlet;
@@ -2103,7 +2132,7 @@ bool solvePipeFlowTwoPhase(const NetworkPipe& pipe,
             marchBeggsBrillPipe(fluid, 0.0, pUp, pipe.length, pipe.diameter,
                                 pipe.roughness, sinFlow, 24,
                                 liquidRheology, pipe.flowPattern, sigmaOfP,
-                                pipe.correlation, nullptr, false,
+                                pipe.correlation, nullptr, pipe.hbGriffith,
                                 pipe.surveyOn ? &segSinVec : nullptr);
         const double deficit = pLow - dead.pOutlet; // missing pressure
         if (deficit > 0.0)
@@ -2296,26 +2325,34 @@ struct LiveFlashState
     double T = 0;                      // K
     std::vector<double> parachors;     // SI [N^0.25 m^2.75/mol], feed order
     bool sigmaFromP = false;           // per-station Weinaug-Katz sigma
+    // Declared TABULATED LBC critical volumes [m3/mol], feed order. Empty =
+    // the historical PR-Zc fallback; a declaration replaces the back-calculation.
+    std::vector<double> criticalVolumes;
 };
 
 namespace
 {
-constexpr double kPrZc = 0.3074; // PR76 universal critical compressibility
+// The PR-Zc fallback now lives in pvt::lbcCriticalVolumes (Viscosity.h);
+// declared tabulated Vcs replace it without touching this call site.
 
 /// Lohrenz-Bray-Clark viscosity of one flash phase from the PR molar volume
 /// the flash already computed: no second EOS solve, so the checker can
 /// re-derive every number from the reported phase state alone.
-double lbcOfPhase(const pvt::Mixture& mix, double T, double molarVolume)
+double lbcOfPhase(const pvt::Mixture& mix, double T, double molarVolume,
+                  const std::vector<double>& declaredVcs)
 {
     const std::vector<pvt::Component>& comps = mix.components();
-    std::vector<double> MWs(comps.size()), Tcs(comps.size()),
-        Pcs(comps.size()), Vcs(comps.size());
+    std::vector<double> MWs(comps.size()), Tcs(comps.size()), Pcs(comps.size());
+    std::vector<double> Vcs = declaredVcs.empty()
+        ? pvt::lbcCriticalVolumes(mix)
+        : declaredVcs;
+    if (Vcs.size() != comps.size())
+        cfFatal("steadyNetwork: LBC criticalVolumes must give one value per component");
     for (std::size_t i = 0; i < comps.size(); ++i)
     {
         MWs[i] = comps[i].molarMass * 1.0e3; // kg/mol -> g/mol
         Tcs[i] = comps[i].Tc;
         Pcs[i] = comps[i].Pc;
-        Vcs[i] = kPrZc * pvt::kGasConstant * comps[i].Tc / comps[i].Pc;
     }
     return pvt::lbcViscosity(T, molarVolume, mix.fractions(), MWs, Tcs,
                              Pcs, Vcs);
@@ -2367,8 +2404,10 @@ void PvtFluid::evaluateAt(double p, double& rhoOut, double& muOut,
     liq.setFractions(r.liquidComposition);
     pvt::Mixture vap = lf.mix;
     vap.setFractions(r.vapourComposition);
-    const double muL = lbcOfPhase(liq, tState, r.liquid.molarVolume);
-    const double muV = lbcOfPhase(vap, tState, r.vapour.molarVolume);
+    const double muL = lbcOfPhase(liq, tState, r.liquid.molarVolume,
+                                  lf.criticalVolumes);
+    const double muV = lbcOfPhase(vap, tState, r.vapour.molarVolume,
+                                  lf.criticalVolumes);
     muOut = wL * muL + wV * muV;
     if (!(rhoOut > 0.0) || !(muOut > 0.0))
         cfFatal("pvtLiveFlash: non-positive rho/mu at p=" + std::to_string(p));
@@ -2546,11 +2585,44 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         const double dp = rho * kGravity * sinI * ds
             + (f * ds / pipe.diameter + pipe.valveK / nSeg) * rho * v * v / 2.0
             - rho * kGravity * headPerM * ds;
+        // Acceleration: with the mass rate booked at the entry density, an
+        // expanding fill accelerates and the momentum flux rho v^2 grows.
+        // The segment pays that increase; without it a gas that expands a
+        // lot under-prices the drop. rho_out is solved from the same table
+        // state the march already uses, so an incompressible fill (rho_out
+        // == rho) reproduces the old march bit for bit.
+        double pOut = p - dp;
+        for (int it = 0; it < 4; ++it)
+        {
+            // Floor guard before the outlet-state flash: the old march priced
+            // properties at the ENTRY pressure only and never re-queried the
+            // segment tail, so a high-rate bisection probe that crossed the
+            // floor downstream could not feed an unsound pressure to the PVT
+            // layer. The acceleration fixed point re-flashes the tail instead,
+            // so a tail that has reached (or slipped past) the floor must not
+            // be handed to tpFlash: break out of the fixed point and leave the
+            // clipped value to the existing hitFloor path below, the same
+            // treatment the old march gave a floor-crossing segment.
+            if (!(pOut > pFloor)) break;
+            double rhoOut = 0, muOut = 0, sigmaOut = 0;
+            fluid.evaluateAt(pOut, rhoOut, muOut, sigmaOut, tState);
+            if (!(rhoOut > 0.0)) break;
+            const double accelDrop = massRate * massRate / (area * area)
+                                   * (1.0 / rhoOut - 1.0 / rho);
+            const double pTry = p - dp - accelDrop;
+            if (std::abs(pTry - pOut)
+                <= 1e-12 * std::max(1.0, std::abs(pOut)))
+            {
+                pOut = pTry;
+                break;
+            }
+            pOut = pTry;
+        }
         m.segX.push_back(i * ds);
         m.segPressure.push_back(p);
         m.segTemperature.push_back(t);
         const double pOld = p;
-        p -= dp;
+        p = pOut;
         const bool hitFloor = !(p > pFloor);
         if (hitFloor) p = pFloor;
         // 5.144 (G6): the passive thermal step, shared with the black-oil
@@ -2753,17 +2825,13 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
         || fluid.pressure.size() < 2)
         return true;
 
-    // 5.156 (P10): a compressor at the `from` end decides the direction at
-    // its shutoff boost -- the line runs the way the machine pushes when it
-    // is asked for nothing. A bare pipe multiplies pFrom by 1.0 and reads
-    // exactly the old test, and pUp/pLow keep the max/min they always were.
+    // 5.156 (P10): a compressor at the `from` end still biases the direction
+    // by its shutoff boost, but a bare pipe (and a machine that cannot lift
+    // the pressure side) no longer reads the direction off the pressure
+    // difference alone: both directions are priced and the larger feasible
+    // rate carries the line, so a downhill gravity-driven pipe is expressible.
     const double pr0 = compressorRatioOf(pipe, 0.0);
-    const bool forward = pFrom * pr0 >= pTo;
-    const bool boostUp = pipe.compressorRatio > 0.0 && forward;
-    const double pUp = forward ? pFrom : pTo;
-    const double pLow = forward ? pTo : pFrom;
-    const double sinFlow =
-        (forward ? 1.0 : -1.0) * pipe.elevation / pipe.length;
+    const double sinFwd = pipe.elevation / pipe.length;
     const double area = 0.25 * M_PI * pipe.diameter * pipe.diameter;
 
     // 5.144 (G6): the steady temperature march. Its T is PASSIVE unless
@@ -2800,9 +2868,41 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
         }
         pth = &th;
     }
+    bool forward = false;
+    bool boostUp = false;
     bool choked = false;
-    const double q = pvtRateForDrop(pipe, fluid, pUp, pLow, sinFlow, choked,
-                                    boostUp, pth);
+    double q = 0.0;
+    if (pFrom * pr0 >= pTo)
+    {
+        forward = true;
+        boostUp = pipe.compressorRatio > 0.0;
+        q = pvtRateForDrop(pipe, fluid, pFrom, pTo, sinFwd, choked,
+                           boostUp, pth);
+    }
+    else
+    {
+        bool chokedF = false, chokedB = false;
+        const bool boostF = pipe.compressorRatio > 0.0;
+        const double qF = pvtRateForDrop(pipe, fluid, pFrom, pTo, sinFwd,
+                                         chokedF, boostF, pth);
+        const double qB = pvtRateForDrop(pipe, fluid, pTo, pFrom, -sinFwd,
+                                         chokedB, false, pth);
+        forward = qF > qB;
+        if (forward)
+        {
+            q = qF;
+            choked = chokedF;
+            boostUp = boostF;
+        }
+        else
+        {
+            q = qB;
+            choked = chokedB;
+        }
+    }
+    const double pUp = forward ? pFrom : pTo;
+    const double pLow = forward ? pTo : pFrom;
+    const double sinFlow = forward ? sinFwd : -sinFwd;
     // 5.194 (G6d): the entry state the march booked its mass rate at, and that
     // mass itself -- printed so a checker can close rho v A = m from the case
     // text and the station readouts alone.
@@ -3021,6 +3121,21 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                                     && comp.getBool("liveFlash");
                 const bool sigmaFromP = comp.has("sigmaFromP")
                                      && comp.getBool("sigmaFromP");
+                // D7 (§5.93) boundary repair: a declared criticalVolumes list
+                // (m3/mol, feed order) replaces LBC's historical PR-Zc
+                // back-calculation. Absent it the exact old path is kept.
+                std::vector<double> criticalVolumes;
+                if (comp.has("criticalVolumes"))
+                {
+                    criticalVolumes = comp.getScalarList("criticalVolumes");
+                    if (criticalVolumes.size() != mix.size())
+                        cfFatal("steadyNetwork: compositional criticalVolumes"
+                                " must give one value per component");
+                    for (const double vc : criticalVolumes)
+                        if (!(vc > 0.0))
+                            cfFatal("steadyNetwork: compositional criticalVolumes"
+                                    " must be positive");
+                }
                 std::vector<double> parachors;
                 if (sigmaFromP)
                 {
@@ -3062,6 +3177,7 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                     st->T = T;
                     st->parachors = parachors;
                     st->sigmaFromP = sigmaFromP;
+                    st->criticalVolumes = criticalVolumes;
                     net.pvtFluid.liveFlash = st;
                     if (sigmaFromP)
                     {
@@ -3089,7 +3205,9 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                             cfFatal("steadyNetwork: compositional pressures must ascend");
                         const pvt::EosState st = pvt::pengRobinsonState(mix, T, p, pref);
                         net.pvtFluid.rho[i] = st.massDensity;
-                        net.pvtFluid.mu[i] = pvt::lbcViscosity(mix, T, p, pref);
+                        const std::vector<double>* vcs = criticalVolumes.empty()
+                            ? nullptr : &criticalVolumes;
+                        net.pvtFluid.mu[i] = pvt::lbcViscosity(mix, T, p, pref, vcs);
                         if (!(net.pvtFluid.rho[i] > 0.0) || !(net.pvtFluid.mu[i] > 0.0))
                             cfFatal("steadyNetwork: compositional generated non-positive"
                                     " rho/mu at pressure " + std::to_string(p));
@@ -3333,6 +3451,22 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                         "are beggsBrill, hagedornBrown, dunsRos and "
                         "olgasSteady");
         }
+        // 2026-11-25: opt-in Griffith bubble/mist branches for the classic
+        // Hagedorn-Brown vertical method. Only legal with the hagedornBrown
+        // holdup law - a different correlation has no Griffith chart to
+        // supplement, so a declaration there is refused loudly.
+        p.hbGriffith = false;
+        if (pd.has("hbGriffith"))
+        {
+            const std::string gw = pd.getWord("hbGriffith");
+            if (gw == "true") p.hbGriffith = true;
+            else if (gw == "false") p.hbGriffith = false;
+            else cfFatal("steadyNetwork: pipe '" + name
+                         + "' hbGriffith must be true or false");
+            if (p.correlation != 1)
+                cfFatal("steadyNetwork: pipe '" + name
+                        + "' hbGriffith needs correlation hagedornBrown");
+        }
         // 5.144 (G6): the passive steady temperature march. Every key is
         // optional; all absent is the isothermal march, bit for bit. The
         // scope rules (marched fluid, c_p, wall model, pvt inlet T) live
@@ -3408,7 +3542,7 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
         //   - the black-oil layer is isothermal by construction (its density /
         //     viscosity correlations never see T).
         // `false` is accepted and means the quiet default, exactly like
-        // `false` above: the key exists to be stated, not to be guessed.
+        // hbGriffith above: the key exists to be stated, not to be guessed.
         p.pvtTemperatureFeedback = false;
         if (pd.has("temperatureFeedback"))
         {

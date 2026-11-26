@@ -26,8 +26,11 @@ namespace cf
 ///   - two-phase friction factor f_tp = f_ns exp(S) on y = lambda/HL^2 with
 ///     the S polynomial and the 1 < y < 1.2 logarithmic branch,
 ///   - pressure gradient (rho_s g sin(th) + f_tp rho_m vm^2 / 2D)
-///     / (1 - Ek), Ek = vsg vm rho_s / p (acceleration, slippage density in
-///     the elevation term, no-slip density in the friction term).
+///     / (1 - Ek), Ek = vsg vm rho_m / p (acceleration): the elevation head
+///     uses the slip / in-situ density rho_s, while BOTH the friction term
+///     and the acceleration correction Ek use the NO-SLIP density rho_m
+///     (Standard Handbook Eq. 4.52-4.54; Brill & Beggs 1991). Using rho_s
+///     in Ek is a common secondary simplification, not the published law.
 /// The correlation operates on in-situ superficial velocities; the caller
 /// derives them from the black-oil stream (cf/pvt/BlackOil.h).
 struct BeggsBrillIn
@@ -77,6 +80,11 @@ struct BeggsBrillIn
     // multiplier on y = lambda/HL^2, but nothing else. See beggsBrill.cpp
     // for the laws and the Duns-Ros / OLGAS-steady provenance caveats.
     int correlation = 0;
+    // 2026-11-25: with correlation hagedornBrown, switch on the Griffith
+    // bubble / mist holdup branches of the classic vertical method (the
+    // Whitson 2017 restatement in this kernel carries only the middle chart).
+    // False keeps every existing Hagedorn-Brown number bit-for-bit.
+    bool griffithBranches = false;
 };
 
 struct BeggsBrillOut

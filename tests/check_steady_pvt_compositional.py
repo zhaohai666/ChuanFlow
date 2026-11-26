@@ -268,7 +268,23 @@ if m:
         re = rho * vv * D / mu
         ff = churchill(re, eps / D)
         v_out, re_out, f_out = vv, re, ff
-        p -= (ff * ds / D) * rho * vv * vv / 2.0  # elevation 0
+        dp = (ff * ds / D) * rho * vv * vv / 2.0  # elevation 0
+        # 5.197: the march also pays the momentum-flux increase of the
+        # expanding fill, p_out = p - dp - (m/A)^2 (1/rho_out - 1/rho), with
+        # rho_out from the same table at the segment's outlet pressure. Four
+        # passes: the same fixed point the solver runs.
+        g2 = mass * mass / (area * area)
+        p_out = p - dp
+        for _ in range(4):
+            rho_out = interp(rho_tab, p_out)
+            if not rho_out > 0.0:
+                break
+            p_try = p - dp - g2 * (1.0 / rho_out - 1.0 / rho)
+            if abs(p_try - p_out) <= 1e-12 * max(1.0, abs(p_out)):
+                p_out = p_try
+                break
+            p_out = p_try
+        p = p_out
     close("remarch lands on reported downstream pressure", p, node_t, 1e-9)
     close("outlet velocity matches replay", v, v_out, 1e-8)
     close("outlet Re matches replay", Re, re_out, 1e-6)

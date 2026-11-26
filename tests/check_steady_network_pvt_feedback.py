@@ -341,7 +341,23 @@ def march(q, T_of):
         rho, mu = state(T_of(i, p), p, ZS, NAMES)
         v = mass / (rho * AREA)
         f = churchill(rho * v * DIA / mu, ROUGH / DIA)
-        p -= f * ds / DIA * rho * v * v / 2.0
+        dp = f * ds / DIA * rho * v * v / 2.0
+        # 5.197: the march also pays the momentum-flux increase of the
+        # expanding fill, p_out = p - dp - (m/A)^2 (1/rho_out - 1/rho), with
+        # rho_out flashed at the segment's outlet pressure on the same T the
+        # march has reached. Four passes: the same fixed point the solver runs.
+        g2 = mass * mass / (AREA * AREA)
+        p_out = p - dp
+        for _ in range(4):
+            rho_out, _ = state(T_of(i, p_out), p_out, ZS, NAMES)
+            if not rho_out > 0.0:
+                break
+            p_try = p - dp - g2 * (1.0 / rho_out - 1.0 / rho)
+            if abs(p_try - p_out) <= 1e-12 * max(1.0, abs(p_out)):
+                p_out = p_try
+                break
+            p_out = p_try
+        p = p_out
         if p < P_FLOOR:
             return P_FLOOR
     return p

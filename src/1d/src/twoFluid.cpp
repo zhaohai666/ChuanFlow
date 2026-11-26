@@ -1905,11 +1905,18 @@ void TwoFluidPipe::sandStep(double dt)
         const double kEps = 1e-12;
         for (int i = 0; i < n_; ++i)
         {
-            const double bNew = bed_[i] / (1.0 + dt * k);
-            if (alpha_[i] > kEps)
-                sandFrac_[i] = std::min(
-                    sandFrac_[i] + (bed_[i] - bNew) / alpha_[i], 1.0);
-            bed_[i] = bNew;
+            const double bRelaxed = bed_[i] / (1.0 + dt * k);
+            if (alpha_[i] <= kEps)
+            {
+                // no liquid to suspend into: the bed keeps the sand rather
+                // than silently dropping it
+                continue;
+            }
+            const double eroded = bed_[i] - bRelaxed;
+            const double capacity = alpha_[i] * std::max(0.0, 1.0 - sandFrac_[i]);
+            const double moved = std::min(eroded, capacity);
+            sandFrac_[i] += moved / alpha_[i];
+            bed_[i] -= moved; // whatever the suspension cannot take stays put
         }
     }
 }
@@ -2564,6 +2571,20 @@ void TwoFluidPipe::terrainSlugStep(double dt)
     if (!cfg_.terrainOn || us <= 0 || n_ < 3) return;
     const double rhoL = cfg_.fluid.rhoL;
 
+    // The terrain overlay moves liquid only: the captured lump and the
+    // discharge redistribution are booked on the liquid side (inventory /
+    // s.volume), and the gas already in the touched cells stays there.
+    // gasMass_ is the continuity state the gas-flux step advances; this
+    // overlay has no gas source to book a rescaling against, so the inventory
+    // is left untouched - the same mass-closure idiom as purgeWaveStep.
+    // Holding the gas density fixed here would scale gas mass by the ag
+    // ratio without a booked transfer; the gas flux step rebalances the two
+    // pockets afterwards, and the sealed-equilibrium witness still holds.
+    auto setHoldup = [&](int i, double aNew)
+    {
+        alpha_[i] = aNew;
+    };
+
     std::vector<TwoFluidTerrainDip> dips = terrainDips();
     if (terrainSlugs_.size() != dips.size())
         terrainSlugs_.assign(dips.size(), TwoFluidTerrainSlug{});
@@ -2587,7 +2608,7 @@ void TwoFluidPipe::terrainSlugStep(double dt)
                 const double excess = invBefore - d.capacity;
                 const double factor = d.capacity / invBefore;
                 for (int i = d.basinStart; i < d.basinEnd; ++i)
-                    alpha_[i] *= factor;
+                    setHoldup(i, alpha_[i] * factor);
                 s.active = true;
                 s.volume = excess;
                 s.front = d.position;
@@ -2688,7 +2709,8 @@ void TwoFluidPipe::terrainSlugStep(double dt)
                 {
                     const double V = std::min(s.volume, avail);
                     for (int i = start; i < n_; ++i)
-                        alpha_[i] += V * (1.0 - alpha_[i]) / avail;
+                        setHoldup(i, alpha_[i]
+                                     + V * (1.0 - alpha_[i]) / avail);
                     s.volume -= V;
                     if (s.volume <= 1e-14)
                     {
@@ -2934,6 +2956,17 @@ void TwoFluidPipe::purgeWaveStep(double dt)
     const double start = pw.riserStart;
     const double end = pw.riserEnd > 0 ? pw.riserEnd : length_;
 
+    // The purge front moves liquid only: the displaced liquid volume is
+    // booked to outVol, and the gas already in the swept cell stays there.
+    // gasMass_ is the continuity state the gas-flux step advances (see the
+    // gas-mass continuity in the transient step); this overlay has no gas
+    // source to book a rescaling against, so the inventory is left untouched.
+    // Rescaling it by ag_new/ag_old would hold the gas density (and the EOS
+    // pressure) fixed but manufacture unbooked gas mass as the gas volume
+    // grows, and would suppress the cap blowdown the slug cycle is witnessed
+    // on. The gas thins into the vacated volume; the flux steps rebalance it
+    // on refill.
+
     // window cells: those whose centre lies inside [start, end]; the base
     // cell (the gas-cap pocket) is the first window cell
     int i0 = -1, i1 = -1;
@@ -3137,25 +3170,24 @@ void TwoFluidPipe::acousticsStep(double dt)
     if (!cfg_.acousticsOn) return;
     const TwoFluidAcoustics& ac = cfg_.acoustics;
 
-    // per-cell wave speed and inertia. EOS path (aModel eos, the
-    // default): a^2 = (dp/drho)_T = gasR T, the exact density derivative
-    // of the kernel's own gas law p = rhoG gasR T - so rhoG a^2
-    // reproduces the cell's gas-phase EOS pressure exactly (the
-    // acoustic rows themselves carry the mixture density rho_m as
-    // inertia, not rhoG). Wood path (aModel
-    // wood): Wood's homogeneous-mixture sound speed (A. B. Wood, "A
-    // Textbook of Sound", 1930; the standard uniform-equilibrium
-    // compressibility rule for a mixture),
+    // per-cell wave speed and inertia. Default twoPhase path: Wood's
+    // homogeneous-mixture sound speed (A. B. Wood, "A Textbook of Sound",
+    // 1930; the standard uniform-equilibrium compressibility rule),
     //   1 / (rho_m a^2) = alphaL / (rhoL aL^2) + alphaG / (rhoG aG^2),
-    // with aG^2 = gasR T the same EOS-exact gas derivative, aL the
-    // DECLARED liquid sound speed (the kernel invents no liquid EOS),
-    // and rho_m the cell's mixture density. Applicability boundary: Wood
-    // assumes uniform PRESSURE equilibrium - both phases compress under
-    // the same dp with no interphase mass/heat exchange and no slip, so
-    // it prices the mixture's effective bulk modulus; it is the right
-    // wave speed for a bubbly/dispersed homogeneous mixture and it
-    // degenerates correctly (alphaG -> 0 gives aL, alphaL -> 0 gives
-    // aG). Declared path: the case's constant replaces it wholesale.
+    // with aG^2 = gasR T the EOS-exact gas derivative and rho_m the cell's
+    // mixture density (the acoustic rows themselves carry rho_m as inertia,
+    // not rhoG). aL is the DECLARED liquid sound speed; absent one the liquid
+    // is taken incompressible (aL -> inf, zero compliance) - the kernel
+    // invents no liquid EOS. A pure-gas cell therefore gives exactly
+    // sqrt(gasR T), so an all-gas line keeps the original EOS wave speed.
+    // Applicability boundary: Wood assumes uniform PRESSURE equilibrium - both
+    // phases compress under the same dp with no interphase mass/heat exchange
+    // and no slip, so it prices the mixture's effective bulk modulus; it is
+    // the right wave speed for a bubbly/dispersed homogeneous mixture and it
+    // degenerates correctly (alphaG -> 0 gives aL, alphaL -> 0 gives aG).
+    // The legacy pure-gas-everywhere path is still selectable as aModel eos;
+    // aModel wood is the same mixture law but requires a declared aL; a
+    // declared soundSpeed replaces any model wholesale.
     std::vector<double> a2(n_), rho(n_);
     double aMax = 0.0, dxMin = 1e300;
     for (int i = 0; i < n_; ++i)
@@ -3164,7 +3196,7 @@ void TwoFluidPipe::acousticsStep(double dt)
         if (ac.soundSpeed > 0) a = ac.soundSpeed;
         else if (ac.aModel == "wood")
         {
-            const double aL = 1.0 - alpha_[i]; // gas share
+            const double gasShare = 1.0 - alpha_[i];
             const double aG2 = cfg_.fluid.gasR * sectionTemperature(i);
             const double rhoG = cellGasDensity(i);
             // the compliance sum; the degenerate single-phase cells
@@ -3172,10 +3204,41 @@ void TwoFluidPipe::acousticsStep(double dt)
             const double compliance
                 = alpha_[i] / (cfg_.fluid.rhoL * ac.liquidSoundSpeed
                                * ac.liquidSoundSpeed)
-                + (aL > 0 ? aL / (rhoG * aG2) : 0.0);
+                + (gasShare > 0 ? gasShare / (rhoG * aG2) : 0.0);
             a = std::sqrt(1.0 / (compliance * mixtureRhoCell(i)));
         }
-        else a = std::sqrt(cfg_.fluid.gasR * sectionTemperature(i));
+        else if (ac.aModel == "twoPhase")
+        {
+            // Same Wood compliance, but the liquid speed is optional: absent
+            // a declaration the liquid is incompressible (zero compliance),
+            // which needs no property table. Pure gas then degenerates to the
+            // EOS derivative exactly; two-phase cells get the mixture speed a
+            // depressurization wave actually rides, not the pure-gas speed.
+            const double gasShare = 1.0 - alpha_[i];
+            const double aG2 = cfg_.fluid.gasR * sectionTemperature(i);
+            const double rhoG = cellGasDensity(i);
+            if (!(gasShare > 0))
+            {
+                // liquid-only cell: the incompressible limit has no finite
+                // speed, so the declared aL is the only honest answer
+                if (!(ac.liquidSoundSpeed > 0))
+                    cfFatal("twoFluid: acoustics twoPhase reached a"
+                            " liquid-only cell (alpha = 1): declare"
+                            " liquidSoundSpeed for a finite liquid wave"
+                            " speed");
+                a = ac.liquidSoundSpeed;
+            }
+            else
+            {
+                const double liquidCompliance = ac.liquidSoundSpeed > 0
+                    ? alpha_[i] / (cfg_.fluid.rhoL * ac.liquidSoundSpeed
+                                   * ac.liquidSoundSpeed)
+                    : 0.0;
+                const double compliance = liquidCompliance + gasShare / (rhoG * aG2);
+                a = std::sqrt(1.0 / (compliance * mixtureRhoCell(i)));
+            }
+        }
+        else a = std::sqrt(cfg_.fluid.gasR * sectionTemperature(i)); // eos legacy
         a2[i] = a * a;
         rho[i] = mixtureRhoCell(i);
         if (a > aMax) aMax = a;
@@ -3863,19 +3926,22 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         c.acoustics.soundSpeed = ad.getScalarOr("soundSpeed", 0.0);
         if (c.acoustics.soundSpeed < 0)
             cfFatal("twoFluid: acoustics soundSpeed must be positive"
-                    " (0 selects the model path of aModel: the"
-                    " EOS-consistent isothermal sqrt(gasR T), or Wood's"
-                    " mixture speed)");
-        // opt-in mixture wave-speed model (default "eos" rides the
-        // original path verbatim). A declared model word is read loudly;
+                    " (0 selects the model path of aModel: the default"
+                    " twoPhase Wood mixture speed, the legacy pure-gas"
+                    " eos speed, or Wood's full mixture speed)");
+        // wave-speed model: the default twoPhase rides Wood's mixture law
+        // with an incompressible liquid when aL is not declared; "eos" is
+        // the legacy pure-gas-everywhere path, "wood" the full mixture law
+        // with a required declared aL. A declared word is read loudly;
         // unknown words are refused, not ignored.
         if (ad.has("aModel"))
         {
             const std::string w = ad.getWord("aModel");
             if (w == "eos") c.acoustics.aModel = "eos";
             else if (w == "wood") c.acoustics.aModel = "wood";
+            else if (w == "twoPhase") c.acoustics.aModel = "twoPhase";
             else cfFatal("twoFluid: unknown acoustics aModel '" + w
-                         + "' (eos or wood)");
+                         + "' (twoPhase, eos or wood)");
         }
         if (ad.has("liquidSoundSpeed"))
         {
@@ -3887,11 +3953,13 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
                         " aL of Wood's equation; the kernel invents no"
                         " liquid EOS to derive it)");
         }
-        // the declared wholesale override and the mixture model are
-        // mutually exclusive: soundSpeed replaces the wave speed
+        // the declared wholesale override and the full Wood mixture model
+        // are mutually exclusive: soundSpeed replaces the wave speed
         // wholesale, aModel wood derives it - declaring both is a
         // contradiction, and a wood declaration without aL has nothing
-        // to derive from (the liquid sound speed is not invented)
+        // to derive from (the liquid sound speed is not invented). The
+        // default twoPhase model needs no aL (incompressible liquid) and
+        // a declared soundSpeed simply overrides it.
         if (c.acoustics.aModel == "wood")
         {
             if (c.acoustics.soundSpeed > 0)
@@ -4719,9 +4787,15 @@ void TwoFluidNetwork::solveNetwork(double dt)
             }
             else
             {
+                // Conservative split: each supplied branch takes the
+                // junction's mixed phase fractions applied to its own
+                // mixture rate. Summing the branch rates then reproduces
+                // the junction's phase rates exactly, so a slip closure can
+                // no longer create or destroy phase volume at the node.
+                const double vMag = std::abs(uOf(e.pipe, x));
                 b.type = TwoFluidBoundary::Type::phaseRates;
-                b.vsl = p.liquidFluxAt(jn.alphaJ);
-                b.vsg = p.gasVolumeFluxAt(jn.alphaJ);
+                b.vsl = vMag * jn.alphaJ;
+                b.vsg = vMag * (1.0 - jn.alphaJ);
             }
             if (e.atOutlet) p.setOutletBoundary(b);
             else p.setInletBoundary(b);

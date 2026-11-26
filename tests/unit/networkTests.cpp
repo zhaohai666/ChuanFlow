@@ -155,7 +155,8 @@ int main()
 
     // ---- Beggs-Brill: golden anchor cross-checked against the fluids
     //      library (Beggs_Brill(0.6, 0.1, 915, 2.67, 180e-6, 14e-6, 0.0487,
-    //      1e7, 0.05, 0deg, 0, 1) -> 686.9724506803469 Pa/m) ----
+    //      1e7, 0.05, 0deg, 0, 1) -> 686.4351588989456 Pa/m; the acceleration
+    //      term now uses the no-slip mixture density rho_m, not rho_s) ----
     {
         const double D = 0.05;
         const double m = 0.6, x = 0.1, rhol = 915.0, rhog = 2.67;
@@ -173,7 +174,7 @@ int main()
         in.roughness = 0.0;
         in.angleDeg = 0.0;
         const BeggsBrillOut out = beggsBrillDpDs(in);
-        CHECK(relNear(out.dpPerMeter, 686.9724506803469, 1e-6),
+        CHECK(relNear(out.dpPerMeter, 686.43515889894559, 1e-6),
               "Beggs-Brill golden anchor (fluids cross-check)");
         CHECK(out.regime == 3, "anchor flow is distributed");
         CHECK(out.holdup > out.lambdaL, "slippage raises the holdup");
@@ -518,8 +519,32 @@ int main()
                 vOut = w / (rho * area);
                 reOut = rho * vOut * Dg / muG;
                 fOut = churchillFriction(reOut, 0.0);
-                pr -= rho * 9.80665 * ds + fOut * rho * vOut * vOut
-                    / (2.0 * Dg) * ds;
+                // Darcy-Weisbach friction opposes the flow, so it subtracts
+                // from the upstream pressure exactly as marchPvtPipe's dp does
+                // (dp = rho g sin ds + f rho v^2 ds / 2D; p_out = p - dp).
+                const double pNoAcc = pr - rho * 9.80665 * ds
+                    - fOut * rho * vOut * vOut / (2.0 * Dg) * ds;
+                // the march now also pays the momentum-flux increase of the
+                // expanding fill: p_out = pNoAcc - (w/A)^2 (1/rho_out - 1/rho)
+                double pOut = pNoAcc;
+                for (int it = 0; it < 4; ++it)
+                {
+                    const double rhoOut = pOut / c;
+                    // same guard the march runs: a negative outlet density
+                    // means this rate cannot land, and dividing by it would
+                    // turn the fixed point into a nan
+                    if (!(rhoOut > 0.0)) break;
+                    const double pTry = pNoAcc
+                        - w * w / (area * area) * (1.0 / rhoOut - 1.0 / rho);
+                    if (std::abs(pTry - pOut)
+                        <= 1e-12 * std::max(1.0, std::abs(pOut)))
+                    {
+                        pOut = pTry;
+                        break;
+                    }
+                    pOut = pTry;
+                }
+                pr = pOut;
             }
             return std::make_tuple(pr, vOut);
         };
@@ -609,8 +634,30 @@ int main()
                 const double v = w / (rho * area);
                 const double re = rho * v * 0.1 / 1.2e-5;
                 const double f = churchillFriction(re, 1e-5 / 0.1);
-                pr -= rho * 9.80665 * 40.0 / 24.0
-                    + f * rho * v * v / (2.0 * 0.1) * ds;
+                // Darcy-Weisbach and gravity subtract from the upstream
+                // pressure, exactly as marchPvtPipe's dp does
+                const double pNoAcc = pr - rho * 9.80665 * 40.0 / 24.0
+                    - f * rho * v * v / (2.0 * 0.1) * ds;
+                // momentum-flux increase of the expanding fill, the same
+                // 4-iteration fixed point marchPvtPipe runs (rho_out from the
+                // table at the trial p_out, guarded against a non-positive
+                // outlet density, 1e-12 relative convergence)
+                double pOut = pNoAcc;
+                for (int it = 0; it < 4; ++it)
+                {
+                    const double rhoOut = pOut / 1.0e5;
+                    if (!(rhoOut > 0.0)) break;
+                    const double pTry = pNoAcc
+                        - w * w / (area * area) * (1.0 / rhoOut - 1.0 / rho);
+                    if (std::abs(pTry - pOut)
+                        <= 1e-12 * std::max(1.0, std::abs(pOut)))
+                    {
+                        pOut = pTry;
+                        break;
+                    }
+                    pOut = pTry;
+                }
+                pr = pOut;
             }
             return pr;
         };

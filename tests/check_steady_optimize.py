@@ -654,7 +654,7 @@ class BlackOil:
                                       + 3.182) - 0.0523))
                 sm = min(sm, 7.0)
             ftp = fns * math.exp(sm)
-            ek = vsg * vm * rhos / max(p, 1000.0)
+            ek = vsg * vm * rhom / max(p, 1000.0)
             ele = G * math.sin(math.radians(angle_deg)) * rhos
             dpds = (ele + ftp * rhom * vm * vm / (2 * D)) / max(1 - ek, 0.1)
             pOld = p

@@ -104,6 +104,33 @@ Flux hllc(const State& uL, scalar pL, const Vector& vL, scalar cL,
           const State& uR, scalar pR, const Vector& vR, scalar cR,
           const Vector& nHat, scalar gamma)
 {
+    const auto valid = [](const State& u, scalar p)
+    {
+        return std::isfinite(u.rho) && u.rho > 0.0
+            && std::isfinite(p) && p > 0.0;
+    };
+    if (!valid(uL, pL) || !valid(uR, pR))
+    {
+        // vacuum / negative-pressure guard: HLLC is only defined for
+        // positive states, so a broken state falls back to the local
+        // Lax-Friedrichs flux on the clamped positive state instead of
+        // feeding NaN into the update.
+        const scalar rhoL = std::max(uL.rho, 1e-12);
+        const scalar rhoR = std::max(uR.rho, 1e-12);
+        const scalar ppL = std::max(pL, 1e-12);
+        const scalar ppR = std::max(pR, 1e-12);
+        const scalar unL = dot(vL, nHat);
+        const scalar unR = dot(vR, nHat);
+        const Flux fL = physicalFlux(uL, ppL, unL, nHat);
+        const Flux fR = physicalFlux(uR, ppR, unR, nHat);
+        const scalar sMax = std::max(
+            std::abs(unL) + std::sqrt(gamma * ppL / rhoL),
+            std::abs(unR) + std::sqrt(gamma * ppR / rhoR));
+        return {0.5 * (fL.mass + fR.mass) - 0.5 * sMax * (uR.rho - uL.rho),
+                0.5 * (fL.mom + fR.mom) - 0.5 * sMax * (uR.mom - uL.mom),
+                0.5 * (fL.energy + fR.energy)
+                    - 0.5 * sMax * (uR.rhoE - uL.rhoE)};
+    }
     const scalar unL = dot(vL, nHat);
     const scalar unR = dot(vR, nHat);
     const scalar pStar = twoRarefactionPressure(pL, unL, cL, pR, unR, cR, gamma);

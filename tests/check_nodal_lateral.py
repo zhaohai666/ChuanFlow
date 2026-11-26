@@ -378,7 +378,7 @@ class BlackOil:
                                       + 3.182) - 0.0523))
                 sm = min(sm, 7.0)
             ftp = fns * math.exp(sm)
-            ek = vsg * vm * rho_s / max(p, 1000.0)
+            ek = vsg * vm * rho_m / max(p, 1000.0)
             ele = G * math.sin(math.radians(angle_deg)) * rho_s
             dpds = (ele + ftp * rho_m * vm * vm / (2 * D)) / max(1 - ek, 0.1)
             hl_out, r_max = hl, max(r_max, r)
@@ -597,8 +597,12 @@ def load_case(path):
 # undersaturated Vazquez-Beggs co was corrected to its PUBLISHED form
 # (denominator = the evaluation pressure, Vazquez & Beggs 1980): the wells
 # march segments above pb, so Bo and the operating rates shift slightly.
-GOLDEN_Q = {"case2": 0.00297063943666, "case3": 0.00363508295731,
-            "caseHetero": 0.0027406891076, "caseDead": 0.00199079469287}
+# 2026-11-25 recalibrated after the Beggs-Brill E_k density repair
+# (E_k now uses the no-slip rho_m, not the slip rho_s); the published law
+# changes total rates by ~1e-4 relative while the checker still re-derives
+# every node/junction balance independently from the printed lines.
+GOLDEN_Q = {"case2": 0.00297093601086, "case3": 0.00363550022412,
+            "caseHetero": 0.00274096588867, "caseDead": 0.00199090079806}
 
 results, models = {}, {}
 for name, path in CASES.items():

@@ -29,7 +29,7 @@ std::string num(double v)
     return os.str();
 }
 
-void reportOne(const FlashCase& c, double p, bool wantVisc,
+void reportOne(const FlashCase& c, double p, const Dictionary* viscosityDict,
                const std::vector<double>* parachors)
 {
     const FlashResult r = tpFlash(c.feed, c.temperature, p, c.controls);
@@ -48,19 +48,41 @@ void reportOne(const FlashCase& c, double p, bool wantVisc,
 
     // D7 (5.93): LBC residual viscosity of each flashed phase, gated on a
     // `viscosity` block so untouched cases keep their exact report. Vm comes
-    // from the phase molar mass / density ( = PR molar volume) and Vc from
-    // PR's critical compressibility, matching the convenience overload.
-    if (wantVisc)
+    // from the phase molar mass / density ( = PR molar volume). Vc comes from
+    // the DECLARED `criticalVolumes` list (m3/mol, feed order) when present;
+    // absent one the historical PR-Zc fallback is kept bit-for-bit. The
+    // `model` word is now loud instead of a dead field.
+    if (viscosityDict)
     {
+        const Dictionary& vd = *viscosityDict;
+        const std::string vm = vd.getWordOr("model", "lbc");
+        if (vm != "lbc")
+            cfFatal("pvt: unknown viscosity model '" + vm + "' (only lbc)");
         const std::vector<Component>& comps = c.feed.components();
-        std::vector<double> MWs(comps.size()), Tcs(comps.size()),
-            Pcs(comps.size()), Vcs(comps.size());
+        std::vector<double> MWs(comps.size()), Tcs(comps.size()), Pcs(comps.size());
+        std::vector<double> Vcs;
+        if (vd.has("criticalVolumes"))
+        {
+            Vcs = vd.getScalarList("criticalVolumes");
+            if (Vcs.size() != comps.size())
+                cfFatal("pvt: viscosity criticalVolumes must give one value"
+                        " per component (" + std::to_string(Vcs.size()) + " given,"
+                        " " + std::to_string(comps.size()) + " expected)");
+            for (const double vc : Vcs)
+                if (!(vc > 0.0))
+                    cfFatal("pvt: viscosity criticalVolumes must be positive");
+        }
+        else
+        {
+            Vcs.resize(comps.size());
+            for (std::size_t i = 0; i < comps.size(); ++i)
+                Vcs[i] = 0.3074 * kGasConstant * comps[i].Tc / comps[i].Pc;
+        }
         for (std::size_t i = 0; i < comps.size(); ++i)
         {
             MWs[i] = comps[i].molarMass * 1.0e3;
             Tcs[i] = comps[i].Tc;
             Pcs[i] = comps[i].Pc;
-            Vcs[i] = 0.3074 * kGasConstant * comps[i].Tc / comps[i].Pc;
         }
         auto phaseMu = [&](const std::vector<scalar>& zs, scalar M, scalar rho)
         {
@@ -104,7 +126,8 @@ int main(int argc, char** argv)
     {
         const Dictionary caseDict = Dictionary::parseFile(argv[1]);
         const FlashCase c = loadFlashCase(caseDict);
-        const bool wantVisc = caseDict.has("viscosity");
+        const Dictionary* viscosityDict = caseDict.has("viscosity")
+            ? &caseDict.getDict("viscosity") : nullptr;
 
         const bool wantSigma = caseDict.has("surfaceTension");
         std::vector<double> parachors;
@@ -141,13 +164,13 @@ int main(int argc, char** argv)
         log::info("pvt: ", c.feed.size(), " components, feed ", c.feed.describe(),
                   " molarMass ", num(c.feed.molarMass()));
 
-        for (const double p : c.pressures) reportOne(c, p, wantVisc, paraPtr);
+        for (const double p : c.pressures) reportOne(c, p, viscosityDict, paraPtr);
 
         if (c.computeBubblePoint)
         {
             const double pb = bubblePressure(c.feed, c.temperature);
             log::info("pvt bubble T ", num(c.temperature), " p ", num(pb));
-            reportOne(c, pb, wantVisc, paraPtr);
+            reportOne(c, pb, viscosityDict, paraPtr);
         }
 
         // D13 increment 4: Prandtl thermal-conductivity closure. Gated on a

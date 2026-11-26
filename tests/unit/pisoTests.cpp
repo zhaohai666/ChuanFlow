@@ -118,15 +118,17 @@ int main()
               "predicted flux is already divergence-free");
     }
 
-    // ---- the second corrector must not overwrite the first one's p ----
+    // ---- the second corrector refines p without collapsing it ----
     // The full-p design (PisoSolver.h) re-predicts the pressure-free flux
-    // at every corrector, so the second corrector re-solves the same fixed
-    // point: the residual stays at the floor and the pressure must match a
-    // single-corrector run. The ac1b343 flux carry-over instead made the
-    // second corrector solve L(p) = -div(phi_closed) ~ 0 and replaced the
-    // pressure field with a near-zero one - guarded here on both the
-    // orthogonal channel and a sheared (non-orthogonal) mesh, where the
-    // closed flux leaves a real residual for the collapse to feed on.
+    // from HbyA at every corrector and NEVER carries the closed flux into the
+    // next full-p equation - the ac1b343 carry-over made the second corrector
+    // solve L(p) = -div(phi_closed) ~ 0 and replaced p with a near-zero field.
+    // What DOES change between correctors is HbyA: rebuilding H(U) from the
+    // velocity the previous corrector corrected is the standard PISO neighbour
+    // correction. So the second corrector must move p (a real correction, not
+    // an identical fixed point) while keeping it a bounded field and leaving
+    // the continuity residual no larger. Both are checked on an orthogonal
+    // channel and a sheared (non-orthogonal) mesh.
     {
         auto run = [](Channel& c, int correctors)
         {
@@ -164,34 +166,39 @@ int main()
         CHECK(two.second.correctorsUsed == 2 &&
                   two.second.correctorResiduals.size() == 2,
               "correctors = 2 runs both correctors");
-        // orthogonal channel: the predicted flux already closes continuity,
-        // so the second corrector is a fixed point - the residual must not
-        // grow (the ac1b343 carry-over instead drove p to the gauge here)
+        // The neighbour correction moves p by a bounded amount on every mesh;
+        // the residual must not grow (the ac1b343 carry-over instead drove p
+        // to the gauge while pretending to close continuity).
         CHECK(two.second.correctorResiduals[1] <= two.second.correctorResiduals[0] + 1e-18,
               "the second corrector does not grow the continuity residual (orthogonal)");
-        CHECK(two.second.pressureCorrectionMax < 1e-8 * one.second.pressureCorrectionMax,
-              "the second corrector is a full-pressure fixed point (orthogonal)");
-        CHECK(two.first > 0.5 * one.first,
+        CHECK(two.second.pressureCorrectionMax > 0 &&
+                  two.second.pressureCorrectionMax < 0.5 * one.second.pressureCorrectionMax,
+              "the neighbour correction refines p, not a repeated fixed point (orthogonal)");
+        CHECK(two.first > 0.5 * one.first && two.first < 2.0 * one.first,
               "the second corrector does not collapse the pressure (orthogonal)");
 
         const auto sOne = run(sheared, 1);
         const auto sTwo = run(sheared, 2);
         CHECK(sTwo.second.correctorsUsed == 2, "the sheared mesh runs both correctors");
         // An x-dependent force gives both meshes a real pressure field. The
-        // second corrector solves the same full-pressure equation, not a
-        // neighbour correction; its warm start may still tighten the linear
-        // solve on the non-orthogonal mesh.
+        // neighbour correction rebuilds H(U) from the corrected velocity, so
+        // the second full-pressure solve sees the neighbours' corrections and
+        // tightens continuity on the non-orthogonal mesh.
         CHECK(sTwo.second.correctorResiduals[1] < sTwo.second.correctorResiduals[0],
-              "the repeated full-pressure solve shrinks the non-orthogonal residual");
+              "the neighbour-correction solve shrinks the non-orthogonal residual");
         // and the refined pressure must stay a real field, not collapse to
         // the gauge the way the carry-over made it
         CHECK(sTwo.first > 0.5 * sOne.first && sTwo.first < 2.0 * sOne.first,
               "the second corrector preserves the pressure field (non-orthogonal)");
+        CHECK(sTwo.second.pressureCorrectionMax > 0,
+              "the neighbour correction refines p, not a repeated fixed point (non-orthogonal)");
         std::cout << "info: corrector residuals orth " << two.second.correctorResiduals[0]
                   << " -> " << two.second.correctorResiduals[1] << ", sheared "
                   << sTwo.second.correctorResiduals[0] << " -> "
                   << sTwo.second.correctorResiduals[1] << " (pMax " << sOne.first
-                  << " -> " << sTwo.first << ")\n";
+                  << " -> " << sTwo.first << ", dpCorrector orth "
+                  << two.second.pressureCorrectionMax << " sheared "
+                  << sTwo.second.pressureCorrectionMax << ")\n";
     }
 
     // ---- steady limit: the discrete parabola of the wall-cell scheme ----

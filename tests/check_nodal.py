@@ -89,9 +89,12 @@ def vogel_rate(pwf, pres, qmax):
 # (denominator = the evaluation pressure, Vazquez & Beggs 1980): the dead-oil
 # twin (pb = 0) previously shrank Bo far faster than the paper's formula, so
 # its operating point and static columns moved; the vogel/deadwell static
-# columns shift slightly where they rise above pb.
+# columns shift slightly where they rise above pb. Recalibrated again when the
+# Beggs-Brill acceleration term E_k was changed from the slip density rho_s to
+# the no-slip mixture density rho_m: the live-gas operating point moves while
+# the static column, the dead-oil twin and the dead well stay put.
 GOLDEN = {
-    "vogel": {"q": 0.00290785579167, "pwf": 15120468.4282,
+    "vogel": {"q": 0.00290813254206, "pwf": 15119687.6356,
               "static": 18641266.279},
     "deadoil": {"q": 0.000900165707941, "pwf": 20092848.201,
                 "static": 20034494.0404},

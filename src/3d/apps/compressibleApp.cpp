@@ -54,6 +54,35 @@ Flux physicalFlux(const State& u, scalar p, scalar un, const Vector& nHat)
     return {u.rho * un, u.mom * un + p * nHat, (u.rhoE + p) * un};
 }
 
+/// Local Lax-Friedrichs (Rusanov) flux. HLLC itself is only defined for
+/// positive densities and pressures; a vacuum or negative-pressure state
+/// would otherwise reach the two-rarefaction solver and return NaN.
+Flux rusanovFlux(const State& uL, scalar pL, const Vector& vL,
+                 const State& uR, scalar pR, const Vector& vR,
+                 const Vector& nHat, scalar gamma)
+{
+    const scalar rhoL = std::max(uL.rho, 1e-12);
+    const scalar rhoR = std::max(uR.rho, 1e-12);
+    const scalar ppL = std::max(pL, 1e-12);
+    const scalar ppR = std::max(pR, 1e-12);
+    const scalar cL = std::sqrt(gamma * ppL / rhoL);
+    const scalar cR = std::sqrt(gamma * ppR / rhoR);
+    const scalar unL = dot(vL, nHat);
+    const scalar unR = dot(vR, nHat);
+    const Flux fL = physicalFlux(uL, ppL, unL, nHat);
+    const Flux fR = physicalFlux(uR, ppR, unR, nHat);
+    const scalar sMax = std::max(std::abs(unL) + cL, std::abs(unR) + cR);
+    return {0.5 * (fL.mass + fR.mass) - 0.5 * sMax * (uR.rho - uL.rho),
+            0.5 * (fL.mom + fR.mom) - 0.5 * sMax * (uR.mom - uL.mom),
+            0.5 * (fL.energy + fR.energy)
+                - 0.5 * sMax * (uR.rhoE - uL.rhoE)};
+}
+
+static bool hllcStateValid(const State& u, scalar p)
+{
+    return std::isfinite(u.rho) && u.rho > 0.0 && std::isfinite(p) && p > 0.0;
+}
+
 /// The pressure the two-rarefaction Riemann solver would report: exact when
 /// both sides release a rarefaction, and the star-pressure estimate that tells
 /// the wave-speed formula below which side actually carries a shock.
@@ -72,6 +101,8 @@ Flux hllc(const State& uL, scalar pL, const Vector& vL, scalar cL,
           const State& uR, scalar pR, const Vector& vR, scalar cR,
           const Vector& nHat, scalar gamma)
 {
+    if (!hllcStateValid(uL, pL) || !hllcStateValid(uR, pR))
+        return rusanovFlux(uL, pL, vL, uR, pR, vR, nHat, gamma);
     const scalar unL = dot(vL, nHat);
     const scalar unR = dot(vR, nHat);
     // Toro's shock-adaptive speeds. The acoustic bounds min(un - c) / max(un + c)
@@ -174,15 +205,10 @@ int main(int argc, char* argv[])
         const Field<label>& neighbour = mesh.neighbour();
         const label nInt = mesh.nInternalFaces();
 
-        // characteristic cell size V/maxFaceArea, for the CFL guard
-        scalar dxMin = std::numeric_limits<scalar>::max();
-        const auto& cellFaces = mesh.cells();
-        for (label i = 0; i < n; ++i)
-        {
-            scalar aMax = 0;
-            for (label f : cellFaces[i]) aMax = std::max(aMax, magSf[f]);
-            dxMin = std::min(dxMin, vol[i] / aMax);
-        }
+        // face-normal distances for the CFL guard: on a general polyhedral
+        // mesh V/maxFaceArea is not the distance a wave has to cross, so the
+        // guard reads the smallest normal centre-to-centre / centre-to-face
+        // distance the flux actually sees.
 
         std::vector<scalar> massV(n), energyV(n);
         std::vector<Vector> momV(n);
@@ -243,10 +269,28 @@ int main(int argc, char* argv[])
                 ok = false;
                 break;
             }
-            const scalar cfl = amax * dt / dxMin;
+            scalar cfl = 0;
+            const Field<Vector>& distVec = mesh.deltaCoeffVec();
+            for (label f = 0; f < mesh.nFaces(); ++f)
+            {
+                const label o = owner[f];
+                const Vector nHat = sf[f] / magSf[f];
+                const scalar dn = std::abs(dot(distVec[f], nHat));
+                if (!(dn > 0.0)) continue;
+                const scalar aO = std::abs(dot(vel[o], nHat)) + c[o];
+                scalar aFace = aO;
+                if (f < nInt)
+                {
+                    const label nn = neighbour[f];
+                    aFace = std::max(aFace,
+                                     std::abs(dot(vel[nn], nHat)) + c[nn]);
+                }
+                cfl = std::max(cfl, aFace * dt / dn);
+            }
             if (cfl > 1.0 + 1e-12)
             {
-                log::error("euler: CFL violated (dt * amax / dxMin = ", num(cfl), ")");
+                log::error("euler: CFL violated (dt * maxFaceWave / dn = ",
+                           num(cfl), ")");
                 ok = false;
                 break;
             }

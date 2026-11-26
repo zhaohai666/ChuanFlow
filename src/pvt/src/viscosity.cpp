@@ -10,7 +10,9 @@ namespace cf::pvt
 namespace
 {
 constexpr scalar kAtm = 101325.0;      // Pa per atm
-constexpr scalar kPrZc = 0.3074;       // PR76 universal critical compressibility
+// The PR76 universal critical compressibility (0.3074) is the DEFAULT ARGUMENT
+// of lbcCriticalVolumes in Viscosity.h; callers with tabulated Vcs pass them
+// directly instead of back-calculating from this number.
 
 // xi = Tc^(1/6) / (sqrt(MW) Pc[atm]^(2/3)); Tc [K], MW [g/mol], Pc [Pa].
 scalar viscosityReducingParameter(scalar Tc, scalar Pc, scalar MW)
@@ -72,21 +74,34 @@ scalar lbcViscosity(scalar T, scalar Vm, const std::vector<scalar>& zs,
     return muCp * 1.0e-3; // cP -> Pa s
 }
 
-scalar lbcViscosity(const Mixture& mix, scalar T, scalar p, RootPreference pref)
+std::vector<scalar> lbcCriticalVolumes(const Mixture& mix, scalar zc)
 {
-    const EosState st = pengRobinsonState(mix, T, p, pref);
+    if (!(zc > 0.0)) cfFatal("pvt: lbcCriticalVolumes needs a positive Zc");
     const std::vector<Component>& comps = mix.components();
+    std::vector<scalar> Vcs(comps.size());
+    for (std::size_t i = 0; i < comps.size(); ++i)
+        Vcs[i] = zc * kGasConstant * comps[i].Tc / comps[i].Pc;
+    return Vcs;
+}
+
+scalar lbcViscosity(const Mixture& mix, scalar T, scalar p, RootPreference pref,
+                    const std::vector<scalar>* Vcs)
+{
+    const std::vector<Component>& comps = mix.components();
+    if (Vcs && Vcs->size() != comps.size())
+        cfFatal("pvt: lbcViscosity declared critical volumes disagree with the mixture");
+    const std::vector<scalar> prVc = Vcs ? std::vector<scalar>() : lbcCriticalVolumes(mix);
+    const std::vector<scalar>& critical = Vcs ? *Vcs : prVc;
+    const EosState st = pengRobinsonState(mix, T, p, pref);
     const std::vector<scalar>& zs = mix.fractions();
-    std::vector<scalar> MWs(comps.size()), Tcs(comps.size()),
-        Pcs(comps.size()), Vcs(comps.size());
+    std::vector<scalar> MWs(comps.size()), Tcs(comps.size()), Pcs(comps.size());
     for (std::size_t i = 0; i < comps.size(); ++i)
     {
         MWs[i] = comps[i].molarMass * 1.0e3; // kg/mol -> g/mol
         Tcs[i] = comps[i].Tc;
         Pcs[i] = comps[i].Pc;
-        Vcs[i] = kPrZc * kGasConstant * comps[i].Tc / comps[i].Pc;
     }
-    return lbcViscosity(T, st.molarVolume, zs, MWs, Tcs, Pcs, Vcs);
+    return lbcViscosity(T, st.molarVolume, zs, MWs, Tcs, Pcs, critical);
 }
 
 } // namespace cf::pvt

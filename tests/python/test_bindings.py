@@ -203,7 +203,7 @@ class TestNodalBindings(unittest.TestCase):
     a case-dict round trip and parity with the app's golden anchor."""
 
     CASE = os.path.join(CASE_DIR, "nodalVogel", "case.dict")
-    GOLDEN_Q = 0.00290785579167
+    GOLDEN_Q = 0.00290813254206
 
     def test_ipr_curve_is_the_published_closed_form(self):
         ipr = chflow.IpR()

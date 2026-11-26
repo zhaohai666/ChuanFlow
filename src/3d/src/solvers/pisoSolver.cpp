@@ -35,6 +35,11 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
     // The pressure keeps its own BCs; the correction equation is not needed
     // here because p is solved implicitly inside the step (see below).
     Field<Vector> gradP = fvc::grad(p, schemes.grad);
+    // HbyA is rebuilt from the corrected velocity on every later corrector,
+    // and that rebuild must use the pressure gradient the momentum equation
+    // was ASSEMBLED with (p^n), not the p just solved. Keep a copy: gradP is
+    // overwritten with the current p inside the corrector loop.
+    const Field<Vector> gradPn = gradP;
 
     // ---------------- momentum (once per time step) ----------------
     const Field<Vector> UOld = U.internalField();
@@ -104,46 +109,69 @@ PisoStepResult solveTransientIncompressiblePiso(polyMesh& mesh,
     // instead would leave the pressure mode invisible to continuity, and the
     // accumulated p then grows it (verified on the start-up channel).
     volVectorField HbyA(mesh, "HbyA");
+    // H(U) = rhs - A_off*U is extensive; rAU = V/aDiag puts it back on the
+    // velocity. Pass the CURRENT velocity in: the first call uses the momentum
+    // solution, the later calls (one per additional corrector) use the velocity
+    // the previous corrector corrected. Rebuilding H from that field is the
+    // standard PISO neighbour correction - the neighbours' just-corrected
+    // velocities change this cell's pressure-free response, which is exactly
+    // the coupling a second corrector is for. gradPn is p^n's gradient, the one
+    // the momentum rhs was assembled with, so it must not be refreshed from
+    // the p solved inside the loop.
+    auto rebuildHbyA = [&](const Field<Vector>& uField)
     {
         Field<scalar> h(static_cast<std::size_t>(nC));
+        Field<scalar> uComp(static_cast<std::size_t>(nC));
         for (int comp = 0; comp < 3; ++comp)
         {
-            UEqn.explicitOperator(UEqn.solution()[static_cast<std::size_t>(comp)], comp, h);
             for (label c = 0; c < nC; ++c)
             {
                 const std::size_t u = static_cast<std::size_t>(c);
-                // the matrix rhs still carries -V grad(p^n): H(U) is extensive,
-                // so divide by the diagonal (through rAU = V/aDiag) once.
-                HbyA.internalField()[u][comp] = rAU[u] * (h[u] + vol[u] * gradP[u][comp]) / vol[u];
+                uComp[u] = uField[u][comp];
+            }
+            UEqn.explicitOperator(uComp, comp, h);
+            for (label c = 0; c < nC; ++c)
+            {
+                const std::size_t u = static_cast<std::size_t>(c);
+                HbyA.internalField()[u][comp] =
+                    rAU[u] * (h[u] + vol[u] * gradPn[u][comp]) / vol[u];
             }
         }
-    }
-    // constrainHbyA: where the velocity is prescribed the response keeps that
-    // normal flux, elsewhere it stays a zero-gradient field.
-    for (label patch = 0; patch < mesh.nPatches(); ++patch)
-    {
-        const bool fixed = U.patchBcType(patch) == "fixedValue";
-        HbyA.setPatchValue(patch, fixed ? "fixedValue" : "zeroGradient",
-                           fixed ? U.patchValue(patch) : Vector::zero());
-    }
-    // Same faces as the velocity: a boundary prescribed as a profile, not as
-    // one number, has to be prescribed that way to the response too.
-    HbyA.adoptFaceValuesFrom(U);
+        // constrainHbyA: where the velocity is prescribed the response keeps
+        // that normal flux, elsewhere it stays a zero-gradient field.
+        for (label patch = 0; patch < mesh.nPatches(); ++patch)
+        {
+            const bool fixed = U.patchBcType(patch) == "fixedValue";
+            HbyA.setPatchValue(patch, fixed ? "fixedValue" : "zeroGradient",
+                               fixed ? U.patchValue(patch) : Vector::zero());
+        }
+        // Same faces as the velocity: a boundary prescribed as a profile, not
+        // as one number, has to be prescribed that way to the response too.
+        HbyA.adoptFaceValuesFrom(U);
+    };
+    rebuildHbyA(U.internalField());
 
     const Field<scalar> rAUf = interpolateToFaces(mesh, rAU);
 
     // ---------------- correctors ----------------
-    // pisoFoam re-predicts the pressure-free flux from HbyA at the top of
-    // EVERY corrector and solves the FULL p there (PisoSolver.h: solving p
-    // rather than accumulating p' is the documented design). Carrying the
-    // closed flux into a later corrector instead - as ac1b343 tried - makes
-    // the next full-p solve invert L(p) = -div(phi_closed) ~ 0 and replaces
-    // the pressure field with a near-zero one. With the re-predicted flux
-    // the second corrector repeats the first's fixed point: the outer loop
-    // is a convergence check, while the non-orthogonal correction work
-    // happens inside the Poisson solve (ctl.nonOrthCorrectors).
+    // Every corrector re-predicts the pressure-free flux from the CURRENT
+    // HbyA and solves the FULL p there (PisoSolver.h: solving p rather than
+    // accumulating p' is the documented design). The closed flux is never
+    // carried into the next full-p equation - ac1b343 tried that and made the
+    // next solve invert L(p) = -div(phi_closed) ~ 0, collapsing p to the
+    // gauge. What DOES change between correctors is HbyA: rebuilding H(U)
+    // from the velocity the previous corrector corrected is the standard
+    // PISO neighbour correction, so later correctors lower the time-splitting
+    // error rather than re-solving the same fixed point. Non-orthogonal
+    // correction work stays inside the Poisson solve (ctl.nonOrthCorrectors).
     for (int corr = 1; corr <= ctl.correctors; ++corr)
     {
+        if (corr > 1)
+        {
+            // neighbour correction: the previous corrector's U now carries
+            // the neighbours' pressure corrections in the off-diagonal
+            rebuildHbyA(U.internalField());
+        }
         // predicted flux: momentum response, pressure not yet included
         updatePhiInternal(mesh, HbyA, phi);
         phi.correctBoundaryFlux(HbyA);

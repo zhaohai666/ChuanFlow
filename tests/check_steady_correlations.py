@@ -431,7 +431,7 @@ class BlackOil:
                                            + 3.182) - 0.0523)
                     sm_b = min(sm_b, 7.0)
                 f_b = fns * math.exp(sm_b)
-                ek_b = vsg * vm * rhos_b / max(p, 1000.0)
+                ek_b = vsg * vm * rhom / max(p, 1000.0)
                 ele_b = G * sin_t * rhos_b
                 return f_b, (ele_b + f_b * rhom * vm * vm / (2 * D)) \
                     / max(1 - ek_b, 0.1)
@@ -634,7 +634,7 @@ def _branch_gradient(lam, nfr, vsl, vsg, rhol, rhog, mul, mug, D, rough,
         s = ly / (ly * (ly * (0.01853 * ly * ly - 0.8725) + 3.182) - 0.0523)
     s = min(s, 7.0)
     f_b = fns * math.exp(s)
-    ek_b = vsg * vm_b * rho_s / max(p_pa, 1000.0)
+    ek_b = vsg * vm_b * rho_m / max(p_pa, 1000.0)
     return f_b, (f_b * rho_m * vm_b * vm_b / (2 * D)) / max(1 - ek_b, 0.1)
 
 
@@ -677,7 +677,7 @@ for lam_c in (0.05, 0.1, 0.2, 0.4, 0.6, 0.9):
 #   HL_t   = w*HL_seg + (1-w)*HL_int          = 0.7851991476453372
 #   fns = 0.022536993703394008 (Re 35794.98)
 #   f_t    = w*f_seg + (1-w)*f_int            = 0.029805001869711356
-#   dp_t   = w*dp_seg + (1-w)*dp_int          = 2.6861370122741586 Pa/m
+#   dp_t   = w*dp_seg + (1-w)*dp_int          = 2.6861356332381296 Pa/m
 vm_a = math.sqrt(0.05 * G * 0.05)
 lam_a, nfr_a = 0.4, 0.05
 w_a = blend_weight(lam_a, nfr_a)
@@ -698,7 +698,7 @@ check("anchor: blended transition holdup",
 check("anchor: blended transition fTp",
       near(w_a * f_seg_a + (1 - w_a) * f_int_a, 0.029805001869711356, 1e-12))
 check("anchor: blended transition gradient",
-      near(w_a * dp_seg_a + (1 - w_a) * dp_int_a, 2.6861370122741586, 1e-12))
+      near(w_a * dp_seg_a + (1 - w_a) * dp_int_a, 2.6861356332381296, 1e-12))
 
 # ---- declaration scope ----
 def refuses(label, body, want):

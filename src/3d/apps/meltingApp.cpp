@@ -86,6 +86,9 @@ int main(int argc, char** argv)
 
     scalar endTime = 1.0;
     int reportEvery = 10;
+    // 5.196: per-cell T / f_l readout, opt-in so old frames stay identical
+    const bool reportCells = caseDict.has("reportCells")
+                           && caseDict.getBool("reportCells");
     PisoControls ctl = app3dturb::pisoControls(caseDict, endTime, reportEvery);
 
     const std::size_t nC = static_cast<std::size_t>(mesh.nCells());
@@ -136,6 +139,17 @@ int main(int argc, char** argv)
             const scalar um = mag(U.internalField()[c]);
             if (fl[c] > 0.9) uLiquid = std::max(uLiquid, um);
             if (fl[c] < 0.1) uSolid = std::max(uSolid, um);
+        }
+        // 5.196: opt-in per-cell readout (`reportCells true`), off by default
+        // so the pre-5.196 frames are byte-identical. It exists because the
+        // latent-heat bookkeeping is a PER-CELL enthalpy statement, which the
+        // global H line cannot witness.
+        if (reportCells)
+        {
+            for (std::size_t c = 0; c < nC; ++c)
+                std::printf("cell %zu T %s fl %s\n", c,
+                            app3dturb::num(energy.temperature().internalField()[c]).c_str(),
+                            app3dturb::num(fl[c]).c_str());
         }
         std::printf("t %s yF %s H %s Qin %s uLiquid %s uSolid %s flMin %s flMax %s\n",
                     app3dturb::num(t).c_str(), app3dturb::num(yF).c_str(),

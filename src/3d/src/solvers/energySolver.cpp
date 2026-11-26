@@ -234,6 +234,26 @@ void EnergyModel::correctEnergy(scalar dt)
     const Field<scalar> oldT = t_.internalField();
     const Field<scalar> src = sourceRate();
 
+    // F12 enthalpy projection (5.196). The latent heat is carried by the
+    // ENTHALPY, not by a linearisation of it:
+    //   H/cp = T + (L/cp) f_l(T),  f_l = clamp((T - Ts)/(Tl - Ts), 0, 1)
+    // so the temperature equation is first solved on the SENSIBLE capacity
+    // (cp V dT/dt, i.e. exactly the pre-5.196 matrix) and the result is read
+    // back as an enthalpy increment:
+    //   h = H(T_old)/cp + (T_solved - T_old)   (H/cp after the step)
+    //   T_new = H^-1(h)
+    // The inversion is closed form and monotone:
+    //   h <= Ts                 -> T = h                (solid)
+    //   h >= Tl + L/cp          -> T = h - L/cp         (liquid)
+    //   in between              -> T = (h + (L/cp) Ts/dT) / (1 + (L/cp)/dT)
+    // This is the Voller-Prakash statement applied exactly instead of
+    // linearised, so a cell that starts OUTSIDE the interval and lands INSIDE
+    // it (or crosses the whole interval in one step) pays its latent heat;
+    // the old apparent-capacity diagonal only knew the cells whose old
+    // temperature was already inside, and its one-shot fix only knew a FULL
+    // crossing. Every case either lands here monotone, with no iteration to
+    // oscillate (a Newton step on the clipped f_l does: it bounces between
+    // the solid and liquid branches forever).
     fvMatrix eqn(mesh_, viewOf(t_), "TEqn");
     eqn.schemes() = schemes_;
     // the matrix' own relaxation would blend against its zero initial guess;
@@ -246,29 +266,6 @@ void EnergyModel::correctEnergy(scalar dt)
     {
         eqn.addRhs(c, 0, vol[static_cast<std::size_t>(c)] * src[static_cast<std::size_t>(c)]);
     }
-
-    // Voller-Prakash apparent heat capacity: the enthalpy of the mushy zone
-    // enters the transient term as V (L/cp) df_l/dT / dt on the diagonal,
-    // evaluated at the temperature the step started from.
-    if (props_.phase.enabled && dt > 0)
-    {
-        const scalar dfdT = 1.0 / (props_.phase.Tliquidus - props_.phase.Tsolidus);
-        for (label c = 0; c < nC; ++c)
-        {
-            const std::size_t u = static_cast<std::size_t>(c);
-            const scalar t = oldT[u];
-            if (t > props_.phase.Tsolidus && t < props_.phase.Tliquidus)
-            {
-                // diag*(T - oldT) is the linearised L df_l/dT dT/dt; the RHS
-                // compensation is what makes the old temperature the reference
-                // instead of zero (the same convention fvm::ddt uses).
-                const scalar coef = vol[u] * props_.phase.latent / props_.cp * dfdT / dt;
-                eqn.addDiag(c, 0, coef);
-                eqn.addRhs(c, 0, coef * t);
-            }
-        }
-    }
-
     const SolverReport rep = eqn.solve(fvMatrix::Controls{linearTol, linearMaxIter, 2});
     if (!rep.converged)
     {
@@ -276,12 +273,32 @@ void EnergyModel::correctEnergy(scalar dt)
                   " iters, residual ", rep.finalResidual, ")");
     }
 
-    const Field<scalar>& x = eqn.solution()[0];
+    Field<scalar> x = eqn.solution()[0];
+    if (props_.phase.enabled && dt > 0)
+    {
+        const scalar ts = props_.phase.Tsolidus;
+        const scalar tl = props_.phase.Tliquidus;
+        const scalar dT = tl - ts;
+        const scalar lc = props_.phase.latent / props_.cp; // K per unit f_l
+        for (label c = 0; c < nC; ++c)
+        {
+            const std::size_t u = static_cast<std::size_t>(c);
+            // H/cp before the step, not T: a cell already inside the mushy
+            // zone starts at T + (L/cp) f_l(T), so using T alone would cool
+            // every such cell by its own latent content on the first step
+            const scalar fl0 = std::min(std::max((oldT[u] - ts) / dT, 0.0), 1.0);
+            const scalar h = oldT[u] + lc * fl0 + (x[u] - oldT[u]);
+            if (h <= ts) x[u] = h;
+            else if (h >= tl + lc) x[u] = h - lc;
+            else x[u] = (h + lc * ts / dT) / (1.0 + lc / dT);
+        }
+    }
+    const Field<scalar>& xDone = x;
     auto& t = t_.internalField();
     if (dt > 0)
     {
         // implicit Euler: the step is the solution, no relaxation
-        t = x;
+        t = xDone;
     }
     else
     {

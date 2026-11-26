@@ -20,3 +20,20 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/check_melting_front.py
         $<TARGET_FILE:chflow-3d-melting>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/meltingFront/case.dict)
+
+# 5.196 (F12 fix): the latent heat of a step that CROSSES the phase interval.
+# Three single-cell cases (all-symmetry faces, source only, so the exact answer
+# is arithmetic) land the enthalpy below-then-inside (a), deeper inside (b) and
+# past the liquidus (c); the checker inverts H/cp = T + (L/cp) f_l in closed
+# form and asserts the printed T, the printed f_l, the enthalpy gain and that
+# the sensible-only answer differs by more than 1 K (so a regression to the
+# pre-fix assembly, which only priced cells whose OLD T was inside, cannot
+# pass silently).
+add_test(
+    NAME verify.meltingLatentStep
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_melting_latent_step.py
+        $<TARGET_FILE:chflow-3d-melting>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/meltingLatentStep/a/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/meltingLatentStep/b/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/meltingLatentStep/c/case.dict)

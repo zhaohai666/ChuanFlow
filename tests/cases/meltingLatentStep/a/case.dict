@@ -1,0 +1,86 @@
+// F12 phase-change melting regression case for chflow-3d-melting.
+//
+// A vertical column (y) in a closed box in x/z with symmetry faces, so a
+// uniform +x body force drives a started-channel flow in the melt and the
+// Darcy porous-medium term is the only thing that can stop the solid.
+//
+// The starting temperature is a cosine mode along y:
+//   T(y) = initialT + initialAmplitude cos(pi y / Ly)
+// with a NEGATIVE amplitude, so the bottom is solid (T < solidusT), the top
+// is liquid (T > liquidusT) and f_l increases with y. The front tracker in
+// meltingApp.cpp looks for the first f_l < 0.5 -> f_l >= 0.5 crossing going
+// UP in y, so this is the orientation it can see. A hot top wall (T > Tl)
+// pushes more heat in and the f_l = 0.5 crossing travels DOWN; the bottom
+// wall is held cold so the column never fully melts during the run.
+//
+// The energy solver carries the latent heat as an apparent heat capacity
+// (Voller-Prakash) and the app applies -A (1-f_l)^2 / (f_l^3 + eps) U
+// explicitly with a 0.5/dt cap. tests/check_melting_front.py re-derives the
+// enthalpy balance, the front motion, the f_l bounds, the Darcy separation
+// and the two refusal modes from the case file (not from stored numbers).
+
+reportCells true;
+
+block
+{
+    min   (0 0 0);
+    max   (0.002 0.002 0.002);
+    cells (1 1 1);
+
+    xmin  { name left;   type symmetry; }
+    xmax  { name right;  type symmetry; }
+    ymin  { name bottom; type symmetry; }
+    ymax  { name top;    type symmetry; }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+nu 1e-5;
+
+patches
+{
+    left   { UType zeroGradient; p 0; pType fixedValue; }
+    right  { UType zeroGradient; pType zeroGradient; }
+    bottom { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top    { U (0 0 0); UType fixedValue; pType zeroGradient; }
+}
+
+energy
+{
+    rho 1000;
+    cp 1000;
+    kappa 100;
+    initialT 265;
+    initialMode 1;
+    initialAmplitude 0;
+    initialAxis y;
+
+    volumetricSource 1.2e+07;
+
+    phaseChange
+    {
+        latentHeat 50000;
+        solidusT 270;
+        liquidusT 280;
+        mushyConstant 10000;
+        mushyEpsilon 0.001;
+    }
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;
+    grad      corrected;
+}
+
+piso
+{
+    dt          1.0;
+    endTime     1.0;
+    correctors  2;
+    continuityTol 1e-8;
+    reportEvery 1;
+    force       (0 0 0);
+}

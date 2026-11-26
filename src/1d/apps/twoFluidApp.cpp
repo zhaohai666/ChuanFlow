@@ -344,6 +344,12 @@ int main(int argc, char** argv)
                           be.empty() ? "" : (" bed " + num(be[i])),
                           compositionReport(s, i));
             }
+            // 5.195 (G10 fix): the clamp that used to drop sand silently. It
+            // prints only when it fired (the cumulative volume the transport
+            // step found over-full and put into the bed), so an ordinary case
+            // report is byte-identical to the pre-fix one.
+            if (c.sandOn && s.sandClampToBed() > 0.0)
+                log::info("sandclamp vol ", num(s.sandClampToBed()));
             // 5.187 (F-class): the transient risk report - one erosion line,
             // plus the hydrate (non-blocking) and corrosion lines when their
             // channels are declared. Pure readout: absent, nothing prints and

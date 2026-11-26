@@ -1214,6 +1214,11 @@ public:
     /// Static bed fraction of the cell's total volume per section (sand
     /// on); zeros unless the sand{} block is present.
     std::vector<double> cellBed() const { return bed_; }
+    /// Cumulative suspended-sand volume (m3/m3 summed over cells and steps)
+    /// that the transport step routed into the bed because alpha*S exceeded
+    /// the bath. Zero when the clamp never fires; the report prints it only
+    /// when it is non-zero, so a silently parameterised case cannot grow one.
+    double sandClampToBed() const { return sandClampToBed_; }
     double endSand(bool atInlet) const
     {
         return cfg_.sandOn ? (atInlet ? sandFrac_[0] : sandFrac_[n_ - 1])
@@ -1682,6 +1687,11 @@ private:
                                     // liquid (sand on)
     std::vector<double> bed_;       // G10: static bed fraction of the cell
                                     // volume (sand on)
+    // G10 fix: cumulative suspended sand volume that the transport step found
+    // over-full and routed into the bed instead of dropping. Zero on every
+    // case that never over-fills a cell, so the readout is silent unless the
+    // clamp actually fires; the inventory alpha*S + B closes either way.
+    double sandClampToBed_ = 0.0;
     // G1: transported liquid composition + per-cell PR flash diagnostics.
     // compZ_ holds the N - 1 independent mole fractions (content alpha*z
     // per component, upwind-transported with the water-cut/sand rule);

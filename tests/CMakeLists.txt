@@ -1977,6 +1977,21 @@ add_test(
         $<TARGET_FILE:chflow-1d-twofluid>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidSandTransport/case.dict)
 
+# 5.195 (G10 fix): the sand bookkeeping when a cell drains. The transport step
+# used to write sand/aCap with a 0 fallback for a holdup below kTol, dropping
+# every grain the cell still held; the fix deposits it into the bed and prints
+# `sandclamp vol`. The case drains the bore (no liquid inflow, gas only, so the
+# sand cannot leave through the outlet) until the holdup crosses kTol = 1e-9;
+# the checker pins the dry step (deposit appears where there was none), the
+# bounded deposit, the frozen inventory of the drained cell, and the readout
+# equalling the sum of the beds.
+add_test(
+    NAME verify.twoFluidSandClamp
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_sand_clamp.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidSandClamp/case.dict)
+
 # G2 gas-cap feedback on the terrain slug travel velocity: the algebraic
 # ejection law re-derived from the reported p profile every frame, the
 # clamp, the terrain-dependent travel, the exact kinematic twin and the

@@ -1,0 +1,69 @@
+// 5.195: the over-full suspension - inlet sand fraction 1.0 with gas entering
+// faster than liquid, so alpha falls while the suspension is already at the
+// bath. The clamped excess used to disappear; it now lands in the bed.
+// G10: 1D sand / cuttings transport. A horizontal rate-driven line with a
+// uniform holdup (wallis slip 0 -> the flux is uniform and the holdup is
+// stationary), carrying a suspended sand fraction that rides the liquid
+// with the water-cut upwind rule. The mixture velocity (0.6 m/s) sits BELOW
+// the declared critical velocity (1.0 m/s), so the settling branch runs
+// every step: S_new = S / (1 + dt vt/(D/2)) with the removed volume moved
+// into the static bed, B += alpha (S - S_new). The inlet keeps injecting
+// sandFraction 0.2, so the checker replicates the kernel's per-step
+// recursion (upwind transport then the implicit settling exchange) and
+// witnesses cell 0 relaxing to the settling/replenishment steady state
+// S = 0.15, the bed growing by exactly the removed content, and the
+// thin-layer bore dEff = D sqrt(1 - B) under feedback. The erosion
+// sibling (vM = 1.2 > uCrit) re-derives B_n = 0.1 (1 + dt erodeRate
+// (vM/uCrit - 1))^-n advected by the upwind transport, and the
+// rejections are loud.
+fluid
+{
+    rhoL 1000;
+    rhoG 20;
+    muL  0.01;
+    muG  1e-5;
+}
+
+closure
+{
+    model wallis;
+    slipVelocity 0;
+}
+
+initial
+{
+    alpha 0.01;
+    water 0;
+}
+
+sand
+{
+    terminalVelocity 1e-9;
+    criticalVelocity 0.01;
+    erodeRate 0;
+    initial 1.0;
+    bedInitial 0;
+    feedback false;
+}
+
+pipe
+{
+    length 10;
+    diameter 0.1;
+    roughness 0;
+    angleDeg 0;
+    sections 10;
+}
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0; vsg 1.5; sandFraction 1.0; }
+    outlet { type fixedPressure; p 0; alpha 0.5; sandFraction 1.0; }
+}
+
+time
+{
+    dt 0.5;
+    endTime 10;
+    reportEvery 1;
+}

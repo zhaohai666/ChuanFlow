@@ -1731,10 +1731,43 @@ void TwoFluidPipe::transportStep(double dt)
         if (cfg_.sandOn)
         {
             // the suspended sand content alpha*S rides the liquid with the
-            // same upwind rule and clamp semantics as the water cut
+            // upwind rule. The bath can hold at most aCap of sand, and sand
+            // cannot be suspended into nothing: the previous clamp
+            // min(max(asNew,0), aCap) SILENTLY DROPPED the mass that did not
+            // fit, so a step that over-filled a cell lost sand out of the
+            // alpha*S + B inventory with nothing said. The excess now settles
+            // into that cell's bed, which is where a physically over-full
+            // suspension puts it, and the deficit is refused like the water
+            // cut's own negative transient (a negative content means dt is
+            // too large for this dx, not a state to clamp).
             double asNew = asOld + dt / dxs_[i] * (sflux[i] - sflux[i + 1]);
-            asNew = std::min(std::max(asNew, 0.0), aCap);
-            sandFrac_[i] = aCap > kTol ? asNew / aCap : 0.0;
+            if (asNew < -kTol)
+                cfFatal("twoFluid: suspended sand content went negative at cell "
+                        + std::to_string(i) + " (asNew "
+                        + std::to_string(asNew) + " m3/m3) - reduce dt or the "
+                        "erodeRate: the clamp that used to swallow this hid the "
+                        "loss, not the violation");
+            if (aCap <= kTol)
+            {
+                // no liquid left in this cell: `asNew / aCap` was written as a
+                // hard zero, so every grain the cell still carried disappeared
+                // from the alpha*S + B inventory. Dry sand settles: it goes to
+                // the bed and the readout says how much.
+                if (asNew > 0.0) sandClampToBed_ += asNew;
+                bed_[i] += std::max(asNew, 0.0);
+                sandFrac_[i] = 0.0;
+            }
+            else
+            {
+                if (asNew > aCap)
+                {
+                    const double excess = asNew - aCap;
+                    bed_[i] += excess;
+                    sandClampToBed_ += excess;
+                    asNew = aCap;
+                }
+                sandFrac_[i] = asNew / aCap;
+            }
         }
         for (size_t k = 0; k < compZ_.size(); ++k)
         {

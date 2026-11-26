@@ -2482,6 +2482,13 @@ if(CARGO_EXECUTABLE)
             -- run pvt ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtFlash/case.dict)
     set_tests_properties(cli.runPvt PROPERTIES
         ENVIRONMENT "CHUANFLOW_BIN_DIR=$<TARGET_FILE_DIR:chflow-pvt>")
+    # All four share --target-dir ${CMAKE_BINARY_DIR}/cli. Under `ctest -j`,
+    # `cargo run` could exec the just-built binary while a sibling `cargo test`
+    # relinked it (delete+recreate), yielding a spurious
+    # "could not execute process ... No such file or directory". Serialise them
+    # on the target directory so the gate is deterministic; assertions unchanged.
+    set_tests_properties(cli.unit cli.runSteady cli.runTransient cli.runPvt
+        PROPERTIES RESOURCE_LOCK cli_cargo_target)
 endif()
 
 # 5.110 increment D: opt-in built-in Weinaug-Katz (1943) parachor table. The

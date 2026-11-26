@@ -2452,6 +2452,18 @@ if(CHFLOW_PYTHON_BINDINGS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_history_match.py)
     set_tests_properties(python.history_match PROPERTIES
         ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # Coupling family: 1D<->3D steady interface solve, structured per-edge result.
+    add_test(
+        NAME python.coupling
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_coupling.py)
+    set_tests_properties(python.coupling PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # 3D family: mesh -> field -> built-in P1 solve -> NumPy arrays.
+    add_test(
+        NAME python.solver3d
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_3d.py)
+    set_tests_properties(python.solver3d PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
 endif()
 
 # ---- CLI (Rust) ----

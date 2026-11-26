@@ -14,9 +14,13 @@
 
 namespace py = pybind11;
 
+void registerCouplingBindings(py::module_& m);
+void registerFields3dBindings(py::module_& m);
+
 PYBIND11_MODULE(chflow_core, m)
 {
-    m.doc() = "ChuanFlow 1D pipe-network kernel (steady + transient) and PVT layer";
+    m.doc() = "ChuanFlow 1D pipe-network kernel (steady + transient), PVT layer, "
+              "1D<->3D coupling and 3D FVM fields";
 
     py::class_<cf::FluidProperties>(m, "FluidProperties")
         .def(py::init<>())
@@ -387,4 +391,8 @@ PYBIND11_MODULE(chflow_core, m)
     m.def("load_flash_case", [](const std::string& caseDictPath)
           { return cf::pvt::loadFlashCase(cf::Dictionary::parseFile(caseDictPath)); },
           py::arg("case_dict_path"));
+
+    // ---- 1D<->3D coupling family and 3D FVM fields ----
+    registerCouplingBindings(m);
+    registerFields3dBindings(m);
 }

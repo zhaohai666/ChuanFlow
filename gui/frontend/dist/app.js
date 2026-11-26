@@ -68,7 +68,27 @@ import {
 // state
 // ---------------------------------------------------------------------------
 
-const DEFAULT_EXE = '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-steady';
+// Developer-tree fallback root, derived from this module's own location
+// (gui/frontend/dist/app.js -> repo root) so no machine-specific absolute path
+// is baked into the source. The Rust resolves (`default_engines`,
+// `three_d_engines`, `coupled_engines`) beat every one of these at startup;
+// these only cover the case where the backend cannot resolve at all. When the
+// bundle is not served from a checkout (packaged app, non-file protocol), the
+// root is empty and `startJob` refuses to launch with an explicit message
+// instead of exec'ing a path that only exists on the author's machine.
+const DEV_TREE_ROOT = (() => {
+  try {
+    const u = new URL('../../../', import.meta.url);
+    if (u.protocol !== 'file:') return '';
+    return decodeURIComponent(u.pathname).replace(/\/+$/, '');
+  } catch (err) {
+    return '';
+  }
+})();
+const DEV_BUILD_DIR = DEV_TREE_ROOT ? `${DEV_TREE_ROOT}/build` : '';
+const devExe = (sub, bin) => (DEV_BUILD_DIR ? `${DEV_BUILD_DIR}/${sub}/${bin}` : '');
+
+const DEFAULT_EXE = devExe('src/1d/apps', 'chflow-1d-steady');
 // Audit fix (P1-2): the point-element engine (chflow-1d-point-elements) is the
 // only consumer of the E4 device top-level blocks (jetPumps/pcpPumps/
 // plungerGasLifts/separators — the steady network app ignores unknown blocks,
@@ -76,28 +96,21 @@ const DEFAULT_EXE = '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d
 // same build directory as the steady binary; E9 persistence covers it.
 const DEFAULT_POINT_ELEMENTS_EXE = DEFAULT_EXE.replace('chflow-1d-steady', 'chflow-1d-point-elements');
 const POINT_ELEMENT_BLOCK_RE = /^\s*(jetPumps|pcpPumps|plungerGasLifts|separators)\s*\{/m;
-const DEFAULT_TRANSIENT_EXE =
-  '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-transient';
-const DEFAULT_COUPLED_EXE =
-  '/Users/haizai/project/ChuanFlow/build/src/coupling/apps/chflow-coupled-1d3d';
-const DEFAULT_TWOFLUID_EXE =
-  '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-twofluid';
-const DEFAULT_NODAL_EXE =
-  '/Users/haizai/project/ChuanFlow/build/src/1d/apps/chflow-1d-nodal';
-const DEFAULT_PVT_EXE =
-  '/Users/haizai/project/ChuanFlow/build/src/pvt/apps/chflow-pvt';
-const DEFAULT_3D_EXE =
-  '/Users/haizai/project/ChuanFlow/build/src/3d/apps/chflow-piso-foam';
+const DEFAULT_TRANSIENT_EXE = devExe('src/1d/apps', 'chflow-1d-transient');
+const DEFAULT_COUPLED_EXE = devExe('src/coupling/apps', 'chflow-coupled-1d3d');
+const DEFAULT_TWOFLUID_EXE = devExe('src/1d/apps', 'chflow-1d-twofluid');
+const DEFAULT_NODAL_EXE = devExe('src/1d/apps', 'chflow-1d-nodal');
+const DEFAULT_PVT_EXE = devExe('src/pvt/apps', 'chflow-pvt');
+const DEFAULT_3D_EXE = devExe('src/3d/apps', 'chflow-piso-foam');
 // E1 (§5.181): the 3D engine family's developer-tree defaults. The Rust
 // `three_d_engines` resolve beats these at startup, exactly like the 8
 // pre-existing engine keys.
-const DEFAULT_3D_FAMILY_DIR = '/Users/haizai/project/ChuanFlow/build/src/3d/apps';
+const DEFAULT_3D_FAMILY_DIR = DEV_BUILD_DIR ? `${DEV_BUILD_DIR}/src/3d/apps` : '';
 // Coupling engine family developer-tree defaults; the Rust `coupled_engines`
 // resolve beats these at startup, same contract as the 3D family.
-const DEFAULT_COUPLED_FAMILY_DIR = '/Users/haizai/project/ChuanFlow/build/src/coupling/apps';
+const DEFAULT_COUPLED_FAMILY_DIR = DEV_BUILD_DIR ? `${DEV_BUILD_DIR}/src/coupling/apps` : '';
 const THREE_D_VTU = '/tmp/chflow_gui_3d_field.vtu';
-const DEFAULT_COUPLED_CASE =
-  '/Users/haizai/project/ChuanFlow/tests/cases/coupled1d3d/case.dict';
+const DEFAULT_COUPLED_CASE = DEV_TREE_ROOT ? `${DEV_TREE_ROOT}/tests/cases/coupled1d3d/case.dict` : '';
 const COUPLED_VTU = '/tmp/chflow_gui_coupled_block.vtu';
 
 const DEFAULT_CASE = `// ChuanFlow 简化稳态管网
@@ -208,12 +221,12 @@ const engines = {
 // E1 (§5.181): per-member developer-tree defaults; threeD (PISO) is declared
 // above so the original constant keeps its single meaning.
 for (const e of THREE_D_FAMILY) {
-  if (e.key !== 'threeD') engines[e.key] = `${DEFAULT_3D_FAMILY_DIR}/${e.bin}`;
+  if (e.key !== 'threeD') engines[e.key] = devExe('src/3d/apps', e.bin);
 }
 // coupling family per-member defaults; the steady single-edge `coupled` key
 // keeps the original DEFAULT_COUPLED_EXE above.
 for (const e of COUPLED_FAMILY) {
-  if (e.key !== 'coupled') engines[e.key] = `${DEFAULT_COUPLED_FAMILY_DIR}/${e.bin}`;
+  if (e.key !== 'coupled') engines[e.key] = devExe('src/coupling/apps', e.bin);
 }
 // which family member the next ▶ 3D run submits to (set by template load /
 // the dictionary-page family selector; defaults to PISO)
@@ -654,10 +667,23 @@ function renderProps() {
     if (state.steady) {
       const r = state.steady.pipes.find((x) => x.name === p.name);
       if (r) {
+        const dash = (v) => (v === null || v === undefined || !Number.isFinite(v) ? '—' : v);
         const res = document.createElement('div');
         res.className = 'kv';
+        const hl = r.holdup === null || r.holdup === undefined ? '—' : dash(r.holdup).toPrecision(4);
+        const rg = r.regime || '—';
+        const rgOut = r.regimeOutlet || '—';
+        const tt = r.temperature === null || r.temperature === undefined ? '—' : dash(r.temperature).toPrecision(5);
         res.innerHTML = `<span>结果</span><span>Q ${fmtDisplay(r.q, 'rate', state.units)} · dp ${fmtDisplay(r.dp, 'pressure', state.units)}</span>`;
+        const res2 = document.createElement('div');
+        res2.className = 'kv';
+        res2.innerHTML = `<span>持液率 HL / 流型</span><span>α ${hl} · ${rg}（出口 ${rgOut}）</span>`;
+        const res3 = document.createElement('div');
+        res3.className = 'kv';
+        res3.innerHTML = `<span>出口温度 T</span><span>${tt} K</span>`;
         propsEl.appendChild(res);
+        propsEl.appendChild(res2);
+        propsEl.appendChild(res3);
       }
     }
     const prow = document.createElement('div');
@@ -1174,6 +1200,14 @@ async function startJob(label, caseText_, isPath = false) {
     : label === '3d' ? (engines[active3DEngine] || engines.threeD)
     : label === 'coupled' ? (engines[activeCoupledEngine] || engines.coupled)
     : engines.coupled;
+  // G6: the engine-path defaults are derived from the checkout this bundle is
+  // served from (see DEV_TREE_ROOT). When there is no checkout and the Rust
+  // resolve also failed, refuse loudly instead of invoking a nonexistent exe.
+  if (!exe) {
+    setStatus(`未解析到 ${label} 求解器路径：后端未能解析、且当前不是可识别的开发树。请在 case 字典页手动填写路径。`, 'error');
+    appendLog(`[${label}] 未解析到求解器路径，已取消启动。`);
+    return;
+  }
   let casePath;
   if (label === 'coupled') {
     casePath = await prepareCoupledCase();
@@ -1409,15 +1443,21 @@ function renderCoupled() {
     .join('');
   $('coupledPipes').querySelector('tbody').innerHTML = pipeRows || '<tr><td>—</td></tr>';
 
-  const ex = c.solved;
-  if (ex) {
-    $('coupledBlock').innerHTML =
-      `<div class="kv"><span>耦合边</span><span>${ex.edge}</span></div>` +
-      `<div class="kv"><span>交换流量 q</span><span>${fmtDisplay(ex.q, 'rate', u)}</span></div>` +
-      `<div class="kv"><span>块压降 dp</span><span>${fmtDisplay(ex.dp, 'pressure', u)}</span></div>` +
-      `<div class="kv"><span>阻力 R</span><span>${ex.r.toPrecision(8)} Pa·s/m³</span></div>` +
-      `<div class="kv"><span>外层迭代</span><span>${ex.iterations}</span></div>` +
-      `<div class="kv"><span>残差</span><span>${ex.residual.toExponential(3)}</span></div>`;
+  // One exchange block per coupled edge; the legacy single-edge case renders
+  // exactly the one block it always did.
+  const edgeList = c.edges.length ? c.edges : (c.solved ? [c.solved] : []);
+  if (edgeList.length) {
+    $('coupledBlock').innerHTML = edgeList.map((ex) => {
+      const iters = ex.iterations === null || ex.iterations === undefined
+        ? '—' : ex.iterations;
+      const res = Number.isFinite(ex.residual) ? ex.residual.toExponential(3) : '—';
+      return `<div class="kv"><span>耦合边</span><span>${escAttr(ex.edge)}</span></div>` +
+        `<div class="kv"><span>交换流量 q</span><span>${fmtDisplay(ex.q, 'rate', u)}</span></div>` +
+        `<div class="kv"><span>块压降 dp</span><span>${fmtDisplay(ex.dp, 'pressure', u)}</span></div>` +
+        `<div class="kv"><span>阻力 R</span><span>${ex.r.toPrecision(8)} Pa·s/m³</span></div>` +
+        `<div class="kv"><span>外层迭代</span><span>${iters}</span></div>` +
+        `<div class="kv"><span>残差</span><span>${res}</span></div>`;
+    }).join('');
   }
 
   // interface exchange convergence: dp per outer iteration (last seed)
@@ -1469,11 +1509,34 @@ async function loadVtu() {
     state.vtu = vtu;
     state.streamlineCache = null;
     state.vortCache = null;
+    populateFieldOptions(vtu);
     renderField();
     setStatus(`已载入 ${vtu.cells.length} 个单元的场数据。`, 'ok');
   } catch (e) {
     setStatus(`读取 VTU 失败: ${e}`, 'error');
   }
+}
+
+// Rebuild the field selector from the scalar arrays the loaded VTU actually
+// carries. The built-in p / u / vort / q options stay; each solver-written
+// scalar beyond p (T, alpha, nut, ...) gets its own `field:<name>` option.
+function populateFieldOptions(vtu) {
+  const sel = $('fieldMode');
+  if (!sel) return;
+  const builtin = ['p', 'u', 'vort', 'q'];
+  const extras = Object.keys(vtu.scalars || {}).filter((n) => n !== 'p');
+  for (const opt of [...sel.options]) {
+    if (!builtin.includes(opt.value)) opt.remove();
+  }
+  for (const name of extras) {
+    const o = document.createElement('option');
+    o.value = `field:${name}`;
+    o.textContent = `场 ${name}`;
+    sel.append(o);
+  }
+  const valid = [...sel.options].some((o) => o.value === state.fieldMode);
+  if (!valid) state.fieldMode = 'p';
+  sel.value = state.fieldMode;
 }
 
 function projectPoint(p, c, yaw, pitch) {
@@ -1514,6 +1577,9 @@ function renderField() {
     } else {
       values = state.fieldMode === 'vort' ? state.vortCache.mag : state.vortCache.q;
     }
+  } else if (state.fieldMode.startsWith('field:')) {
+    const name = state.fieldMode.slice(6);
+    values = (vtu.scalars && vtu.scalars[name]) || cellP;
   } else {
     values = state.fieldMode === 'p'
       ? cellP
@@ -1729,6 +1795,9 @@ function renderField() {
   }
 
   const FIELD_NAMES = { p: '压力 p', u: '流速 |U|', vort: '涡量 |ω|', q: 'Q 判据' };
+  const fieldName = state.fieldMode.startsWith('field:')
+    ? state.fieldMode.slice(6)
+    : (FIELD_NAMES[state.fieldMode] || state.fieldMode);
   const unit = state.fieldMode === 'p' ? unitLabel('pressure', state.units)
     : state.fieldMode === 'vort' ? '1/s'
       : state.fieldMode === 'q' ? '1/s²' : 'm/s';
@@ -1744,7 +1813,7 @@ function renderField() {
       : `剖切 ${v3.clipAxis}@${v3.clipFrac.toFixed(2)}`;
   $('fieldInfo').textContent =
     `块网格 ${cells.length} 单元 / ${points.length} 顶点 · ` +
-    `渲染场 ${FIELD_NAMES[state.fieldMode] || state.fieldMode} · ` +
+    `渲染场 ${fieldName} · ` +
     `yaw ${v3.yaw}° pitch ${v3.pitch}° · ${clipTxt}` +
     (v3.vectors ? ` · 矢量 ${drawn}（按 |U| 着色 ${magLo.toPrecision(3)}–${magHi.toPrecision(3)} m/s）` : '') +
     (v3.streamlines ? ` · 流线 ${streamCount}` : '') +

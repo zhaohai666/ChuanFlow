@@ -89,6 +89,18 @@ BlockSpec loadBlockSpec(const Dictionary& dd, const char* argv0,
                      readCompressible(dd)};
 }
 
+/// Write only the fields the solver actually built (T / alpha / nut) on top
+/// of U/p; a case that declared none keeps its old U/p-only VTU.
+void writeBlockFields(VtkWriter& w, const DetailBlock& block)
+{
+    if (const EnergyModel* energy = block.energy())
+        w.addCellScalar("T", energy->temperature().internalField());
+    if (const PhaseField* ph = block.phases())
+        w.addCellScalar("alpha", ph->alphaCell());
+    if (const RansModel* turb = block.turbulence())
+        w.addCellScalar("nut", turb->nut());
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -383,6 +395,7 @@ int main(int argc, char** argv)
                     VtkWriter w(owners[i]->mesh());
                     w.addCellVector("U", owners[i]->U().internalField());
                     w.addCellScalar("p", owners[i]->p().internalField());
+                    writeBlockFields(w, *owners[i]);
                     w.write(specs[i].vtk);
                 }
             }

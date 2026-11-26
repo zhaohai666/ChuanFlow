@@ -158,10 +158,12 @@ function after(text, key) {
 
 /**
  * Parse chflow-coupled-1d3d stdout: "node final p", "pipe final ... Q ... dp",
- * "coupled solved: edge ... q ... dp ... R ... iterations ... residual ..." and
- * the per-seed outer-loop lines ("coupled seed s: iterations ... converged/
- * not converged", "interface seed s iter k ..."). Tolerates the [chflow]
- * prefix; unknown lines are ignored.
+ * the per-edge solved lines ("coupled solved: edge ... q ... dp ... R ...
+ * iterations ... residual ...", or the multi-app "settled <start> edge ..."
+ * lines), and the per-seed outer-loop lines. The solved state is collected per
+ * edge into `edges` (one record per coupled edge); `solved` stays set to the
+ * first edge for the legacy single-edge view. Tolerates the [chflow] prefix;
+ * unknown lines are ignored.
  */
 export function parseCoupledOutput(out) {
   const clean = out
@@ -171,9 +173,21 @@ export function parseCoupledOutput(out) {
   const result = {
     nodes: [], // { name, p }
     pipes: [], // { name, q, v, re, dp }
-    solved: null, // { edge, q, dp, r, iterations, residual }
+    solved: null, // { edge, q, dp, r, iterations, residual } (first edge, legacy)
+    edges: [], // one { edge, q, dp, r, iterations, residual, sweeps } per edge
     seeds: [], // { seed, iterations, converged, dp, q }
     interfaces: [], // { seed, iteration, q, dp, resistance }
+  };
+  const edgeByName = new Map();
+
+  const upsertEdge = (rec) => {
+    const existing = edgeByName.get(rec.edge);
+    if (existing) Object.assign(existing, rec);
+    else {
+      edgeByName.set(rec.edge, rec);
+      result.edges.push(rec);
+    }
+    if (!result.solved) result.solved = rec;
   };
 
   for (const raw of clean.split('\n')) {
@@ -198,10 +212,20 @@ export function parseCoupledOutput(out) {
     }
     m = /^coupled solved: edge (\S+) q (\S+) dp (\S+) R (\S+) iterations (\d+) residual (\S+)$/.exec(line);
     if (m) {
-      result.solved = {
+      upsertEdge({
         edge: m[1], q: Number(m[2]), dp: Number(m[3]), r: Number(m[4]),
-        iterations: Number(m[5]), residual: Number(m[6]),
-      };
+        iterations: Number(m[5]), residual: Number(m[6]), sweeps: null,
+      });
+      continue;
+    }
+    // multi-app steady/transient ledger: `settled <start> edge <name> q ...
+    // dp ... R ... residual ... sweeps ...`; last pass for an edge wins.
+    m = /^settled \S+ edge (\S+) q (\S+) dp (\S+) R (\S+) residual (\S+) sweeps (\d+)$/.exec(line);
+    if (m) {
+      upsertEdge({
+        edge: m[1], q: Number(m[2]), dp: Number(m[3]), r: Number(m[4]),
+        iterations: null, residual: Number(m[5]), sweeps: Number(m[6]),
+      });
       continue;
     }
     m = /^coupled seed (\S+): iterations (\d+)(.*)$/.exec(line);
@@ -238,8 +262,11 @@ export function parseCoupledOutput(out) {
 
 /**
  * Parse an ASCII .vtu written by VtkWriter: points (x y z), polygonal
- * connectivity + offsets, and the cell data arrays U (3 comps) and p.
- * Returns null when the text is not a readable VTU.
+ * connectivity + offsets, and the cell data arrays. U (3 comps) and p keep
+ * their legacy `cellU` / `cellP` slots; every other scalar the solver wrote
+ * (T, alpha, nut, ...) lands in `scalars` by field name. A VTU that carries
+ * none of U/p still parses its geometry. Returns null when the text is not a
+ * readable VTU.
  */
 export function parseVtu(text) {
   try {
@@ -262,10 +289,32 @@ export function parseVtu(text) {
     const faceMatch = /Name="faces" format="ascii">\s*([\s\S]*?)<\/DataArray>/.exec(text);
     const faceData = faceMatch ? faceMatch[1].trim().split(/\s+/).map(Number) : [];
 
-    const uMatch = /<DataArray type="Float64" Name="U" NumberOfComponents="3" format="ascii">\s*([\s\S]*?)<\/DataArray>/.exec(text);
-    const pMatch = /<DataArray type="Float64" Name="p" format="ascii">\s*([\s\S]*?)<\/DataArray>/.exec(text);
-    const U = uMatch ? uMatch[1].trim().split(/\s+/).map(Number) : [];
-    const p = pMatch ? pMatch[1].trim().split(/\s+/).map(Number) : [];
+    // Every CellData array by name: scalars -> number[], 3-component vectors
+    // -> number[][]. Only fields the solver actually wrote appear here; no
+    // placeholder arrays are invented for missing fields.
+    const scalars = {};
+    const vectors = {};
+    const cellDataBlock = /<CellData>([\s\S]*?)<\/CellData>/.exec(text);
+    if (cellDataBlock) {
+      const arrRe = /<DataArray[^>]*Name="([^"]+)"([^>]*)>\s*([\s\S]*?)<\/DataArray>/g;
+      let am;
+      while ((am = arrRe.exec(cellDataBlock[1])) !== null) {
+        const name = am[1];
+        const comps = /NumberOfComponents="(\d+)"/.exec(am[2]);
+        const nComp = comps ? Number(comps[1]) : 1;
+        const vals = am[3].trim().split(/\s+/).map(Number);
+        if (nComp === 3) {
+          const rows = [];
+          for (let k = 0; k + 2 < vals.length; k += 3) rows.push([vals[k], vals[k + 1], vals[k + 2]]);
+          vectors[name] = rows;
+        } else {
+          scalars[name] = vals;
+        }
+      }
+    }
+
+    const U = vectors.U || [];
+    const p = scalars.p || [];
 
     const cells = [];
     const cellFaces = [];
@@ -288,11 +337,11 @@ export function parseVtu(text) {
         }
         cellFaces.push(rings);
       }
-      cellU.push(U.length >= 3 * (k + 1) ? [U[3 * k], U[3 * k + 1], U[3 * k + 2]] : [0, 0, 0]);
+      cellU.push(U[k] || [0, 0, 0]);
       cellP.push(p.length > k ? p[k] : 0);
       k += 1;
     }
-    return { points, cells, cellFaces, cellU, cellP };
+    return { points, cells, cellFaces, cellU, cellP, scalars, vectors };
   } catch (_) {
     return null;
   }
@@ -575,8 +624,10 @@ export function classifyLogLine(line) {
 // parsers) - the job-based runs stream raw text, so the workspace parses it.
 // ---------------------------------------------------------------------------
 
-/** Parse chflow-1d-steady stdout: "node NAME p V", "pipe NAME Q v Re f dp",
- * "steady solved: iterations=N residual=R (converged)". */
+/** Parse chflow-1d-steady stdout: "node NAME p V", "pipe NAME Q v Re f dp"
+ * plus the multiphase/thermal readout tokens (`HL`, `regime`, `oRegime`,
+ * `T`), and "steady solved: iterations=N residual=R (converged)". Missing
+ * readout fields stay `null` (rendered as "—"), never a disguised 0. */
 export function parseSteadyOutput(out) {
   const summary = { nodes: [], pipes: [], iterations: 0, residual: 0, converged: false };
   for (const raw of out.split('\n')) {
@@ -587,14 +638,33 @@ export function parseSteadyOutput(out) {
       summary.nodes.push({ name: m[1], p: Number(m[2]) });
       continue;
     }
-    m = /^pipe (\S+) Q (\S+) v (\S+) Re (\S+)(.*)$/.exec(line);
-    if (m) {
-      const rest = m[5];
-      const dpMatch = /\bdp (\S+)/.exec(rest);
-      summary.pipes.push({
-        name: m[1], q: Number(m[2]), v: Number(m[3]), re: Number(m[4]),
-        dp: dpMatch ? Number(dpMatch[1]) : 0,
-      });
+    if (line.startsWith('pipe ')) {
+      const toks = line.slice(5).trim().split(/\s+/);
+      if (!toks.length) continue;
+      const grab = (key) => {
+        const i = toks.indexOf(key);
+        return i >= 0 && i + 1 < toks.length ? toks[i + 1] : null;
+      };
+      const num = (key) => {
+        const v = grab(key);
+        return v === null ? null : Number(v);
+      };
+      const numOr0 = (key) => {
+        const v = num(key);
+        return v === null ? 0 : v;
+      };
+      const pipe = {
+        name: toks[0],
+        q: numOr0('Q'),
+        v: numOr0('v'),
+        dp: numOr0('dp'),
+        re: num('Re'),
+        holdup: num('HL'),
+        regime: grab('regime'),
+        regimeOutlet: grab('oRegime'),
+        temperature: num('T'),
+      };
+      summary.pipes.push(pipe);
       continue;
     }
     if (line.includes('steady solved:')) {

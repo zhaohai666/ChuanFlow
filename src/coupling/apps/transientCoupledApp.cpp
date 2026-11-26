@@ -57,6 +57,18 @@ SimpleControls loadSimple(const Dictionary& d)
     return ctl;
 }
 
+/// Write only the fields the solver actually built (T / alpha / nut) on top
+/// of U/p; a case that declared none keeps its old U/p-only VTU.
+void writeBlockFields(VtkWriter& w, const DetailBlock& block)
+{
+    if (const EnergyModel* energy = block.energy())
+        w.addCellScalar("T", energy->temperature().internalField());
+    if (const PhaseField* ph = block.phases())
+        w.addCellScalar("alpha", ph->alphaCell());
+    if (const RansModel* turb = block.turbulence())
+        w.addCellScalar("nut", turb->nut());
+}
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -281,6 +293,7 @@ int main(int argc, char** argv)
                     VtkWriter w(block.mesh());
                     w.addCellVector("U", block.U().internalField());
                     w.addCellScalar("p", block.p().internalField());
+                    writeBlockFields(w, block);
                     w.write(vtk);
                 }
             }

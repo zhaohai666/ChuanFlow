@@ -630,6 +630,22 @@ pub struct PipeResult {
     pub q: f64,
     pub v: f64,
     pub dp: f64,
+    /// Liquid holdup α ([-]); `None` when the kernel pipe row carries no
+    /// `HL` token (single-phase / valve / rod-pump branches), so a missing
+    /// field reads as absent rather than a disguised zero.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub holdup: Option<f64>,
+    /// Inlet flow-regime name as printed by the kernel (`segregated` /
+    /// `transition` / `intermittent` / `distributed`); `None` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub regime: Option<String>,
+    /// Outlet flow-regime name (`oRegime` token); `None` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "regimeOutlet")]
+    pub regime_outlet: Option<String>,
+    /// Outlet temperature (K, `T` token); `None` on every isothermal path,
+    /// where the kernel prints no `T` token at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
@@ -812,17 +828,37 @@ pub fn parse_solver_output(out: &str) -> SolverSummary {
             let mut q = 0.0f64;
             let mut v = 0.0f64;
             let mut dp = 0.0f64;
+            let mut holdup: Option<f64> = None;
+            let mut regime: Option<String> = None;
+            let mut regime_outlet: Option<String> = None;
+            let mut temperature: Option<f64> = None;
             // Scan every token rather than assuming a fixed layout: regime
-            // flags and optional fields vary from case to case.
+            // flags and optional fields vary from case to case. HL/regime/
+            // oRegime/T are the multiphase / thermal readout tokens the
+            // kernel prints only when they apply; a missing token stays
+            // `None` instead of being coerced to 0 / an empty regime.
             for i in 0..parts.len().saturating_sub(1) {
                 match parts[i] {
                     "Q" => q = parts[i + 1].parse().unwrap_or(q),
                     "v" => v = parts[i + 1].parse().unwrap_or(v),
                     "dp" => dp = parts[i + 1].parse().unwrap_or(dp),
+                    "HL" => holdup = parts[i + 1].parse().ok(),
+                    "regime" => regime = Some(parts[i + 1].to_string()),
+                    "oRegime" => regime_outlet = Some(parts[i + 1].to_string()),
+                    "T" => temperature = parts[i + 1].parse().ok(),
                     _ => {}
                 }
             }
-            summary.pipes.push(PipeResult { name, q, v, dp });
+            summary.pipes.push(PipeResult {
+                name,
+                q,
+                v,
+                dp,
+                holdup,
+                regime,
+                regime_outlet,
+                temperature,
+            });
             continue;
         }
 
@@ -2317,6 +2353,43 @@ random banner text
         assert_eq!(s.pipes[0].dp, 4.0);
         assert_eq!(s.iterations, 200);
         assert!(!s.converged);
+    }
+
+    // Real stdout captured from build-wt's chflow-1d-steady on
+    // steadyNetworkMultiphase (no T token) and steadyThermalProfile (T on
+    // the cooled/charged pipes, absent on the isothermal third pipe). The
+    // four readout fields must parse back to the exact printed numbers.
+    #[test]
+    fn parse_solver_output_multiphase_and_thermal_readout() {
+        let out = "\
+[chflow] node W1 p 4779252.53425
+[chflow] pipe P1 Q 0.00399999999959 v 2.1611965691 HL 0.508176818275 regime intermittent m 3.69399779912 oRegime intermittent lambda 0.403886708359 Nfr 5.95357564799 L1 240.313113421 L2 0.00867250429444 L3 0.372866718941 L4 224.90187797 dp 603183.65005 T 336.993817724
+[chflow] pipe P3 Q 0.00599999999982 v 2.15876992974 HL 0.495055509992 regime intermittent m 5.54099669908 oRegime intermittent lambda 0.387205359994 Nfr 4.75217083258 L1 237.27138946 L2 0.00962412311043 L3 0.396409743909 L4 298.827882342 dp 176068.884195
+[chflow] pipe Mono Q 1e-6 v 0.003 Re 50 f 0.5 dp 5000
+[chflow] steady solved: iterations=12 residual=6.81490454346e-11 (converged)
+";
+        let s = parse_solver_output(out);
+        assert_eq!(s.pipes.len(), 3);
+
+        let p1 = &s.pipes[0];
+        assert_eq!(p1.holdup, Some(0.508176818275));
+        assert_eq!(p1.regime, Some("intermittent".to_string()));
+        assert_eq!(p1.regime_outlet, Some("intermittent".to_string()));
+        assert_eq!(p1.temperature, Some(336.993817724));
+
+        let p3 = &s.pipes[1];
+        assert_eq!(p3.holdup, Some(0.495055509992));
+        assert_eq!(p3.regime, Some("intermittent".to_string()));
+        assert_eq!(p3.regime_outlet, Some("intermittent".to_string()));
+        // The kernel prints no `T` token on this isothermal pipe: absent,
+        // not a disguised 0.
+        assert_eq!(p3.temperature, None);
+
+        let mono = &s.pipes[2];
+        assert_eq!(mono.holdup, None);
+        assert_eq!(mono.regime, None);
+        assert_eq!(mono.regime_outlet, None);
+        assert_eq!(mono.temperature, None);
     }
 
     #[cfg(unix)]

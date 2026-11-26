@@ -544,6 +544,11 @@ public:
     /// laminar. Lives as long as the block, and holds references to its fields.
     const RansModel* turbulence() const { return turbModel_.get(); }
 
+    /// The solved energy (temperature) model, or null when the block declared
+    /// no `thermal{}`/`energy{}` pass. The VTU dump borrows its temperature
+    /// field; no field is invented where the solver never solved one.
+    const EnergyModel* energy() const { return energy_.get(); }
+
 private:
     void buildSections();
     void buildInletProfile();

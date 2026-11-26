@@ -1,12 +1,14 @@
 /**
  * E2 — structured editing of the 1D two-fluid flow-assurance declaration
- * blocks: hydrate{}, inhibitor{}, inhibitorEquilibrium{}, slugTracking{} and
- * purgeWave{}. All kernel keys and guards mirror src/1d/src/twoFluid.cpp
- * (§5.127/§5.141/§5.161/§5.162/§5.163). Pure functions only: parse a case
- * dictionary into a form model, render the form back into exact dictionary
- * lines (with loud validation), apply/remove blocks via upsertDictBlock /
- * removeDictBlock, and parse the kernel's report rows for the slug timeline.
- * No DOM, no Tauri — node --test covers round-trip, guards and report parsing.
+ * blocks: hydrate{}, inhibitor{}, inhibitorEquilibrium{}, slugTracking{},
+ * purgeWave{}, wax{}, pigging{}, sand{} and acoustics{}. All kernel keys and
+ * guards mirror src/1d/src/twoFluid.cpp (§5.127/§5.141/§5.161/§5.162/§5.163
+ * /§5.96 wax /§5.176 pigging /G10 sand /§5.183 acoustics). Pure functions
+ * only: parse a case dictionary into a form model, render the form back into
+ * exact dictionary lines (with loud validation), apply/remove blocks via
+ * upsertDictBlock / removeDictBlock, and parse the kernel's report rows for
+ * the slug timeline. No DOM, no Tauri — node --test covers round-trip, guards
+ * and report parsing.
  */
 
 import { upsertDictBlock, removeDictBlock } from './editor.js';
@@ -104,6 +106,130 @@ export const FA_BLOCKS = {
       if (v.riserEnd !== undefined && Number(v.riserEnd) > 0
           && Number(v.riserEnd) <= Number(v.riserStart || 0))
         return 'riserEnd 必须大于 riserStart';
+      return null;
+    },
+  },
+  wax: {
+    label: '蜡沉积/溶解（wax{}）',
+    // twoFluid.cpp:3481-3498 (keys), guards 396-413. Kernel defaults in
+    // parentheses; the block also requires a thermal{} block to be declared.
+    fields: [
+      { key: 'meltingTemperature', kind: 'num', required: false, hint: '析蜡温度 Tf (K)，默认 323.75，必须 >0' },
+      { key: 'fusionEnthalpy', kind: 'num', required: false, hint: '溶解焓 dHf (J/mol)，默认 54890，必须 >0' },
+      { key: 'waxFraction', kind: 'num', required: false, hint: '蜡含量 z ∈ [0,1]，默认 0' },
+      { key: 'growthRate', kind: 'num', required: false, hint: '沉积速率 ≥0 1/s，默认 0' },
+      { key: 'dissolutionRate', kind: 'num', required: false, hint: '溶解速率 ≥0 1/s，默认 0' },
+      { key: 'latentHeat', kind: 'num', required: false, hint: '析蜡潜热 ≥0，默认 0' },
+      { key: 'initial', kind: 'num', required: false, hint: '初始蜡分数 [0,1]，默认 0' },
+      { key: 'feedback', kind: 'word', required: false, options: ['true', 'false'], hint: '是否按沉积粗糙度反馈水动力' },
+      { key: 'depositRoughness', kind: 'num', required: false, hint: '沉积层粗糙度 ≥0，默认 0' },
+    ],
+    check: (v) => {
+      const Tf = v.meltingTemperature === undefined ? 323.75 : Number(v.meltingTemperature);
+      const dHf = v.fusionEnthalpy === undefined ? 54890 : Number(v.fusionEnthalpy);
+      if (!(Tf > 0)) return 'wax.meltingTemperature 必须为正';
+      if (!(dHf > 0)) return 'wax.fusionEnthalpy 必须为正';
+      const z = v.waxFraction === undefined ? 0 : Number(v.waxFraction);
+      if (!(z >= 0 && z <= 1)) return 'wax.waxFraction 必须在 [0,1]';
+      const g = v.growthRate === undefined ? 0 : Number(v.growthRate);
+      const d = v.dissolutionRate === undefined ? 0 : Number(v.dissolutionRate);
+      if (!(g >= 0)) return 'wax.growthRate 不可为负';
+      if (!(d >= 0)) return 'wax.dissolutionRate 不可为负';
+      const i = v.initial === undefined ? 0 : Number(v.initial);
+      if (!(i >= 0 && i <= 1)) return 'wax.initial 必须在 [0,1]';
+      const lh = v.latentHeat === undefined ? 0 : Number(v.latentHeat);
+      if (!(lh >= 0)) return 'wax.latentHeat 不可为负';
+      const dr = v.depositRoughness === undefined ? 0 : Number(v.depositRoughness);
+      if (!(dr >= 0)) return 'wax.depositRoughness 不可为负';
+      return null;
+    },
+  },
+  pigging: {
+    label: '清管器追踪（pigging{}）',
+    // twoFluid.cpp:3866-3902. frontCapacity is kernel-fatal unless >0;
+    // pigVelocity must be >0 only when the tracker is enabled.
+    fields: [
+      { key: 'enable', kind: 'word', required: false, options: ['true', 'false'], hint: 'false 关闭追踪（缺省 true）' },
+      { key: 'startX', kind: 'num', required: false, hint: '发射位置 x (m)，默认 0' },
+      { key: 'endX', kind: 'num', required: false, hint: '到达位置 x (m)，默认 0' },
+      { key: 'pigVelocity', kind: 'num', required: false, hint: '清管器速度 (m/s)，启用时必须 >0' },
+      { key: 'blockage', kind: 'num', required: false, hint: '堵塞截面比 [0,1)，默认 0' },
+      { key: 'pushEfficiency', kind: 'num', required: false, hint: '堆液效率 [0,1]，默认 0' },
+      { key: 'frontCapacity', kind: 'num', required: true, hint: '前端容积 C (>0)' },
+    ],
+    check: (v) => {
+      const enable = v.enable === undefined ? true : v.enable === 'true';
+      const sx = Number(v.startX || 0);
+      const ex = Number(v.endX || 0);
+      if (sx < 0) return 'pigging.startX 不可为负';
+      if (ex < 0) return 'pigging.endX 不可为负';
+      if (ex > 0 && ex <= sx) return 'pigging.endX 必须大于 startX';
+      const vel = Number(v.pigVelocity || 0);
+      if (vel < 0) return 'pigging.pigVelocity 不可为负';
+      const b = Number(v.blockage || 0);
+      if (!(b >= 0 && b < 1)) return 'pigging.blockage 必须在 [0,1)';
+      const pe = Number(v.pushEfficiency || 0);
+      if (!(pe >= 0 && pe <= 1)) return 'pigging.pushEfficiency 必须在 [0,1]';
+      if (!(Number(v.frontCapacity) > 0)) return 'pigging.frontCapacity 必须为正';
+      if (enable && !(vel > 0)) return '启用 pigging 需正的 pigVelocity';
+      return null;
+    },
+  },
+  sand: {
+    label: '砂/岩屑输运（sand{}）',
+    // twoFluid.cpp:3589-3605 (keys), guards 454-464. terminalVelocity and
+    // criticalVelocity are loud getScalar reads: required and >0.
+    fields: [
+      { key: 'terminalVelocity', kind: 'num', required: true, hint: '沉降末速 vt (m/s)，必须 >0' },
+      { key: 'criticalVelocity', kind: 'num', required: true, hint: '临界流速 uCrit (m/s)，必须 >0' },
+      { key: 'erodeRate', kind: 'num', required: false, hint: '床层侵蚀速率 ≥0，默认 0' },
+      { key: 'initial', kind: 'num', required: false, hint: '初始悬浮砂分数 [0,1]，默认 0' },
+      { key: 'bedInitial', kind: 'num', required: false, hint: '初始床层分数 [0,1)，默认 0' },
+      { key: 'feedback', kind: 'word', required: false, options: ['true', 'false'], hint: '床层是否反馈内径' },
+    ],
+    check: (v) => {
+      if (!(Number(v.terminalVelocity) > 0)) return 'sand.terminalVelocity 必须为正';
+      if (!(Number(v.criticalVelocity) > 0)) return 'sand.criticalVelocity 必须为正';
+      const e = v.erodeRate === undefined ? 0 : Number(v.erodeRate);
+      if (!(e >= 0)) return 'sand.erodeRate 不可为负';
+      const i = v.initial === undefined ? 0 : Number(v.initial);
+      if (!(i >= 0 && i <= 1)) return 'sand.initial 必须在 [0,1]';
+      const b = v.bedInitial === undefined ? 0 : Number(v.bedInitial);
+      if (!(b >= 0 && b < 1)) return 'sand.bedInitial 必须在 [0,1)';
+      return null;
+    },
+  },
+  acoustics: {
+    label: '管线声波（acoustics{}）',
+    // twoFluid.cpp:3904-4004. soundSpeed (wholesale override) and aModel
+    // wood (derived from phase speeds) are mutually exclusive; wood needs a
+    // declared positive liquidSoundSpeed aL.
+    fields: [
+      { key: 'enable', kind: 'word', required: false, options: ['true', 'false'], hint: 'false 关闭声波场（缺省 true）' },
+      { key: 'initialGauge', kind: 'num', required: false, hint: '初始表压超压 (Pa)，启用时必须 >0' },
+      { key: 'soundSpeed', kind: 'num', required: false, hint: '整体波速覆盖 (m/s)，0=按 aModel 推算；与 wood 互斥' },
+      { key: 'aModel', kind: 'word', required: false, options: ['twoPhase', 'eos', 'wood'], hint: '波速模型，默认 twoPhase' },
+      { key: 'liquidSoundSpeed', kind: 'num', required: false, hint: '液相声速 aL (m/s)，wood 模型必须 >0' },
+      { key: 'cfl', kind: 'num', required: false, hint: 'CFL 数 (0,0.5]，默认 0.5' },
+      { key: 'openEnd', kind: 'word', required: false, options: ['outlet', 'inlet'], hint: '压力释放端' },
+    ],
+    check: (v) => {
+      const enable = v.enable === undefined ? true : v.enable === 'true';
+      const g = v.initialGauge === undefined ? 0 : Number(v.initialGauge);
+      if (g < 0) return 'acoustics.initialGauge 不可为负';
+      const a = v.soundSpeed === undefined ? 0 : Number(v.soundSpeed);
+      if (a < 0) return 'acoustics.soundSpeed 不可为负';
+      const model = String(v.aModel || 'twoPhase');
+      if (!['twoPhase', 'eos', 'wood'].includes(model)) return 'aModel 只能 twoPhase/eos/wood';
+      const aL = v.liquidSoundSpeed === undefined ? 0 : Number(v.liquidSoundSpeed);
+      if (v.liquidSoundSpeed !== undefined && !(aL > 0)) return 'acoustics.liquidSoundSpeed 必须为正';
+      if (model === 'wood') {
+        if (a > 0) return 'acoustics: soundSpeed 与 aModel wood 互斥';
+        if (!(aL > 0)) return 'aModel wood 需正的 liquidSoundSpeed';
+      }
+      const cfl = v.cfl === undefined ? 0.5 : Number(v.cfl);
+      if (!(cfl > 0 && cfl <= 0.5)) return 'acoustics.cfl 必须在 (0,0.5]';
+      if (enable && !(g > 0)) return '启用 acoustics 需正的 initialGauge';
       return null;
     },
   },

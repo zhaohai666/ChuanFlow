@@ -4,6 +4,9 @@ import {
   FA_BLOCKS, FA_BLOCK_NAMES, emptyFlowAssurance, parseFlowAssurance,
   applyFlowAssurance, flowAssuranceBlockLines, parseSlugEvents, parsePurgePhases,
 } from '../frontend/dist/flowAssurance.js';
+import {
+  PIPE_BLOCKS, PIPE_BLOCK_NAMES, BLACKOIL_SPEC,
+} from '../frontend/dist/dictBlocks.js';
 
 import {
   parseReservoirLine, wellControlPanel, parseRiskLine, riskPanel,
@@ -447,6 +450,40 @@ test('workspace: parseCoupledOutput 提取节点/管段/耦合边/交界面迭�
   assert.equal(c.interfaces.length, 2);
   assert.equal(c.interfaces[1].dp, 640);
   assert.equal(c.interfaces[1].resistance, 4e6);
+  // single-edge legacy contract: `edges` mirrors the one solved record
+  assert.equal(c.edges.length, 1);
+  assert.deepEqual(c.edges[0], c.solved);
+});
+
+const COUPLED_MULTI_SAMPLE = `[chflow] node final p 1000669.324963046
+[chflow] node final p 1000000
+[chflow] pipe final A Q 0.00024 v 0.0305 Re 24.45 dp 48.89
+[chflow] settled lo edge X1 q 2.0154823397814812e-05 dp 74.283635868430522 R 3685622.5033146306 residual 7.6087163127645239e-06 sweeps 17
+[chflow] settled lo edge X2 q 3.0000000000003995e-05 dp 467.74964216219121 R 15591632.094728857 residual 1.4523159441925254e-06 sweeps 9
+[chflow] settled high edge X1 q 2.0181833168775212e-05 dp 74.383633381806746 R 3670592.1605732427 residual 0.0040916899681570206 sweeps 76
+[chflow] coupled solved: edge X1 q 2.0154823397814812e-05 dp 74.283635868430522 R 3685622.5033146306 iterations 3 residual 7.6087163127645239e-06
+[chflow] coupled solved: edge X2 q 3.0000000000003995e-05 dp 467.74964216219121 R 15591632.094728857 iterations 3 residual 1.4523159441925254e-06
+`;
+
+test('workspace: parseCoupledOutput 多边解析成数组，逐条残差与原始行一致', () => {
+  const c = parseCoupledOutput(COUPLED_MULTI_SAMPLE);
+  assert.equal(c.edges.length, 2);
+  const x1 = c.edges.find((e) => e.edge === 'X1');
+  const x2 = c.edges.find((e) => e.edge === 'X2');
+  assert.ok(x1 && x2);
+  // numbers copied verbatim from the kernel `coupled solved:` lines
+  assert.equal(x1.q, 2.0154823397814812e-05);
+  assert.equal(x1.dp, 74.283635868430522);
+  assert.equal(x1.r, 3685622.5033146306);
+  assert.equal(x1.residual, 7.6087163127645239e-06);
+  assert.equal(x1.iterations, 3);
+  assert.equal(x2.q, 3.0000000000003995e-05);
+  assert.equal(x2.dp, 467.74964216219121);
+  assert.equal(x2.r, 15591632.094728857);
+  assert.equal(x2.residual, 1.4523159441925254e-06);
+  assert.equal(x2.iterations, 3);
+  // legacy single-view hook stays on the first edge
+  assert.equal(c.solved.edge, 'X1');
 });
 
 // ---------------------------------------------------------------------------
@@ -468,6 +505,37 @@ test('workspace: parseSteadyOutput 提取收敛与场', () => {
   const bad = parseSteadyOutput('nothing useful');
   assert.equal(bad.nodes.length, 0);
   assert.equal(bad.converged, false);
+});
+
+test('workspace: parseSteadyOutput 持液率/流型/出口流型/温度四字段，缺项为 null', () => {
+  // Real stdout captured from build-wt chflow-1d-steady: multiphase network
+  // (no T token) and the thermal twin (T on the charged pipes, absent on the
+  // isothermal third pipe).
+  const out = [
+    '[chflow] node W1 p 4779252.53425',
+    '[chflow] pipe P1 Q 0.00399999999959 v 2.1611965691 HL 0.508176818275 regime intermittent m 3.69399779912 oRegime intermittent lambda 0.403886708359 dp 603183.65005 T 336.993817724',
+    '[chflow] pipe P3 Q 0.00599999999982 v 2.15876992974 HL 0.495055509992 regime intermittent m 5.54099669908 oRegime intermittent lambda 0.387205359994 dp 176068.884195',
+    '[chflow] pipe Mono Q 1e-6 v 0.003 Re 50 f 0.5 dp 5000',
+    '[chflow] steady solved: iterations=12 residual=6.81490454346e-11 (converged)',
+  ].join('\n');
+  const s = parseSteadyOutput(out);
+  assert.equal(s.pipes.length, 3);
+  const p1 = s.pipes[0];
+  assert.equal(p1.holdup, 0.508176818275);
+  assert.equal(p1.regime, 'intermittent');
+  assert.equal(p1.regimeOutlet, 'intermittent');
+  assert.equal(p1.temperature, 336.993817724);
+  const p3 = s.pipes[1];
+  assert.equal(p3.holdup, 0.495055509992);
+  assert.equal(p3.regime, 'intermittent');
+  assert.equal(p3.regimeOutlet, 'intermittent');
+  // isothermal pipe: no `T` token -> null, not a disguised 0
+  assert.equal(p3.temperature, null);
+  const mono = s.pipes[2];
+  assert.equal(mono.holdup, null);
+  assert.equal(mono.regime, null);
+  assert.equal(mono.regimeOutlet, null);
+  assert.equal(mono.temperature, null);
 });
 
 test('workspace: parseTransientOutput 时间帧与序列', () => {
@@ -531,6 +599,54 @@ test('workspace: parseVtu 读取 ASCII 场并算质心', () => {
   assert.equal(c.x, 0.5);
   assert.equal(c.y, 0.5);
   assert.equal(parseVtu('not a vtu'), null);
+});
+
+const VTU_EXTRA_SAMPLE = `<?xml version="1.0"?>
+<VTKFile type="UnstructuredGrid" version="1.0">
+<UnstructuredGrid>
+<Piece NumberOfPoints="4" NumberOfCells="1">
+<Points>
+<DataArray type="Float64" NumberOfComponents="3" format="ascii">
+0 0 0 1 0 0 1 1 0 0 1 0
+</DataArray>
+</Points>
+<Cells>
+<DataArray type="Int64" Name="connectivity" format="ascii">
+0 1 2 3
+</DataArray>
+<DataArray type="Int64" Name="offsets" format="ascii">
+4
+</DataArray>
+</Cells>
+<CellData>
+<DataArray type="Float64" Name="U" NumberOfComponents="3" format="ascii">
+0.5 0 0
+</DataArray>
+<DataArray type="Float64" Name="p" format="ascii">
+101325
+</DataArray>
+<DataArray type="Float64" Name="T" format="ascii">
+336.993817724
+</DataArray>
+<DataArray type="Float64" Name="alpha" format="ascii">
+0.508176818275
+</DataArray>
+</CellData>
+</Piece>
+</UnstructuredGrid>
+</VTKFile>`;
+
+test('workspace: parseVtu 识别 VTU 里 T/alpha 等附加标量场', () => {
+  const v = parseVtu(VTU_EXTRA_SAMPLE);
+  assert.ok(v);
+  assert.equal(v.cellP[0], 101325);
+  assert.deepEqual(v.scalars.T, [336.993817724]);
+  assert.deepEqual(v.scalars.alpha, [0.508176818275]);
+  assert.ok(Number.isFinite(v.scalars.T[0]) && v.scalars.T[0] !== 0);
+  // a VTU without extra fields exposes an empty scalar map, not undefined
+  const base = parseVtu(VTU_SAMPLE);
+  assert.deepEqual(base.scalars.p, [101325]);
+  assert.deepEqual(base.scalars.alpha, undefined);
 });
 
 test('workspace: fieldRange / rainbowColor 端点与钳制', () => {
@@ -1924,17 +2040,57 @@ const FA_CASE = [
   '',
 ].join('\n');
 
-test('E2 FA_BLOCKS: 五个声明块的键表与内核 loader 对齐', () => {
+test('E2 FA_BLOCKS: 九个声明块的键表与内核 loader 对齐', () => {
   assert.deepEqual(FA_BLOCK_NAMES, [
     'hydrate', 'inhibitor', 'inhibitorEquilibrium', 'slugTracking', 'purgeWave',
+    'wax', 'pigging', 'sand', 'acoustics',
   ]);
+  // Per-block key tables, hardcoded to the kernel's own dictionary reads;
+  // renaming/adding/dropping a key here fails deepEqual rather than passing.
+  const expectedKeys = {
+    hydrate: ['curveA', 'curveB', 'growthRate', 'dissociationRate', 'gasContent', 'latentHeat', 'initial'],
+    inhibitor: ['kDepression', 'initial'],
+    inhibitorEquilibrium: ['enable', 'activityK', 'basis'],
+    slugTracking: ['enable', 'alphaThreshold', 'minLength', 'velocityMode', 'slugVelocity', 'gasCapTime', 'maxSlugVelocity'],
+    purgeWave: ['enable', 'triggerFactor', 'continuityAlpha', 'alphaResidual', 'waveMode', 'uWave', 'gasCapTime', 'maxCycles', 'riserStart', 'riserEnd'],
+    wax: ['meltingTemperature', 'fusionEnthalpy', 'waxFraction', 'growthRate', 'dissolutionRate', 'latentHeat', 'initial', 'feedback', 'depositRoughness'],
+    pigging: ['enable', 'startX', 'endX', 'pigVelocity', 'blockage', 'pushEfficiency', 'frontCapacity'],
+    sand: ['terminalVelocity', 'criticalVelocity', 'erodeRate', 'initial', 'bedInitial', 'feedback'],
+    acoustics: ['enable', 'initialGauge', 'soundSpeed', 'aModel', 'liquidSoundSpeed', 'cfl', 'openEnd'],
+  };
+  for (const name of FA_BLOCK_NAMES) {
+    assert.deepEqual(
+      FA_BLOCKS[name].fields.map((f) => f.key),
+      expectedKeys[name],
+      `block ${name} field keys must match the kernel loader`,
+    );
+  }
   assert.ok(FA_BLOCKS.hydrate.fields.some((f) => f.key === 'latentHeat' && f.required));
   assert.ok(FA_BLOCKS.inhibitor.fields.some((f) => f.key === 'kDepression'));
   assert.ok(FA_BLOCKS.slugTracking.fields.some((f) => f.key === 'velocityMode'));
   assert.ok(FA_BLOCKS.purgeWave.fields.some((f) => f.key === 'gasCapTime' && f.required));
 });
 
-test('E2 parseFlowAssurance: 从字典读出五个块，空字典全关', () => {
+test('E2b dictBlocks: correlations/rheology/blackoil 键名与内核逐字对齐', () => {
+  // Keys hardcoded to the kernel dictionary reads (network.cpp: correlations
+  // 3426-3461, rheology 3811-3813, blackoil 3048-3053); not read back from the
+  // module for self-comparison.
+  assert.deepEqual(PIPE_BLOCK_NAMES, ['correlations', 'rheology']);
+  assert.deepEqual(
+    PIPE_BLOCKS.correlations.fields.map((f) => f.key),
+    ['correlation', 'flowPattern', 'hbGriffith'],
+  );
+  assert.deepEqual(
+    PIPE_BLOCKS.rheology.fields.map((f) => f.key),
+    ['flowIndex', 'consistency', 'yieldStress'],
+  );
+  assert.deepEqual(
+    BLACKOIL_SPEC.fields.map((f) => f.key),
+    ['gasGravity', 'oilDensity', 'gor', 'waterCut', 'temperature', 'surfaceTension'],
+  );
+});
+
+test('E2 parseFlowAssurance: 从字典读出九个块，空字典全关', () => {
   const empty = parseFlowAssurance(FA_CASE);
   assert.ok(FA_BLOCK_NAMES.every((n) => !empty[n].enabled));
   const withBlocks = FA_CASE + `

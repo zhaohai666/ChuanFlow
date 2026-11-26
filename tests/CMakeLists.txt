@@ -2645,7 +2645,8 @@ if(CHFLOW_GUI_CARGO AND CHFLOW_GUI_NODE)
             --target-dir ${CMAKE_BINARY_DIR}/gui)
     add_test(NAME gui.frontend
         COMMAND ${CHFLOW_GUI_NODE} --test
-            ${PROJECT_SOURCE_DIR}/gui/tests/frontend.test.mjs)
+            ${PROJECT_SOURCE_DIR}/gui/tests/frontend.test.mjs
+            ${PROJECT_SOURCE_DIR}/gui/tests/dictBlocks.test.mjs)
     # first offline resolution walks the full cached dependency tree
     set_tests_properties(gui.unit gui.build PROPERTIES TIMEOUT 900)
 endif()

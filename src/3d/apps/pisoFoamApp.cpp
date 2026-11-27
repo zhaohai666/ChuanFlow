@@ -251,7 +251,15 @@ int main(int argc, char** argv)
                 {
                     w.addCellScalar("p", p.internalField());
                 }
-                if (turb) app::writeTurbulence(w, *turb);
+                // Only write turbulence fields the model actually transports:
+                // the laminar model (explicit `model laminar`) owns no k, no
+                // dissipation variable and a nut that stays identically zero,
+                // so writing it would be a zero placeholder for a field the
+                // solver never built. dissipationName() == "none" is that
+                // model's marker; every other model carries k, its dissipation
+                // variable and nut for real.
+                if (turb && turb->dissipationName() != "none")
+                    app::writeTurbulence(w, *turb);
                 if (energy.model) energy.write(w);
                 w.write(vtk);
             }

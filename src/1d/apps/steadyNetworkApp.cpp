@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -32,6 +33,107 @@ const char* regimeName(int r)
     static const char* n[] = {"segregated", "transition", "intermittent",
                               "distributed"};
     return r >= 0 && r <= 3 ? n[r] : "none";
+}
+
+// ---------------------------------------------------------------------------
+// Opt-in steady-network VTU dump (batch 2, item 3). One VTK_VERTEX per pipe
+// at its centre, with the solved pipe state as cell data. The block is read
+// only when the case declares `output { vtk <path>; }`; an undeclared case
+// gains neither a file nor a single stdout byte.
+//
+// Row order is the declared pipe order, i.e. the same order the stdout
+// `pipe <name> ...` lines print in, so a checker aligns vtu row i to pipe i.
+//
+// Quantity conventions (what each vtu column actually is):
+//   x            arc position of the pipe centre, m:
+//                  x_i = sum_{j<i} L_j + L_i/2
+//                along the declared pipe order. A gathering network branches,
+//                so there is no single streamline; x is a plotting arc offset,
+//                not a physical coordinate along one wellbore.
+//   p            centre pressure, Pa abs: p_i = 0.5*(p(from)+p(to)) read off
+//                the solved node pressures. It is NOT the pipe drop: the drop
+//                dpTotal = p(from)-p(to) stays its own stdout `dp` token and is
+//                not duplicated here.
+//   T            temperature, K: the marched outlet temperature f.temperature
+//                on a thermal pipe; otherwise the declared feed temperature
+//                (black-oil `fluid.blackoil.temperature`, else the PVT-table
+//                temperature), 0 when the case declares no temperature at all.
+//   alpha        outlet liquid holdup (liquid volume fraction), f.holdup; 0 on
+//                a single-phase pipe that prices no Beggs-Brill law.
+//   regimeIndex  flow-pattern code of the last segment, f.regime. Encoding
+//                table (identical to regimeName() above):
+//                  -1  none / single-phase (no two-phase wall law priced)
+//                   0  segregated
+//                   1  transition
+//                   2  intermittent
+//                   3  distributed
+//                The word names are not written into the vtu (VTK string
+//                arrays are poorly supported in ParaView); map the index back
+//                through this table, or against the stdout `regime` token.
+void writeSteadyNetworkVtu(const OneDNetwork& net,
+                           const SteadyNetworkResult& res,
+                           const std::string& path)
+{
+    const std::size_t n = net.pipes.size();
+    std::ofstream out(path);
+    if (!out) cfFatal("1d vtu: cannot open '" + path + "' for writing");
+    out << std::setprecision(12);
+
+    const double feedT = net.hasBlackOil ? net.blackOil.temperature
+                        : net.hasPvtFluid ? net.pvtFluid.temperature : 0.0;
+
+    std::vector<double> x(n), p(n), T(n), alpha(n), regime(n);
+    double arc = 0.0;
+    for (std::size_t i = 0; i < n; ++i)
+    {
+        const NetworkPipe& pipe = net.pipes[i];
+        const PipeFlowResult& f = res.pipeFlows[i];
+        x[i] = arc + 0.5 * pipe.length;
+        arc += pipe.length;
+        p[i] = 0.5 * (res.nodePressure[static_cast<std::size_t>(pipe.from)]
+                      + res.nodePressure[static_cast<std::size_t>(pipe.to)]);
+        T[i] = f.temperature > 0.0 ? f.temperature : feedT;
+        alpha[i] = f.holdup;
+        regime[i] = static_cast<double>(f.regime);
+    }
+
+    out << "<?xml version=\"1.0\"?>\n"
+        << "<VTKFile type=\"UnstructuredGrid\" version=\"0.1\" "
+           "byte_order=\"LittleEndian\">\n"
+        << "<UnstructuredGrid>\n"
+        << "<Piece NumberOfPoints=\"" << n << "\" NumberOfCells=\"" << n << "\">\n";
+
+    out << "<Points>\n<DataArray type=\"Float64\" NumberOfComponents=\"3\" "
+           "format=\"ascii\">\n";
+    for (std::size_t i = 0; i < n; ++i) out << x[i] << " 0 0\n";
+    out << "</DataArray>\n</Points>\n";
+
+    out << "<Cells>\n";
+    out << "<DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">\n";
+    for (std::size_t i = 0; i < n; ++i) out << i << ' ';
+    out << "\n</DataArray>\n";
+    out << "<DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">\n";
+    for (std::size_t i = 0; i < n; ++i) out << i + 1 << ' ';
+    out << "\n</DataArray>\n";
+    out << "<DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">\n";
+    for (std::size_t i = 0; i < n; ++i) out << "1 "; // VTK_VERTEX
+    out << "\n</DataArray>\n</Cells>\n";
+
+    out << "<CellData>\n";
+    const std::pair<std::string, const std::vector<double>*> scalars[] = {
+        {"x", &x}, {"p", &p}, {"T", &T}, {"alpha", &alpha},
+        {"regimeIndex", &regime}};
+    for (const auto& [name, vals] : scalars)
+    {
+        out << "<DataArray type=\"Float64\" Name=\"" << name
+            << "\" format=\"ascii\">\n";
+        for (const double v : *vals) out << v << '\n';
+        out << "</DataArray>\n";
+    }
+    out << "</CellData>\n";
+
+    out << "</Piece>\n</UnstructuredGrid>\n</VTKFile>\n";
+    log::info("vtk: wrote ", path);
 }
 
 // The opt-in composition-generated PVT table echo needs round-trip precision:
@@ -874,6 +976,16 @@ int main(int argc, char** argv)
         if (caseDict.has("gasLiftAllocation"))
             runGasLiftAllocation(caseDict.getDict("gasLiftAllocation"),
                                  caseDict, net, res);
+
+        // Opt-in VTU dump of the solved network (see writeSteadyNetworkVtu).
+        // Read only when `output { vtk <path>; }` is declared; without it no
+        // file is touched and the stdout above stays byte-identical.
+        if (caseDict.has("output"))
+        {
+            const Dictionary& od = caseDict.getDict("output");
+            const std::string vtk = od.getWordOr("vtk", "");
+            if (!vtk.empty()) writeSteadyNetworkVtu(net, res, vtk);
+        }
 
         return res.converged ? 0 : 1;
     }

@@ -914,6 +914,19 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupledPerEdgeStarts)
 
+# writer fidelity (5.214): the VTU a run leaves behind must carry exactly the
+# fields that solver really built -- no zero placeholders for a laminar nut --
+# and the values must be the ones the text report already printed. Also covers
+# the 1D steady network, which had no VTU writer at all before this increment:
+# one vertex per pipe centre, x/p/T/alpha/regimeIndex, emitted only when the
+# case declares output{vtk}.
+add_test(
+    NAME verify.vtuFields
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_vtu_fields.py
+        $<TARGET_FILE:chflow-piso-foam>
+        $<TARGET_FILE:chflow-1d-steady>)
+
 # the last of the three axes put together: a SHAPE handed across the interface, a
 # wall-function partner that answers with its own beta, and a time level. The
 # steady sign law -- beta_in above beta_out means the entry region GIVES back

@@ -2700,6 +2700,48 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidRiskReport/case.dict
         ${CMAKE_CURRENT_BINARY_DIR}/twoFluidRisk_tmp)
 
+# 5.219 (F-class): hydrate blockage - the opt-in counterpart of the 5.186
+# non-blocking reading. The deposition arm re-derives the implicit layer
+# balance and dEff == D - 2*delta on every section of every frame; the
+# bridging arm holds vm == 0 exactly on every frame whose h reaches the
+# packing limit; the passive twin (blockage undeclared) prints no column and
+# the inert declaration is byte-identical to it; loud refusals.
+add_test(
+    NAME verify.twoFluidHydrateBlockage
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_hydrate_blockage.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidHydrateBlockage/case.dict
+        ${CMAKE_CURRENT_BINARY_DIR}/twoFluidBlockage_tmp)
+
+# 5.220 (F-class): erosion / corrosion hydraulic feedback - the opt-in
+# counterpart of the 5.187 read-only risk report. The erosion arm grows the
+# bore by exactly erosionRate*dt on every frame above the section's own API
+# RP 14E limit; the corrosion arm grows it by corrosionRate*dt while the
+# 0.5 psia sour line holds; the passive twin prints no dEff column; loud
+# refusals.
+add_test(
+    NAME verify.twoFluidErosionCorrosionFeedback
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_erosion_corrosion_feedback.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidErosionCorrosionFeedback/case.dict
+        ${CMAKE_CURRENT_BINARY_DIR}/twoFluidFeedback_tmp)
+
+# 5.222 (F-class): time-varying ambient temperature. The schedule arm's
+# reported wallT column matches the piecewise-linear interpolation of the
+# declared (times, ambientT) closed form, and the temperature field marches
+# the implicit-Euler relaxation onto the moving wall; the passive twin (no
+# ambientSchedule) keeps the 5.144 constant-wall answer byte-identical; a
+# constant schedule reproduces it exactly; loud refusals.
+add_test(
+    NAME verify.twoFluidAmbientSchedule
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_ambient_schedule.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidAmbientSchedule/case.dict
+        ${CMAKE_CURRENT_BINARY_DIR}/twoFluidSchedule_tmp)
+
 # README M5: Tauri GUI (command-layer Rust unit tests, offline build, and the
 # DOM-free frontend pure-function tests). Only registered when cargo / node
 # exist, so a bare environment keeps every CTest green.

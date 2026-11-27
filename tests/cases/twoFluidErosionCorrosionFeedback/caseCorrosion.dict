@@ -1,0 +1,30 @@
+// 5.220 (F-class): corrosion HYDRAULIC feedback - the corrosion arm. The
+// line runs slow (vm = 2 m/s, far below the 14E limit) so the erosion
+// channel never fires (erosionRate 0 anyway), but the sour gas (h2s 0.002
+// at the ~5 MPa section pressure -> partial ~1e4 Pa >= 3447 Pa = 0.5 psia)
+// holds the wall on the sour side: every section's bore grows by exactly
+// corrosionRate * dt while the sour line holds.
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; cL 2000; cG 2100; gasR 470; }
+
+pipe { length 200; diameter 0.1; roughness 0; angleDeg 0; sections 20; }
+
+closure { model wallis; slipVelocity 0.2; }
+
+initial { alpha 0.5; water 0.5; temperature 300; }
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 1.0; vsg 1.0; waterFraction 0.5;
+             temperature 300; }
+    outlet { type fixedPressure; p 5.0e6; temperature 300; }
+}
+
+hydraulicFeedback
+{
+    erosionC 100;
+    erosionRate 0;
+    h2s 0.002;
+    corrosionRate 5.0e-6;
+}
+
+time { dt 0.05; endTime 20; reportEvery 1; }

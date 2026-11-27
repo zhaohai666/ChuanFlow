@@ -1,0 +1,44 @@
+// 5.219 (F-class): hydrate BLOCKAGE - the deposition arm. The 5.186 case
+// keeps h out of the bore; declaring blockage{} charges it two ways. This
+// arm runs the DEPOSITION LAYER: the wall layer obeys the declared balance
+//   d delta / dt = depositionRate * h - erosionRate * delta
+// (implicit Euler, the wax/scale relaxation idiom) and the bore loses the
+// layer on both walls: d_eff = D - 2 * delta (no wax is declared here, so
+// the deposit law contributes exactly D). packingFraction 0.6 is never
+// reached (the water cut caps h at 0.2), so the bridging arm stays quiet.
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; cL 2000; cG 2100; gasR 470; }
+
+pipe { length 200; diameter 0.1; roughness 1.0e-4; angleDeg 0; sections 20; }
+
+closure { model wallis; slipVelocity 0.2; }
+
+initial { alpha 0.2; water 0.1; temperature 300; }
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 3.0; vsg 5.0; waterFraction 0.1;
+             temperature 300; }
+    outlet { type fixedPressure; p 5.0e6; temperature 300; }
+}
+
+thermal { wallHeatTransfer 50; wallModel constant; wallTemperature 300; }
+
+hydrate
+{
+    curveA 33.0;
+    curveB -5684;
+    growthRate 0.01;
+    dissociationRate 0.05;
+    gasContent 122;
+    latentHeat 4.2e8;
+    initial 0.1;
+}
+
+blockage
+{
+    packingFraction 0.6;
+    depositionRate 2.0e-5;
+    erosionRate 1.0e-4;
+}
+
+time { dt 0.05; endTime 20; reportEvery 1; }

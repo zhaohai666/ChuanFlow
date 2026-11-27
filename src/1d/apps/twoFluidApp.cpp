@@ -254,8 +254,19 @@ int main(int argc, char** argv)
             const std::vector<double> de
                 = (c.waxOn && c.wax.feedback)
                       || (c.sandOn && c.sand.feedback)
+                      || c.blockageOn || c.hydraulicFeedbackOn
                           ? s.cellEffectiveDiameter()
                           : std::vector<double>();
+            // 5.219: the hydrate deposition layer thickness (m) rides the
+            // cell rows as a gated `blk` column - absent unless blockage{}
+            const std::vector<double> bl
+                = c.blockageOn ? s.cellBlockageThickness()
+                               : std::vector<double>();
+            // 5.222: the scheduled wall temperature the step saw, gated on
+            // ambientSchedule{}
+            const std::vector<double> wt
+                = c.ambientScheduleOn ? s.cellWallTemperature()
+                                      : std::vector<double>();
             const std::vector<double> az
                 = c.asphalteneOn ? s.cellAsphaltene()
                                  : std::vector<double>();
@@ -332,6 +343,7 @@ int main(int argc, char** argv)
                           hy.empty() ? "" : (" h " + num(hy[i])),
                           wx.empty() ? "" : (" wax " + num(wx[i])),
                           de.empty() ? "" : (" dEff " + num(de[i])),
+                          bl.empty() ? "" : (" blk " + num(bl[i])),
                           az.empty() ? "" : (" asph " + num(az[i])),
                           sc.empty() ? "" : (" scale " + num(sc[i])),
                           ent.empty() ? "" : (" entr " + num(ent[i])),
@@ -342,6 +354,7 @@ int main(int argc, char** argv)
                           me.empty() ? "" : (" muEff " + num(me[i])),
                           sa.empty() ? "" : (" sand " + num(sa[i])),
                           be.empty() ? "" : (" bed " + num(be[i])),
+                          wt.empty() ? "" : (" wallT " + num(wt[i])),
                           compositionReport(s, i));
             }
             // 5.195 (G10 fix): the clamp that used to drop sand silently. It

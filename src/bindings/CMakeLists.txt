@@ -3,6 +3,7 @@ pybind11_add_module(chflow_core
     src/coupling_bind.cpp
     src/coupling_transient_bind.cpp
     src/scalar_transport_bind.cpp
+    src/melting_bind.cpp
     src/fields3d_bind.cpp)
 # cfcoupling pulls cf1d + cf3d transitively (PUBLIC link), which is what the
 # coupling and 3D binding families need.

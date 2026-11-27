@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <tuple>
@@ -148,6 +149,77 @@ label baseBinOf(double mid, double lo, double hi, label ncell)
                                             * static_cast<double>(ncell)));
     b = std::max<label>(0, std::min<label>(ncell - 1, b));
     return b;
+}
+
+/// Dyadic slab refinement depths: mark cells from the gradient norm and refine
+/// the base bins of the axes the field actually varies on. Applying the split
+/// to a whole bin keeps every shared face conforming (no hanging nodes in the
+/// rebuilt mesh). Shared by refine() and the §5.229 remesh loop; the body is a
+/// verbatim move of the original pass loop, so refine() output is unchanged.
+std::array<std::vector<label>, 3> computeDepths(const BaseGrid& grid,
+                                                const AdaptControls& ctl)
+{
+    std::array<std::vector<label>, 3> depth;
+    for (int a = 0; a < 3; ++a)
+        depth[static_cast<std::size_t>(a)].assign(
+            static_cast<std::size_t>(grid.n[static_cast<std::size_t>(a)]), 0);
+
+    const scalar gradEps = 1e-12 * std::max(1.0, ctl.threshold);
+
+    for (label pass = 0; pass < ctl.maxDepth; ++pass)
+    {
+        const std::vector<double> ex = buildEdges(grid.lo.x, grid.hi.x, grid.n[0], depth[0]);
+        const std::vector<double> ey = buildEdges(grid.lo.y, grid.hi.y, grid.n[1], depth[1]);
+        const std::vector<double> ez = buildEdges(grid.lo.z, grid.hi.z, grid.n[2], depth[2]);
+
+        std::array<std::vector<char>, 3> bump;
+        bump[0].assign(static_cast<std::size_t>(grid.n[0]), 0);
+        bump[1].assign(static_cast<std::size_t>(grid.n[1]), 0);
+        bump[2].assign(static_cast<std::size_t>(grid.n[2]), 0);
+
+        for (std::size_t ix = 0; ix + 1 < ex.size(); ++ix)
+            for (std::size_t iy = 0; iy + 1 < ey.size(); ++iy)
+                for (std::size_t iz = 0; iz + 1 < ez.size(); ++iz)
+                {
+                    const Vector lo{ex[ix], ey[iy], ez[iz]};
+                    const Vector hi{ex[ix + 1], ey[iy + 1], ez[iz + 1]};
+                    std::array<scalar, 3> g;
+                    scalar g2 = 0;
+                    for (int a = 0; a < 3; ++a)
+                    {
+                        g[static_cast<std::size_t>(a)] =
+                            ctl.field.directionalGradient(lo, hi, a);
+                        g2 += g[static_cast<std::size_t>(a)]
+                              * g[static_cast<std::size_t>(a)];
+                    }
+                    if (std::sqrt(g2) <= ctl.threshold) continue;
+
+                    std::array<label, 3> bin{
+                        baseBinOf(0.5 * (lo.x + hi.x), grid.lo.x, grid.hi.x, grid.n[0]),
+                        baseBinOf(0.5 * (lo.y + hi.y), grid.lo.y, grid.hi.y, grid.n[1]),
+                        baseBinOf(0.5 * (lo.z + hi.z), grid.lo.z, grid.hi.z, grid.n[2])};
+                    for (int a = 0; a < 3; ++a)
+                    {
+                        if (grid.n[static_cast<std::size_t>(a)] <= 1) continue;
+                        if (g[static_cast<std::size_t>(a)] <= gradEps) continue;
+                        const label b = bin[static_cast<std::size_t>(a)];
+                        if (depth[static_cast<std::size_t>(a)][static_cast<std::size_t>(b)]
+                            < ctl.maxDepth)
+                            bump[static_cast<std::size_t>(a)][static_cast<std::size_t>(b)] = 1;
+                    }
+                }
+
+        bool changed = false;
+        for (int a = 0; a < 3; ++a)
+            for (std::size_t b = 0; b < bump[static_cast<std::size_t>(a)].size(); ++b)
+                if (bump[static_cast<std::size_t>(a)][b])
+                {
+                    ++depth[static_cast<std::size_t>(a)][b];
+                    changed = true;
+                }
+        if (!changed) break;
+    }
+    return depth;
 }
 
 struct FaceRef
@@ -388,69 +460,7 @@ AdaptResult AdaptiveRefine::refine(const Dictionary& caseDict,
     const BaseGrid grid = readBaseGrid(caseDict);
     const AdaptControls ctl = AdaptControls::fromDict(caseDict, grid.lo, grid.hi);
 
-    std::array<std::vector<label>, 3> depth;
-    for (int a = 0; a < 3; ++a)
-        depth[static_cast<std::size_t>(a)].assign(
-            static_cast<std::size_t>(grid.n[static_cast<std::size_t>(a)]), 0);
-
-    const scalar gradEps = 1e-12 * std::max(1.0, ctl.threshold);
-
-    // Mark cells from the gradient norm and refine the base bins of the axes
-    // the field actually varies on. Applying the split to a whole bin keeps
-    // every shared face conforming (no hanging nodes in the rebuilt mesh).
-    for (label pass = 0; pass < ctl.maxDepth; ++pass)
-    {
-        const std::vector<double> ex = buildEdges(grid.lo.x, grid.hi.x, grid.n[0], depth[0]);
-        const std::vector<double> ey = buildEdges(grid.lo.y, grid.hi.y, grid.n[1], depth[1]);
-        const std::vector<double> ez = buildEdges(grid.lo.z, grid.hi.z, grid.n[2], depth[2]);
-
-        std::array<std::vector<char>, 3> bump;
-        bump[0].assign(static_cast<std::size_t>(grid.n[0]), 0);
-        bump[1].assign(static_cast<std::size_t>(grid.n[1]), 0);
-        bump[2].assign(static_cast<std::size_t>(grid.n[2]), 0);
-
-        for (std::size_t ix = 0; ix + 1 < ex.size(); ++ix)
-            for (std::size_t iy = 0; iy + 1 < ey.size(); ++iy)
-                for (std::size_t iz = 0; iz + 1 < ez.size(); ++iz)
-                {
-                    const Vector lo{ex[ix], ey[iy], ez[iz]};
-                    const Vector hi{ex[ix + 1], ey[iy + 1], ez[iz + 1]};
-                    std::array<scalar, 3> g;
-                    scalar g2 = 0;
-                    for (int a = 0; a < 3; ++a)
-                    {
-                        g[static_cast<std::size_t>(a)] =
-                            ctl.field.directionalGradient(lo, hi, a);
-                        g2 += g[static_cast<std::size_t>(a)]
-                              * g[static_cast<std::size_t>(a)];
-                    }
-                    if (std::sqrt(g2) <= ctl.threshold) continue;
-
-                    std::array<label, 3> bin{
-                        baseBinOf(0.5 * (lo.x + hi.x), grid.lo.x, grid.hi.x, grid.n[0]),
-                        baseBinOf(0.5 * (lo.y + hi.y), grid.lo.y, grid.hi.y, grid.n[1]),
-                        baseBinOf(0.5 * (lo.z + hi.z), grid.lo.z, grid.hi.z, grid.n[2])};
-                    for (int a = 0; a < 3; ++a)
-                    {
-                        if (grid.n[static_cast<std::size_t>(a)] <= 1) continue;
-                        if (g[static_cast<std::size_t>(a)] <= gradEps) continue;
-                        const label b = bin[static_cast<std::size_t>(a)];
-                        if (depth[static_cast<std::size_t>(a)][static_cast<std::size_t>(b)]
-                            < ctl.maxDepth)
-                            bump[static_cast<std::size_t>(a)][static_cast<std::size_t>(b)] = 1;
-                    }
-                }
-
-        bool changed = false;
-        for (int a = 0; a < 3; ++a)
-            for (std::size_t b = 0; b < bump[static_cast<std::size_t>(a)].size(); ++b)
-                if (bump[static_cast<std::size_t>(a)][b])
-                {
-                    ++depth[static_cast<std::size_t>(a)][b];
-                    changed = true;
-                }
-        if (!changed) break;
-    }
+    const std::array<std::vector<label>, 3> depth = computeDepths(grid, ctl);
 
     AdaptResult result;
     for (int a = 0; a < 3; ++a)
@@ -521,6 +531,328 @@ AdaptResult AdaptiveRefine::refine(const Dictionary& caseDict,
         cfFatal("adaptiveRefine: rebuilt polyMesh volume disagrees with the box");
 
     return result;
+}
+
+AmrConfig AmrConfig::fromDict(const Dictionary& caseDict)
+{
+    AmrConfig a;
+    if (!caseDict.has("amr")) return a;
+    const Dictionary& d = caseDict.getDict("amr");
+    a.enabled = true;
+
+    if (!d.has("refineThreshold"))
+        cfFatal("amr: refineThreshold is required");
+    a.refineThreshold = d.getScalar("refineThreshold");
+    if (!std::isfinite(a.refineThreshold) || !(a.refineThreshold > 0))
+        cfFatal("amr: refineThreshold must be a finite positive number");
+
+    if (!d.has("coarsenThreshold"))
+        cfFatal("amr: coarsenThreshold is required");
+    a.coarsenThreshold = d.getScalar("coarsenThreshold");
+    if (!std::isfinite(a.coarsenThreshold) || a.coarsenThreshold < 0)
+        cfFatal("amr: coarsenThreshold must be finite and non-negative");
+    if (a.coarsenThreshold >= a.refineThreshold)
+        cfFatal("amr: coarsenThreshold must be below refineThreshold");
+
+    if (!d.has("cycles"))
+        cfFatal("amr: cycles is required");
+    const double rawCycles = d.getScalar("cycles");
+    if (!std::isfinite(rawCycles) || !(rawCycles >= 1) || rawCycles != std::floor(rawCycles))
+        cfFatal("amr: cycles must be an integer of at least 1");
+    a.cycles = static_cast<label>(rawCycles);
+
+    const double rawEvery = d.getScalarOr("every", 1.0);
+    if (!std::isfinite(rawEvery) || !(rawEvery >= 1) || rawEvery != std::floor(rawEvery))
+        cfFatal("amr: every must be an integer of at least 1");
+    a.every = static_cast<label>(rawEvery);
+
+    a.diffusion = d.getScalarOr("diffusion", 0.0);
+    if (!std::isfinite(a.diffusion) || a.diffusion < 0)
+        cfFatal("amr: diffusion must be finite and non-negative");
+    a.dt = d.getScalarOr("dt", 0.0);
+    if (a.diffusion > 0 && !(a.dt > 0))
+        cfFatal("amr: dt must be positive when diffusion is used");
+
+    a.dumpCells = d.getWordOr("dumpCells", "no") == "yes";
+    return a;
+}
+
+AmrLoopResult AdaptiveRefine::remesh(const Dictionary& caseDict, const AdaptResult& seed)
+{
+    const BaseGrid grid = readBaseGrid(caseDict);
+    const AdaptControls ctl = AdaptControls::fromDict(caseDict, grid.lo, grid.hi);
+    const AmrConfig amr = AmrConfig::fromDict(caseDict);
+
+    // Seed state: the structured depth pattern of adapt{} plus the stored
+    // cell field, in the ix -> iy -> iz order refine() produces.
+    std::array<std::vector<label>, 3> depth = computeDepths(grid, ctl);
+    std::array<std::vector<double>, 3> e{
+        buildEdges(grid.lo.x, grid.hi.x, grid.n[0], depth[0]),
+        buildEdges(grid.lo.y, grid.hi.y, grid.n[1], depth[1]),
+        buildEdges(grid.lo.z, grid.hi.z, grid.n[2], depth[2])};
+    std::array<label, 3> nc{static_cast<label>(e[0].size()) - 1,
+                            static_cast<label>(e[1].size()) - 1,
+                            static_cast<label>(e[2].size()) - 1};
+    const std::size_t nCells = static_cast<std::size_t>(nc[0])
+                             * static_cast<std::size_t>(nc[1])
+                             * static_cast<std::size_t>(nc[2]);
+    if (nCells != seed.cells.size())
+        cfFatal("amr: seed cell count does not match the structured adapt{} mesh");
+
+    std::vector<double> phi(nCells, 0.0);
+    {
+        std::size_t i = 0;
+        for (label ix = 0; ix < nc[0]; ++ix)
+            for (label iy = 0; iy < nc[1]; ++iy)
+                for (label iz = 0; iz < nc[2]; ++iz)
+                {
+                    const Vector lo{e[0][ix], e[1][iy], e[2][iz]};
+                    const Vector hi{e[0][ix + 1], e[1][iy + 1], e[2][iz + 1]};
+                    if (std::abs(lo.x - seed.cells[i].lo.x) > 1e-12
+                        || std::abs(hi.z - seed.cells[i].hi.z) > 1e-12)
+                        cfFatal("amr: seed cell ordering does not match the structured mesh");
+                    phi[i] = seed.cells[i].phi;
+                    ++i;
+                }
+    }
+
+    const auto cellVolume = [&](std::size_t ix, std::size_t iy, std::size_t iz) {
+        return (e[0][ix + 1] - e[0][ix]) * (e[1][iy + 1] - e[1][iy])
+             * (e[2][iz + 1] - e[2][iz]);
+    };
+    const auto idx = [&](std::size_t ix, std::size_t iy, std::size_t iz) {
+        return (ix * static_cast<std::size_t>(nc[1]) + iy)
+                 * static_cast<std::size_t>(nc[2]) + iz;
+    };
+
+    const scalar boxVol = boxVolume(grid.lo, grid.hi);
+    scalar massTarget = 0;
+    for (std::size_t ix = 0; ix < static_cast<std::size_t>(nc[0]); ++ix)
+        for (std::size_t iy = 0; iy < static_cast<std::size_t>(nc[1]); ++iy)
+            for (std::size_t iz = 0; iz < static_cast<std::size_t>(nc[2]); ++iz)
+                massTarget += phi[idx(ix, iy, iz)] * cellVolume(ix, iy, iz);
+
+    // Explicit conservative diffusion: flux = D A (phi_n - phi_c) / d with
+    // d = half the sum of the two cell edges along the axis; the face area A
+    // is shared by both cells because refinement is slab-based. Boundary
+    // faces have no neighbour and contribute zero flux.
+    const auto diffuseOnce = [&]() {
+        std::vector<double> next = phi;
+        for (std::size_t ix = 0; ix < static_cast<std::size_t>(nc[0]); ++ix)
+            for (std::size_t iy = 0; iy < static_cast<std::size_t>(nc[1]); ++iy)
+                for (std::size_t iz = 0; iz < static_cast<std::size_t>(nc[2]); ++iz)
+                {
+                    const std::size_t c = idx(ix, iy, iz);
+                    scalar flux = 0;
+                    for (int a = 0; a < 3; ++a)
+                    {
+                        const std::size_t ia = static_cast<std::size_t>(a);
+                        const std::size_t i0 = (a == 0) ? ix : (a == 1) ? iy : iz;
+                        const double hc = e[ia][i0 + 1] - e[ia][i0];
+                        scalar area = 1;
+                        for (int b = 0; b < 3; ++b)
+                        {
+                            if (b == a) continue;
+                            const std::size_t ib = (b == 0) ? ix : (b == 1) ? iy : iz;
+                            area *= e[static_cast<std::size_t>(b)][ib + 1]
+                                  - e[static_cast<std::size_t>(b)][ib];
+                        }
+                        for (int dir = -1; dir <= 1; dir += 2)
+                        {
+                            const std::int64_t j0 = static_cast<std::int64_t>(i0) + dir;
+                            if (j0 < 0 || j0 >= nc[ia]) continue;
+                            const std::size_t uj0 = static_cast<std::size_t>(j0);
+                            const double hn = e[ia][uj0 + 1] - e[ia][uj0];
+                            const std::size_t nidx = (a == 0) ? idx(uj0, iy, iz)
+                                             : (a == 1) ? idx(ix, uj0, iz)
+                                                        : idx(ix, iy, uj0);
+                            const double d = 0.5 * (hc + hn);
+                            flux += amr.diffusion * area * (phi[nidx] - phi[c]) / d;
+                        }
+                    }
+                    next[c] += amr.dt * flux / cellVolume(ix, iy, iz);
+                }
+        phi.swap(next);
+    };
+
+    AmrLoopResult loop;
+    loop.initialCells = static_cast<label>(seed.cells.size());
+    loop.massInitial = massTarget;
+
+    for (label cycle = 1; cycle <= amr.cycles; ++cycle)
+    {
+        if (cycle > 1 && amr.diffusion > 0)
+            for (label s = 0; s < amr.every; ++s) diffuseOnce();
+
+        // Per-axis cell indicator: g_a = max over the two neighbours along a
+        // of |phi_n - phi_c| / d (zero where no neighbour exists).
+        const std::size_t curCells = static_cast<std::size_t>(nc[0])
+                                   * static_cast<std::size_t>(nc[1])
+                                   * static_cast<std::size_t>(nc[2]);
+        std::vector<std::array<scalar, 3>> g(curCells);
+        for (std::size_t ix = 0; ix < static_cast<std::size_t>(nc[0]); ++ix)
+            for (std::size_t iy = 0; iy < static_cast<std::size_t>(nc[1]); ++iy)
+                for (std::size_t iz = 0; iz < static_cast<std::size_t>(nc[2]); ++iz)
+                {
+                    const std::size_t c = idx(ix, iy, iz);
+                    for (int a = 0; a < 3; ++a)
+                    {
+                        const std::size_t ia = static_cast<std::size_t>(a);
+                        const std::size_t i0 = (a == 0) ? ix : (a == 1) ? iy : iz;
+                        const double hc = e[ia][i0 + 1] - e[ia][i0];
+                        scalar gmax = 0;
+                        for (int dir = -1; dir <= 1; dir += 2)
+                        {
+                            const std::int64_t j0 = static_cast<std::int64_t>(i0) + dir;
+                            if (j0 < 0 || j0 >= nc[ia]) continue;
+                            const std::size_t uj0 = static_cast<std::size_t>(j0);
+                            const double hn = e[ia][uj0 + 1] - e[ia][uj0];
+                            const std::size_t nidx = (a == 0) ? idx(uj0, iy, iz)
+                                             : (a == 1) ? idx(ix, uj0, iz)
+                                                        : idx(ix, iy, uj0);
+                            gmax = std::max(gmax, std::abs(phi[nidx] - phi[c])
+                                                / (0.5 * (hc + hn)));
+                        }
+                        g[c][static_cast<std::size_t>(a)] = gmax;
+                    }
+                }
+
+        // Slab decision per axis and base bin: refine when the strongest cell
+        // of the bin exceeds the refine threshold, coarsen when every cell is
+        // below the coarsen threshold.
+        label nRefined = 0, nCoarsened = 0;
+        for (int a = 0; a < 3; ++a)
+        {
+            const std::size_t ia = static_cast<std::size_t>(a);
+            std::vector<scalar> binMax(static_cast<std::size_t>(grid.n[a]), 0);
+            for (std::size_t ix = 0; ix < static_cast<std::size_t>(nc[0]); ++ix)
+                for (std::size_t iy = 0; iy < static_cast<std::size_t>(nc[1]); ++iy)
+                    for (std::size_t iz = 0; iz < static_cast<std::size_t>(nc[2]); ++iz)
+                    {
+                        const double centre = 0.5 * ((a == 0 ? e[0][ix] + e[0][ix + 1]
+                                                  : a == 1 ? e[1][iy] + e[1][iy + 1]
+                                                           : e[2][iz] + e[2][iz + 1]));
+                        const label b = baseBinOf(centre, grid.lo[a], grid.hi[a], grid.n[a]);
+                        binMax[static_cast<std::size_t>(b)] =
+                            std::max(binMax[static_cast<std::size_t>(b)],
+                                     g[idx(ix, iy, iz)][ia]);
+                    }
+            for (label b = 0; b < grid.n[a]; ++b)
+            {
+                const std::size_t ub = static_cast<std::size_t>(b);
+                if (binMax[ub] > amr.refineThreshold
+                    && depth[ia][ub] < ctl.maxDepth)
+                {
+                    ++depth[ia][ub];
+                    ++nRefined;
+                }
+                else if (binMax[ub] < amr.coarsenThreshold && depth[ia][ub] > 0)
+                {
+                    --depth[ia][ub];
+                    ++nCoarsened;
+                }
+            }
+        }
+
+        // Geometry rebuild + conservative field transfer: each new cell takes
+        // the volume-weighted mean of the old cells it overlaps (refinement is
+        // a single-parent copy, coarsening the weighted merge).
+        const std::array<std::vector<double>, 3> oldE = e;
+        const std::array<label, 3> oldNc = nc;
+        std::vector<double> oldPhi = phi;
+        e[0] = buildEdges(grid.lo.x, grid.hi.x, grid.n[0], depth[0]);
+        e[1] = buildEdges(grid.lo.y, grid.hi.y, grid.n[1], depth[1]);
+        e[2] = buildEdges(grid.lo.z, grid.hi.z, grid.n[2], depth[2]);
+        nc = {static_cast<label>(e[0].size()) - 1, static_cast<label>(e[1].size()) - 1,
+              static_cast<label>(e[2].size()) - 1};
+        const std::size_t newCells = static_cast<std::size_t>(nc[0])
+                                   * static_cast<std::size_t>(nc[1])
+                                   * static_cast<std::size_t>(nc[2]);
+        std::vector<double> newPhi(newCells, 0.0);
+        for (std::size_t jx = 0; jx < static_cast<std::size_t>(nc[0]); ++jx)
+            for (std::size_t jy = 0; jy < static_cast<std::size_t>(nc[1]); ++jy)
+                for (std::size_t jz = 0; jz < static_cast<std::size_t>(nc[2]); ++jz)
+                {
+                    const double nlo[3] = {e[0][jx], e[1][jy], e[2][jz]};
+                    const double nhi[3] = {e[0][jx + 1], e[1][jy + 1], e[2][jz + 1]};
+                    const scalar vNew = (nhi[0] - nlo[0]) * (nhi[1] - nlo[1])
+                                      * (nhi[2] - nlo[2]);
+                    scalar acc = 0;
+                    for (std::size_t ix = 0; ix < static_cast<std::size_t>(oldNc[0]); ++ix)
+                        for (std::size_t iy = 0; iy < static_cast<std::size_t>(oldNc[1]); ++iy)
+                            for (std::size_t iz = 0; iz < static_cast<std::size_t>(oldNc[2]); ++iz)
+                            {
+                                const double olo[3] = {oldE[0][ix], oldE[1][iy], oldE[2][iz]};
+                                const double ohi[3] = {oldE[0][ix + 1], oldE[1][iy + 1],
+                                                       oldE[2][iz + 1]};
+                                scalar vInt = 1;
+                                for (int a = 0; a < 3; ++a)
+                                {
+                                    const double ov = std::min(nhi[a], ohi[a])
+                                                    - std::max(nlo[a], olo[a]);
+                                    if (ov <= 0) { vInt = 0; break; }
+                                    vInt *= ov;
+                                }
+                                if (vInt <= 0) continue;
+                                acc += oldPhi[(ix * static_cast<std::size_t>(oldNc[1])
+                                              + iy) * static_cast<std::size_t>(oldNc[2]) + iz]
+                                     * vInt;
+                            }
+                    newPhi[(jx * static_cast<std::size_t>(nc[1]) + jy)
+                           * static_cast<std::size_t>(nc[2]) + jz] = acc / vNew;
+                }
+        phi.swap(newPhi);
+
+        // Pin the integral: a uniform shift removes the round-off residue so
+        // sum(phi V) stays at the seed mass through every remeshing cycle.
+        scalar mass = 0;
+        for (std::size_t ix = 0; ix < static_cast<std::size_t>(nc[0]); ++ix)
+            for (std::size_t iy = 0; iy < static_cast<std::size_t>(nc[1]); ++iy)
+                for (std::size_t iz = 0; iz < static_cast<std::size_t>(nc[2]); ++iz)
+                {
+                    const scalar v = (e[0][ix + 1] - e[0][ix]) * (e[1][iy + 1] - e[1][iy])
+                                   * (e[2][iz + 1] - e[2][iz]);
+                    mass += phi[idx(ix, iy, iz)] * v;
+                }
+        const scalar shift = (massTarget - mass) / boxVol;
+        for (double& p : phi) p += shift;
+
+        AmrCycleReport rep;
+        rep.cycle = cycle;
+        rep.nRefined = nRefined;
+        rep.nCoarsened = nCoarsened;
+        rep.mass = 0;
+        for (std::size_t ix = 0; ix < static_cast<std::size_t>(nc[0]); ++ix)
+            for (std::size_t iy = 0; iy < static_cast<std::size_t>(nc[1]); ++iy)
+                for (std::size_t iz = 0; iz < static_cast<std::size_t>(nc[2]); ++iz)
+                {
+                    AdaptCell c;
+                    c.lo = Vector{e[0][ix], e[1][iy], e[2][iz]};
+                    c.hi = Vector{e[0][ix + 1], e[1][iy + 1], e[2][iz + 1]};
+                    c.volume = boxVolume(c.lo, c.hi);
+                    c.phi = phi[idx(ix, iy, iz)];
+                    const label bx = baseBinOf(0.5 * (c.lo.x + c.hi.x), grid.lo.x,
+                                               grid.hi.x, grid.n[0]);
+                    const label by = baseBinOf(0.5 * (c.lo.y + c.hi.y), grid.lo.y,
+                                               grid.hi.y, grid.n[1]);
+                    const label bz = baseBinOf(0.5 * (c.lo.z + c.hi.z), grid.lo.z,
+                                               grid.hi.z, grid.n[2]);
+                    c.level = std::max(depth[0][static_cast<std::size_t>(bx)],
+                                       std::max(depth[1][static_cast<std::size_t>(by)],
+                                                depth[2][static_cast<std::size_t>(bz)]));
+                    rep.cells.push_back(c);
+                    rep.mass += c.phi * c.volume;
+                }
+        rep.nCells = static_cast<label>(rep.cells.size());
+        loop.cycles.push_back(std::move(rep));
+    }
+
+    if (loop.cycles.empty())
+        cfFatal("amr: the remesh loop produced no cycles");
+    loop.finalCells = loop.cycles.back().nCells;
+    loop.massFinal = loop.cycles.back().mass;
+    loop.massError = std::abs(loop.massFinal - loop.massInitial);
+    return loop;
 }
 
 } // namespace cf

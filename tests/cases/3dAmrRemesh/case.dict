@@ -1,0 +1,43 @@
+// 5.229 (H6): AMR remeshing loop. The adapt{} seed (gradientThreshold 1e9)
+// leaves the 8 x 8 x 1 base grid untouched: 64 cells carrying the exact step
+// averages (x-bins 0-3 -> 0, bin 4 -> 0.6, bins 5-7 -> 1, mass 0.045). The
+// amr{} loop then refines the bins 3,4,5 around the interface in cycle 1
+// (indicator 4.8 / 3.2 > 2), relaxes the field with 400 explicit conservative
+// diffusion steps (D dt / dx^2 = 0.128) before cycle 2 coarsens them back to
+// 64 cells, and cycle 3 finds a smooth field and does nothing. The checker
+// mirrors the whole loop in Python and pins sum(phi V) to 0.045 every cycle.
+block
+{
+    min  (0 0 0);
+    max  (1 1 0.1);
+    cells (8 8 1);
+    xmin { name left;   type wall; }
+    xmax { name right;  type wall; }
+    ymin { name bottom; type wall; }
+    ymax { name top;    type wall; }
+    zmin { name front;  type symmetry; }
+    zmax { name back;   type symmetry; }
+}
+
+adapt
+{
+    gradientThreshold 1e9;
+    maxDepth 2;
+    field step;
+    axis x;
+    interface 0.55;
+    low 0.0;
+    high 1.0;
+    dumpCells yes;
+}
+
+amr
+{
+    refineThreshold  2;
+    coarsenThreshold 0.5;
+    cycles           3;
+    every            400;
+    diffusion        0.05;
+    dt               0.01;
+    dumpCells        yes;
+}

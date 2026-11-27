@@ -33,6 +33,20 @@ void report(scalar t, const BodyState& s, scalar scalarMean, scalar massBalance)
        << s.theta << ' ' << s.omega << ' ' << scalarMean << ' ' << massBalance;
     log::info(os.str());
 }
+
+// §5.228: printed only when fluidStress{} is declared (passive twin keeps the
+// F11 output byte-identical).
+void reportStress(scalar t, const StressLoad& sl)
+{
+    std::ostringstream os;
+    os << std::setprecision(12)
+       << "STRESS " << t
+       << ' ' << sl.forcePressure.x << ' ' << sl.forcePressure.y << ' ' << sl.forcePressure.z
+       << ' ' << sl.forceViscous.x << ' ' << sl.forceViscous.y << ' ' << sl.forceViscous.z
+       << ' ' << sl.moment.x << ' ' << sl.moment.y << ' ' << sl.moment.z
+       << ' ' << sl.volume;
+    log::info(os.str());
+}
 } // namespace
 
 int main(int argc, char** argv)
@@ -64,11 +78,16 @@ int main(int argc, char** argv)
 
         // Initial state (t = 0): no motion has happened, so GCL residual is 0.
         report(0.0, body, cfg.initialValue, 0.0);
+        if (cfg.stress.enabled)
+            reportStress(0.0, integrateFluidStress(mesh, cfg.stress));
 
         for (int step = 1; step <= cfg.steps; ++step)
         {
-            // Rigid-body update (independent of the mesh geometry).
-            body = advanceBody(body, cfg, cfg.dt);
+            // Rigid-body update (independent of the mesh geometry). With
+            // fluidStress{} the body is advanced AFTER the mesh move, driven
+            // by the integrated surface traction instead of bodyForce / drag.
+            if (!cfg.stress.enabled)
+                body = advanceBody(body, cfg, cfg.dt);
 
             // Prescribed rigid mesh translation.
             Field<Vector> newPoints(static_cast<std::size_t>(mesh.nPoints()));
@@ -76,6 +95,13 @@ int main(int argc, char** argv)
             for (std::size_t i = 0; i < pts.size(); ++i)
                 newPoints[i] = pts[i] + cfg.meshVelocity * cfg.dt;
             mesh.movePoints(newPoints);
+
+            StressLoad load;
+            if (cfg.stress.enabled)
+            {
+                load = integrateFluidStress(mesh, cfg.stress);
+                body = advanceBodyStress(body, cfg, load, cfg.dt);
+            }
 
             // Relative flux and GCL on the NEW geometry.
             const Field<scalar> phiRel = relativeFaceFlux(mesh, cfg.fluidVelocity, cfg.meshVelocity);
@@ -97,7 +123,11 @@ int main(int argc, char** argv)
             const scalar scalarMean = totalMass / totalVol;
 
             if (step % cfg.reportEvery == 0 || step == cfg.steps)
+            {
                 report(step * cfg.dt, body, scalarMean, massBalance);
+                if (cfg.stress.enabled)
+                    reportStress(step * cfg.dt, load);
+            }
         }
         return 0;
     }

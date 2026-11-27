@@ -533,7 +533,19 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
     // be sized BEFORE this call: a feedback bore starts from the initial
     // bed, not from the raw diameter.
     dEff_.assign(n_, diameter_);
-    refreshDepositDiameter();
+    // 5.219/5.220: the blockage layer and the wear start at zero; the
+    // deposit refresh below already composes them (both steps are inert
+    // when the blocks are undeclared).
+    blockage_.assign(n_, 0.0);
+    wear_.assign(n_, 0.0);
+    refreshDepositDiameter(0.0);
+    // 5.222: the first frame reports the schedule's wall temperature at
+    // t = 0 (the expression is time-free when the schedule is undeclared).
+    if (cfg_.ambientScheduleOn)
+    {
+        wallTUsed_.assign(n_, 0.0);
+        for (int i = 0; i < n_; ++i) wallTUsed_[i] = wallTemperatureAt(i, 0.0);
+    }
 
     if (cfg_.entrainmentOn)
     {
@@ -843,10 +855,15 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     // verbatim. With feedback on the deposit sets both the wall diameter and
     // the exposed roughness; the thin-layer approximation leaves area() and
     // the transport faces at the declared bore.
-    const bool fb = (cfg_.waxOn && cfg_.wax.feedback)
-                 || (cfg_.sandOn && cfg_.sand.feedback);
+    // 5.219/5.220: a blockage layer or bore wear also moves the wall
+    // diameter; the exposed roughness stays the wax deposit's only when a
+    // deposit feedback owns the wall, otherwise the pipe's own roughness.
+    const bool depositFb = (cfg_.waxOn && cfg_.wax.feedback)
+                        || (cfg_.sandOn && cfg_.sand.feedback);
+    const bool fb = depositFb || cfg_.blockageOn || cfg_.hydraulicFeedbackOn;
     const double d = fb ? dEff_[i] : diameter_;
-    const double rr = fb ? cfg_.wax.depositRoughness / d : relrough_[i];
+    const double rr = depositFb ? cfg_.wax.depositRoughness / d
+                                : relrough_[i];
     if (f.flowIndex <= 0 && !(f.yieldStress > 0))
     {
         // 5.75/5.77: the undeclared branch is the old law verbatim -- the
@@ -939,7 +956,8 @@ double TwoFluidPipe::yieldThresholdPa() const
     if (!(cfg_.fluid.yieldStress > 0)) return 0.0;
     double sum = 0;
     const bool fb = (cfg_.waxOn && cfg_.wax.feedback)
-                 || (cfg_.sandOn && cfg_.sand.feedback);
+                 || (cfg_.sandOn && cfg_.sand.feedback)
+                 || cfg_.blockageOn || cfg_.hydraulicFeedbackOn;
     for (int i = 0; i < n_; ++i)
         sum += 4.0 * dxs_[i] / (fb ? dEff_[i] : diameter_) * alpha_[i]
              * cfg_.fluid.yieldStress;
@@ -1057,6 +1075,16 @@ void TwoFluidPipe::momentumSolve(double dt)
 {
     const TwoFluidBoundary& in = cfg_.inlet;
     const TwoFluidBoundary& out = cfg_.outlet;
+
+    // 5.219: a standing bridging plug beats the pump - the line is held at
+    // rest (vM = 0) for every step the bridge stands, whatever the boundary
+    // type. Undeclared (or unbridged) this branch is not even entered.
+    if (cfg_.blockageOn && blocked_)
+    {
+        clearStaticHold();
+        vM_ = 0.0;
+        return;
+    }
 
     if (in.type == TwoFluidBoundary::Type::phaseRates)
     {
@@ -2023,12 +2051,15 @@ void TwoFluidPipe::waxStep(double dt)
 // 5.98/5.99: one owner for the thin-layer diameter. The deposit that shrinks
 // the wall-shear bore is the TOTAL of every depositing species (wax +
 // asphaltene + scale); with only wax declared this is exactly the 5.98
-// behavior, bit for bit.
-void TwoFluidPipe::refreshDepositDiameter()
+// behavior, bit for bit. 5.219: with blockage{} the hydrate layer runs here
+// and is charged linearly on top (d_eff = d_deposit - 2 * delta).
+void TwoFluidPipe::refreshDepositDiameter(double dt)
 {
     const bool waxFb = cfg_.waxOn && cfg_.wax.feedback;
     const bool sandFb = cfg_.sandOn && cfg_.sand.feedback;
-    if (!waxFb && !sandFb) return;
+    if (!waxFb && !sandFb && !cfg_.blockageOn && !cfg_.hydraulicFeedbackOn)
+        return;
+    if (cfg_.blockageOn) hydrateBlockageStep(dt);
     for (int i = 0; i < n_; ++i)
     {
         const double w = (cfg_.waxOn ? wax_[i] : 0.0)
@@ -2036,6 +2067,64 @@ void TwoFluidPipe::refreshDepositDiameter()
             + (cfg_.scaleOn ? scale_[i] : 0.0)
             + (sandFb ? bed_[i] : 0.0);
         dEff_[i] = diameter_ * std::sqrt(std::max(1.0 - w, 1e-12));
+        if (cfg_.blockageOn)
+            dEff_[i] = std::max(dEff_[i] - 2.0 * blockage_[i], 1e-12);
+    }
+}
+
+// 5.219: hydrate blockage. The wall layer obeys the declared deposition /
+// erosion balance, implicit Euler exactly as the wax/scale relaxations:
+//   delta_new = (delta_old / dt + depositionRate * h) / (1 / dt + erosionRate)
+// (erosionRate = 0 degenerates to the pure accumulation delta + dt*dep*h).
+// The layer cannot eat more than the bore: it is clamped below D/2 so the
+// linear charge keeps d_eff positive. The bridging arm is a latch on the
+// FINAL hydrate field of the step: where any section reaches the packing
+// fraction the line plugs (vM = 0 on the spot and held by momentumSolve
+// for every step the bridge stands); dissociation back below the limit
+// releases it.
+void TwoFluidPipe::hydrateBlockageStep(double dt)
+{
+    if (dt <= 0) return;
+    const TwoFluidBlockage& bk = cfg_.blockage;
+    const double deltaMax = 0.5 * diameter_ * (1.0 - 1e-9);
+    bool bridged = false;
+    for (int i = 0; i < n_; ++i)
+    {
+        double d = (blockage_[i] / dt + bk.depositionRate * hydrate_[i])
+                 / (1.0 / dt + bk.erosionRate);
+        d = std::min(std::max(d, 0.0), deltaMax);
+        blockage_[i] = d;
+        if (hydrate_[i] >= bk.packingFraction) bridged = true;
+    }
+    if (bridged) vM_ = 0.0; // the step that forms the bridge ends plugged
+    blocked_ = bridged;
+}
+
+// 5.220: erosion / corrosion hydraulic feedback. The bore GROWS where the
+// risk is live: the section's own API RP 14E limit (the 5.187 law, priced
+// on this frame's mixture density) is crossed by |vM|, or the declared H2S
+// fraction at the highest section EOS pressure sits on the sour side of the
+// published 0.5 psia = 3447 Pa line. The growth is the declared explicit
+// accumulation (rate * dt per step), so the checker re-derives every frame
+// from the reported state. Applied on top of the deposit diameter.
+void TwoFluidPipe::erosionCorrosionFeedbackStep(double dt)
+{
+    if (!cfg_.hydraulicFeedbackOn) return;
+    const TwoFluidHydraulicFeedback& fb = cfg_.hydraulicFeedback;
+    const std::vector<double> p = cellPressure();
+    double pmax = 0.0;
+    for (int i = 0; i < n_; ++i) pmax = std::max(pmax, p[i]);
+    const bool sour = fb.h2sFraction * pmax >= 3447.0; // 0.5 psia
+    for (int i = 0; i < n_; ++i)
+    {
+        const double rhoM = mixtureRhoCell(i);
+        const double rhoLb = rhoM / 16.0184634;
+        const double velim = rhoLb > 0.0
+            ? 0.3048 * fb.erosionC / std::sqrt(rhoLb) : 0.0;
+        const double ratio = velim > 0.0 ? std::fabs(vM_) / velim : 0.0;
+        wear_[i] += dt * (fb.erosionRate * (ratio > 1.0 ? 1.0 : 0.0)
+                        + fb.corrosionRate * (sour ? 1.0 : 0.0));
+        dEff_[i] += wear_[i];
     }
 }
 
@@ -2122,7 +2211,8 @@ void TwoFluidPipe::step(double dt)
     waxStep(dt);
     asphalteneStep(dt);
     scaleStep(dt);
-    refreshDepositDiameter();
+    refreshDepositDiameter(dt);
+    erosionCorrosionFeedbackStep(dt); // 5.220: bore growth rides the final state
     compositionStep(dt); // G1: per-cell PR flash diagnostics (reads only)
     thermalStep(dt);
     slugTrackStep(dt); // O2 (5.161): rides the step's final holdup field
@@ -2134,10 +2224,43 @@ void TwoFluidPipe::step(double dt)
 
 double TwoFluidPipe::wallTemperature(int i) const
 {
+    return wallTemperatureAt(i, t_);
+}
+
+// 5.222: with ambientSchedule{} the ambient level is the piecewise-linear
+// interpolation of the declared (times, ambientT) at the evaluation time:
+// the constant model's wall IS the ambient, the geothermal model keeps its
+// per-section depth offset on top of the moving surface level. Without the
+// schedule the time argument is ignored and the old expression returns
+// verbatim (bit-identical history).
+double TwoFluidPipe::wallTemperatureAt(int i, double t) const
+{
     const TwoFluidThermal& th = cfg_.thermal;
-    if (th.wallModel == 0) return th.wallTemperature;
+    if (!cfg_.ambientScheduleOn)
+    {
+        if (th.wallModel == 0) return th.wallTemperature;
+        const double depth = th.inletDepth - centerDrop_[i];
+        return th.surfaceTemperature + th.geothermalGradient * depth;
+    }
+    const double amb = ambientAtTime(t);
+    if (th.wallModel == 0) return amb;
     const double depth = th.inletDepth - centerDrop_[i];
-    return th.surfaceTemperature + th.geothermalGradient * depth;
+    return amb + th.geothermalGradient * depth;
+}
+
+// 5.222: the declared schedule, held (clamped) outside the time window.
+// The segment is the last point at or before t; the value is the exact
+// linear blend on it.
+double TwoFluidPipe::ambientAtTime(double t) const
+{
+    const std::vector<double>& ts = cfg_.ambientSchedule.times;
+    const std::vector<double>& tv = cfg_.ambientSchedule.ambientT;
+    if (t <= ts.front()) return tv.front();
+    if (t >= ts.back()) return tv.back();
+    std::size_t k = 0;
+    while (k + 1 < ts.size() - 1 && ts[k + 1] <= t) ++k;
+    const double f = (t - ts[k]) / (ts[k + 1] - ts[k]);
+    return tv[k] + f * (tv[k + 1] - tv[k]);
 }
 
 void TwoFluidPipe::thermalStep(double dt)
@@ -2163,8 +2286,11 @@ void TwoFluidPipe::thermalStep(double dt)
                          * (alpha_[i] * f.rhoL * f.cL
                             + (1.0 - alpha_[i]) * cellGasDensity(i) * f.cG);
         const double kw = th.wallHeatTransfer * dxs_[i];
+        // 5.222: the implicit source is evaluated at the step's END time;
+        // without a schedule the expression ignores t (bit-identical)
         const double tw = cfg_.formationOn ? formT_[i][0]
-                                           : wallTemperature(i);
+                                           : wallTemperatureAt(i, t_ + dt);
+        if (cfg_.ambientScheduleOn) wallTUsed_[i] = wallTemperatureAt(i, t_ + dt);
         mat[i][i] = cap / dt + kw;
         rhs[i] = cap / dt * T_[i] + kw * tw;
         if (cfg_.hydrateOn)
@@ -2274,7 +2400,7 @@ void TwoFluidPipe::thermalStep(double dt)
     for (int i = 0; i < n_; ++i)
     {
         const double tw = cfg_.formationOn ? formT_[i][0]
-                                           : wallTemperature(i);
+                                           : wallTemperatureAt(i, t_ + dt);
         wallHeatRate_ += th.wallHeatTransfer * dxs_[i] * (tw - T_[i]);
     }
 }
@@ -2299,8 +2425,9 @@ void TwoFluidPipe::formationStep(double dt)
     for (int i = 0; i < n_; ++i)
     {
         const double kw = th.wallHeatTransfer * dxs_[i];
-        const double te = semi ? wallTemperature(i) + formFarRise_
-                               : wallTemperature(i);
+        const double te = semi
+            ? wallTemperatureAt(i, t_ + dt) + formFarRise_
+            : wallTemperatureAt(i, t_ + dt);
         const std::vector<double>& g = formG_[i];
         const std::vector<double>& c = formC_[i];
         std::vector<double>& tf = formT_[i];
@@ -4095,6 +4222,126 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
             c.risk.corrosionOn = true;
         }
     }
+
+    // ---- 5.219 (F-class): hydrate blockage --------------------------------
+    // The opt-in counterpart of the 5.186 non-blocking reading: a declared
+    // blockage{} charges h to the bore (layer) and to the line (bridging
+    // plug). Undeclared, no field moves.
+    if (caseDict.has("blockage"))
+    {
+        const Dictionary& bk = caseDict.getDict("blockage");
+        static const char* kBlockageKeys[] = {
+            "packingFraction", "depositionRate", "erosionRate"};
+        for (const std::string& k : bk.keys())
+        {
+            bool known = false;
+            for (const char* w : kBlockageKeys)
+                if (k == w) { known = true; break; }
+            if (!known)
+                cfFatal("twoFluid: blockage declares unknown key '" + k
+                        + "' (packingFraction, depositionRate, erosionRate)");
+        }
+        if (!c.hydrateOn)
+            cfFatal("twoFluid: blockage{} charges the hydrate fraction to the"
+                    " bore, but no hydrate{} is declared: the blockage would"
+                    " act on nothing");
+        c.blockageOn = true;
+        c.blockage.packingFraction = bk.getScalarOr("packingFraction", 0.6);
+        c.blockage.depositionRate = bk.getScalarOr("depositionRate", 0.0);
+        c.blockage.erosionRate = bk.getScalarOr("erosionRate", 0.0);
+        if (!(c.blockage.packingFraction > 0)
+            || c.blockage.packingFraction > 1.0)
+            cfFatal("twoFluid: blockage packingFraction must be in (0, 1]:"
+                    " it is the bridging limit on the hydrate fraction");
+        if (c.blockage.depositionRate < 0)
+            cfFatal("twoFluid: negative blockage depositionRate: the layer"
+                    " grows by deposition, stripping is the erosionRate");
+        if (c.blockage.erosionRate < 0)
+            cfFatal("twoFluid: negative blockage erosionRate");
+    }
+
+    // ---- 5.220 (F-class): erosion / corrosion hydraulic feedback ----------
+    // The opt-in counterpart of the 5.187 read-only risk report: the risk
+    // moves the bore. Undeclared, no diameter term reads a velocity.
+    if (caseDict.has("hydraulicFeedback"))
+    {
+        const Dictionary& hf = caseDict.getDict("hydraulicFeedback");
+        static const char* kFeedbackKeys[] = {
+            "erosionC", "erosionRate", "h2s", "corrosionRate"};
+        for (const std::string& k : hf.keys())
+        {
+            bool known = false;
+            for (const char* w : kFeedbackKeys)
+                if (k == w) { known = true; break; }
+            if (!known)
+                cfFatal("twoFluid: hydraulicFeedback declares unknown key '"
+                        + k + "' (erosionC, erosionRate, h2s, corrosionRate)");
+        }
+        c.hydraulicFeedbackOn = true;
+        c.hydraulicFeedback.erosionC = hf.getScalarOr("erosionC", 100.0);
+        c.hydraulicFeedback.erosionRate
+            = hf.getScalarOr("erosionRate", 0.0);
+        c.hydraulicFeedback.h2sFraction = hf.getScalarOr("h2s", 0.0);
+        c.hydraulicFeedback.corrosionRate
+            = hf.getScalarOr("corrosionRate", 0.0);
+        if (!(c.hydraulicFeedback.erosionC > 0))
+            cfFatal("twoFluid: hydraulicFeedback erosionC must be positive:"
+                    " it divides the API RP 14E velocity limit");
+        if (c.hydraulicFeedback.erosionRate < 0)
+            cfFatal("twoFluid: negative hydraulicFeedback erosionRate: wear"
+                    " grows the bore, it cannot shrink it");
+        if (c.hydraulicFeedback.corrosionRate < 0)
+            cfFatal("twoFluid: negative hydraulicFeedback corrosionRate");
+        if (!(c.hydraulicFeedback.h2sFraction >= 0)
+            || !(c.hydraulicFeedback.h2sFraction <= 1))
+            cfFatal("twoFluid: hydraulicFeedback h2s is a gas-phase mole"
+                    " fraction and must be in [0,1]");
+        if (c.hydraulicFeedback.corrosionRate > 0 && !(c.fluid.gasR > 0))
+            cfFatal("twoFluid: hydraulicFeedback corrosion prices the H2S"
+                    " partial pressure at the highest section EOS pressure:"
+                    " declare the gas EOS (fluid gasR > 0)");
+    }
+
+    // ---- 5.222 (F-class): time-varying ambient temperature ----------------
+    // The wall's ambient level follows a declared piecewise-linear schedule.
+    // Undeclared, wallTemperature(i) is the constant/geothermal expression.
+    if (caseDict.has("ambientSchedule"))
+    {
+        const Dictionary& as = caseDict.getDict("ambientSchedule");
+        static const char* kScheduleKeys[] = {"times", "ambientT"};
+        for (const std::string& k : as.keys())
+        {
+            bool known = false;
+            for (const char* w : kScheduleKeys)
+                if (k == w) { known = true; break; }
+            if (!known)
+                cfFatal("twoFluid: ambientSchedule declares unknown key '" + k
+                        + "' (times, ambientT)");
+        }
+        if (!c.thermalOn)
+            cfFatal("twoFluid: ambientSchedule{} moves the thermal wall, but"
+                    " no thermal{} is declared: the schedule would feed"
+                    " nothing");
+        c.ambientScheduleOn = true;
+        c.ambientSchedule.times = as.getScalarList("times");
+        c.ambientSchedule.ambientT = as.getScalarList("ambientT");
+        if (c.ambientSchedule.times.size()
+            != c.ambientSchedule.ambientT.size())
+            cfFatal("twoFluid: ambientSchedule times and ambientT need the"
+                    " same length");
+        if (c.ambientSchedule.times.size() < 2)
+            cfFatal("twoFluid: ambientSchedule needs at least two points"
+                    " (times, ambientT)");
+        for (std::size_t k = 0; k < c.ambientSchedule.times.size(); ++k)
+        {
+            if (c.ambientSchedule.times[k] < 0)
+                cfFatal("twoFluid: ambientSchedule times must be non-negative");
+            if (k && !(c.ambientSchedule.times[k - 1]
+                       < c.ambientSchedule.times[k]))
+                cfFatal("twoFluid: ambientSchedule times must be strictly"
+                        " ascending");
+        }
+    }
 }
 
 } // namespace
@@ -4199,6 +4446,18 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
     if (caseDict.has("riskReport"))
         cfFatal("twoFluid: riskReport is a serial-row feature; the branch"
                 " network row carries no risk report columns yet");
+    // 5.219/5.220/5.222: same rule for the three opt-in blockage, wear and
+    // ambient-schedule blocks - the network report carries no blk/wallT
+    // columns, so a declaration there would run unreported physics.
+    if (caseDict.has("blockage"))
+        cfFatal("twoFluid: blockage is a serial-row feature; the branch"
+                " network row carries no blockage report columns yet");
+    if (caseDict.has("hydraulicFeedback"))
+        cfFatal("twoFluid: hydraulicFeedback is a serial-row feature; the"
+                " branch network row carries no wear report columns yet");
+    if (caseDict.has("ambientSchedule"))
+        cfFatal("twoFluid: ambientSchedule is a serial-row feature; the"
+                " branch network row carries no wallT report columns yet");
     TwoFluidNetworkCase nc;
     nc.perPipe.networkMode = true;
     loadTwoFluidCommon(caseDict, nc.perPipe);

@@ -1,0 +1,20 @@
+// 5.220 (F-class) passive twin: the erosion arm with hydraulicFeedback{}
+// NOT declared. The bore stays the declared D: no dEff column, no wear.
+// The checker also runs the 5.187 read-only deck itself as the byte
+// witness that the undeclared path is untouched.
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; cL 2000; cG 2100; gasR 470; }
+
+pipe { length 200; diameter 0.1; roughness 0; angleDeg 0; sections 20; }
+
+closure { model wallis; slipVelocity 0.2; }
+
+initial { alpha 0.5; water 0.5; temperature 300; }
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 5.0; vsg 5.0; waterFraction 0.5;
+             temperature 300; }
+    outlet { type fixedPressure; p 5.0e6; temperature 300; }
+}
+
+time { dt 0.05; endTime 20; reportEvery 1; }

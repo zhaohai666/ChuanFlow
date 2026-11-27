@@ -1,0 +1,50 @@
+// 5.222 (F-class): time-varying ambient temperature. The sealed, liquid-
+// full line of the 5.144 relax case, but the wall's ambient level now
+// follows a declared piecewise-linear schedule:
+//   times ( 0 30 60 ); ambientT ( 280 310 290 );
+// With wallModel constant the schedule IS the wall temperature: the frame
+// reports it as the per-cell wallT column (the checker re-derives the
+// closed-form interpolation at the frame time to 1e-9), and the implicit-
+// Euler temperature row relaxes onto the MOVING wall - the checker marches
+// the same recurrence and re-derives every section temperature.
+fluid
+{
+    rhoL 1000; rhoG 20; muL 0.01; muG 1e-5;
+    cL 4180; cG 2150;
+}
+
+pipe
+{
+    length 10; diameter 0.02; roughness 0; angleDeg 0; sections 20;
+}
+
+closure
+{
+    model wallis; slipVelocity 0;
+}
+
+initial
+{
+    alpha 1; temperature 320;
+}
+
+boundaries
+{
+    inlet { type sealed; }
+    outlet { type sealed; }
+}
+
+thermal
+{
+    wallHeatTransfer 2;
+    wallModel constant;
+    wallTemperature 280;
+}
+
+ambientSchedule
+{
+    times    ( 0 30 60 );
+    ambientT ( 280 310 290 );
+}
+
+time { dt 2; endTime 60; reportEvery 1; }

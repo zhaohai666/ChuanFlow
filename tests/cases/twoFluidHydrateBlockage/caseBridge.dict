@@ -1,0 +1,46 @@
+// 5.219 (F-class): hydrate BLOCKAGE - the PARTICLE BRIDGING arm. No layer
+// grows (depositionRate 0), but the water-rich line (water cut 0.6, initial
+// h 0.05) sits below the declared dissociation curve (~308 K at the section
+// pressure against a 290 K stream), so the kinetics drive h toward the
+// slurry total 0.65 (the latent charge is set inertly small here: this arm
+// isolates the packing criterion - the deposition arm carries the heat).
+// The moment any section reaches the packing limit 0.6 the section bridges:
+// the line plugs - vM = 0 on the spot and held at zero for every step the
+// bridge stands (the plug latch re-reads the final field, so dissociation
+// below the limit releases it).
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; cL 2000; cG 2100; gasR 470; }
+
+pipe { length 200; diameter 0.1; roughness 1.0e-4; angleDeg 0; sections 20; }
+
+closure { model wallis; slipVelocity 0.2; }
+
+initial { alpha 0.4; water 0.6; temperature 290; }
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 0.5; vsg 2.0; waterFraction 0.6;
+             temperature 290; }
+    outlet { type fixedPressure; p 5.0e6; temperature 290; }
+}
+
+thermal { wallHeatTransfer 50; wallModel constant; wallTemperature 290; }
+
+hydrate
+{
+    curveA 33.0;
+    curveB -5684;
+    growthRate 0.1;
+    dissociationRate 0.01;
+    gasContent 10;
+    latentHeat 1.0e3;
+    initial 0.05;
+}
+
+blockage
+{
+    packingFraction 0.6;
+    depositionRate 0;
+    erosionRate 0;
+}
+
+time { dt 0.05; endTime 10; reportEvery 1; }

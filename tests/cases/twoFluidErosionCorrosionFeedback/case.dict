@@ -1,0 +1,32 @@
+// 5.220 (F-class): erosion HYDRAULIC feedback - the erosion arm. The 5.187
+// riskReport only reads the risk out; declaring hydraulicFeedback{} lets it
+// move the bore. The line runs at vm = 10 m/s against the API RP 14E limit
+// Ve = 0.3048 * erosionC / sqrt(rho_m / 16.0184634) ~ 5.6 m/s at the mixed
+// density, so every section is over the limit and its effective bore GROWS
+// by exactly erosionRate * dt each step (the explicit accumulation the
+// checker re-derives frame by frame). h2s 0 keeps the corrosion channel
+// quiet.
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; cL 2000; cG 2100; gasR 470; }
+
+pipe { length 200; diameter 0.1; roughness 0; angleDeg 0; sections 20; }
+
+closure { model wallis; slipVelocity 0.2; }
+
+initial { alpha 0.5; water 0.5; temperature 300; }
+
+boundaries
+{
+    inlet  { type phaseRates; vsl 5.0; vsg 5.0; waterFraction 0.5;
+             temperature 300; }
+    outlet { type fixedPressure; p 5.0e6; temperature 300; }
+}
+
+hydraulicFeedback
+{
+    erosionC 100;
+    erosionRate 1.0e-5;
+    h2s 0;
+    corrosionRate 0;
+}
+
+time { dt 0.05; endTime 20; reportEvery 1; }

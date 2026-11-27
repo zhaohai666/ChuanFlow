@@ -4449,6 +4449,16 @@ checker `check_transient_coupled_multi_both_series.py`（CTest `verify.transient
 7. **湍流档记录模型的诚实边界**：`TurbConc`/`TurbHalf` 都 Re > 4000、独立复算 Churchill 1e-9、f·Re 离层流 C > 50%，但两者 Q 之差 `0 < ΔQ/Q < 1e-3`——Churchill 的湍流成员只认 Re 与相对粗糙度，**同 Dh 即同摩擦**，偏心距是层流剖面效应，越过过渡区不再分账（环空没有 Wilson–Thomas 的对应式；§5.83 只给圆管 Bingham）。
 8. **九条拒收探针**（regex 重写 `EccHalf` 臂，逐条 rc=1 点名）：负 e、无 dInner 的 e、e ≥ (Do−Di)/2、e 恰等于极限（1e-17 m 液膜 → 网格不可解）、幂律 + e、e + `ductHeight`、e + 耦合边、e + 屈服，外加瞬动量行与两流体行对 `eccentricity` 的 loader 拒收（防静默忽略）。
 
+**判据溯源（5.197 收口，Re 精确相等 → 1e-9 相对界）**：`verify.steadyEccentricAnnulus` 的 `EccZero` / `EccEps` 双臂比对，在 d3b49ec（5.197）收口时把 Re 从四项 Python `==` 精确相等中拆出，改为 1e-9 相对界（当前 `tests/check_steady_eccentric_annulus.py:213-217`）。
+- **旧界来源与证据**：旧判据对 `Q` / `v` / `Re` / `f` 四项一律 `==` 逐位比对——`c2103d3:tests/check_steady_eccentric_annulus.py:203-204`（`for k in ("Q", "v", "Re", "f")`）；当时 Re 走 12 位有效数字打印（`c2103d3:src/1d/apps/steadyNetworkApp.cpp:72`，`num(f.reynolds)`），两侧 Re 被舍入成 `5.68210284900` 才相等——旧判据「通过」依赖打印精度，而不是真相等。d3b49ec 同提交把该行 Re 打印升为 `num17` round-trip（当前 `src/1d/apps/steadyNetworkApp.cpp:624`），checker 侧相应改为相对界。
+- **改动原因**：把隐含的「打印位数掩盖」换成显式 1e-9 相对界，判据更诚实；`Q` / `v` / `f` 三项的 `==` 原样保留。
+- **实测读数（三层；历史值当前不可复现，量级待作者复核）**：
+  1. **历史记录值**：全精度 Re 相对残差 **7.3e-10**，出处 d3b49ec 提交正文「判据」第 4 条（原话：「Re 改全精度后，e/gap = 1e-6 的真实一阶响应 7.3e-10（相对）暴露出来」），以及 `tests/check_steady_eccentric_annulus.py:203-212` 脚本注释（`At full precision the residual is 7.3e-10 relative`）；**该值在本机当前二进制上无法复现**。
+  2. **本轮复测值**：主树 `build-f3` 二进制跑 `check_steady_eccentric_annulus.py`，`EccZero` 与 `EccConc` 逐位相同；`EccEps`（e = 1.0e-8 m，e/gap = 1e-6）Re 5.6821028489974665 对 `EccConc` 5.6821028490016374，**绝对差 4.17e-12、相对 7.34e-13**。
+  3. **结论与待复核**：算术比较 7.3e-10 < 1e-9（历史值为界的 0.73 倍，余量约 1.37×），按历史记录值 1e-9 相对界仍判通过；本轮复测 7.34e-13 仅为界的 7.34e-4 倍（余量约 1.36×10³）。**待作者复核**：若 7.3e-10 确属 Re 的相对残差且为真值，1e-9 界偏宽、钉不住这档一阶响应，需重新定界；本轮复测只看到 7e-13 量级。可能差异来源：① 复测二进制（主树 `build-f3`，2026-11-26 14:35 构建）与 d3b49ec 收口时所用构建不同；② 提交后内核或打印路径（`num17` round-trip）版本漂移；③ 7.3e-10 实际指截面解 K_geom / C 等别的量，而非报表 Re。旁证：`EccZero` 与 Conc 逐位相同、`EccMicro`(0.002) 连续单调，求解器本身未见错误。
+- **改动性质**：一次**口径澄清**，不是放宽——任何 >1e-9 的偏差现在会真红；旧判据里被打印精度抹平的那一档差不再被默许。
+- **审计复现**：`python3 tests/check_steady_eccentric_annulus.py <chflow-1d-steady> tests/cases/steadyEccentricAnnulus/case.dict <chflow-1d-transient> <chflow-1d-twofluid>`（CTest `verify.steadyEccentricAnnulus`，注册见 `tests/CMakeLists.txt:1410`）。本轮实跑同形命令（二进制用绝对路径），末行 `OK: the eccentric annulus …`，双臂 Re 残差均在 1e-9 内。
+
 **本增量的边界**：① 只进**稳态单相牛顿**环空；幂律、屈服、黑油两相 march、PVT march、瞬态行、两流体行全部在入口大声拒收（`Network.h` 注释与三处 loader 各自点名）。② K_geom 由 `addPipe` 解一次并缓存，**不随压强/温度/流变重算**（牛顿环空它是纯几何常数，成立）；把偏心距接成随井眼轨迹变化的场量、或从两相解回填 e，是后续增量。③ e→Ro−Ri 的贴边极限在 `45/tmin < 2e4` 处失去可解性（模数发散），大声拒收而非给未收敛值——实测 e/gap = 0.95 仍在域内（mmax ~ 数百）。④ 湍流侧无偏心距相关式可转录，形状盲区如实记录（判据锁接线与「确实几乎不分账」这个事实本身，不假装捕捉到物理）。⑤ 定向（宽边朝上/朝下）不影响本格：稳态单相牛顿的截面解只认 |e|，重力取向属于两相/岩屑床问题。⑥ 零声明逐位不变的见证是 `verify.steadyAnnulus` + `EccZero`/`EccEps` 双臂 + 全量回归。
 
 **成本**：内核 ~120 行（`Network.h` 注释+2 字段 ~18 / `network.cpp` `eccentricAnnulusSectionIntegral` ~90 + `msgNum` 6 + 两分支 6 + 两条校验 ~12 + loader 键 2 / `transient.cpp` 3 / `twoFluid.cpp` 6）+ 1 case（3 节点 15 管）+ 1 checker（67 判据）+ 1 条 `add_test`，case 运行时 0.03 s（15 管全部截面解完），**本增量 CTest 139 → 140**。全量回归数字见 `docs/gap_analysis.md` §6 实施日志。
@@ -5783,6 +5793,13 @@ kij 对称、对角恒 0（kii≡0）。a_i/b_i 仍是 PR76 的 `kOmegaA=0.45723
 **边界**。声学层纯诊断（与动量/持液场的双向耦合是显式命名的后续增量）；固定 dt（无自适应）；线性声学不建模激波/非线性有限幅效应。
 
 **补记（2026-11-25，默认声速修为两相）**：原版 `aModel` 默认 `eos`（每格 `a²=gasR·T`）在两相 EOS 泄压线上仍是**纯气声速**——气相柔度之外还要液体柔度，波速被高估数倍（50/50 水/气线上 √(287·300)=293.4 m/s 对比 Wood 混合 ≈62.8 m/s）。默认 `aModel` 改为 `twoPhase`：`1/(ρ_m a²) = α_L/(ρ_L a_L²) + α_G/(ρ_G gasR T)`，气相柔度仍是内核 EOS 的精确密度导数；未声明 `liquidSoundSpeed` 时液体取不可压（`a_L→∞`、该项为零），内核不发明液体 EOS；声明了则用完整 Wood 柔度。纯气格 `α_L=0` 精确退化回 `√(gasR T)`，所以 §5.183 全气算例逐字节不变；纯液格 `α_G=0` 且未声明 `a_L` 时大声拒收（不可压极限没有有限波速）。旧纯气路径保留为 opt-in `aModel eos`；`aModel wood` 仍是**必须声明 a_L** 的完整 Wood 律，`soundSpeed` 仍整体覆盖。`verify.transientGasFluxConsistency` 的 `caseWoodBase` 孪生判据由「默认骑 EOS 速度」改为「默认骑从 case 文本独立重推的 twoPhase 混合速度」（拟合 60.6 vs 重推 62.8，容差 8% 覆盖报告采样量子），并新增「远低于纯气速度」判据；`verify.transientEosAcoustics` 全气臂保持逐字节通过。
+
+**判据溯源（5.197 收口，孪生臂容差收紧 0.08 → 0.05）**：`verify.transientGasFluxConsistency` 里未声明孪生臂（`caseWoodBase.dict`，默认 `twoPhase` 路径）两条判据的容差，在 d3b49ec（5.197）收口时由工作树临时放宽的 0.08 收回 0.05（当前 `tests/check_transient_gas_flux_consistency.py:426`、`:428`）。
+- **旧界来源与证据**：提交级历史中该孪生臂容差一直是 0.05——`c26294f:tests/check_transient_gas_flux_consistency.py:407`（文件引入，§5.184）与 `411db34:tests/check_transient_gas_flux_consistency.py:413` 均为 `1.0/bslope, A_eos, 0.05`；**0.08 无提交级证据**：它只存在于被 d3b49ec 接管的未提交工作树（d3b49ec 提交正文「判据」第 3 条：「工作树原把 check_transient_gas_flux_consistency 里未声明 twin 骑默认声速的容差从 0.05 放到 0.08」），git 历史里查不到对应的 0.08 提交，仅能从当前树与 d3b49ec 的 diff 反推。同文件两条**声明 Wood 臂**判据的 0.08（当前 `:385`、`:388`）是 HEAD 既有，本轮未动。
+- **改动原因**：8% 的宽容差会把真实的气相通量不平衡放过去，当不成闸门；收紧到 5% 后仍留约 1.3 个百分点余量。
+- **实测读数**：`caseWoodBase.dict` 孪生臂三探针（单元 95 / 85 / 75）拟合速度 60.6061 m/s，对从 case 文本独立重推的 twoPhase 混合声速 62.8697 m/s，相对偏差 **3.60%**；「远低于纯气速度」比值判据实测 4.84156 对 4.66724，相对偏差 **3.74%**（d3b49ec 提交正文记为 3.6% / 3.7%）。
+- **改动性质**：一次**收紧（judge tightening）**，不是放宽；未删判据、未加 try/except 跳过、未调大任何阈值。收紧后 d3b49ec 全量回归 230/230（提交正文「验证方式说明」第 3 条，656.16 s，`-E mpiDecomposition`）；当前工作树口径 232/232（本轮未重跑全量 ctest，数以 `ctest -N` 实测为准）。
+- **审计复现**：`python3 tests/check_transient_gas_flux_consistency.py <chflow-1d-twofluid> tests/cases/transientGasFluxConsistency`（CTest `verify.transientGasFluxConsistency`，注册见 `tests/CMakeLists.txt:2589`）。本轮实跑：`python3 tests/check_transient_gas_flux_consistency.py build-f3/src/1d/apps/chflow-1d-twofluid tests/cases/transientGasFluxConsistency`，末行 `all checks passed`，上述两条孪生判据读数如上。
 
 ### 5.184 F1 · 气相面通量按体积恒等式闭合（gvol = vM − F）+ dynamicUs 判据反转
 

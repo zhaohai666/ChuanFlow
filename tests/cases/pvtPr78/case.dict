@@ -1,0 +1,28 @@
+# 5.230 (H3): the PR1978 alpha branch. The custom composition block declares
+# the heavy fraction with omega = 0.5 (above the published 0.491 threshold, so
+# the kernel must take the PR78 cubic kappa) next to a mid fraction at
+# omega = 0.4 (PR76 branch, bit-identical to the pre-5.230 kernel) and methane
+# at its table omega. prAlpha{} echoes the ACTUAL kappa/alpha/a/dadT the EOS
+# built at the declared temperature; the twin case (omega 0.491) checks the
+# branch switch is continuous in the flash and enthalpy outputs.
+composition {
+    methane { fraction 0.5; Tc 190.56; Pc 4.5992e6; omega 0.011;
+              molarMass 0.016043; }
+    mid     { fraction 0.2; Tc 400.0;  Pc 2.0e6;    omega 0.4;
+              molarMass 0.100; }
+    heavy   { fraction 0.3; Tc 500.0;  Pc 1.0e6;    omega 0.5;
+              molarMass 0.142; }
+}
+temperature 350.0;
+pressures (2.0e6 5.0e6 10.0e6);
+prAlpha { temperature 350.0; }
+nonIsothermal {
+    pressure 5.0e6;
+    referenceT 273.15;
+    cpA (3000.0 2200.0 1900.0);
+    cpB (0.5 1.2 2.0);
+    enthalpyT (330.0 350.0 370.0);
+    hTarget 1.2e5;
+    Tmin 300.0;
+    Tmax 400.0;
+}

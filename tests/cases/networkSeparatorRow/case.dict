@@ -1,0 +1,38 @@
+# 5.223 (H3): the separator AS a network row.
+#
+# The inlet node is fed by a source; the row clamps both outlet nodes to the
+# inlet minus dP (derived pressures, exact), the two lines take their demand
+# at that pressure, and the arriving total is flashed by the Separator.h
+# allocation function. LIQ and GASL are deliberately identical, so the feed
+# splits 50/50 in volume while the flash still reports the efficiency-weighted
+# MASS split.
+fluid { blackoil {
+    gasGravity 0.75;
+    oilDensity 850.0;
+    gor 100.0;
+    waterCut 0.1;
+    waterDensity 1000.0;
+    temperature 320.0;
+} }
+nodes {
+    IN {};
+    OUT {};
+    GAS {};
+    TANK { pressure 1.0e5; }
+}
+sources { s1 { node IN; rate 2.0e-3; } }
+pipes {
+    SEP {
+        from IN; to OUT; length 0.0; diameter 0.0;
+        separator {
+            gasNode GAS;
+            feedRate 2.0e-3;   # the declared expectation; the row delivers it
+            efficiency 0.9;
+            dP 1.0e4;
+            temperature 320.0;
+        }
+    }
+    LIQ { from OUT; to TANK; length 500.0; diameter 0.05; roughness 0.0; }
+    GASL { from GAS; to TANK; length 500.0; diameter 0.05; roughness 0.0; }
+}
+solve { maxIter 100; tol 1e-12; }

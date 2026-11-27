@@ -54,6 +54,22 @@ scalar wilsonK(const Component& c, scalar T, scalar p)
     return c.Pc / p * std::exp(5.373 * (1.0 + c.acentric) * (1.0 - c.Tc / T));
 }
 
+/// 5.230: the alpha-function slope parameter, one branch statement shared by
+/// a(T) here and da/dT in enthalpy.cpp. Peng & Robinson (1976) Eq 17:
+/// kappa = 0.37464 + 1.54226 w - 0.26992 w^2 for omega <= 0.491; Robinson &
+/// Peng (1978, GPA RR-28) give the cubic extension for the heavier fractions,
+/// kappa = 0.379642 + 1.48503 w - 0.164423 w^2 + 0.016666 w^3 for
+/// omega > 0.491. The PR76 expression keeps its original operation order, so
+/// a component at or under the threshold is bit-identical to the pre-5.230
+/// kernel.
+scalar prKappa(scalar omega)
+{
+    if (omega <= 0.491)
+        return 0.37464 + 1.54226 * omega - 0.26992 * omega * omega;
+    return 0.379642 + 1.48503 * omega - 0.164423 * omega * omega
+         + 0.016666 * omega * omega * omega;
+}
+
 PengRobinsonParams mixtureParameters(const Mixture& mix, scalar T, scalar p)
 {
     if (mix.size() == 0) cfFatal("pvt: empty mixture");
@@ -68,20 +84,26 @@ PengRobinsonParams mixtureParameters(const Mixture& mix, scalar T, scalar p)
     PengRobinsonParams prm;
     prm.aI.resize(n);
     prm.bI.resize(n);
+    prm.kappaI.resize(n);
+    prm.alphaI.resize(n);
     prm.aIJ.assign(n, std::vector<scalar>(n, 0.0));
 
     const scalar RT = kGasConstant * T;
     for (std::size_t i = 0; i < n; ++i)
     {
         const scalar w = comps[i].acentric;
-        // PR76 alpha function (omega <= 0.491 branch): kappa = 0.37464 + 1.54226 w - 0.26992 w^2.
-        const scalar kappa = 0.37464 + 1.54226 * w - 0.26992 * w * w;
+        // 5.230: the alpha function's kappa branch (PR76 for omega <= 0.491,
+        // PR1978 for omega > 0.491) lives in prKappa, the one statement shared
+        // with prDaDT so a and dadT can never disagree.
+        const scalar kappa = prKappa(w);
         const scalar alpha = (1.0 + kappa * (1.0 - std::sqrt(T / comps[i].Tc)))
                            * (1.0 + kappa * (1.0 - std::sqrt(T / comps[i].Tc)));
         // a_i = 0.45724 (R Tc)^2 / Pc * alpha(T),  b_i = 0.07780 R Tc / Pc
         const scalar Rtc = kGasConstant * comps[i].Tc;
         prm.aI[i] = kOmegaA * Rtc * Rtc / comps[i].Pc * alpha;
         prm.bI[i] = kOmegaB * Rtc / comps[i].Pc;
+        prm.kappaI[i] = kappa;
+        prm.alphaI[i] = alpha;
     }
 
     for (std::size_t i = 0; i < n; ++i)

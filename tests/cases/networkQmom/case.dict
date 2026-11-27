@@ -1,0 +1,36 @@
+# 5.226 (H3): the two-point QMOM of 5.107 as a PIPE declaration on the steady
+# network. P1 carries the droplet population M0..M3; each of the march's 24
+# segments advances it by the segment residence time against the
+# constant-kernel Smoluchowski source, and past the declared dThreshold the
+# segment pays Brinkman mu (1 + 2.5 phi). The table is deliberately constant
+# so the march reduces to a clean per-segment friction sum the checker can
+# replay from the case text and the solved rate alone. The feed node is free
+# and driven by a declared source rate: every free node then carries the
+# complete conductance diagonal of its outgoing rows.
+fluid { pvt {
+    pressure (1.0e6 2.0e6 3.0e6);
+    rho (850.0 850.0 850.0);
+    mu (0.001 0.001 0.001);
+} }
+nodes {
+    A {};
+    B {};
+    C { pressure 1.0e6; }
+}
+sources { s1 { node A; rate 0.042; } }
+pipes {
+    P1 {
+        from A; to B; length 600.0; diameter 0.1; roughness 0.0;
+        qmom {
+            beta 1.0e-18;        # Smoluchowski constant kernel, the switch
+            m0 1.0e10;           # number concentration (1/m3)
+            m1 10.0;             # total droplet volume fraction (conserved)
+            m2 1.0e-8;           # area moment
+            m3 1.0e-17;          # volume moment: d32 = m3/m2 = 1e-9
+            dThreshold 5.0e-10;  # m; d32 past it switches on Brinkman
+            phi 0.1;             # declared volume fraction
+        }
+    }
+    P2 { from B; to C; length 600.0; diameter 0.1; roughness 0.0; }
+}
+solve { maxIter 60; tol 1e-10; }

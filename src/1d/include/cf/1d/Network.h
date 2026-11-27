@@ -294,6 +294,73 @@ struct NetworkPipe
     double jetThroatLength = 0;  // m, L_t
     double jetFrictionFactor = 0;// Darcy f on the throat wall
 
+    // 5.223 (H3): the separator AS a network row (the Separator.h point
+    // element, now iterated). The row carries THREE nodes -- the inlet (the
+    // pipe's `from`), the liquid outlet (the pipe's `to`) and the declared
+    // `gasNode` -- so it is the one row in this kernel that is not a two-node
+    // edge. The chosen connection is "one inlet node, two outlet edges": the
+    // stage sits AT the inlet node (the arriving stream flashes at its own
+    // pressure, so no separate stage unknown is needed -- that is why not the
+    // "separator as a node" variant, which would add a pressure the Newton
+    // system has no slot for), and the two outlets are stiff links from the
+    // inlet: each edge books a rigid C*(dp - dP) flow, so the node balance
+    // drives p(from) - p(outlet) to dP to machine precision while the lines
+    // take their own demand at that clamped pressure and the two demands sum
+    // to the feed the flash sees. The two outlets sit at the same pressure
+    // (p(from) - dP) by construction, which the two-node pipe model cannot
+    // state -- hence the row, not a pipe pair.
+    //
+    // Volume basis of the two edges (the black-oil node balance is sm3/s of
+    // ONE stock-tank rate per row, the 5.192 jet-pump reduction): each edge
+    // is a rigid link C*(dp - dP), so the node balance drives both outlet
+    // pressures to p(from) - dP and the lines take what they take at that
+    // pressure; their sum is the arriving feed q_in that enters the flash.
+    // The flash's mass split (liquid mass rate to `to`, gas mass rate to
+    // `gasNode`, at the declared efficiency) is the row's reported statement;
+    // the liberated gas (gorStd - rs) * q_in at standard volume is reported
+    // as sepGasStdRate, since free gas has no volume slot in a lumped nodal
+    // balance (it rides each pipe's own GOR). Mass closes exactly by
+    // separatorSolve's own construction.
+    bool separatorOn = false;
+    std::string sepGasNodeName; // the gas outlet node (resolved by addPipe)
+    label sepGasNode = -1;
+    double sepFeedRate = 0;     // sm3/s, optional expectation (0 = as delivered)
+    double sepEfficiency = 1;   // liquid recovery, [0,1]
+    double sepDP = 0;           // Pa, declared internal drop, >= 0
+    double sepTemperature = 0;  // K, stage temperature (0 -> the fluid's)
+
+    // 5.226 (H3): the two-point QMOM of §5.107 (src/3d/src/dpm/qmom.cpp) as a
+    // PIPE declaration. The moments M0..M3 are the droplet population the
+    // stream carries; the steady march already walks the line segment by
+    // segment, so each segment advances the moments by its own residence
+    // time dt = ds/|v| against the constant-kernel Smoluchowski source (the
+    // same four closed-form rates qmom.cpp integrates: dM0/dt = -beta M0^2/2,
+    // dM1/dt = 0, dM2/dt = beta M1^2, dM3/dt = 3 beta M1 M2). With no flow
+    // there is no residence time and the population does not evolve -- the
+    // march is Eulerian along the arc, not a clock.
+    //
+    // The moments feed back through the Sauter diameter d32 = M3/M2: past the
+    // declared dThreshold the emulsion is no longer the clean fluid, and the
+    // segment pays Brinkman (1952) mu_eff = mu (1 + 2.5 phi). phi is either
+    // declared directly or priced from the local number density,
+    // phi = phiFromM0 * M0, the declared simplification being that one
+    // coefficient turns a count into a volume fraction.
+    //
+    // The march is the tabulated-PVT one (marchPvtPipe): the constant-
+    // property law is algebraic with no segment to carry a population, and
+    // the black-oil march is a correlation chain that prices no explicit
+    // mu(p) to multiply. Undeclared, every field below is inert and the
+    // march is byte-identical to 5.223.
+    bool qmomOn = false;
+    double qmomBeta = 0;        // Smoluchowski constant kernel, > 0 (the switch)
+    double qmomM0 = 0;          // inlet moments (number / volume / area / volume-weighted)
+    double qmomM1 = 0;
+    double qmomM2 = 0;
+    double qmomM3 = 0;
+    double qmomDThreshold = 0;  // m, > 0: d32 past it switches on Brinkman
+    double qmomPhi = 0;         // declared constant volume fraction [0,1)
+    double qmomPhiFromM0 = 0;   // > 0: phi = qmomPhiFromM0 * M0(x) instead
+
     /// 5.188 (G6b): the layered wall, when `insulation{}` priced U instead of
     /// a declared wallHeatTransfer. The stack is radial from innerRadius
     /// outward, thickness/conductivity one entry per layer, plus an optional
@@ -832,6 +899,38 @@ struct PipeFlowResult
     double dpJet = 0;           // Pa, the jet pump's own rise (5.192)
     double jetFlowRatio = 0;    // r = q_s/q_n the row settled on (5.192)
     int jetState = -1;          // -1 none, 0 PUMPING, 1 NO-SUCTION, 2 FREE-JET
+    // 5.223 (H3): the separator row's own statement -- the same numbers the
+    // Separator.h point element reports, priced at the stage pressure the
+    // network solved (the inlet node), so the twin case against the
+    // chflow-separator app is a comparison of one allocation function called
+    // at two pressures rather than of two models. -1 on every other row.
+    int separatorState = -1;    // -1 not a separator row, 0 solved
+    double sepStagePressure = 0;    // Pa, the inlet node pressure it flashed at
+    double sepOutletPressure = 0;   // Pa, both outlets: stage - dP
+    double sepRs = 0;               // sm3/sm3, solution GOR of the outlet liquid
+    double sepBo = 1;               // rm3/sm3 at stage p,T
+    double sepBg = 1;               // rm3/sm3 at stage p,T
+    double sepGasLiberated = 0;     // sm3/sm3 free gas at standard conditions
+    double sepFeedMassRate = 0;     // kg/s in
+    double sepLiquidMassRate = 0;   // kg/s the liquid outlet carries
+    double sepGasMassRate = 0;      // kg/s liberated + entrained
+    double sepEntrainedMassRate = 0; // kg/s (1-eff) carried by the gas
+    double sepClosure = 0;          // kg/s liquid + gas - feed (0 by design)
+    double sepLiquidRate = 0;       // sm3/s the liquid edge books
+    double sepGasEdgeRate = 0;      // sm3/s the gas edge books (entrainment,
+                                    // stock-tank liquid basis)
+    double sepGasStdRate = 0;       // sm3/s liberated gas at standard
+                                    // conditions (reported, not node-booked)
+    // 5.226 (H3): the QMOM march's own statement on a pipe that declared
+    // qmom{}. The moments are the population AT THE OUTLET (after all 24
+    // segments advanced), d32 = M3/M2 there, and muBase/muEff are the clean
+    // table viscosity and the Brinkman viscosity the LAST segment priced its
+    // gradient with. -1 / zeros on every undeclared pipe.
+    int qmomState = -1;       // -1 undeclared, 0 marched
+    double qmomM0 = 0, qmomM1 = 0, qmomM2 = 0, qmomM3 = 0;
+    double qmomD32 = 0;       // m, outlet M3/M2
+    double qmomMuBase = 0;    // Pa.s, the march's mu before Brinkman
+    double qmomMuEff = 0;     // Pa.s, the mu the segment charged
     double marchJouleThomson = 0;
     int marchJtMode = 0;
     /// 5.194 (G6d): did the march price properties at its own T, and at what
@@ -964,6 +1063,36 @@ RiskReadout riskReadoutOf(const NetworkPipe& pipe,
 /// into; the pump is a point element like the valve, so `diameter`, `length`
 /// and `elevation` all read 0, and a wall law, bore shape, head curve, lift
 /// valve, coupled edge or flow-pattern override co-declared with it is refused.
+/// Separator row (5.223, H3), on a black-oil network only:
+///   pipes { SEP { from IN; to OUTLIQ; length 0; diameter 0;
+///                 separator { gasNode OUTGAS;  // the gas outlet node
+///                             feedRate 2e-3;   // optional expectation
+///                             efficiency 0.95; // [0,1], default 1
+///                             dP 1.0e4;        // Pa, >= 0, default 0
+///                             temperature 320; } } } // K, default the fluid's
+/// The row clamps both outlet nodes to the inlet node minus dP through stiff
+/// link conductances that enter the Jacobian, so the solved pressure
+/// difference IS dP; the arriving feed (the two line demands at that
+/// pressure, summed) is flashed by the Separator.h allocation function and its
+/// mass split reported per outlet. A declared feedRate that is not positive,
+/// an efficiency outside [0,1], a negative dP, an unknown gasNode, a
+/// non-black-oil network, a non-zero length/diameter/elevation, any
+/// co-declared machine and a converged row with no feed are all refused
+/// loudly.
+/// QMOM pipe block (5.226, H3), on a tabulated-PVT (`fluid { pvt }`) network:
+///   pipes { P1 { from A; to B; length 600; diameter 0.1;
+///                qmom { beta 1.0e-9;            // kernel, > 0 (the switch)
+///                       m0 1.0e14; m1 1.0e-3;   // inlet moments M0..M3
+///                       m2 1.0e-14; m3 1.0e-28;
+///                       dThreshold 1.0e-6;      // m, > 0
+///                       phi 0.1; } } }          // or phiFromM0 <coeff>
+/// Each of the march's 24 segments advances M0..M3 by its own residence time
+/// ds/|v| against the §5.107 constant-kernel source, then charges Brinkman
+/// mu (1 + 2.5 phi) when the segment's d32 = M3/M2 passes dThreshold. Zero
+/// rate advances nothing. A non-positive beta, a negative m0, a non-positive
+/// dThreshold, a missing phi statement and any co-declared machine, rheology,
+/// bore shape, thermal physics or non-PVT fill are refused loudly; an
+/// undeclared pipe marches byte-identically to 5.223.
 OneDNetwork loadNetworkFromDict(const Dictionary& caseDict);
 SteadyControls loadSteadyControls(const Dictionary& caseDict);
 

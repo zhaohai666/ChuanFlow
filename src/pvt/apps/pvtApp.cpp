@@ -29,6 +29,16 @@ std::string num(double v)
     return os.str();
 }
 
+// 5.230: the prAlpha echo needs round-trip precision -- the checker compares
+// kappa/alpha/a/dadT against the published PR76/PR78 closed forms at 1e-14,
+// which a 12-digit print cannot carry.
+std::string num17(double v)
+{
+    std::ostringstream os;
+    os << std::setprecision(17) << v;
+    return os.str();
+}
+
 void reportOne(const FlashCase& c, double p, const Dictionary* viscosityDict,
                const std::vector<double>* parachors)
 {
@@ -165,6 +175,35 @@ int main(int argc, char** argv)
                   " molarMass ", num(c.feed.molarMass()));
 
         for (const double p : c.pressures) reportOne(c, p, viscosityDict, paraPtr);
+
+        // 5.230: the alpha-function echo, gated on a `prAlpha{}` block. It
+        // prints the ACTUAL per-component kappa/alpha/a the kernel built at
+        // the declared temperature (mixtureParameters, not a re-evaluation),
+        // plus the prDaDT the enthalpy departure consumes, so the checker can
+        // pin the PR76 / PR1978 branch (threshold omega = 0.491) against the
+        // published closed forms and confirm a and dadT share one kappa.
+        // Absent the block, this app's report is byte-identical to before.
+        if (caseDict.has("prAlpha"))
+        {
+            const Dictionary& pa = caseDict.getDict("prAlpha");
+            const scalar tAlpha = pa.getScalar("temperature");
+            if (!(tAlpha > 0.0))
+                cfFatal("pvt: prAlpha temperature must be positive");
+            const PengRobinsonParams prm =
+                mixtureParameters(c.feed, tAlpha, c.pressures.front());
+            const auto& comps = c.feed.components();
+            for (std::size_t i = 0; i < comps.size(); ++i)
+            {
+                log::info("pvt prAlpha comp ", comps[i].name,
+                          " T ", num17(tAlpha),
+                          " omega ", num17(comps[i].acentric),
+                          " kappa ", num17(prm.kappaI[i]),
+                          " alpha ", num17(prm.alphaI[i]),
+                          " a ", num17(prm.aI[i]),
+                          " b ", num17(prm.bI[i]),
+                          " dadT ", num17(prDaDT(comps[i], tAlpha)));
+            }
+        }
 
         if (c.computeBubblePoint)
         {

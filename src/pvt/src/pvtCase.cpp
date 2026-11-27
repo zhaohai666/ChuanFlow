@@ -1,3 +1,4 @@
+#include <cmath>
 #include <string>
 
 #include "cf/common/Error.h"
@@ -12,8 +13,37 @@ Mixture loadComposition(const Dictionary& compDict)
     for (const std::string& key : compDict.keys())
     {
         const Dictionary::Node& node = compDict.find(key);
+        // 5.230: a block entry declares a CUSTOM component -- the built-in
+        // tables stop at water (omega 0.344), and the PR1978 alpha branch is
+        // for omega > 0.491, so the heavier fractions a field model carries
+        // (C7+, H2S-rich runs) must be declarable. fraction is the mole
+        // fraction; Tc/Pc/omega/molarMass are the four EOS constants. A
+        // scalar entry is the historical built-in lookup, byte-identical.
+        if (node.kind == Dictionary::Kind::block)
+        {
+            const Dictionary& cd = *node.block;
+            Component c;
+            c.name = key;
+            c.Tc = cd.getScalar("Tc");
+            c.Pc = cd.getScalar("Pc");
+            c.acentric = cd.getScalar("omega");
+            c.molarMass = cd.getScalar("molarMass");
+            const double fraction = cd.getScalar("fraction");
+            if (!(c.Tc > 0.0) || !(c.Pc > 0.0) || !(c.molarMass > 0.0))
+                cfFatal("pvt: custom component '" + key
+                        + "' needs positive Tc, Pc and molarMass");
+            if (!std::isfinite(c.acentric))
+                cfFatal("pvt: custom component '" + key
+                        + "' needs a finite omega");
+            if (!(fraction > 0.0))
+                cfFatal("pvt: custom component '" + key
+                        + "' needs a positive fraction");
+            mix.add(c, fraction);
+            continue;
+        }
         if (node.kind != Dictionary::Kind::scalar)
-            cfFatal("pvt: composition entry '" + key + "' must be a number");
+            cfFatal("pvt: composition entry '" + key + "' must be a number"
+                    " or a custom-component block");
         mix.add(requireComponent(key), node.scalar);
     }
     if (mix.size() == 0) cfFatal("pvt: empty composition block");

@@ -1,0 +1,49 @@
+// 5.235 (E6c): the DYNAMIC pig on the 1D network transient row. mass > 0
+// switches the kinematic point to a momentum ODE integrated over the committed
+// step, driven by the pipe's committed pressure drop and resisted by a declared
+// friction and the liquid slug piled ahead of it:
+//   m dv/dt = driveFraction (p_from - p_to) A - f0 - f1 v - kSlug H A
+//   implicit Euler, v >= 0;  x += v dt;  H += eta lambda (x_{n+1} - x_n)
+// u0 is the launch speed v_0. The front slug H grows by the liquid the pig
+// sweeps as it advances and feeds back as the kSlug H A resistance, so the pig
+// accelerates off the launch, then the growing slug ahead of it slows it down.
+// Nothing is written back to a rate, node or field.
+//
+// Tank 5e5 Pa through a 200 m line; the pig walks 5 -> 50 m.
+
+fluid { rho 850; mu 0.02; }
+
+nodes
+{
+    TANK { volume 5; bulkModulus 4.0e7; pressure 5.0e5; liquidFraction 1; }
+    OUT  { fixedPressure 0; }
+}
+
+pipes
+{
+    LINE
+    {
+        from TANK; to OUT;
+        length 200; diameter 0.08;
+        pigging
+        {
+            startX 5;
+            endX 50;
+            u0 2;
+            blockage 0.8;
+            pushEfficiency 0.4;
+            frontCapacity 0.9;
+            liquidFraction 0.9;
+            mass 50;
+            frictionForce 15;
+            frictionViscous 20;
+            slugResistance 150;
+            driveFraction 0.25;
+        }
+    }
+}
+
+// dt == the reporting interval, so every reported frame is exactly one step
+// and a checker re-derives the discrete momentum law frame by frame from the
+// node pressures and pipe rate the frame itself reports.
+time { dt 0.2; endTime 40; reportEvery 1; }

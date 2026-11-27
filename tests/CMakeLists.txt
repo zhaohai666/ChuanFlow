@@ -2110,6 +2110,18 @@ add_test(
         $<TARGET_FILE:chflow-1d-transient>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientNetworkPigging/case.dict)
 
+# E6c (5.235): the DYNAMIC pig (mass > 0). The checker re-derives the implicit
+# Euler momentum ODE m dv/dt = driveFraction (p_from-p_to) A - f0 - f1 v - kSlug H A
+# frame by frame from the node pressures the frame itself reports, with the front
+# slug growing by the pig's swept distance and feeding back as resistance; it
+# checks arrival/freeze, the no-write-back twin, a stalled-pig arm and refusals.
+add_test(
+    NAME verify.transientNetworkPigDynamic
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_network_pig_dynamic.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientNetworkPigDynamic/case.dict)
+
 # G7 (5.191): the positive-displacement machine as a steady NETWORK row. The
 # checker re-derives q* = nV/(1 + R C) against the laminar wall, asserts
 # dpPcp == -(nV - q)/C, the exact linearity in n, the rho(p)-fill arm where

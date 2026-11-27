@@ -538,6 +538,11 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
         d.pigEta = pc.pigPushEfficiency;
         d.pigCapacity = pc.pigFrontCapacity;
         d.pigLambda = pc.pigLiquidFraction;
+        d.pigMass = pc.pigMass;
+        d.pigF0 = pc.pigFrictionForce;
+        d.pigF1 = pc.pigFrictionViscous;
+        d.pigKslug = pc.pigSlugResistance;
+        d.pigDriveFrac = pc.pigDriveFraction;
         pipes_.push_back(d);
         pipeNames_.push_back(pc.name);
     }
@@ -1357,6 +1362,9 @@ double TransientNetwork::step(double dt)
 //   at x = end: outVol = H, v = 0, ARRIVE journalled once, the pig freezes.
 // Q is the pipe's committed volumetric rate. Nothing here writes a rate,
 // a node or a field.
+// 5.235 (E6c): mass > 0 switches v to the dynamic momentum ODE driven by the
+// committed pipe drop and resisted by friction + the front slug (see header);
+// the front growth, arrival and write-nothing boundary are unchanged.
 void TransientNetwork::piggingStep(double dt)
 {
     if (pigs_.empty() || !(dt > 0)) return;
@@ -1370,14 +1378,42 @@ void TransientNetwork::piggingStep(double dt)
         const double area = 0.25 * M_PI * geo.diameter * geo.diameter;
         const double end = pd.pigEndX > 0 ? pd.pigEndX : geo.length;
         const double q = std::abs(q_[k]);
-        const double choke = pd.pigCapacity > 0
-            ? std::min(1.0, std::max(0.0, st.front / pd.pigCapacity))
-            : 0.0;
-        const double v = pd.pigU0 * (1.0 - pd.pigBeta * choke);
+        double v;
+        if (pd.pigMass > 0)
+        {
+            // 5.235 (E6c): the dynamic pig. The committed node pressures give
+            // the pipe drop that drives it; the front slug H (at the step's
+            // start, like the kinematic choke) and the declared friction resist
+            // it. Implicit Euler on m dv/dt = Fdrive - f0 - f1 v - Fslug:
+            //   v1 = (m v0/dt + Fdrive - f0 - Fslug) / (m/dt + f1),  v1 >= 0.
+            const double dp = nodes_[static_cast<std::size_t>(geo.from)].pPrev
+                            - nodes_[static_cast<std::size_t>(geo.to)].pPrev;
+            const double fDrive = pd.pigDriveFrac * dp * area;
+            const double fSlug = pd.pigKslug * st.front * area;
+            const double m = pd.pigMass;
+            double v1 = (m * st.v / dt + fDrive - pd.pigF0 - fSlug)
+                        / (m / dt + pd.pigF1);
+            if (v1 < 0) v1 = 0; // the pig is driven forward; it never reverses
+            v = v1;
+        }
+        else
+        {
+            const double choke = pd.pigCapacity > 0
+                ? std::min(1.0, std::max(0.0, st.front / pd.pigCapacity))
+                : 0.0;
+            v = pd.pigU0 * (1.0 - pd.pigBeta * choke);
+        }
         double x1 = st.x + v * dt;
         if (x1 > end) x1 = end;
-        st.front += pd.pigEta * pd.pigLambda * q * dt
-                    / (area > 0 ? area : 1.0);
+        if (pd.pigMass > 0)
+            // 5.235 (E6c): the front slug grows by the liquid the PIG sweeps as
+            // it advances (eta * lambda * swept distance), so a stalled pig
+            // stops piling liquid - the slug ahead is the pig's own wake, not
+            // the bulk pipe rate that keeps flowing past a stuck pig.
+            st.front += pd.pigEta * pd.pigLambda * (x1 - st.x);
+        else
+            st.front += pd.pigEta * pd.pigLambda * q * dt
+                        / (area > 0 ? area : 1.0);
         st.x = x1;
         st.v = v;
         if (x1 >= end)
@@ -1860,6 +1896,12 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
             p.pigPushEfficiency = pgd.getScalarOr("pushEfficiency", 0.0);
             p.pigFrontCapacity = pgd.getScalarOr("frontCapacity", 0.0);
             p.pigLiquidFraction = pgd.getScalarOr("liquidFraction", 1.0);
+            // 5.235 (E6c): the dynamic-pig declarations (opt-in via mass > 0).
+            p.pigMass = pgd.getScalarOr("mass", 0.0);
+            p.pigFrictionForce = pgd.getScalarOr("frictionForce", 0.0);
+            p.pigFrictionViscous = pgd.getScalarOr("frictionViscous", 0.0);
+            p.pigSlugResistance = pgd.getScalarOr("slugResistance", 0.0);
+            p.pigDriveFraction = pgd.getScalarOr("driveFraction", 1.0);
             const double end = p.pigEndX > 0 ? p.pigEndX : p.length;
             if (p.pigStartX < 0)
                 cfFatal("transient: pipe '" + name + "' pigs from a negative"
@@ -1899,6 +1941,24 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
                         " and declares a pig: the row's rate belongs to the"
                         " partner region, so the pig would ride a number this"
                         " pipe does not price");
+            // 5.235 (E6c): the dynamic-pig declarations are validated whether
+            // or not mass switches the mode on, so a typo is caught at load.
+            if (!(p.pigMass >= 0) || !std::isfinite(p.pigMass))
+                cfFatal("transient: pipe '" + name + "' pig mass must be a"
+                        " finite non-negative kg (0 keeps the kinematic law)");
+            if (!(p.pigFrictionForce >= 0) || !std::isfinite(p.pigFrictionForce))
+                cfFatal("transient: pipe '" + name + "' pig frictionForce is a"
+                        " non-negative N: the Coulomb drag opposing the motion");
+            if (!(p.pigFrictionViscous >= 0) || !std::isfinite(p.pigFrictionViscous))
+                cfFatal("transient: pipe '" + name + "' pig frictionViscous is a"
+                        " non-negative N.s/m: the linear viscous drag");
+            if (!(p.pigSlugResistance >= 0) || !std::isfinite(p.pigSlugResistance))
+                cfFatal("transient: pipe '" + name + "' pig slugResistance is a"
+                        " non-negative Pa/m: the front slug's resistance kSlug");
+            if (!(p.pigDriveFraction >= 0 && p.pigDriveFraction <= 1))
+                cfFatal("transient: pipe '" + name + "' pig driveFraction is a"
+                        " fraction in [0,1]: the share of the pipe drop that"
+                        " drives the pig");
         }
         if (pd.has("valveClose"))
         {

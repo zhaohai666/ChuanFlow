@@ -130,6 +130,24 @@ struct TransientPipeConfig
     double pigPushEfficiency = 0;// fraction [0,1] of swept liquid piled ahead
     double pigFrontCapacity = 0; // m, front inventory that fully chokes the pig
     double pigLiquidFraction = 1.0; // [0,1], liquid share of the pipe's rate
+
+    // 5.235 (E6c): the DYNAMIC pig, opt-in via mass > 0. The kinematic point
+    // above prescribes v = u0(1 - beta H/C); the dynamic pig instead integrates
+    // its own momentum over the committed step, driven by the pipe's committed
+    // pressure drop and resisted by a declared friction and the liquid slug
+    // piled ahead of it:
+    //   m dv/dt = driveFraction (p_from - p_to) A - f0 - f1 v - kSlug H A
+    // implicit Euler, v clamped >= 0; u0 is the launch speed v_0. The front
+    // slug H grows by the liquid the pig sweeps as it advances (eta lambda
+    // times the swept distance), and feeds back as the kSlug H A resistance
+    // (the slug ahead of the pig); a stalled pig stops piling liquid. The
+    // blockage/frontCapacity kinematic choke is inert in this mode. Nothing is
+    // written back to a rate, node or field, exactly as the kinematic pig.
+    double pigMass = 0;            // kg, > 0 enables the dynamic mode
+    double pigFrictionForce = 0;   // N, constant Coulomb friction f0 (>= 0)
+    double pigFrictionViscous = 0; // N.s/m, linear viscous coefficient f1 (>= 0)
+    double pigSlugResistance = 0;  // Pa/m, kSlug: F_slug = kSlug * H * A (>= 0)
+    double pigDriveFraction = 1.0; // [0,1], share of the pipe drop driving it
 };
 
 /// 5.190: the live pig state a report reads (one per declared pig).
@@ -655,6 +673,9 @@ private:
         bool pigOn = false;
         double pigStartX = 0, pigEndX = 0, pigU0 = 0;
         double pigBeta = 0, pigEta = 0, pigCapacity = 0, pigLambda = 1.0;
+        // 5.235 (E6c): the dynamic-pig declarations (mass > 0 switches the
+        // step from the kinematic law to the momentum ODE).
+        double pigMass = 0, pigF0 = 0, pigF1 = 0, pigKslug = 0, pigDriveFrac = 1.0;
     };
     // E7a: per-pipe wellbore element state. kind 0 leaves every field inert,
     // so an undeclared case carries no extra term and reads no extra state.

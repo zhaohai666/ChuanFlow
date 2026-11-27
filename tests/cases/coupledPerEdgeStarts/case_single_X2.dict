@@ -1,0 +1,53 @@
+# X2 on its own: the series duct solved as the only coupled edge, started from
+# the same coefficient the per-edge table hands X2. The checker compares its
+# settled resistance and rate against the X2 arm of the two-edge per-edge run.
+fluid { rho 800; mu 0.1; }
+
+nodes {
+    Src  {};
+    J1   {};
+    J2   {};
+    Snk  { pressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 3.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+    X2 { from J1; to J2; length 0.4;   diameter 0.015;
+         coupledResistance 1.6e7; }
+    B  { from J2; to Snk; length 5.0;  diameter 0.1; }
+}
+
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edge X2;
+    seeds ( 5.3e7 );
+    relax 1.0;
+    tolerance 1e-4;
+    maxOuterIterations 12;
+}
+
+detail {
+    block {
+        min   (0 0 0);
+        max   (0.4 0.01 0.03);
+        cells (40 20 6);
+
+        xmin  { name inlet;   type inlet;    }
+        xmax  { name outlet;  type outlet;   }
+        ymin  { name bottom;  type wall;     }
+        ymax  { name top;     type wall;     }
+        zmin  { name front;   type symmetry; }
+        zmax  { name back;    type symmetry; }
+    }
+    probe { min 0.15; max 0.38; }
+    schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+    simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+             momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+}
+
+output { vtk out_single_X2.vtu; }

@@ -1,0 +1,98 @@
+# coupledPerEdgeStarts: two 3D detailed regions in one steady network, each
+# edge handed its OWN starting resistance through the per-edge `starts{}`
+# table, instead of one scalar seed broadcast to every coupled edge.
+#
+#   Src -> A -> { X1 (3D duct) || By (1D bypass) } -> X2 (3D duct) -> B -> Snk
+#
+# X1 is the parallel branch, X2 the series edge. The two starts are an order
+# of magnitude apart on purpose, so the interface's first answer per edge has
+# to come from its own partner rather than from a shared guess; the converged
+# fixed point is independent of the starting coefficient either way.
+#
+# Closed-form duct resistances (planar Poiseuille):
+#   R_X1 = 12 mu L / (H^3 W) = 3.75e6,  R_X2 = 12 mu L / (H^3 W) = 1.6e7,
+#   R_By = 128 mu L / (pi D^4) = 7.545e6, R_A = R_B = 2.037e5 Pa.s/m3
+fluid { rho 800; mu 0.1; }
+
+nodes {
+    Src {};
+    J1 {};
+    J2 {};
+    J3 {};
+    Snk { pressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 3.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+
+    // the coupled edges: length and diameter describe the detailed region and
+    // are only used for the reported velocity and Reynolds number
+    X1 { from J1; to J2; length 0.5;  diameter 0.02;
+         coupledResistance 3.75e6; }
+    By { from J1; to J2; length 1.5;  diameter 0.03; }
+
+    X2 { from J2; to J3; length 0.4;  diameter 0.015;
+         coupledResistance 1.6e7; }
+
+    B  { from J3; to Snk; length 5.0; diameter 0.1; }
+}
+
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edges ( X1 X2 );
+    relax 1.0;
+    tolerance 1e-4;
+    maxOuterIterations 12;
+    // per-edge starting coefficients: X1 starts under its duct value, X2 far
+    // above its own; the two numbers are an order of magnitude apart
+    starts {
+        peredge { X1 1.25e6; X2 5.3e7; }
+    }
+}
+
+details {
+    X1 {
+        block {
+            min   (0 0 0);
+            max   (0.5 0.02 0.02);
+            cells (50 20 1);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.12; max 0.49; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_peredge_X1.vtu;
+    }
+
+    X2 {
+        block {
+            min   (0 0 0);
+            max   (0.4 0.01 0.03);
+            cells (40 20 6);
+
+            xmin  { name inlet;   type inlet;    }
+            xmax  { name outlet;  type outlet;   }
+            ymin  { name bottom;  type wall;     }
+            ymax  { name top;     type wall;     }
+            zmin  { name front;   type symmetry; }
+            zmax  { name back;    type symmetry; }
+        }
+        probe { min 0.15; max 0.38; }
+        schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+        simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+                 momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+        vtk out_peredge_X2.vtu;
+    }
+}

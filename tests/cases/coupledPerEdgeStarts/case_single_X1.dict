@@ -1,0 +1,56 @@
+# X1 on its own: the parallel branch duct solved as the only coupled edge,
+# started from the same coefficient the per-edge table hands X1. The checker
+# compares its settled resistance and rate against the X1 arm of the two-edge
+# per-edge run: a block's own fixed point must not depend on which other edge
+# shares the network.
+fluid { rho 800; mu 0.1; }
+
+nodes {
+    Src  {};
+    J1   {};
+    J2   {};
+    Snk  { pressure 1.0e6; }
+}
+
+sources {
+    feed { node Src; rate 3.0e-5; }
+}
+
+pipes {
+    A  { from Src; to J1; length 5.0;  diameter 0.1; }
+    X1 { from J1; to J2; length 0.5;   diameter 0.02;
+         coupledResistance 3.75e6; }
+    By { from J1; to J2; length 1.5;   diameter 0.03; }
+    B  { from J2; to Snk; length 5.0;  diameter 0.1; }
+}
+
+solve { maxIter 200; tol 1e-10; relax 1.0; }
+
+couple {
+    edge X1;
+    seeds ( 1.25e6 );
+    relax 1.0;
+    tolerance 1e-4;
+    maxOuterIterations 12;
+}
+
+detail {
+    block {
+        min   (0 0 0);
+        max   (0.5 0.02 0.02);
+        cells (50 20 1);
+
+        xmin  { name inlet;   type inlet;    }
+        xmax  { name outlet;  type outlet;   }
+        ymin  { name bottom;  type wall;     }
+        ymax  { name top;     type wall;     }
+        zmin  { name front;   type symmetry; }
+        zmax  { name back;    type symmetry; }
+    }
+    probe { min 0.12; max 0.49; }
+    schemes { ddt steady; div upwind; laplacian corrected; grad corrected; }
+    simple { maxIterations 300; continuityTol 1e-6; pcorrTol 1e-5;
+             momentumTol 1e-5; relaxU 0.9; relaxP 0.03; pRelaxStart 0.02; }
+}
+
+output { vtk out_single_X1.vtu; }

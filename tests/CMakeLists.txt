@@ -899,6 +899,21 @@ add_test(
         $<TARGET_FILE:chflow-coupled-1d3d-multi>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupled1d3dTurbulentProfile/case.dict)
 
+# per-edge starting resistances (5.213): the steady coupled app now accepts a
+# starts{} table quoting one own coefficient per coupled edge, next to the
+# legacy scalar seeds() list that keeps broadcasting one number to every edge.
+# The checker pins the three things that make this more than a syntax addition:
+# the two arms really start from different coefficients (42x apart here), each
+# arm settles on the fixed point its OWN single-edge run reaches, the residual
+# band stays identical to the scalar-seed path, and a starts table that misses
+# or invents an edge is rejected with that edge named.
+add_test(
+    NAME verify.coupledPerEdgeStarts
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_coupled_start_peredge.py
+        $<TARGET_FILE:chflow-coupled-1d3d>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/coupledPerEdgeStarts)
+
 # the last of the three axes put together: a SHAPE handed across the interface, a
 # wall-function partner that answers with its own beta, and a time level. The
 # steady sign law -- beta_in above beta_out means the entry region GIVES back

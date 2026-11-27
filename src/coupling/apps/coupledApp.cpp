@@ -166,27 +166,68 @@ int main(int argc, char** argv)
         ctl.relax = cd.getScalarOr("relax", ctl.relax);
         ctl.accelerate = cd.has("accelerate") && cd.getBool("accelerate");
         ctl.tolerance = cd.getScalarOr("tolerance", ctl.tolerance);
-        // the starting interface coefficients: each one runs the whole
-        // partitioned solve on its own, so a seed that lands anywhere else is
-        // not a coupling but a fixed point the initial value still owns
-        std::vector<double> seeds;
-        if (cd.has("seeds")) seeds = cd.getScalarList("seeds");
-        if (seeds.empty())
-            cfFatal("coupled1d3d: couple{} needs at least one starting"
-                    " resistance in seeds ( )");
+        // the starting interface coefficients. The legacy scalar list `seeds (
+        // R ... )` charges every coupled edge with the same coefficient for
+        // one whole-network run per entry. The per-edge table `starts{ <set> {
+        // <edge> R; ... } }` quotes its own starting coefficient per edge
+        // inside each run, shaped exactly like the steady multi-edge app's
+        // starts{} block: an edge the table omits, or a name that is not one
+        // of the coupled edges, is rejected with the edge named.
+        const bool useStarts = cd.has("starts");
+        std::vector<std::string> startNames;
+        std::vector<std::vector<double>> armRs; // rows: runs, cols: edges
+        std::vector<double> seeds;              // legacy scalar list, old logs
+        if (useStarts)
+        {
+            const Dictionary& startsDict = cd.getDict("starts");
+            for (const std::string& sname : startsDict.keys())
+            {
+                const Dictionary& sd = startsDict.getDict(sname);
+                std::vector<double> rs;
+                for (const std::string& edgeName : edgeNames)
+                {
+                    if (!sd.has(edgeName))
+                        cfFatal("coupled1d3d: starts." + sname + " gives no"
+                                " starting resistance for coupled edge '"
+                                + edgeName + "'");
+                    rs.push_back(sd.getScalar(edgeName));
+                }
+                for (const std::string& key : sd.keys())
+                {
+                    if (std::find(edgeNames.begin(), edgeNames.end(), key)
+                        == edgeNames.end())
+                        cfFatal("coupled1d3d: starts." + sname + " names unknown"
+                                " coupled edge '" + key + "'");
+                }
+                startNames.push_back(sname);
+                armRs.push_back(std::move(rs));
+            }
+            if (armRs.empty())
+                cfFatal("coupled1d3d: couple.starts{} needs at least one set");
+        }
+        else
+        {
+            if (cd.has("seeds")) seeds = cd.getScalarList("seeds");
+            if (seeds.empty())
+                cfFatal("coupled1d3d: couple{} needs at least one starting"
+                        " resistance in seeds ( )");
+            for (double r : seeds)
+                armRs.push_back(std::vector<double>(edgeNames.size(), r));
+        }
 
-        // Per-seed interface operator: the same seed run once plainly and once
-        // accelerated differs only in how the next coefficient is chosen, so
-        // the two pass counts say what the quasi-Newton did to this block.
-        std::vector<bool> accelerates(seeds.size(), ctl.accelerate);
+        // Per-run interface operator: the same starting coefficient run once
+        // plainly and once accelerated differs only in how the next coefficient
+        // is chosen, so the two pass counts say what the quasi-Newton did to
+        // this block.
+        std::vector<bool> accelerates(armRs.size(), ctl.accelerate);
         if (cd.has("accelerates"))
         {
             const std::vector<double> a = cd.getScalarList("accelerates");
             if (a.size() == 1)
                 std::fill(accelerates.begin(), accelerates.end(), a[0] != 0.0);
-            else if (a.size() != seeds.size())
+            else if (a.size() != armRs.size())
                 cfFatal("coupled1d3d: couple.accelerates needs one entry per"
-                        " seed (" + std::to_string(seeds.size()) + " seeds, got "
+                        " seed (" + std::to_string(armRs.size()) + " seeds, got "
                         + std::to_string(a.size()) + ")");
             else
                 for (std::size_t i = 0; i < a.size(); ++i)
@@ -238,8 +279,14 @@ int main(int argc, char** argv)
 
         bool allConverged = true;
         CoupledResult last;
-        for (std::size_t s = 0; s < seeds.size(); ++s)
+        for (std::size_t s = 0; s < armRs.size(); ++s)
         {
+            // label used in every per-run log line: the legacy seeds path keeps
+            // its "seed <index>" wording byte-for-byte, the per-edge table
+            // prints its own start-set name the way the multi-edge app does
+            const std::string armLabel =
+                useStarts ? startNames[s] : "seed " + std::to_string(s);
+
             // one fresh block per seed: the block warm-starts from its own
             // previous solution, so sharing it between seeds would let seed 2
             // inherit seed 1's interface history
@@ -261,8 +308,9 @@ int main(int argc, char** argv)
             // starting value and the seed would no longer be independent
             OneDNetwork net = loadNetworkFromDict(caseDict);
             std::vector<label> edges;
-            for (const std::string& edgeName : edgeNames)
+            for (std::size_t k = 0; k < edgeNames.size(); ++k)
             {
+                const std::string& edgeName = edgeNames[k];
                 label edge = -1;
                 for (std::size_t i = 0; i < net.pipes.size(); ++i)
                 {
@@ -272,12 +320,22 @@ int main(int argc, char** argv)
                     cfFatal("coupled1d3d: no pipe named '" + edgeName
                             + "' in the network");
                 edges.push_back(edge);
-                net.pipes[static_cast<std::size_t>(edge)].coupledResistance = seeds[s];
+                net.pipes[static_cast<std::size_t>(edge)].coupledResistance =
+                    armRs[s][k];
             }
 
-            log::info("seed ", s, " starting resistance ", num(seeds[s]),
-                      " interface ", (accelerates[s] ? "quasi-Newton"
-                                                     : "plain Gauss-Seidel"));
+            if (useStarts)
+            {
+                for (std::size_t i = 0; i < edges.size(); ++i)
+                    log::info("start ", startNames[s], " edge ", edgeNames[i],
+                              " resistance ", num(armRs[s][i]));
+                log::info("start ", startNames[s], " interface ",
+                          (accelerates[s] ? "quasi-Newton" : "plain Gauss-Seidel"));
+            }
+            else
+                log::info("seed ", s, " starting resistance ", num(seeds[s]),
+                          " interface ", (accelerates[s] ? "quasi-Newton"
+                                                         : "plain Gauss-Seidel"));
             CoupledControls runCtl = ctl;
             runCtl.accelerate = accelerates[s];
             const CoupledResult res =
@@ -287,7 +345,7 @@ int main(int argc, char** argv)
             {
                 const EdgeExchange& st = res.state[i];
                 if (multiEdge)
-                    log::info("coupled seed ", s, " edge ", edgeNames[i],
+                    log::info("coupled ", armLabel, " edge ", edgeNames[i],
                               ": iterations ", res.iterations,
                               " q ", num(st.q), " dp ", num(st.dpPa),
                               " R ", num(st.resistance),
@@ -297,7 +355,7 @@ int main(int argc, char** argv)
                 else
                 {
                     // legacy single-edge line, unchanged
-                    log::info("coupled seed ", s, ": iterations ", res.iterations,
+                    log::info("coupled ", armLabel, ": iterations ", res.iterations,
                               " q ", num(st.q), " dp ", num(st.dpPa),
                               " R ", num(st.resistance),
                               " residual ", num(res.residual),
@@ -311,9 +369,8 @@ int main(int argc, char** argv)
                 const DetailBlock& block = *owners[i];
                 const BlockMeasure& m = block.measure();
                 const std::string tag = multiEdge ? edgeNames[i] : "";
-                const std::string seedPrefix = multiEdge
-                    ? "block seed " + std::to_string(s) + " edge " + tag
-                    : "block seed " + std::to_string(s);
+                const std::string seedPrefix =
+                    "block " + armLabel + (multiEdge ? " edge " + tag : "");
                 log::info(seedPrefix, ": cells ", m.cells, " sweeps ", m.sweeps,
                           " blockConverged ", (m.converged ? 1 : 0),
                           " fluxIn ", num(m.fluxIn), " fluxOut ", num(m.fluxOut),
@@ -332,7 +389,7 @@ int main(int argc, char** argv)
                           " wallYPlusMax ", num(m.wallYPlusMax),
                           " wallUTau ", num(m.wallUTau));
                 if (const PhaseField* ph = block.phases())
-                    log::info("block phases seed ", s,
+                    log::info("block phases ", armLabel,
                               multiEdge ? std::string(" edge ") + tag : "",
                               ": alphaMean ", num(ph->alphaMean()),
                               " rhoMean ", num(ph->rhoMean()),
@@ -344,7 +401,7 @@ int main(int argc, char** argv)
                 if (block.compressible())
                 {
                     const CompressibleMeasure& cm = block.compressibleMeasure();
-                    log::info("block compressible seed ", s,
+                    log::info("block compressible ", armLabel,
                               multiEdge ? std::string(" edge ") + tag : "",
                               ": pIn ", num(cm.pIn), " pOut ", num(cm.pOut),
                               " dp ", num(cm.dpPa),
@@ -378,7 +435,7 @@ int main(int argc, char** argv)
                 }
                 if (const GeneralizedNewtonianViscosity* gn =
                         block.generalizedNewtonian())
-                    log::info("block fluid seed ", s,
+                    log::info("block fluid ", armLabel,
                               multiEdge ? std::string(" edge ") + tag : "",
                               ": n ", num(gn->rheology().index()),
                               " K ", num(gn->rheology().consistencyOr(fluid.mu)),
@@ -397,14 +454,14 @@ int main(int argc, char** argv)
                 {
                     const EdgeExchange& ex = it.edges[i];
                     if (multiEdge)
-                        log::info("interface seed ", s, " iter ", it.iteration,
+                        log::info("interface ", armLabel, " iter ", it.iteration,
                                   " edge ", edgeNames[i],
                                   " R ", num(ex.resistance), " q ", num(ex.q),
                                   " dpBlock ", num(ex.dpPa),
                                   " sweeps ", ex.sweeps,
                                   " residual ", num(ex.residual));
                     else
-                        log::info("interface seed ", s, " iter ", it.iteration,
+                        log::info("interface ", armLabel, " iter ", it.iteration,
                                   " R ", num(ex.resistance), " q ", num(ex.q),
                                   " dpBlock ", num(ex.dpPa),
                                   " sweeps ", ex.sweeps,
@@ -417,14 +474,14 @@ int main(int argc, char** argv)
                 const PipeFlowResult& edgeFlow =
                     res.network.pipeFlows[static_cast<std::size_t>(edges[i])];
                 if (multiEdge)
-                    log::info("network seed ", s, " edge ", edgeNames[i],
+                    log::info("network ", armLabel, " edge ", edgeNames[i],
                               ": dpNetwork ", num(edgeFlow.dpTotal),
                               " qNetwork ", num(edgeFlow.flowRate),
                               " v ", num(edgeFlow.velocity),
                               " Re ", num(edgeFlow.reynolds),
                               " nodeResidual ", num(res.network.relativeResidual));
                 else
-                    log::info("network seed ", s, ": dpNetwork ",
+                    log::info("network ", armLabel, ": dpNetwork ",
                               num(edgeFlow.dpTotal),
                               " qNetwork ", num(edgeFlow.flowRate),
                               " v ", num(edgeFlow.velocity),
@@ -432,7 +489,7 @@ int main(int argc, char** argv)
                               " nodeResidual ", num(res.network.relativeResidual));
             }
 
-            if (s + 1 == seeds.size())
+            if (s + 1 == armRs.size())
             {
                 last = res;
                 // Legacy: the single block's VTU path comes from output{ vtk };

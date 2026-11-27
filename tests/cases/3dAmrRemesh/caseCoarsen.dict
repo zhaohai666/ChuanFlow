@@ -1,4 +1,4 @@
-// 5.229 (H6) coarsen arm: two cycles. Cycle 1 refines bins 3,4,5 (88 cells);
+// 5.237 (H6) coarsen arm: two cycles. Cycle 1 refines bins 3,4,5 (88 cells);
 // 400 conservative diffusion steps smooth the step below the coarsen
 // threshold, so cycle 2 merges every refined bin back: the parent phi must
 // equal the volume-weighted average of its two (diffused) children and the

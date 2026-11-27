@@ -11,7 +11,7 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/radiationDo/caseP1.dict
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/radiationDo/caseReject.dict)
 
-# 5.227: the 3D level-symmetric arm of the same binary (geometry box). The
+# 5.235: the 3D level-symmetric arm of the same binary (geometry box). The
 # checker rebuilds the 1D slab recursion for the degenerate box, the
 # Rosseland diffusion closed form, the exact isothermal-cavity source
 # balance and six loud refusals from the case constants alone.

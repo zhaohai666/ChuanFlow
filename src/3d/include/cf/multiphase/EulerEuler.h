@@ -7,7 +7,7 @@
 namespace cf::eulerEuler
 {
 
-/// 5.224: the 3D Euler-Euler (two-fluid) kernel. Where VOF carries one
+/// 5.232: the 3D Euler-Euler (two-fluid) kernel. Where VOF carries one
 /// mixture velocity and an interface fraction, this model carries a velocity
 /// field PER PHASE -- gas `UG`, liquid `UL` -- and a phase fraction `alphaG`
 /// that is advected by its own phase's flux. The liquid fraction is the

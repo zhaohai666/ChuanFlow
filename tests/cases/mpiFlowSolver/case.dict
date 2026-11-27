@@ -1,4 +1,4 @@
-// 5.225 MPI flow-solver case: a pressure-free-developing channel between
+// 5.233 MPI flow-solver case: a pressure-free-developing channel between
 // no-slip walls, run through the full distributed SIMPLE loop. One domain
 // per rank; the checker runs np = 1, 2, 4 and compares the gathered fields,
 // the recomputed div(phi) and the per-rank halo dumps. Every physical

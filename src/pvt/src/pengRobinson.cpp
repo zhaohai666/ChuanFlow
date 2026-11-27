@@ -54,13 +54,13 @@ scalar wilsonK(const Component& c, scalar T, scalar p)
     return c.Pc / p * std::exp(5.373 * (1.0 + c.acentric) * (1.0 - c.Tc / T));
 }
 
-/// 5.230: the alpha-function slope parameter, one branch statement shared by
+/// 5.238: the alpha-function slope parameter, one branch statement shared by
 /// a(T) here and da/dT in enthalpy.cpp. Peng & Robinson (1976) Eq 17:
 /// kappa = 0.37464 + 1.54226 w - 0.26992 w^2 for omega <= 0.491; Robinson &
 /// Peng (1978, GPA RR-28) give the cubic extension for the heavier fractions,
 /// kappa = 0.379642 + 1.48503 w - 0.164423 w^2 + 0.016666 w^3 for
 /// omega > 0.491. The PR76 expression keeps its original operation order, so
-/// a component at or under the threshold is bit-identical to the pre-5.230
+/// a component at or under the threshold is bit-identical to the pre-5.238
 /// kernel.
 scalar prKappa(scalar omega)
 {
@@ -92,7 +92,7 @@ PengRobinsonParams mixtureParameters(const Mixture& mix, scalar T, scalar p)
     for (std::size_t i = 0; i < n; ++i)
     {
         const scalar w = comps[i].acentric;
-        // 5.230: the alpha function's kappa branch (PR76 for omega <= 0.491,
+        // 5.238: the alpha function's kappa branch (PR76 for omega <= 0.491,
         // PR1978 for omega > 0.491) lives in prKappa, the one statement shared
         // with prDaDT so a and dadT can never disagree.
         const scalar kappa = prKappa(w);

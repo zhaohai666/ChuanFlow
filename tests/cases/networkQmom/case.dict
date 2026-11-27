@@ -1,4 +1,4 @@
-# 5.226 (H3): the two-point QMOM of 5.107 as a PIPE declaration on the steady
+# 5.234 (H3): the two-point QMOM of 5.107 as a PIPE declaration on the steady
 # network. P1 carries the droplet population M0..M3; each of the march's 24
 # segments advances it by the segment residence time against the
 # constant-kernel Smoluchowski source, and past the declared dThreshold the

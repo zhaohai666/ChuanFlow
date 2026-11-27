@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.218 (W-class) verification: distributed well control in the 1D transient
+"""5.226 (W-class) verification: distributed well control in the 1D transient
 kernel -- a marched segmented annulus (drift-flux gas migration, pV=const
 expansion, distributed Darcy-Weisbach friction) under a closing BOP ram.
 

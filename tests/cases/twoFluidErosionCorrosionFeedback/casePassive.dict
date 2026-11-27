@@ -1,4 +1,4 @@
-// 5.220 (F-class) passive twin: the erosion arm with hydraulicFeedback{}
+// 5.228 (F-class) passive twin: the erosion arm with hydraulicFeedback{}
 // NOT declared. The bore stays the declared D: no dEff column, no wear.
 // The checker also runs the 5.187 read-only deck itself as the byte
 // witness that the undeclared path is untouched.

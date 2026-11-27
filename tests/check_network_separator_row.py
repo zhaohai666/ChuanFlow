@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.223 (H3): independent verification of the separator AS a network row.
+"""5.231 (H3): independent verification of the separator AS a network row.
 
 The steady network solve is re-derived from the case text alone, with no
 solver internals:

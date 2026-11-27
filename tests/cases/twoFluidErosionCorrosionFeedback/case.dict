@@ -1,4 +1,4 @@
-// 5.220 (F-class): erosion HYDRAULIC feedback - the erosion arm. The 5.187
+// 5.228 (F-class): erosion HYDRAULIC feedback - the erosion arm. The 5.187
 // riskReport only reads the risk out; declaring hydraulicFeedback{} lets it
 // move the bore. The line runs at vm = 10 m/s against the API RP 14E limit
 // Ve = 0.3048 * erosionC / sqrt(rho_m / 16.0184634) ~ 5.6 m/s at the mixed

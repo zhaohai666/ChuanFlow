@@ -83,7 +83,7 @@ DynamicMeshConfig readDynamicMeshConfig(const Dictionary& caseDict)
     cfg.reportEvery = static_cast<int>(d.getScalarOr("reportEvery", 1.0));
     cfg.validate();
 
-    // §5.228 opt-in fluid-stress block. Absent -> cfg.stress.enabled stays
+    // §5.236 opt-in fluid-stress block. Absent -> cfg.stress.enabled stays
     // false and every downstream code path is the untouched F11 reference.
     if (caseDict.has("fluidStress"))
     {

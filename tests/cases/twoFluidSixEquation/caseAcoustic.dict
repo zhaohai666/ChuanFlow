@@ -1,4 +1,4 @@
-// 5.221 (H1b): the two-way write-back arm. acoustics{} + sixEquation{} with
+// 5.229 (H1b): the two-way write-back arm. acoustics{} + sixEquation{} with
 // writeBack true: after every acoustic step the linear face velocity u' is
 // superposed onto BOTH phase momenta (the cell takes the average of its two
 // face velocities, the gas weighted (1 - alpha), the liquid alpha), the slip

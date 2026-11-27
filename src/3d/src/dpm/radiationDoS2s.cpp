@@ -258,7 +258,7 @@ RadSlabResult solveDoSlab(int nCells, scalar length, scalar TL, scalar TR,
 }
 
 // =====================================================================
-// 5.227: 3D level-symmetric DO on a blockMesh box. The slab functions
+// 5.235: 3D level-symmetric DO on a blockMesh box. The slab functions
 // above are untouched; everything below is the new arm.
 // =====================================================================
 

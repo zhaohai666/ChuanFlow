@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.228 (H6): verify the opt-in fluid-stress load on the 6DOF body,
+"""5.236 (H6): verify the opt-in fluid-stress load on the 6DOF body,
 independently of the C++ code.
 
   * Closed-surface integration: on the block box (V = 0.01 m3) with the

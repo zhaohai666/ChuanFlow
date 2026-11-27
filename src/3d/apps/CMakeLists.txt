@@ -28,7 +28,7 @@ target_link_libraries(chflow-piso-foam PRIVATE cf3d)
 add_executable(chflow-vof vofApp.cpp)
 target_link_libraries(chflow-vof PRIVATE cf3d cf_pvt)
 
-# 5.224: the two-fluid Euler-Euler kernel (per-phase velocities, shared
+# 5.232: the two-fluid Euler-Euler kernel (per-phase velocities, shared
 # pressure, interphase drag) and its case-driven app.
 add_executable(chflow-3d-euler-euler eulerEulerApp.cpp)
 target_link_libraries(chflow-3d-euler-euler PRIVATE cf3d)
@@ -70,7 +70,7 @@ if(MPI_CXX_FOUND)
         ${MPI_CXX_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(chflow-mpi-linear-solver PRIVATE cf3d cf_common MPI::MPI_CXX)
 
-    # 5.225: the full SIMPLE pressure-velocity coupling on Decomposition-split
+    # 5.233: the full SIMPLE pressure-velocity coupling on Decomposition-split
     # domains -- rank-local per-domain stencils, Sendrecv halos before every
     # stencil application, Allreduce collectives for the global reductions.
     add_executable(chflow-3d-mpi-flow mpiFlowSolverApp.cpp)

@@ -29,7 +29,7 @@ std::string num(double v)
     return os.str();
 }
 
-// 5.230: the prAlpha echo needs round-trip precision -- the checker compares
+// 5.238: the prAlpha echo needs round-trip precision -- the checker compares
 // kappa/alpha/a/dadT against the published PR76/PR78 closed forms at 1e-14,
 // which a 12-digit print cannot carry.
 std::string num17(double v)
@@ -176,7 +176,7 @@ int main(int argc, char** argv)
 
         for (const double p : c.pressures) reportOne(c, p, viscosityDict, paraPtr);
 
-        // 5.230: the alpha-function echo, gated on a `prAlpha{}` block. It
+        // 5.238: the alpha-function echo, gated on a `prAlpha{}` block. It
         // prints the ACTUAL per-component kappa/alpha/a the kernel built at
         // the declared temperature (mixtureParameters, not a re-evaluation),
         // plus the prDaDT the enthalpy departure consumes, so the checker can

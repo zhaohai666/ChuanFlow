@@ -1,4 +1,4 @@
-// 5.218 (W-class): distributed well control -- a gas kick that MIGRATES up a
+// 5.226 (W-class): distributed well control -- a gas kick that MIGRATES up a
 // segmented vertical annulus under a BOP that closes at a declared time.
 //
 // The annulus block is a marched column beside the network (it reads node

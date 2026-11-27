@@ -13,7 +13,7 @@ Mixture loadComposition(const Dictionary& compDict)
     for (const std::string& key : compDict.keys())
     {
         const Dictionary::Node& node = compDict.find(key);
-        // 5.230: a block entry declares a CUSTOM component -- the built-in
+        // 5.238: a block entry declares a CUSTOM component -- the built-in
         // tables stop at water (omega 0.344), and the PR1978 alpha branch is
         // for omega > 0.491, so the heavier fractions a field model carries
         // (C7+, H2S-rich runs) must be declarable. fraction is the mole

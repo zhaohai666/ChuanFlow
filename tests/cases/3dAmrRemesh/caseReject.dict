@@ -1,4 +1,4 @@
-// 5.229 (H6) rejection fixture: a coarsen threshold at or above the refine
+// 5.237 (H6) rejection fixture: a coarsen threshold at or above the refine
 // threshold would make every indicator both a refine and a coarsen candidate;
 // the loop must refuse it loudly instead of oscillating.
 block

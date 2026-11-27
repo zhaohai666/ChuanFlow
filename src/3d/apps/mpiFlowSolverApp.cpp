@@ -1,6 +1,6 @@
 // chflow-3d-mpi-flow: the full incompressible SIMPLE pressure-velocity
 // coupling on a real MPI transport over a Decomposition-split blockMesh
-// (5.225). One domain per rank.
+// (5.233). One domain per rank.
 //
 // This is NOT the §5.136 petscDistributed path. There, one global Krylov
 // solve shares the whole matrix across ranks. Here the flow solver keeps the

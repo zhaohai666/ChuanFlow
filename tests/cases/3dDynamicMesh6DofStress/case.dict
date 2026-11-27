@@ -1,4 +1,4 @@
-// 5.228 (H6): fluid-stress loaded 6DOF body. The block boundary is a closed
+// 5.236 (H6): fluid-stress loaded 6DOF body. The block boundary is a closed
 // box (V = 1 x 0.1 x 0.1 = 0.01 m3) translating rigidly with U_mesh = (0.5,0,0)
 // while the hydrostatic closure p = pressureRef + rho g.x, g = (0,0,-9.81),
 // loads it. The net pressure force is exactly the buoyancy -rho g V =

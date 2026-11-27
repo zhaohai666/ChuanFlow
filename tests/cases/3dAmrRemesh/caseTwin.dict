@@ -1,4 +1,4 @@
-// 5.229 (H6) passive twin: the same seed without any amr{} block. The app
+// 5.237 (H6) passive twin: the same seed without any amr{} block. The app
 // must print no AMR line and stay byte-identical to the F13-only output; the
 // checker also compares it against the amr block stripped from case.dict.
 block

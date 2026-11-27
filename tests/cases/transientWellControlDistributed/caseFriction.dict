@@ -1,4 +1,4 @@
-// 5.218 arm 2: steady single-phase annular friction, distributed per segment.
+// 5.226 arm 2: steady single-phase annular friction, distributed per segment.
 //
 // The column carries no gas (single phase, rhoM = rhoL) and is fed by the
 // 5.185 reservoir's own PI law re-used against the annulus bottom pressure

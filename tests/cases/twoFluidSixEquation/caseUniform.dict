@@ -1,4 +1,4 @@
-// 5.221 (H1b): the uniform limit of the six rows. Horizontal line, both
+// 5.229 (H1b): the uniform limit of the six rows. Horizontal line, both
 // ends at the EOS-consistent pressure (p = rhoG gasR T = 15 * 470 * 300 =
 // 2.115e6 Pa, so the ghost density equals the cell density and the uniform
 // state is an exact solution of the transport), uniform holdup: dp/dx = 0

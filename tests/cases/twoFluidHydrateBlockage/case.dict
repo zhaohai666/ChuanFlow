@@ -1,4 +1,4 @@
-// 5.219 (F-class): hydrate BLOCKAGE - the deposition arm. The 5.186 case
+// 5.227 (F-class): hydrate BLOCKAGE - the deposition arm. The 5.186 case
 // keeps h out of the bore; declaring blockage{} charges it two ways. This
 // arm runs the DEPOSITION LAYER: the wall layer obeys the declared balance
 //   d delta / dt = depositionRate * h - erosionRate * delta

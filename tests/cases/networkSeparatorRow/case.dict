@@ -1,4 +1,4 @@
-# 5.223 (H3): the separator AS a network row.
+# 5.231 (H3): the separator AS a network row.
 #
 # The inlet node is fed by a source; the row clamps both outlet nodes to the
 # inlet minus dP (derived pressures, exact), the two lines take their demand

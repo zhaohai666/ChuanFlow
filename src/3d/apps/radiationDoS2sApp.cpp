@@ -5,7 +5,7 @@
 //   model s2s  -- surface-to-surface view-factor closure (transparent limit)
 //   model p1   -- delegate to the shipped, untouched solveP1 for a trend check
 //
-// 5.227 adds `geometry box`: the same binary then runs the 3D level-symmetric
+// 5.235 adds `geometry box`: the same binary then runs the 3D level-symmetric
 // S2/S4 finite-volume sweep (radiation3d{} block, six grey walls). Absent or
 // `geometry slab` keeps the F9 slab path byte-identical.
 //
@@ -122,7 +122,7 @@ void printResult(const RadSlabResult& r, const char* model, const Slab& s)
               " viewFactor ", num(r.viewFactor));
 }
 
-// 5.227 box branch: the six walls of the blockMesh box, in the fixed order
+// 5.235 box branch: the six walls of the blockMesh box, in the fixed order
 // x0 x1 y0 y1 z0 z1, take their name/type from the block face declarations
 // and their temperature/emissivity from the matching patches{} entry.
 Do3dConfig readBoxConfig(const Dictionary& caseDict)
@@ -261,7 +261,7 @@ int main(int argc, char** argv)
         const Dictionary caseDict = Dictionary::parseFile(argv[1]);
 
         // geometry{slab|box}: absent or slab runs the shipped F9 path with
-        // byte-identical output; box runs the 5.227 3D level-symmetric sweep.
+        // byte-identical output; box runs the 5.235 3D level-symmetric sweep.
         const std::string geom = caseDict.getWordOr("geometry", "slab");
 
         if (geom == "box")

@@ -34,7 +34,7 @@ void report(scalar t, const BodyState& s, scalar scalarMean, scalar massBalance)
     log::info(os.str());
 }
 
-// §5.228: printed only when fluidStress{} is declared (passive twin keeps the
+// §5.236: printed only when fluidStress{} is declared (passive twin keeps the
 // F11 output byte-identical).
 void reportStress(scalar t, const StressLoad& sl)
 {

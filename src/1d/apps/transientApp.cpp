@@ -124,7 +124,7 @@ int main(int argc, char** argv)
                           " killmud ", num(r.killMudWeight),
                           " sidpp ", num(r.sidpp));
             }
-            // 5.218: the distributed well-control readout, one line per cell
+            // 5.226: the distributed well-control readout, one line per cell
             // of every declared annulus and one per declared BOP (absent when
             // the case declares none, so untouched traces print exactly what
             // they printed before).

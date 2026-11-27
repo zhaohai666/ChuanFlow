@@ -11,7 +11,7 @@
 namespace cf
 {
 
-/// Opt-in fluid-stress load on a closed body surface (§5.228, batch H6).
+/// Opt-in fluid-stress load on a closed body surface (§5.236, batch H6).
 ///
 /// When a `fluidStress{}` block is declared, the app integrates the Cauchy
 /// traction
@@ -44,7 +44,7 @@ struct FluidStressConfig
     void validate() const;
 };
 
-/// Integrated traction over a closed body surface (§5.228).
+/// Integrated traction over a closed body surface (§5.236).
 struct StressLoad
 {
     Vector forcePressure = Vector::zero(); // sum -p Sf, N
@@ -84,7 +84,7 @@ struct StressLoad
 struct DynamicMeshConfig
 {
     bool enabled = false;
-    FluidStressConfig stress;            // opt-in fluidStress{} (§5.228)
+    FluidStressConfig stress;            // opt-in fluidStress{} (§5.236)
     Vector meshVelocity = Vector::zero();  // prescribed constant mesh translation, m/s
     Vector bodyForce = Vector::zero();     // constant force on the body, N (x used)
     scalar mass = 0;                       // translational mass, kg (> 0)
@@ -139,7 +139,7 @@ Field<scalar> transportStep(const polyMesh& mesh, const Field<scalar>& phi,
 BodyState advanceBody(const BodyState& s, const DynamicMeshConfig& cfg, scalar dt);
 
 /// Integrate the Cauchy traction over the declared closed body surface
-/// (§5.228). Refuses loudly (cfFatal) when the selected face set is not a
+/// (§5.236). Refuses loudly (cfFatal) when the selected face set is not a
 /// closed outward surface: sum Sf must vanish and the divergence-theorem
 /// volume must be positive.
 StressLoad integrateFluidStress(const polyMesh& mesh, const FluidStressConfig& cfg);

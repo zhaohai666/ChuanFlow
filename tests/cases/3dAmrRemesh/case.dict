@@ -1,4 +1,4 @@
-// 5.229 (H6): AMR remeshing loop. The adapt{} seed (gradientThreshold 1e9)
+// 5.237 (H6): AMR remeshing loop. The adapt{} seed (gradientThreshold 1e9)
 // leaves the 8 x 8 x 1 base grid untouched: 64 cells carrying the exact step
 // averages (x-bins 0-3 -> 0, bin 4 -> 0.6, bins 5-7 -> 1, mass 0.045). The
 // amr{} loop then refines the bins 3,4,5 around the interface in cycle 1

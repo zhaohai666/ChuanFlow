@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.225 independent regression for the distributed SIMPLE flow solver.
+"""5.233 independent regression for the distributed SIMPLE flow solver.
 
 The same channel case is run through chflow-3d-mpi-flow at np = 1, 2, 4.
 np = 1 is the single-domain serial SIMPLE loop (the "single process serial"

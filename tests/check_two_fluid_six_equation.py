@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.221 (H1b) verification: six-equation distributed phase momentum.
+"""5.229 (H1b) verification: six-equation distributed phase momentum.
 
 usage: check_two_fluid_six_equation.py <exe> <case.dict> <tmpdir>
 

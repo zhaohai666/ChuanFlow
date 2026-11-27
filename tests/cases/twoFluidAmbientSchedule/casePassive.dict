@@ -1,4 +1,4 @@
-// 5.222 (F-class) passive twin: the schedule arm with ambientSchedule{}
+// 5.230 (F-class) passive twin: the schedule arm with ambientSchedule{}
 // NOT declared - the 5.144 constant-wall relax case verbatim in its physics
 // blocks. The wall stays 280 K, no wallT column prints, and the temperature
 // field follows the old closed-form relaxation (the checker also runs the

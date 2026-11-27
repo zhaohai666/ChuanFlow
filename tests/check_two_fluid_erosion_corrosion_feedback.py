@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.220 verification: erosion / corrosion HYDRAULIC feedback on the bore.
+"""5.228 verification: erosion / corrosion HYDRAULIC feedback on the bore.
 
 usage: check_two_fluid_erosion_corrosion_feedback.py <exe> <case.dict> <tmpdir>
 

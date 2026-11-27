@@ -302,7 +302,7 @@ struct ReservoirReadout
     double sidpp = 0;           // Pa, p_res - rho_mud g depth (static)
 };
 
-// ---- 5.218 (W-class): opt-in distributed well control ---------------------
+// ---- 5.226 (W-class): opt-in distributed well control ---------------------
 //
 // HONEST BOUNDARIES (a marched annulus string, not a coupled two-fluid
 // wellbore):
@@ -430,7 +430,7 @@ struct TransientCase
     std::vector<TransientEspConfig> esps;
     // 5.185: opt-in well-control reservoir inflows; each targets one free node.
     std::vector<TransientReservoirConfig> reservoirs;
-    // 5.218: opt-in distributed well control; the annulus strings and the BOP
+    // 5.226: opt-in distributed well control; the annulus strings and the BOP
     // rams that seal them.
     std::vector<TransientAnnulusConfig> annulus;
     std::vector<TransientBopConfig> bops;
@@ -576,7 +576,7 @@ public:
     // so the app prints nothing and the undeclared path is untouched.
     std::vector<ReservoirReadout> reservoirReadouts() const;
 
-    // ---- 5.218: the distributed well-control readout. One line per cell of
+    // ---- 5.226: the distributed well-control readout. One line per cell of
     // every declared annulus, one line per declared BOP. Both empty when the
     // case declares none, so an undeclared run prints byte-identical output.
     std::vector<AnnulusSegReadout> annulusReadouts() const;
@@ -702,7 +702,7 @@ private:
         double volume = 0, gasVolume = 0; // cumulative m3 injected
     };
 
-    // 5.218: one cell of a marched annulus. `vs` is the gas standard-volume
+    // 5.226: one cell of a marched annulus. `vs` is the gas standard-volume
     // inventory (Pa.m3, conserved by the advection); the readout fields are
     // the values the last march step actually priced.
     struct AnnulusCell
@@ -723,7 +723,7 @@ private:
         double bottomPressure = 0;      // fixed when nodeIndex < 0
         double drift = 0, rhoG = 0, pSurface = 0, temperature = 0;
         double influx = 0, influxGasFraction = 0, frictionFactor = 0;
-        // 5.218: the optional PI influx account (a declared reservoir's own
+        // 5.226: the optional PI influx account (a declared reservoir's own
         // law numbers, evaluated against the column's bottom pressure).
         bool hasPi = false;
         double piPressure = 0, piJ = 0, piFg = 0;
@@ -740,7 +740,7 @@ private:
         double pos = 0, kv = 0, q = 0;  // last step's values
     };
 
-    /// 5.218: one explicit march step of every annulus string and every BOP
+    /// 5.226: one explicit march step of every annulus string and every BOP
     /// ram, after the network state has been committed. Inert when the case
     /// declares none.
     void annulusStep(double dt);
@@ -770,7 +770,7 @@ private:
     std::vector<SourceEntry> sourceEntries_;
     // 5.185: the declared reservoir inflows, in declaration order.
     std::vector<ReservoirEntry> reservoirs_;
-    // 5.218: the marched annulus strings and the rams on them, in declaration
+    // 5.226: the marched annulus strings and the rams on them, in declaration
     // order. Both empty on every undeclared case.
     std::vector<AnnulusDyn> annuli_;
     std::vector<BopDyn> bops_;
@@ -829,7 +829,7 @@ TransientSeries runTransient(const TransientCase& c, double dt,
 /// a `coupledResistance`; anything else is refused at load time. The three
 /// blocks are declarative stand-ins (see the honest-boundary note above), not
 /// actuator/motor models; undeclared cases are byte-identical to pre-E7a.
-/// 5.218 adds two opt-in top-level blocks: `annulus { NAME { segments
+/// 5.226 adds two opt-in top-level blocks: `annulus { NAME { segments
 /// { SEG { innerD ..; outerD ..; length ..; roughness ..; initialGasFraction
 /// ..; } .. }; bottomPressure ..; driftVelocity ..; .. } }` (a marched
 /// vertical column beside the network: drift-flux gas migration, pV=const
@@ -837,7 +837,7 @@ TransientSeries runTransient(const TransientCase& c, double dt,
 /// ..; closeTime ..; strokeTime ..; openKv ..; closedKv ..; } }` (a Kv
 /// schedule at the column top, q = kv*sqrt(|dp|)). A ram needs its column;
 /// every other mistake is refused at load time; undeclared cases are
-/// byte-identical to pre-5.218.
+/// byte-identical to pre-5.226.
 TransientCase loadTransientFromDict(const Dictionary& caseDict);
 struct TransientTimeControls
 {

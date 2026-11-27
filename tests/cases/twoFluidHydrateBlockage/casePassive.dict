@@ -1,4 +1,4 @@
-// 5.219 (F-class) passive twin: the deposition arm with blockage{} NOT
+// 5.227 (F-class) passive twin: the deposition arm with blockage{} NOT
 // declared. The 5.186 non-blocking path must run untouched: no dEff/blk
 // column, and the hydraulics identical to the declared arm with the blockage
 // made inert. The physics blocks mirror the 5.186 case's hydrate kinetics

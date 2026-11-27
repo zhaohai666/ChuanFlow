@@ -299,7 +299,7 @@ add_test(
         $<TARGET_FILE:chflow-vof>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofOscillating/case.dict)
 
-# 5.224: the 3D Euler-Euler (two-fluid) kernel. The checker derives the
+# 5.232: the 3D Euler-Euler (two-fluid) kernel. The checker derives the
 # uniform / drag / buoyancy-slip / Schiller-Naumann arms from the case in its
 # tmp directory and re-derives every one in closed form: the implicit drag
 # pair per step (tau_k = alpha_k rho_k / K) with the mixture-momentum
@@ -2455,7 +2455,7 @@ if(MPI_CXX_FOUND AND TARGET chflow-mpi-linear-solver)
             ${CMAKE_CURRENT_SOURCE_DIR}/cases/mpiLinearSolver/case.dict)
 endif()
 
-# 5.225 / G7: the full SIMPLE pressure-velocity coupling distributed over
+# 5.233 / G7: the full SIMPLE pressure-velocity coupling distributed over
 # coordinate-median domains. The checker runs the same channel case at
 # np = 1/2/4, compares the gathered p/U fields cell by cell (1e-8 relative,
 # the documented reduction/sweep-order tolerance), re-derives div(phi) from
@@ -2709,7 +2709,7 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientWellControl/case.dict
         ${CMAKE_CURRENT_BINARY_DIR}/transientWellControl_tmp)
 
-# 5.218 (W-class): distributed well control. A gas kick migrates up a marched
+# 5.226 (W-class): distributed well control. A gas kick migrates up a marched
 # segmented annulus (graded drift-flux slip, pV=const expansion, distributed
 # Darcy-Weisbach friction) under a BOP ram that closes on a declared Kv
 # schedule; the friction arm re-derives the closed-form segment sum, the
@@ -2746,7 +2746,7 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidRiskReport/case.dict
         ${CMAKE_CURRENT_BINARY_DIR}/twoFluidRisk_tmp)
 
-# 5.219 (F-class): hydrate blockage - the opt-in counterpart of the 5.186
+# 5.227 (F-class): hydrate blockage - the opt-in counterpart of the 5.186
 # non-blocking reading. The deposition arm re-derives the implicit layer
 # balance and dEff == D - 2*delta on every section of every frame; the
 # bridging arm holds vm == 0 exactly on every frame whose h reaches the
@@ -2760,7 +2760,7 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidHydrateBlockage/case.dict
         ${CMAKE_CURRENT_BINARY_DIR}/twoFluidBlockage_tmp)
 
-# 5.220 (F-class): erosion / corrosion hydraulic feedback - the opt-in
+# 5.228 (F-class): erosion / corrosion hydraulic feedback - the opt-in
 # counterpart of the 5.187 read-only risk report. The erosion arm grows the
 # bore by exactly erosionRate*dt on every frame above the section's own API
 # RP 14E limit; the corrosion arm grows it by corrosionRate*dt while the
@@ -2774,7 +2774,7 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidErosionCorrosionFeedback/case.dict
         ${CMAKE_CURRENT_BINARY_DIR}/twoFluidFeedback_tmp)
 
-# 5.222 (F-class): time-varying ambient temperature. The schedule arm's
+# 5.230 (F-class): time-varying ambient temperature. The schedule arm's
 # reported wallT column matches the piecewise-linear interpolation of the
 # declared (times, ambientT) closed form, and the temperature field marches
 # the implicit-Euler relaxation onto the moving wall; the passive twin (no
@@ -2788,7 +2788,7 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidAmbientSchedule/case.dict
         ${CMAKE_CURRENT_BINARY_DIR}/twoFluidSchedule_tmp)
 
-# 5.221 (H1b): six-equation distributed phase momentum. The checker re-derives
+# 5.229 (H1b): six-equation distributed phase momentum. The checker re-derives
 # the exact 2x2 per-phase implicit-Euler recursion (Churchill wall friction
 # per phase, dynamic-closure drag K = C|uG-uL| semi-implicit through the
 # origin secant, EOS pressure gradient face-centred) frame by frame from the
@@ -2827,7 +2827,7 @@ if(CHFLOW_GUI_CARGO AND CHFLOW_GUI_NODE)
     set_tests_properties(gui.unit gui.build PROPERTIES TIMEOUT 900)
 endif()
 
-# 5.223 (H3): the separator AS a network row. The row clamps both outlet node
+# 5.231 (H3): the separator AS a network row. The row clamps both outlet node
 # pressures to the inlet minus dP (derived unknowns, exact), the lines take
 # their demand there, and the arriving feed is flashed by the Separator.h
 # allocation function. Checker re-derives the mass closure (1e-10), the edge
@@ -2843,7 +2843,7 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/networkSeparatorRow/case.dict
         $<TARGET_FILE:chflow-separator>)
 
-# 5.226 (H3): the 5.107 two-point QMOM as a pipe block on the steady network.
+# 5.234 (H3): the 5.107 two-point QMOM as a pipe block on the steady network.
 # Each of the march's 24 segments advances M0..M3 by its residence time
 # against the constant-kernel Smoluchowski source, and past dThreshold the
 # segment pays Brinkman mu (1 + 2.5 phi). Checker replays the whole moment
@@ -2858,10 +2858,10 @@ add_test(
         $<TARGET_FILE:chflow-1d-steady>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/networkQmom/case.dict)
 
-# 5.230 (H3): the PR1978 alpha branch. kappa switches at omega = 0.491 from
+# 5.238 (H3): the PR1978 alpha branch. kappa switches at omega = 0.491 from
 # the PR76 quadratic to the PR78 cubic, in ONE prKappa function shared by
 # a(T) and prDaDT. Checker re-derives both closed forms in Python: the
-# omega = 0.4 arm bitwise (the pre-5.230 kernel, operation order included),
+# omega = 0.4 arm bitwise (the pre-5.238 kernel, operation order included),
 # the omega = 0.5 arm at 1e-14, dadT on the same branch, and the
 # flash/enthalpy twin continuity across the switch; custom components with a
 # non-positive Tc or fraction are refused.
@@ -2879,7 +2879,7 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/verify_3dturb.cmake OPTIONAL)
 include(${CMAKE_CURRENT_SOURCE_DIR}/verify_3dphys.cmake OPTIONAL)
 include(${CMAKE_CURRENT_SOURCE_DIR}/verify_3dmesh.cmake OPTIONAL)
 
-# 5.228 (H6): 3D 6DOF 流体应力积分。checker 独立推导封闭面上的柯西合力:
+# 5.236 (H6): 3D 6DOF 流体应力积分。checker 独立推导封闭面上的柯西合力:
 # 静水压力闭包给出精确浮力 Fp = -rho g V (0,0,98.1)、零粘性力(无梯度声明)、
 # 力矩 M = r_c(t) x Fp 随网格平移、散度定理体积 == 0.01;应力载荷替换
 # bodyForce/drag 后 x=v=0 而转动 DOF 保持阻尼振荡闭式;GCL 质量平衡与均匀标量
@@ -2895,7 +2895,7 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/dynamicMesh6Dof/case.dict
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/3dDynamicMesh6DofStress/caseReject.dict)
 
-# 5.229 (H6): AMR 粗化 + 场量迁移 + remeshing 循环。checker 用 Python 完整镜像
+# 5.237 (H6): AMR 粗化 + 场量迁移 + remeshing 循环。checker 用 Python 完整镜像
 # 循环(显式保守扩散 -> 逐轴 slab 指示子 -> 箱交集体积加权迁移 -> 均匀守恒
 # 平移),逐 cycle 对比 AMR_CELL 集合、AMR_CYCLE 计数与 AMR_DONE 质量;判据:
 # cycle1 细化 bins3,4,5 至 88 cell 且子格体积和==父格(1e-14)、同父两子 phi

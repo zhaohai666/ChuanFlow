@@ -27,7 +27,7 @@ struct PengRobinsonParams
     scalar bMix = 0;              // m3/mol
     std::vector<scalar> aI;       // per component
     std::vector<scalar> bI;
-    // 5.230: the alpha-function ingredients, published per component so a
+    // 5.238: the alpha-function ingredients, published per component so a
     // case can check the branch it got (prKappa) against the closed form
     // without re-deriving it from the roots.
     std::vector<scalar> kappaI;   // per-component kappa of the alpha function
@@ -55,7 +55,7 @@ struct EosState
 /// the standard initial guess for a flash iteration.
 scalar wilsonK(const Component& c, scalar T, scalar p);
 
-/// 5.230: the alpha-function slope parameter kappa(omega), the single source
+/// 5.238: the alpha-function slope parameter kappa(omega), the single source
 /// of the branch for BOTH a(T) (mixtureParameters) and da/dT (prDaDT), so the
 /// enthalpy departure can never price a different alpha than the EOS does.
 /// Peng & Robinson (1976) Eq 17 gives kappa = 0.37464 + 1.54226 w - 0.26992 w^2
@@ -63,7 +63,7 @@ scalar wilsonK(const Component& c, scalar T, scalar p);
 /// heavier fractions with the cubic kappa = 0.379642 + 1.48503 w - 0.164423 w^2
 /// + 0.016666 w^3, the published branch threshold being omega = 0.491. The
 /// PR76 expression is evaluated with its original operation order below, so a
-/// component at or under the threshold is bit-identical to the pre-5.230 code.
+/// component at or under the threshold is bit-identical to the pre-5.238 code.
 scalar prKappa(scalar omega);
 
 /// a_i(T), b_i and the mixture parameters for mix.components()/fractions().

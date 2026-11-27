@@ -1,4 +1,4 @@
-// 5.221 (H1b): six-equation distributed phase momentum - the main arm.
+// 5.229 (H1b): six-equation distributed phase momentum - the main arm.
 // Declaring sixEquation{} replaces the lumped mixture-momentum row (and the
 // dynamic closure's slip relaxation) by one implicit-Euler momentum row PER
 // PHASE PER CELL, driven on the cell's own EOS pressure gradient with

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.230 (H3): independent verification of the PR1978 alpha branch.
+"""5.238 (H3): independent verification of the PR1978 alpha branch.
 
 The prAlpha{} echo is checked against the two published closed forms,
 re-derived here in Python with the kernel's own operation order:
@@ -12,7 +12,7 @@ re-derived here in Python with the kernel's own operation order:
   da_i/dT = 0.45724 (R Tc)^2 / Pc * (-kappa f / sqrt(T Tc)), f = 1+kappa(1-sqrtTr)
 
 The PR76 arm (omega = 0.4) is compared BITWISE -- the operation order is
-reproduced exactly, so equality is the "unchanged since before 5.230" witness.
+reproduced exactly, so equality is the "unchanged since before 5.238" witness.
 The PR78 arm (omega = 0.5) is compared at 1e-14. dadT must carry the SAME
 branch (the enthalpy departure's consistency criterion). The flash/enthalpy
 twin (omega moved 0.5 -> 0.491) must stay continuous: the branch switch is a
@@ -103,7 +103,7 @@ for name, c in comps.items():
     dadT = OMEGA_A * Rtc * Rtc / c["Pc"] * (-k * f / math.sqrt(T * c["Tc"]))
     check(f"{name} omega echoed", e["omega"] == c["omega"])
     if c["omega"] <= 0.491:
-        # PR76 arm: bit-identical to the pre-5.230 kernel (same expression,
+        # PR76 arm: bit-identical to the pre-5.238 kernel (same expression,
         # same operation order) -- equality, not tolerance.
         check(f"{name} PR76 kappa bitwise", e["kappa"] == k,
               f"{e['kappa']!r} vs {k!r}")

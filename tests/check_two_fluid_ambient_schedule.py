@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.222 verification: time-varying ambient temperature for the wall.
+"""5.230 verification: time-varying ambient temperature for the wall.
 
 usage: check_two_fluid_ambient_schedule.py <exe> <case.dict> <tmpdir>
 

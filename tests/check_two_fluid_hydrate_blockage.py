@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.219 verification: hydrate BLOCKAGE (deposition layer + particle bridging).
+"""5.227 verification: hydrate BLOCKAGE (deposition layer + particle bridging).
 
 usage: check_two_fluid_hydrate_blockage.py <exe> <case.dict> <tmpdir>
 

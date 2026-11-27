@@ -211,7 +211,7 @@ int main(int argc, char** argv)
                       " uCrit ", num(c.sand.criticalVelocity), " erodeRate ",
                       num(c.sand.erodeRate), " feedback ",
                       c.sand.feedback ? "true" : "false");
-        // 5.221 (H1b): the distributed phase momentum names its own mode
+        // 5.229 (H1b): the distributed phase momentum names its own mode
         if (c.sixEquationOn)
             log::info("twoFluid sixEquation: writeBack ",
                       c.sixEquation.writeBack ? "true" : "false",
@@ -265,12 +265,12 @@ int main(int argc, char** argv)
                       || c.blockageOn || c.hydraulicFeedbackOn
                           ? s.cellEffectiveDiameter()
                           : std::vector<double>();
-            // 5.219: the hydrate deposition layer thickness (m) rides the
+            // 5.227: the hydrate deposition layer thickness (m) rides the
             // cell rows as a gated `blk` column - absent unless blockage{}
             const std::vector<double> bl
                 = c.blockageOn ? s.cellBlockageThickness()
                                : std::vector<double>();
-            // 5.222: the scheduled wall temperature the step saw, gated on
+            // 5.230: the scheduled wall temperature the step saw, gated on
             // ambientSchedule{}
             const std::vector<double> wt
                 = c.ambientScheduleOn ? s.cellWallTemperature()
@@ -320,7 +320,7 @@ int main(int argc, char** argv)
             const std::vector<double> uAc
                 = c.acousticsOn ? s.faceAcousticVelocity()
                                 : std::vector<double>();
-            // 5.221 (H1b): the distributed phase velocities ride the cell
+            // 5.229 (H1b): the distributed phase velocities ride the cell
             // rows as `uG`/`uL` keys - absent unless sixEquation{} was
             // declared and enabled
             const std::vector<double> ug

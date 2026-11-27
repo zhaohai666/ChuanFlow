@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.226 (H3): independent verification of the QMOM pipe block.
+"""5.234 (H3): independent verification of the QMOM pipe block.
 
 The moment march is re-derived in Python from the case text alone: 24
 segments, residence time dt = ds/|v| with v = massRate/(rho A), the

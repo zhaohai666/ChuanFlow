@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.224: verify the 3D Euler-Euler (two-fluid) kernel.
+"""5.232: verify the 3D Euler-Euler (two-fluid) kernel.
 
 The checker derives every arm from cases/3dEulerEuler/case.dict (the drag
 arm) by rewriting the declared blocks in its tmp directory, runs the app,

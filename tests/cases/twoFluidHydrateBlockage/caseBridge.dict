@@ -1,4 +1,4 @@
-// 5.219 (F-class): hydrate BLOCKAGE - the PARTICLE BRIDGING arm. No layer
+// 5.227 (F-class): hydrate BLOCKAGE - the PARTICLE BRIDGING arm. No layer
 // grows (depositionRate 0), but the water-rich line (water cut 0.6, initial
 // h 0.05) sits below the declared dissociation curve (~308 K at the section
 // pressure against a 290 K stream), so the kinetics drive h toward the

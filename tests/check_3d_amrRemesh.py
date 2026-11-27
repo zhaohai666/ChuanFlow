@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.229 (H6): independent acceptance test for the opt-in AMR remeshing loop.
+"""5.237 (H6): independent acceptance test for the opt-in AMR remeshing loop.
 
 The checker mirrors the whole loop in pure Python from the case dictionaries
 (seed depths from adapt{}, explicit conservative diffusion, per-axis slab

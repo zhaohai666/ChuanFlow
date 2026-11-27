@@ -154,7 +154,7 @@ label baseBinOf(double mid, double lo, double hi, label ncell)
 /// Dyadic slab refinement depths: mark cells from the gradient norm and refine
 /// the base bins of the axes the field actually varies on. Applying the split
 /// to a whole bin keeps every shared face conforming (no hanging nodes in the
-/// rebuilt mesh). Shared by refine() and the §5.229 remesh loop; the body is a
+/// rebuilt mesh). Shared by refine() and the §5.237 remesh loop; the body is a
 /// verbatim move of the original pass loop, so refine() output is unchanged.
 std::array<std::vector<label>, 3> computeDepths(const BaseGrid& grid,
                                                 const AdaptControls& ctl)

@@ -1,4 +1,4 @@
-// 5.228 (H6) rejection fixture: the named surface (left) is a single open
+// 5.236 (H6) rejection fixture: the named surface (left) is a single open
 // patch, so the area-vector sum does not vanish and the integrated load must
 // be refused loudly instead of silently reporting a half-box force.
 block

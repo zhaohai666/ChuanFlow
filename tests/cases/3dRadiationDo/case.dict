@@ -1,4 +1,4 @@
-// 5.227 DO 3D case: a grey participating box between two black walls,
+// 5.235 DO 3D case: a grey participating box between two black walls,
 // geometry box, level-symmetric S2 (order 2). Transverse faces are
 // symmetry/empty, so the 3D upwind sweep must reproduce the 1D slab
 // discrete recursion cell by cell (the degenerate arm). The checker

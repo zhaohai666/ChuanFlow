@@ -659,7 +659,7 @@ struct TwoFluidAcoustics
                               // end is a hard wall u' = 0.
 };
 
-/// 5.221 (H1b): six-equation distributed phase momentum. The lumped single
+/// 5.229 (H1b): six-equation distributed phase momentum. The lumped single
 /// mixture velocity row is replaced by one momentum row PER PHASE per cell
 /// (the two-fluid six-equation model reduced to pressure + friction LAGGED
 /// at the old state and the dynamic closure's interfacialDrag K = C|uG-uL|
@@ -1029,7 +1029,7 @@ struct TwoFluidRiskReadout
     bool sour = false;
 };
 
-/// 5.219 (F-class): hydrate BLOCKAGE - the opt-in counterpart of the 5.186
+/// 5.227 (F-class): hydrate BLOCKAGE - the opt-in counterpart of the 5.186
 /// NON-blocking reading. While the transported fraction h stays out of the
 /// thin-layer diameter law, a declared `blockage{}` charges it two ways:
 ///
@@ -1062,7 +1062,7 @@ struct TwoFluidBlockage
     double erosionRate = 0;       // 1/s, layer removal per unit thickness
 };
 
-/// 5.220 (F-class): erosion / corrosion HYDRAULIC feedback - the opt-in
+/// 5.228 (F-class): erosion / corrosion HYDRAULIC feedback - the opt-in
 /// counterpart of the 5.187 read-only risk report. The report only prices
 /// the risk; a declared `hydraulicFeedback{}` lets the risk move the bore:
 ///
@@ -1100,7 +1100,7 @@ struct TwoFluidHydraulicFeedback
     double corrosionRate = 0;     // m/s, bore growth while sour
 };
 
-/// 5.222 (F-class): time-varying ambient temperature. The thermal{} wall is
+/// 5.230 (F-class): time-varying ambient temperature. The thermal{} wall is
 /// either a constant or a fixed geothermal profile; a declared
 /// `ambientSchedule{}` makes the ambient level move with time:
 ///     times[] and ambientT[] (equal length, times strictly ascending)
@@ -1195,19 +1195,19 @@ struct TwoFluidCase
     // report is hydraulically inert (the twin regressions witness that).
     bool riskOn = false;
     TwoFluidRiskConfig risk;
-    // 5.219 (F-class): hydrate blockage (deposition layer + particle bridging).
+    // 5.227 (F-class): hydrate blockage (deposition layer + particle bridging).
     // Opt-in: undeclared, the 5.186 non-blocking path is byte-identical.
     bool blockageOn = false;
     TwoFluidBlockage blockage;
-    // 5.220 (F-class): erosion / corrosion hydraulic feedback on the bore.
+    // 5.228 (F-class): erosion / corrosion hydraulic feedback on the bore.
     // Opt-in: undeclared, the 5.187 read-only path is byte-identical.
     bool hydraulicFeedbackOn = false;
     TwoFluidHydraulicFeedback hydraulicFeedback;
-    // 5.222 (F-class): time-varying ambient temperature for the wall.
+    // 5.230 (F-class): time-varying ambient temperature for the wall.
     // Opt-in: undeclared, the constant/geothermal wall is byte-identical.
     bool ambientScheduleOn = false;
     TwoFluidAmbientSchedule ambientSchedule;
-    // 5.221 (H1b): six-equation distributed phase momentum. Opt-in:
+    // 5.229 (H1b): six-equation distributed phase momentum. Opt-in:
     // undeclared, the lumped mixture-momentum row is byte-identical.
     bool sixEquationOn = false;
     TwoFluidSixEquation sixEquation;
@@ -1318,14 +1318,14 @@ public:
     /// bore everywhere unless wax{ feedback yes; } is declared, in which case
     /// d_eff = D sqrt(1 - w).
     std::vector<double> cellEffectiveDiameter() const { return dEff_; }
-    /// 5.219: hydrate deposition layer thickness per section, m (blockage on);
+    /// 5.227: hydrate deposition layer thickness per section, m (blockage on);
     /// zeros unless the blockage{} block is present. The bore reads
     /// d_eff = d_deposit - 2 * delta.
     std::vector<double> cellBlockageThickness() const { return blockage_; }
-    /// 5.219: 1 while a bridging plug (h >= packingFraction somewhere) holds
+    /// 5.227: 1 while a bridging plug (h >= packingFraction somewhere) holds
     /// the mixture velocity at zero (blockage on).
     bool blocked() const { return blocked_; }
-    /// 5.222: the wall temperature the last thermal step actually saw, per
+    /// 5.230: the wall temperature the last thermal step actually saw, per
     /// section, K (ambientSchedule on); zeros unless the block is declared.
     std::vector<double> cellWallTemperature() const { return wallTUsed_; }
     /// Deposited asphaltene volume fraction per section (5.99); zeros unless
@@ -1489,7 +1489,7 @@ public:
     {
         return cfg_.acousticsOn ? uA_ : std::vector<double>();
     }
-    /// 5.221 (H1b): the per-cell gas phase velocity uG (m/s), the six-equation
+    /// 5.229 (H1b): the per-cell gas phase velocity uG (m/s), the six-equation
     /// momentum row's own state (empty unless sixEquation{} is declared and
     /// enabled). The closure slip `s` column keeps its meaning; these are the
     /// DISTRIBUTED phase velocities behind it.
@@ -1497,7 +1497,7 @@ public:
     {
         return cfg_.sixEquationOn ? uG_ : std::vector<double>();
     }
-    /// 5.221 (H1b): the per-cell liquid phase velocity uL (m/s) (empty unless
+    /// 5.229 (H1b): the per-cell liquid phase velocity uL (m/s) (empty unless
     /// sixEquation{} is declared and enabled).
     std::vector<double> cellLiquidVelocity() const
     {
@@ -1664,7 +1664,7 @@ public:
 private:
     void momentumSolve(double dt);
     void slipStep(double dt);
-    /// 5.221 (H1b): the distributed per-cell two-phase momentum rows that
+    /// 5.229 (H1b): the distributed per-cell two-phase momentum rows that
     /// replace the lumped mixture row + slip relaxation when sixEquation{}
     /// is on; vM_ is then the arc-weighted mass-weighted mixture velocity.
     void sixEquationMomentumSolve(double dt);
@@ -1706,16 +1706,16 @@ private:
     /// 5.98/5.99: refresh dEff_ from the TOTAL deposit (wax + asphaltene +
     /// scale) under the thin-layer identity d_eff = D sqrt(1 - w_total).
     /// With feedback off or nothing deposited this keeps d_eff = D.
-    /// 5.219: with blockage{} declared the hydrate layer step runs here (it
+    /// 5.227: with blockage{} declared the hydrate layer step runs here (it
     /// needs the step's dt for the implicit balance) and the layer is charged
     /// linearly: d_eff = d_deposit - 2 * delta.
     void refreshDepositDiameter(double dt);
-    /// 5.219: advance the hydrate deposition layer (implicit Euler on
+    /// 5.227: advance the hydrate deposition layer (implicit Euler on
     /// d delta/dt = depositionRate*h - erosionRate*delta) and re-read the
     /// bridging plug latch from the final hydrate field; a fresh bridge
     /// zeroes the mixture velocity on the spot.
     void hydrateBlockageStep(double dt);
-    /// 5.220: erosion / corrosion bore growth: wear_i += dt * (erosionRate
+    /// 5.228: erosion / corrosion bore growth: wear_i += dt * (erosionRate
     /// above the section's own Ve + corrosionRate while the sour line
     /// holds), applied on top of the deposit diameter.
     void erosionCorrosionFeedbackStep(double dt);
@@ -1726,12 +1726,12 @@ private:
     /// without a schedule).
     void applySchedule(double dt);
     double wallTemperature(int i) const;
-    /// 5.222: the wall temperature at an explicit evaluation time: without
+    /// 5.230: the wall temperature at an explicit evaluation time: without
     /// ambientSchedule{} the time is ignored and the constant/geothermal
     /// expression is returned verbatim (bit-identical history); with it the
     /// piecewise-linear ambient is interpolated at t.
     double wallTemperatureAt(int i, double t) const;
-    /// 5.222: piecewise-linear ambient temperature of the declared schedule,
+    /// 5.230: piecewise-linear ambient temperature of the declared schedule,
     /// clamped (held) outside the declared time window.
     double ambientAtTime(double t) const;
     // hydrate equilibrium temperature T_eq(p) from ln(p) = A + B / T_eq
@@ -1848,9 +1848,9 @@ private:
                                   // (Pa); allocated only when acoustics on
     std::vector<double> uA_;      // E7c: face acoustic velocity (m/s), one
                                   // entry per face (n_ + 1)
-    std::vector<double> uG_;      // 5.221: cell gas phase velocity (m/s);
+    std::vector<double> uG_;      // 5.229: cell gas phase velocity (m/s);
                                   // allocated only when sixEquation on
-    std::vector<double> uL_;      // 5.221: cell liquid phase velocity (m/s)
+    std::vector<double> uL_;      // 5.229: cell liquid phase velocity (m/s)
     std::vector<double> slip_;    // dynamic closure: vG - vL per section
     std::vector<double> sDotOld_; // last step's ds/dt, the lagged slip
                                   // inertia the mixture momentum feels
@@ -1875,13 +1875,13 @@ private:
     std::vector<double> dEff_;     // 5.98: effective wall-shear diameter;
                                    // D when feedback is off, D sqrt(1-w) when
                                    // on (area()/transport still use D)
-    std::vector<double> blockage_; // 5.219: hydrate deposition layer
+    std::vector<double> blockage_; // 5.227: hydrate deposition layer
                                    // thickness per section, m (blockage on);
                                    // d_eff loses 2 * blockage_
-    bool blocked_ = false;         // 5.219: bridging plug latch (blockage on)
-    std::vector<double> wear_;     // 5.220: erosion/corrosion bore growth per
+    bool blocked_ = false;         // 5.227: bridging plug latch (blockage on)
+    std::vector<double> wear_;     // 5.228: erosion/corrosion bore growth per
                                    // section, m (hydraulicFeedback on)
-    std::vector<double> wallTUsed_; // 5.222: the wall temperature the last
+    std::vector<double> wallTUsed_; // 5.230: the wall temperature the last
                                     // thermal step saw, per section K
                                     // (ambientSchedule on)
     std::vector<double> entrained_; // droplet fraction of the liquid
@@ -2089,7 +2089,7 @@ private:
 ///                                // pressure-release); the other end is
 ///                                // a hard wall u' = 0
 ///   }
-///   blockage     // optional (5.219): hydrate BLOCKAGE (the opt-in
+///   blockage     // optional (5.227): hydrate BLOCKAGE (the opt-in
 ///                // counterpart of the 5.186 non-blocking reading); needs
 ///                // hydrate{}
 ///   {
@@ -2097,7 +2097,7 @@ private:
 ///       depositionRate 2.0e-5;   // m/s, wall layer growth (>= 0)
 ///       erosionRate 1.0e-4;      // 1/s, layer stripping (>= 0)
 ///   }
-///   hydraulicFeedback // optional (5.220): erosion/corrosion bore growth (the
+///   hydraulicFeedback // optional (5.228): erosion/corrosion bore growth (the
 ///                // opt-in counterpart of the 5.187 read-only risk report)
 ///   {
 ///       erosionC 100;            // API RP 14E C factor (> 0)
@@ -2105,7 +2105,7 @@ private:
 ///       h2s 0.002;               // sour mole fraction [0,1]
 ///       corrosionRate 5.0e-6;    // m/s bore growth while sour (>= 0)
 ///   }
-///   ambientSchedule // optional (5.222): time-varying ambient for the wall
+///   ambientSchedule // optional (5.230): time-varying ambient for the wall
 ///                // (needs thermal{}); piecewise linear, held outside
 ///   {
 ///       times    ( 0 3600 7200 );   // s, strictly ascending

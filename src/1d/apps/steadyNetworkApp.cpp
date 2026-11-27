@@ -716,7 +716,7 @@ int main(int argc, char** argv)
             }
             else if (f.separatorState >= 0)
             {
-                // 5.223 (H3): a separator row has no wall law and no marched
+                // 5.231 (H3): a separator row has no wall law and no marched
                 // station -- its own line below carries the whole statement.
             }
             else
@@ -770,7 +770,7 @@ int main(int argc, char** argv)
                                                        : " belowTransition");
             }
             log::info(line);
-            // 5.223 (H3): the separator row's own line -- the allocation the
+            // 5.231 (H3): the separator row's own line -- the allocation the
             // flash made at the stage pressure the network solved. Round-trip
             // precision: the twin case against the chflow-separator app and
             // the mass closure are both checked tighter than 1e-9.
@@ -792,7 +792,7 @@ int main(int argc, char** argv)
                           + " qGas " + num17(f.sepGasEdgeRate)
                           + " qGasStd " + num17(f.sepGasStdRate));
             }
-            // 5.226 (H3): the QMOM march's own line -- the outlet population,
+            // 5.234 (H3): the QMOM march's own line -- the outlet population,
             // the Sauter diameter it reached and the viscosities the last
             // segment charged, so a checker can replay the residence-time
             // march from the case text and the solved rate alone.

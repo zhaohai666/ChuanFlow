@@ -1,4 +1,4 @@
-// 5.224 drag arm: uniform alphaG, initial UG != UL, no gravity, no pressure
+// 5.232 drag arm: uniform alphaG, initial UG != UL, no gravity, no pressure
 // gradient. The coupled implicit drag pair relaxes the slip to zero with each
 // phase's own response time tau_k = alpha_k rho_k / K, and the mixture
 // momentum alphaG rhoG UG + alphaL rhoL UL is invariant because the drag

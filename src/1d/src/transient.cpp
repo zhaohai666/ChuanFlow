@@ -249,7 +249,7 @@ double espHeadSlope(double stages, double h0, double hq, double qr, double q)
     return -stages * 2.0 * (h0 - hq) * q / (qr * qr);
 }
 
-// ---- 5.218 (§5.218) distributed well control: the BOP ram schedule ---------
+// ---- 5.226 (§5.226) distributed well control: the BOP ram schedule ---------
 
 /// The ram's closure position at time t: 0 while open, a linear ramp over
 /// [closeTime, closeTime + strokeTime], 1 once shut. strokeTime 0 is the
@@ -624,7 +624,7 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
     q_.assign(pipes_.size(), 0.0);
     for (std::size_t k = 0; k < pipes_.size(); ++k) q_[k] = pipes_[k].qPrev;
 
-    // ---- 5.218: the distributed well-control column -------------------------
+    // ---- 5.226: the distributed well-control column -------------------------
     // Built after the network state exists: the column reads node pressures
     // and writes none, so an undeclared case advances the 5.185 march bit for
     // bit. Every mistake is loud: a bore that is not a bore, a column of no
@@ -795,7 +795,7 @@ std::vector<ReservoirReadout> TransientNetwork::reservoirReadouts() const
     return out;
 }
 
-// 5.218: one explicit Euler march of every annulus column. The scheme is
+// 5.226: one explicit Euler march of every annulus column. The scheme is
 // closed form in the case's own numbers, so a checker re-derives it without
 // reading any kernel state:
 //
@@ -899,7 +899,7 @@ void TransientNetwork::annulusStep(double dt)
     }
 }
 
-// 5.218: the ram schedule at the implicit new time: the closure position and
+// 5.226: the ram schedule at the implicit new time: the closure position and
 // the flow coefficient the step's outflow law will read.
 void TransientNetwork::bopStep(double tNew)
 {
@@ -1328,7 +1328,7 @@ void TransientNetwork::commitStep()
         hydrateKineticsStep(nd.vL, nd.vH, nd.rate, dt);
     }
 
-    // 5.218: the distributed well-control column marches on the committed
+    // 5.226: the distributed well-control column marches on the committed
     // state. It reads node pressures and writes none, so an undeclared case
     // advances exactly as before and a declared one adds only its own lines.
     annulusStep(dt);
@@ -2262,7 +2262,7 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
         }
     }
 
-    // ---- 5.218: the opt-in distributed well control ------------------------
+    // ---- 5.226: the opt-in distributed well control ------------------------
     // The annulus column: a vertical string of segments (bottom to top), each
     // a cell of the marched column. The grammar's own numbers are priced here;
     // the wiring (name collisions, the ram's column) is checked by the

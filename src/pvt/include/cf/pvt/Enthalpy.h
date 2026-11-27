@@ -22,7 +22,7 @@ scalar idealGasEnthalpyRise(scalar T, scalar Tref, scalar cpA, scalar cpB);
 
 /// Analytic da_i/dT of the PR alpha(T) function
 ///   alpha = [1 + kappa (1 - sqrt(T/Tc))]^2,
-/// with kappa from prKappa (5.230): the PR76 polynomial for omega <= 0.491
+/// with kappa from prKappa (5.238): the PR76 polynomial for omega <= 0.491
 /// and the PR1978 cubic for omega > 0.491, so da/dT is always the derivative
 /// of the same alpha the EOS priced.
 scalar prDaDT(const Component& c, scalar T);

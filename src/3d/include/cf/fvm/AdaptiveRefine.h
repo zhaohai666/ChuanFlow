@@ -93,7 +93,7 @@ struct AdaptResult
     scalar maxVolume = 0;
 };
 
-/// Opt-in AMR remeshing loop controls, parsed from `amr{}` (§5.229).
+/// Opt-in AMR remeshing loop controls, parsed from `amr{}` (§5.237).
 ///
 /// Without the block `enabled` stays false and the app output is byte-identical
 /// to the F13 reference. The loop refines / coarsens base bins by the cell
@@ -151,7 +151,7 @@ class AdaptiveRefine
 public:
     static AdaptResult refine(const Dictionary& caseDict, const std::string& casePath);
 
-    /// Opt-in AMR remeshing loop over the seed produced by `refine` (§5.229).
+    /// Opt-in AMR remeshing loop over the seed produced by `refine` (§5.237).
     /// Per cycle: (c>1) `every` explicit conservative diffusion steps, a
     /// per-axis gradient indicator, slab refine / coarsen of base bins within
     /// the adapt{} maxDepth, a conservative field transfer through the box

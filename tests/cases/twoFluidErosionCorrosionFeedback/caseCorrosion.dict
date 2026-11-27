@@ -1,4 +1,4 @@
-// 5.220 (F-class): corrosion HYDRAULIC feedback - the corrosion arm. The
+// 5.228 (F-class): corrosion HYDRAULIC feedback - the corrosion arm. The
 // line runs slow (vm = 2 m/s, far below the 14E limit) so the erosion
 // channel never fires (erosionRate 0 anyway), but the sour gas (h2s 0.002
 // at the ~5 MPa section pressure -> partial ~1e4 Pa >= 3447 Pa = 0.5 psia)

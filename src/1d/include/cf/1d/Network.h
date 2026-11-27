@@ -294,7 +294,7 @@ struct NetworkPipe
     double jetThroatLength = 0;  // m, L_t
     double jetFrictionFactor = 0;// Darcy f on the throat wall
 
-    // 5.223 (H3): the separator AS a network row (the Separator.h point
+    // 5.231 (H3): the separator AS a network row (the Separator.h point
     // element, now iterated). The row carries THREE nodes -- the inlet (the
     // pipe's `from`), the liquid outlet (the pipe's `to`) and the declared
     // `gasNode` -- so it is the one row in this kernel that is not a two-node
@@ -329,7 +329,7 @@ struct NetworkPipe
     double sepDP = 0;           // Pa, declared internal drop, >= 0
     double sepTemperature = 0;  // K, stage temperature (0 -> the fluid's)
 
-    // 5.226 (H3): the two-point QMOM of §5.107 (src/3d/src/dpm/qmom.cpp) as a
+    // 5.234 (H3): the two-point QMOM of §5.107 (src/3d/src/dpm/qmom.cpp) as a
     // PIPE declaration. The moments M0..M3 are the droplet population the
     // stream carries; the steady march already walks the line segment by
     // segment, so each segment advances the moments by its own residence
@@ -350,7 +350,7 @@ struct NetworkPipe
     // property law is algebraic with no segment to carry a population, and
     // the black-oil march is a correlation chain that prices no explicit
     // mu(p) to multiply. Undeclared, every field below is inert and the
-    // march is byte-identical to 5.223.
+    // march is byte-identical to 5.231.
     bool qmomOn = false;
     double qmomBeta = 0;        // Smoluchowski constant kernel, > 0 (the switch)
     double qmomM0 = 0;          // inlet moments (number / volume / area / volume-weighted)
@@ -899,7 +899,7 @@ struct PipeFlowResult
     double dpJet = 0;           // Pa, the jet pump's own rise (5.192)
     double jetFlowRatio = 0;    // r = q_s/q_n the row settled on (5.192)
     int jetState = -1;          // -1 none, 0 PUMPING, 1 NO-SUCTION, 2 FREE-JET
-    // 5.223 (H3): the separator row's own statement -- the same numbers the
+    // 5.231 (H3): the separator row's own statement -- the same numbers the
     // Separator.h point element reports, priced at the stage pressure the
     // network solved (the inlet node), so the twin case against the
     // chflow-separator app is a comparison of one allocation function called
@@ -921,7 +921,7 @@ struct PipeFlowResult
                                     // stock-tank liquid basis)
     double sepGasStdRate = 0;       // sm3/s liberated gas at standard
                                     // conditions (reported, not node-booked)
-    // 5.226 (H3): the QMOM march's own statement on a pipe that declared
+    // 5.234 (H3): the QMOM march's own statement on a pipe that declared
     // qmom{}. The moments are the population AT THE OUTLET (after all 24
     // segments advanced), d32 = M3/M2 there, and muBase/muEff are the clean
     // table viscosity and the Brinkman viscosity the LAST segment priced its
@@ -1063,7 +1063,7 @@ RiskReadout riskReadoutOf(const NetworkPipe& pipe,
 /// into; the pump is a point element like the valve, so `diameter`, `length`
 /// and `elevation` all read 0, and a wall law, bore shape, head curve, lift
 /// valve, coupled edge or flow-pattern override co-declared with it is refused.
-/// Separator row (5.223, H3), on a black-oil network only:
+/// Separator row (5.231, H3), on a black-oil network only:
 ///   pipes { SEP { from IN; to OUTLIQ; length 0; diameter 0;
 ///                 separator { gasNode OUTGAS;  // the gas outlet node
 ///                             feedRate 2e-3;   // optional expectation
@@ -1079,7 +1079,7 @@ RiskReadout riskReadoutOf(const NetworkPipe& pipe,
 /// non-black-oil network, a non-zero length/diameter/elevation, any
 /// co-declared machine and a converged row with no feed are all refused
 /// loudly.
-/// QMOM pipe block (5.226, H3), on a tabulated-PVT (`fluid { pvt }`) network:
+/// QMOM pipe block (5.234, H3), on a tabulated-PVT (`fluid { pvt }`) network:
 ///   pipes { P1 { from A; to B; length 600; diameter 0.1;
 ///                qmom { beta 1.0e-9;            // kernel, > 0 (the switch)
 ///                       m0 1.0e14; m1 1.0e-3;   // inlet moments M0..M3
@@ -1092,7 +1092,7 @@ RiskReadout riskReadoutOf(const NetworkPipe& pipe,
 /// rate advances nothing. A non-positive beta, a negative m0, a non-positive
 /// dThreshold, a missing phi statement and any co-declared machine, rheology,
 /// bore shape, thermal physics or non-PVT fill are refused loudly; an
-/// undeclared pipe marches byte-identically to 5.223.
+/// undeclared pipe marches byte-identically to 5.231.
 OneDNetwork loadNetworkFromDict(const Dictionary& caseDict);
 SteadyControls loadSteadyControls(const Dictionary& caseDict);
 

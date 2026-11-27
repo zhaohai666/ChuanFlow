@@ -1,4 +1,4 @@
-// 5.218 passive twin: the main deck with annulus{}/bop{} deleted. The
+// 5.226 passive twin: the main deck with annulus{}/bop{} deleted. The
 // checker asserts its output is byte-identical to the main deck's output
 // minus the annulus/bop lines: the marched column never touches the network.
 fluid { rho 1200; mu 0.05; }

@@ -291,7 +291,7 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         uA_.assign(n_ + 1, 0.0);
     }
 
-    // 5.221 (H1b): the six-equation phase velocities start from the declared
+    // 5.229 (H1b): the six-equation phase velocities start from the declared
     // uG0/uL0, or from the initial mixture velocity when undeclared (the
     // line starts at rest with no slip). The slip state rides the phase
     // difference from the first frame. Allocated only on the declared path,
@@ -547,13 +547,13 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
     // be sized BEFORE this call: a feedback bore starts from the initial
     // bed, not from the raw diameter.
     dEff_.assign(n_, diameter_);
-    // 5.219/5.220: the blockage layer and the wear start at zero; the
+    // 5.227/5.228: the blockage layer and the wear start at zero; the
     // deposit refresh below already composes them (both steps are inert
     // when the blocks are undeclared).
     blockage_.assign(n_, 0.0);
     wear_.assign(n_, 0.0);
     refreshDepositDiameter(0.0);
-    // 5.222: the first frame reports the schedule's wall temperature at
+    // 5.230: the first frame reports the schedule's wall temperature at
     // t = 0 (the expression is time-free when the schedule is undeclared).
     if (cfg_.ambientScheduleOn)
     {
@@ -869,7 +869,7 @@ double TwoFluidPipe::cellFriction(int i, double vM) const
     // verbatim. With feedback on the deposit sets both the wall diameter and
     // the exposed roughness; the thin-layer approximation leaves area() and
     // the transport faces at the declared bore.
-    // 5.219/5.220: a blockage layer or bore wear also moves the wall
+    // 5.227/5.228: a blockage layer or bore wear also moves the wall
     // diameter; the exposed roughness stays the wax deposit's only when a
     // deposit feedback owns the wall, otherwise the pipe's own roughness.
     const bool depositFb = (cfg_.waxOn && cfg_.wax.feedback)
@@ -1090,7 +1090,7 @@ void TwoFluidPipe::momentumSolve(double dt)
     const TwoFluidBoundary& in = cfg_.inlet;
     const TwoFluidBoundary& out = cfg_.outlet;
 
-    // 5.219: a standing bridging plug beats the pump - the line is held at
+    // 5.227: a standing bridging plug beats the pump - the line is held at
     // rest (vM = 0) for every step the bridge stands, whatever the boundary
     // type. Undeclared (or unbridged) this branch is not even entered.
     if (cfg_.blockageOn && blocked_)
@@ -1271,7 +1271,7 @@ void TwoFluidPipe::slipStep(double dt)
     }
 }
 
-// 5.221 (H1b): one implicit-Euler step of the DISTRIBUTED two-phase momentum
+// 5.229 (H1b): one implicit-Euler step of the DISTRIBUTED two-phase momentum
 // rows that replace the lumped mixture row when sixEquation{} is declared.
 // Per cell i (holdup and EOS density frozen at the old time level):
 //   ag rhoG duG/dt = -ag dp/dx - ag rhoG g sinT - ag rG - K (uG - uL)
@@ -1311,7 +1311,7 @@ void TwoFluidPipe::sixEquationMomentumSolve(double dt)
                                           : 0.5 * (p[i] + p[i + 1]);
         const double dpdx = (pFaceR - pFaceL) / dxs_[i];
         // the same bore and roughness ownership cellFriction uses (5.98 /
-        // 5.219 / 5.220): a deposit, blockage or wear layer moves the wall
+        // 5.227 / 5.228): a deposit, blockage or wear layer moves the wall
         const bool depositFb = (cfg_.waxOn && cfg_.wax.feedback)
                             || (cfg_.sandOn && cfg_.sand.feedback);
         const bool fb = depositFb || cfg_.blockageOn
@@ -1360,7 +1360,7 @@ void TwoFluidPipe::sixEquationMomentumSolve(double dt)
     vM_ = mixtureVelocityFromPhases();
 }
 
-// 5.221 (H1b): the mixture velocity the transport reads, as the arc-weighted
+// 5.229 (H1b): the mixture velocity the transport reads, as the arc-weighted
 // mass-weighted average of the phase velocities (total phase momentum per
 // unit area over total phase mass per unit area along the chain). A uniform
 // phase field reads back that field; a uniform mixture velocity with equal
@@ -2173,7 +2173,7 @@ void TwoFluidPipe::waxStep(double dt)
 // 5.98/5.99: one owner for the thin-layer diameter. The deposit that shrinks
 // the wall-shear bore is the TOTAL of every depositing species (wax +
 // asphaltene + scale); with only wax declared this is exactly the 5.98
-// behavior, bit for bit. 5.219: with blockage{} the hydrate layer runs here
+// behavior, bit for bit. 5.227: with blockage{} the hydrate layer runs here
 // and is charged linearly on top (d_eff = d_deposit - 2 * delta).
 void TwoFluidPipe::refreshDepositDiameter(double dt)
 {
@@ -2194,7 +2194,7 @@ void TwoFluidPipe::refreshDepositDiameter(double dt)
     }
 }
 
-// 5.219: hydrate blockage. The wall layer obeys the declared deposition /
+// 5.227: hydrate blockage. The wall layer obeys the declared deposition /
 // erosion balance, implicit Euler exactly as the wax/scale relaxations:
 //   delta_new = (delta_old / dt + depositionRate * h) / (1 / dt + erosionRate)
 // (erosionRate = 0 degenerates to the pure accumulation delta + dt*dep*h).
@@ -2222,7 +2222,7 @@ void TwoFluidPipe::hydrateBlockageStep(double dt)
     blocked_ = bridged;
 }
 
-// 5.220: erosion / corrosion hydraulic feedback. The bore GROWS where the
+// 5.228: erosion / corrosion hydraulic feedback. The bore GROWS where the
 // risk is live: the section's own API RP 14E limit (the 5.187 law, priced
 // on this frame's mixture density) is crossed by |vM|, or the declared H2S
 // fraction at the highest section EOS pressure sits on the sour side of the
@@ -2321,7 +2321,7 @@ void TwoFluidPipe::step(double dt)
     applySchedule(dt);
     // junction branches have their mixture velocity imposed by the
     // network's coupled Newton (externalMomentum_ is a one-shot flag)
-    // 5.221 (H1b): with sixEquation{} the distributed per-cell phase rows
+    // 5.229 (H1b): with sixEquation{} the distributed per-cell phase rows
     // own the momentum and the slip state rides the phase velocities
     // directly - the lumped row and the slip relaxation are skipped; the
     // undeclared path below is untouched verbatim
@@ -2342,7 +2342,7 @@ void TwoFluidPipe::step(double dt)
     asphalteneStep(dt);
     scaleStep(dt);
     refreshDepositDiameter(dt);
-    erosionCorrosionFeedbackStep(dt); // 5.220: bore growth rides the final state
+    erosionCorrosionFeedbackStep(dt); // 5.228: bore growth rides the final state
     compositionStep(dt); // G1: per-cell PR flash diagnostics (reads only)
     thermalStep(dt);
     slugTrackStep(dt); // O2 (5.161): rides the step's final holdup field
@@ -2357,7 +2357,7 @@ double TwoFluidPipe::wallTemperature(int i) const
     return wallTemperatureAt(i, t_);
 }
 
-// 5.222: with ambientSchedule{} the ambient level is the piecewise-linear
+// 5.230: with ambientSchedule{} the ambient level is the piecewise-linear
 // interpolation of the declared (times, ambientT) at the evaluation time:
 // the constant model's wall IS the ambient, the geothermal model keeps its
 // per-section depth offset on top of the moving surface level. Without the
@@ -2378,7 +2378,7 @@ double TwoFluidPipe::wallTemperatureAt(int i, double t) const
     return amb + th.geothermalGradient * depth;
 }
 
-// 5.222: the declared schedule, held (clamped) outside the time window.
+// 5.230: the declared schedule, held (clamped) outside the time window.
 // The segment is the last point at or before t; the value is the exact
 // linear blend on it.
 double TwoFluidPipe::ambientAtTime(double t) const
@@ -2416,7 +2416,7 @@ void TwoFluidPipe::thermalStep(double dt)
                          * (alpha_[i] * f.rhoL * f.cL
                             + (1.0 - alpha_[i]) * cellGasDensity(i) * f.cG);
         const double kw = th.wallHeatTransfer * dxs_[i];
-        // 5.222: the implicit source is evaluated at the step's END time;
+        // 5.230: the implicit source is evaluated at the step's END time;
         // without a schedule the expression ignores t (bit-identical)
         const double tw = cfg_.formationOn ? formT_[i][0]
                                            : wallTemperatureAt(i, t_ + dt);
@@ -3422,7 +3422,7 @@ void TwoFluidPipe::piggingStep(double dt)
 // sealed boundary imposes its velocity, so acoustically it is a wall).
 // No write-back: the mean state (momentum, holdup, gas mass) is untouched,
 // the acoustic layer is superposed reporting only - with one exception:
-// 5.221 (H1b) sixEquation{} + writeBack superposes the face velocity onto
+// 5.229 (H1b) sixEquation{} + writeBack superposes the face velocity onto
 // the distributed phase momenta after the step (see below); without the
 // six-equation declaration this row is byte-identical to the report-only
 // layer it always was.
@@ -3548,7 +3548,7 @@ void TwoFluidPipe::acousticsStep(double dt)
     uA_.swap(uNew);
     pA_.swap(pNew);
 
-    // 5.221 (H1b): two-way coupling. With sixEquation{} + writeBack the
+    // 5.229 (H1b): two-way coupling. With sixEquation{} + writeBack the
     // acoustic face velocity superposes onto BOTH phase momenta - the cell
     // takes the average of its two face velocities, weighted by the phase
     // fractions it carries (the gas rides (1 - alpha), the liquid alpha) -
@@ -4376,7 +4376,7 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
         }
     }
 
-    // ---- 5.219 (F-class): hydrate blockage --------------------------------
+    // ---- 5.227 (F-class): hydrate blockage --------------------------------
     // The opt-in counterpart of the 5.186 non-blocking reading: a declared
     // blockage{} charges h to the bore (layer) and to the line (bridging
     // plug). Undeclared, no field moves.
@@ -4413,7 +4413,7 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
             cfFatal("twoFluid: negative blockage erosionRate");
     }
 
-    // ---- 5.220 (F-class): erosion / corrosion hydraulic feedback ----------
+    // ---- 5.228 (F-class): erosion / corrosion hydraulic feedback ----------
     // The opt-in counterpart of the 5.187 read-only risk report: the risk
     // moves the bore. Undeclared, no diameter term reads a velocity.
     if (caseDict.has("hydraulicFeedback"))
@@ -4455,7 +4455,7 @@ void loadTwoFluidCommon(const Dictionary& caseDict, TwoFluidCase& c)
                     " declare the gas EOS (fluid gasR > 0)");
     }
 
-    // ---- 5.222 (F-class): time-varying ambient temperature ----------------
+    // ---- 5.230 (F-class): time-varying ambient temperature ----------------
     // The wall's ambient level follows a declared piecewise-linear schedule.
     // Undeclared, wallTemperature(i) is the constant/geothermal expression.
     if (caseDict.has("ambientSchedule"))
@@ -4582,7 +4582,7 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
         && c.inlet.type != TwoFluidBoundary::Type::phaseRates)
         cfFatal("twoFluid: a rate schedule needs a phaseRates inlet");
 
-    // ---- 5.221 (H1b): six-equation distributed phase momentum -----------
+    // ---- 5.229 (H1b): six-equation distributed phase momentum -----------
     // The lumped mixture row is replaced by per-cell phase rows driven on
     // the cell's own EOS pressure gradient; the drag pricing is the dynamic
     // closure's interfacialDrag. Every key is read loudly; the boundary and
@@ -4690,7 +4690,7 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
     if (caseDict.has("riskReport"))
         cfFatal("twoFluid: riskReport is a serial-row feature; the branch"
                 " network row carries no risk report columns yet");
-    // 5.219/5.220/5.222: same rule for the three opt-in blockage, wear and
+    // 5.227/5.228/5.230: same rule for the three opt-in blockage, wear and
     // ambient-schedule blocks - the network report carries no blk/wallT
     // columns, so a declaration there would run unreported physics.
     if (caseDict.has("blockage"))
@@ -4702,7 +4702,7 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
     if (caseDict.has("ambientSchedule"))
         cfFatal("twoFluid: ambientSchedule is a serial-row feature; the"
                 " branch network row carries no wallT report columns yet");
-    // 5.221 (H1b): same rule for the six-equation block - the network frame
+    // 5.229 (H1b): same rule for the six-equation block - the network frame
     // carries no uG/uL columns and the junction Newton owns the branch
     // velocity, so a declaration there would run unreported physics.
     if (caseDict.has("sixEquation"))

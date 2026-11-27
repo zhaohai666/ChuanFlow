@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""5.227 independent regression for the 3D level-symmetric DO arm.
+"""5.235 independent regression for the 3D level-symmetric DO arm.
 
 Nothing here trusts a number printed by the solver: every expected value is
 re-derived from the case constants (kappa_a, kappa_s, sigmaSB, wall

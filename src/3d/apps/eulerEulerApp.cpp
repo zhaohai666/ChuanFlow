@@ -1,4 +1,4 @@
-// chflow-3d-euler-euler (5.224): the two-fluid Euler-Euler kernel on a
+// chflow-3d-euler-euler (5.232): the two-fluid Euler-Euler kernel on a
 // declared case. Per phase a velocity field, one shared pressure, a gas
 // volume fraction advected by its own phase flux, an interphase drag and a
 // mixture-continuity PISO-like coupling -- all on ChuanFlow's own FVM

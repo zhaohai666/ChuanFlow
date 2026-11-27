@@ -89,7 +89,7 @@ int main(int argc, char** argv)
             }
         }
 
-        // §5.229 opt-in AMR remeshing loop. Without the block the output above
+        // §5.237 opt-in AMR remeshing loop. Without the block the output above
         // is byte-identical to the F13 reference.
         if (caseDict.has("amr"))
         {

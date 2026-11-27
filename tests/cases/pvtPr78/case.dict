@@ -1,7 +1,7 @@
-# 5.230 (H3): the PR1978 alpha branch. The custom composition block declares
+# 5.238 (H3): the PR1978 alpha branch. The custom composition block declares
 # the heavy fraction with omega = 0.5 (above the published 0.491 threshold, so
 # the kernel must take the PR78 cubic kappa) next to a mid fraction at
-# omega = 0.4 (PR76 branch, bit-identical to the pre-5.230 kernel) and methane
+# omega = 0.4 (PR76 branch, bit-identical to the pre-5.238 kernel) and methane
 # at its table omega. prAlpha{} echoes the ACTUAL kappa/alpha/a/dadT the EOS
 # built at the declared temperature; the twin case (omega 0.491) checks the
 # branch switch is continuous in the flash and enthalpy outputs.

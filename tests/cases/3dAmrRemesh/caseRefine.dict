@@ -1,4 +1,4 @@
-// 5.229 (H6) refine arm: one cycle, no diffusion (cycle 1 never diffuses).
+// 5.237 (H6) refine arm: one cycle, no diffusion (cycle 1 never diffuses).
 // Bins 3,4,5 must deepen to 1 (88 cells), each child volume summing to its
 // parent and each parent's two children sharing the parent's seed phi plus one
 // identical uniform conservation shift (which must be round-off small).

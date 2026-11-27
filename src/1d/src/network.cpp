@@ -48,7 +48,7 @@ bool pipeIsLiftValve(const NetworkPipe& p) { return p.liftDomePressure > 0; }
 // 5.90 (D1 increment 4): the barrel bore is what switches a rod pump on.
 bool pipeIsRodPump(const NetworkPipe& p) { return p.rodPlungerDiameter > 0; }
 
-// 5.223 (H3): the separator{} block itself is the switch.
+// 5.231 (H3): the separator{} block itself is the switch.
 bool pipeIsSeparator(const NetworkPipe& p) { return p.separatorOn; }
 
 double pipeArea(const NetworkPipe& p)
@@ -1213,7 +1213,7 @@ label OneDNetwork::addPipe(const NetworkPipe& pipe)
     if (!pipeIsLiftValve(p) && !pipeIsRodPump(p) && !pipeIsSeparator(p)
         && (!(p.diameter > 0) || !(p.length > 0)))
         cfFatal("network: pipe '" + p.name + "' needs positive length and diameter");
-    // 5.223 (H3): the separator row is a point element like the valve and the
+    // 5.231 (H3): the separator row is a point element like the valve and the
     // plunger -- its three nodes ARE the geometry -- so a non-zero length,
     // bore or elevation would be a wall law the row never marches. Resolve the
     // gas outlet node here, next to the from/to resolution, and refuse a row
@@ -1696,7 +1696,7 @@ void solvePipeFlow(const NetworkPipe& pipe, const FluidProperties& fluid,
 namespace
 {
 
-/// 5.223 (H3): the separator row's own statement, priced at the pressures the
+/// 5.231 (H3): the separator row's own statement, priced at the pressures the
 /// Newton iterate currently holds. The connection chosen for this increment is
 /// "one inlet node, two outlet edges" rather than "the separator as a node":
 /// the arriving stream already sits at the inlet node, so flashing it there
@@ -1777,7 +1777,7 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
     res.nodePressure.assign(n, 0.0);
     res.pipeFlows.resize(net.pipes.size());
 
-    // 5.223 (H3): the separator row's outlet nodes are DERIVED, not unknowns:
+    // 5.231 (H3): the separator row's outlet nodes are DERIVED, not unknowns:
     // p(outlet) := p(inlet) - dP is an identity of the linear system, so the
     // solved upstream-downstream difference IS dP to machine precision while
     // the Newton matrix stays as well-conditioned as the marched rows alone.
@@ -1867,7 +1867,7 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
             else if (unk[i] >= 0)
                 pAll[i] = pv[static_cast<std::size_t>(unk[i])];
         }
-        // 5.223 (H3): the separator outlets, one level deep (masters are
+        // 5.231 (H3): the separator outlets, one level deep (masters are
         // never themselves derived -- refused above).
         for (std::size_t i = 0; i < n; ++i)
         {
@@ -1879,7 +1879,7 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
         if (withJacobian) j.assign(nFree, std::vector<double>(nFree, 0.0));
 
         double maxRes = 0;
-        // 5.223 (H3): the marched rows book to the MASTER unknown -- a derived
+        // 5.231 (H3): the marched rows book to the MASTER unknown -- a derived
         // outlet node's balance equation lives at its separator inlet, and
         // unk[master[.]] is exactly the chain rule dp_outlet/dp_inlet = 1 that
         // puts dP into the Jacobian. They also accumulate the net volume each
@@ -1933,7 +1933,7 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
         {
             const NetworkPipe& pipe = net.pipes[k];
             if (!pipe.separatorOn) continue;
-            // 5.223 (H3): the row books no residual of its own -- its outlet
+            // 5.231 (H3): the row books no residual of its own -- its outlet
             // pressures are derived identities and the edge flows ARE the line
             // demands at those pressures. It states the flash of the arriving
             // feed for the report (and for the feed rejection below).
@@ -1988,7 +1988,7 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
                     if (!(pTry[i] > 0.0) || !std::isfinite(pTry[i]))
                         feasible = false;
                 }
-                // 5.223 (H3): derived outlet nodes ride their inlet's trial
+                // 5.231 (H3): derived outlet nodes ride their inlet's trial
                 // pressure minus dP -- keep THOSE positive too, or a trial
                 // state would march a pipe at a non-positive pressure.
                 for (std::size_t i = 0; i < n && feasible; ++i)
@@ -2027,7 +2027,7 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
     {
         if (unk[i] >= 0) res.nodePressure[i] = p[static_cast<std::size_t>(unk[i])];
     }
-    // 5.223 (H3): the derived outlets report the pressure the identity gave
+    // 5.231 (H3): the derived outlets report the pressure the identity gave
     // them, not the initial guess they were never solved for.
     for (std::size_t i = 0; i < n; ++i)
     {
@@ -2039,7 +2039,7 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
     for (std::size_t k = 0; k < net.pipes.size(); ++k)
     {
         const NetworkPipe& pipe = net.pipes[k];
-        if (pipe.separatorOn) continue; // 5.223: booked in the pass below,
+        if (pipe.separatorOn) continue; // 5.231: booked in the pass below,
                                         // once every node's conductance is final
         if (net.hasBlackOil)
         {
@@ -2064,7 +2064,7 @@ SteadyNetworkResult solveSteadyNetwork(const OneDNetwork& net,
                           res.pipeFlows[k]);
         }
     }
-    // 5.223 (H3): the separator rows at the converged pressures, and the
+    // 5.231 (H3): the separator rows at the converged pressures, and the
     // increment's own rejection: a row whose inlet node delivered nothing has
     // no feed to flash.
     {
@@ -2717,7 +2717,7 @@ struct PvtMarchOut
     // publishes, so the thermal report reads the same shape on both paths.
     // Filled on every march; copied to the result only when thermal is on.
     std::vector<double> segX, segPressure, segTemperature;
-    // 5.226 (H3): the QMOM march's statement -- the population at the outlet
+    // 5.234 (H3): the QMOM march's statement -- the population at the outlet
     // (after every segment's residence-time advance), the Sauter diameter
     // there, and the clean / Brinkman viscosities the LAST segment charged.
     // Inert (false / zeros) on every undeclared pipe.
@@ -2728,7 +2728,7 @@ struct PvtMarchOut
     double qmomMuEff = 0;
 };
 
-/// 5.226 (H3): the constant-kernel Smoluchowski moment source of §5.107,
+/// 5.234 (H3): the constant-kernel Smoluchowski moment source of §5.107,
 /// restated here from src/3d/src/dpm/qmom.cpp `coagulationSource` (cross-layer
 /// include of the 3D fvm header from the 1D kernel is not available):
 ///   dM0/dt = -beta M0^2 / 2   (number density lost to pairs)
@@ -2800,7 +2800,7 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
     PvtMarchOut m;
     double p = pStart > 0.0 ? pStart : pUp;
     double t = thermal ? thermal->temperatureIn : 0.0;
-    // 5.226 (H3): the population the march carries, in the pipe's own frame.
+    // 5.234 (H3): the population the march carries, in the pipe's own frame.
     // Undeclared, qm is never read and every number below is bit for bit.
     double qm[4] = {pipe.qmomM0, pipe.qmomM1, pipe.qmomM2, pipe.qmomM3};
     if (pipe.qmomOn) m.qmomOn = true;
@@ -2819,7 +2819,7 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         const double tState = pipe.pvtTemperatureFeedback ? t : 0.0;
         fluid.evaluateAt(p, rho, mu0, sigma, tState);
         const double v = massRate / (rho * area);
-        // 5.226 (H3): the population first takes this segment's residence
+        // 5.234 (H3): the population first takes this segment's residence
         // time, then the segment charges the viscosity it has reached. No
         // flow means no residence time: the moments do not evolve and the
         // pipe charges the declared state's viscosity.
@@ -2841,7 +2841,7 @@ PvtMarchOut marchPvtPipe(const NetworkPipe& pipe, const PvtFluid& fluid,
         double mu = wallRateApparentViscosityPaS(
             Rheology{pipe.flowIndex, pipe.consistency, pipe.yieldStress},
             8.0 * std::abs(v) / pipe.diameter, mu0);
-        // 5.226 (H3): the Sauter feedback. Past the declared diameter the
+        // 5.234 (H3): the Sauter feedback. Past the declared diameter the
         // emulsion is Brinkman's; below it the clean table viscosity stands.
         if (pipe.qmomOn)
         {
@@ -3205,7 +3205,7 @@ bool solvePipeFlowPvt(const NetworkPipe& pipe, const PvtFluid& fluid,
         boostUp ? pUp * compressorRatioOf(pipe, q) : 0.0);
     out.sigmaOutlet = m.sigmaOutlet;
     out.temperature = m.temperature;
-    // 5.226 (H3): the QMOM march's outlet statement, from the replayed march
+    // 5.234 (H3): the QMOM march's outlet statement, from the replayed march
     // the readouts above already agree with.
     if (pipe.qmomOn && m.qmomOn)
     {
@@ -4487,7 +4487,7 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                         "co2LowPa >= co2HighPa: the bands must rise with the "
                         "partial pressure");
         }
-        // 5.223 (H3): the separator row. The `separator{}` block is the switch,
+        // 5.231 (H3): the separator row. The `separator{}` block is the switch,
         // read last so every machine and wall key above is already in `p` and
         // the scope refusals see the whole declaration. Every rejection the
         // increment names is refused here, loudly, before the first march: a
@@ -4538,7 +4538,7 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                         " or flow-assurance override: the row is the flash,"
                         " not a pipe");
         }
-        // 5.226 (H3): the QMOM pipe block. `beta` is the kernel and the
+        // 5.234 (H3): the QMOM pipe block. `beta` is the kernel and the
         // switch: with no kernel there is no source to march, so its absence
         // (or a non-positive one) is refused rather than priced as a frozen
         // population. M0 < 0 is not a count; dThreshold <= 0 would switch
@@ -4591,7 +4591,7 @@ OneDNetwork loadNetworkFromDict(const Dictionary& caseDict)
                 cfFatal("steadyNetwork: pipe '" + name + "' declares qmom on"
                         " a network without the tabulated march: the moment"
                         " population rides the segment-by-segment PVT march"
-                        " (5.226)");
+                        " (5.234)");
             if (p.flowIndex > 0.0 || p.consistency > 0.0
                 || p.yieldStress > 0.0)
                 cfFatal("steadyNetwork: pipe '" + name + "' declares qmom"

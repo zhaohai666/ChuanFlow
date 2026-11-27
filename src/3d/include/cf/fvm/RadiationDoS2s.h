@@ -100,7 +100,7 @@ RadSlabResult solveS2sSlab(int nCells, scalar length, scalar TL, scalar TR,
 scalar dos2sBlackbodyG(scalar temperature, scalar sigmaSB);
 
 // =====================================================================
-// 5.227: the DO sweep extended from the 1D slab to a true 3D box.
+// 5.235: the DO sweep extended from the 1D slab to a true 3D box.
 //
 // The slab path above stays exactly as shipped (F9); this adds a level
 // symmetric ordinate set in 3D and a per-direction finite-volume sweep on

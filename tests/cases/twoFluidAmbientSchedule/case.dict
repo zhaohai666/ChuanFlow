@@ -1,4 +1,4 @@
-// 5.222 (F-class): time-varying ambient temperature. The sealed, liquid-
+// 5.230 (F-class): time-varying ambient temperature. The sealed, liquid-
 // full line of the 5.144 relax case, but the wall's ambient level now
 // follows a declared piecewise-linear schedule:
 //   times ( 0 30 60 ); ambientT ( 280 310 290 );

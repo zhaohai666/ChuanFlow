@@ -2455,6 +2455,24 @@ if(MPI_CXX_FOUND AND TARGET chflow-mpi-linear-solver)
             ${CMAKE_CURRENT_SOURCE_DIR}/cases/mpiLinearSolver/case.dict)
 endif()
 
+# 5.225 / G7: the full SIMPLE pressure-velocity coupling distributed over
+# coordinate-median domains. The checker runs the same channel case at
+# np = 1/2/4, compares the gathered p/U fields cell by cell (1e-8 relative,
+# the documented reduction/sweep-order tolerance), re-derives div(phi) from
+# the per-rank flux dumps, requires the per-rank halo dumps and checksums to
+# be exact, and grades two loud refusals (np != declared domains, domains >
+# mesh segments). Registered only when an MPI compiler/launcher was found.
+if(MPI_CXX_FOUND AND MPIEXEC_EXECUTABLE AND TARGET chflow-3d-mpi-flow)
+    add_test(
+        NAME verify.mpiFlowSolver
+        COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/check_mpi_flow_solver.py
+            $<TARGET_FILE:chflow-3d-mpi-flow>
+            ${CMAKE_CURRENT_SOURCE_DIR}/cases/mpiFlowSolver/case.dict
+            ${MPIEXEC_EXECUTABLE})
+    set_tests_properties(verify.mpiFlowSolver PROPERTIES TIMEOUT 900)
+endif()
+
 # A11 / §5.133 cross-check: PETSc's own MPI machinery (MatCreateAIJ + KSPCG,
 # PETSc's contiguous-block partition) against the homegrown distributed CSR CG
 # (coordinate-median partition) on the same 16384-cell graph-Laplacian system.

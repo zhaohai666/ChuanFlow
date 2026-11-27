@@ -1,0 +1,48 @@
+// 5.225 MPI flow-solver case: a pressure-free-developing channel between
+// no-slip walls, run through the full distributed SIMPLE loop. One domain
+// per rank; the checker runs np = 1, 2, 4 and compares the gathered fields,
+// the recomputed div(phi) and the per-rank halo dumps. Every physical
+// constant and solver control is declared here; the `mpi` block is absent
+// so any rank count is accepted (the refusal arms mutate it in).
+//
+// nu: dynamic viscosity of the declared fluid [m2/s].
+block
+{
+    min   (0 0 0);
+    max   (1 0.4 0.2);
+    cells (16 4 2);
+
+    xmin  { name inlet;  type patch;    }
+    xmax  { name outlet; type patch;    }
+    ymin  { name lower;  type wall;     }
+    ymax  { name upper;  type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+nu 0.01;
+
+patches
+{
+    inlet  { U (1 0 0); }
+    outlet { p 0; }
+    lower  { }
+    upper  { }
+}
+
+simple
+{
+    maxIterations 400;
+    continuityTol 1e-9;
+    pcorrTol      1e-12;
+    momentumTol   1e-12;
+    relaxU        0.7;
+    relaxP        0.3;
+    gsSweeps      800;
+    grad          linear;
+}
+
+output
+{
+    dump flow.dat;
+}

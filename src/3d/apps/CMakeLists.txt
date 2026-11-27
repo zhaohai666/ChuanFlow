@@ -70,6 +70,15 @@ if(MPI_CXX_FOUND)
         ${MPI_CXX_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(chflow-mpi-linear-solver PRIVATE cf3d cf_common MPI::MPI_CXX)
 
+    # 5.225: the full SIMPLE pressure-velocity coupling on Decomposition-split
+    # domains -- rank-local per-domain stencils, Sendrecv halos before every
+    # stencil application, Allreduce collectives for the global reductions.
+    add_executable(chflow-3d-mpi-flow mpiFlowSolverApp.cpp)
+    target_compile_definitions(chflow-3d-mpi-flow PRIVATE CF_HAVE_MPI)
+    target_include_directories(chflow-3d-mpi-flow PRIVATE
+        ${MPI_CXX_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(chflow-3d-mpi-flow PRIVATE cf3d cf_common MPI::MPI_CXX)
+
     # A11 cross-check: the SAME graph-Laplacian system solved by PETSc's own
     # MPI machinery (MatCreateAIJ + KSPCG) under a deliberately different
     # partition, dumped in the same six-column format so one checker compares

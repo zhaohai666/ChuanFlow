@@ -99,4 +99,86 @@ RadSlabResult solveS2sSlab(int nCells, scalar length, scalar TL, scalar TR,
 /// Blackbody incident radiation G_w = 4 pi I_b = 4 sigma T^4.
 scalar dos2sBlackbodyG(scalar temperature, scalar sigmaSB);
 
+// =====================================================================
+// 5.227: the DO sweep extended from the 1D slab to a true 3D box.
+//
+// The slab path above stays exactly as shipped (F9); this adds a level
+// symmetric ordinate set in 3D and a per-direction finite-volume sweep on
+// a blockMesh box:
+//
+//   div(s . I) = -(kappa_a + kappa_s) I + kappa_a I_b + kappa_s/(4 pi) sum w I
+//
+// discretised first-order upwind per axis (the inflow face value is the
+// upwind cell centre), grey diffuse walls with a declared emissivity
+// (I_in = eps I_b(T_w) + (1 - eps) I_out of the mirrored direction, lagged
+// one source iteration), and symmetry/empty faces that return the outgoing
+// intensity back unchanged, so that axis cancels exactly.
+//
+// Direction sets (weights normalised to sum 4 pi, set closed under the full
+// octahedral group, so every second moment is isotropic):
+//   order 2 (S2): 8 ordinates  (+-1,+-1,+-1)/sqrt(3), w = pi/2
+//   order 4 (S4): 24 ordinates  orbit of (+-2,+-1,+-1)/sqrt(6), w = pi/6
+struct Do3dWall
+{
+    std::string type = "wall";   // wall | symmetry | empty
+    scalar temperature = 0;      // K (walls)
+    scalar emissivity = 1;       // grey wall, [0,1]
+};
+
+struct Do3dConfig
+{
+    int order = 2;               // 2 | 4
+    scalar absorption = 0;       // kappa_a [1/m], >= 0
+    scalar scattering = 0;       // kappa_s [1/m], >= 0
+    scalar mediumT1 = 0;         // K at x = xmin (uniform when T2 == T1)
+    scalar mediumT2 = 0;         // K at x = xmax
+    scalar sbConstant = 5.670374419e-8;
+    Do3dWall walls[6];           // x0 x1 y0 y1 z0 z1
+    scalar sourceTol = 1e-13;    // source-iteration stop
+    int maxIterations = 5000;
+
+    scalar extinction() const { return absorption + scattering; }
+    void validate() const;
+};
+
+/// Read `geometry box` and the `radiation3d{}` block (order, kappa_a,
+/// kappa_s, mediumT1/2, sigmaSB, sourceTol, maxIterations). The six walls are
+/// filled by the caller from the block face definitions and the `patches{}`
+/// entries. Rejects order not 2/4, emissivity outside [0,1], negative kappa.
+Do3dConfig readDo3dConfig(const Dictionary& caseDict);
+
+/// One 3D level-symmetric ordinate: direction cosines + weight.
+struct Ordinate3d
+{
+    Vector s = Vector::zero();
+    scalar w = 0;
+};
+
+/// The declared S2 (8) / S4 (24) set; any other order fails loudly.
+std::vector<Ordinate3d> levelSymOrdinates(int order);
+
+/// Result of a steady 3D box DO solve on an nx x ny x nz blockMesh.
+struct RadBoxResult
+{
+    int nx = 0, ny = 0, nz = 0;
+    Field<scalar> G;             // cell-averaged incident radiation [W/m2]
+    Field<Vector> q;             // cell net radiative flux [W/m2]
+    Field<scalar> S;             // cell net volumetric source [W/m3]
+    scalar qX0 = 0;              // net flux INTO the medium at x = xmin [W/m2]
+    scalar qX1 = 0;              // net flux INTO the medium at x = xmax
+    scalar qY0 = 0, qY1 = 0, qZ0 = 0, qZ1 = 0;
+    scalar volSrc = 0;           // integral S dV / V
+    scalar balance = 0;          // sum of the six wall fluxes - integral S dV
+    int directions = 0;
+    int iterations = 0;
+    scalar residual = 0;
+    bool converged = true;
+};
+
+/// 3D discrete-ordinates FVM sweep on a uniform box. The medium temperature
+/// varies linearly along x between T1 and T2 (uniform when equal).
+RadBoxResult solveDo3d(int nx, int ny, int nz,
+                       scalar Lx, scalar Ly, scalar Lz,
+                       const Do3dConfig& cfg);
+
 } // namespace cf

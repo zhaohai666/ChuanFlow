@@ -1,0 +1,56 @@
+// RSM (LRR slow pressure-strain) on a canonical homogeneous plane shear,
+// U = (rate*(y-y0), 0, 0). The seeded profile is linear and the walls carry its
+// exact end values, so the Gauss gradient is rate in every cell and the mean
+// profile stays linear: the Reynolds stresses are spatially uniform and their
+// transport reduces to the homogeneous-shear ODE system the checker re-derives.
+block
+{
+    min   (0 0 0);
+    max   (1 0.5 0.1);
+    cells (4 8 1);
+
+    xmin  { name left;   type symmetry; }
+    xmax  { name right;  type symmetry; }
+    ymin  { name bottom; type wall;     }
+    ymax  { name top;    type wall;     }
+    zmin  { name front;  type symmetry; }
+    zmax  { name back;   type symmetry; }
+}
+
+nu 0.01;
+
+patches
+{
+    left   { UType zeroGradient; p 0; pType fixedValue; }
+    right  { UType zeroGradient; pType zeroGradient;    }
+    bottom { U (0 0 0); UType fixedValue; pType zeroGradient; }
+    top    { U (1 0 0); UType fixedValue; pType zeroGradient; } // rate*H = 2*0.5
+    front  { UType zeroGradient; pType zeroGradient; }
+    back   { UType zeroGradient; pType zeroGradient; }
+}
+
+schemes
+{
+    ddt       Euler;
+    div       upwind;
+    laplacian corrected;
+    grad      linear;
+}
+
+profile { type linearShear; rate 2; }
+
+rsm
+{
+    C1 1.8; C1eps 1.44; C2eps 1.92;
+    sigmaR 1.0; sigmaEps 1.3;
+    relaxation 0.7;
+    k0 0.01; eps0 0.001;
+}
+
+probe { xyz (0.5 0.25 0.05); }
+
+piso
+{
+    dt 0.01; endTime 0.5; reportEvery 10;
+    correctors 2; continuityTol 1e-8;
+}

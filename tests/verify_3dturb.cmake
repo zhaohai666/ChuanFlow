@@ -7,6 +7,19 @@ add_test(
         $<TARGET_FILE:chflow-3d-les>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/lesSgs/case.dict)
 
+# RSM (LRR slow pressure-strain) second-moment closure on a homogeneous plane
+# shear: the stresses are spatially uniform, so the checker re-derives the
+# homogeneous-shear ODE system from the case text and replays the app's implicit
+# Euler + relaxation + realizability scheme step by step (driving the mean shear
+# by the reported shear trajectory), then checks k=tr/2, realizability, the
+# developing anisotropy, the energy bound and loud refusals.
+add_test(
+    NAME verify.rsmShear
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_rsm_shear.py
+        $<TARGET_FILE:chflow-3d-rsm>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/rsmShear/case.dict)
+
 add_test(
     NAME verify.cavitationTransport
     COMMAND ${Python3_EXECUTABLE}

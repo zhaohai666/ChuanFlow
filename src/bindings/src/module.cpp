@@ -22,6 +22,7 @@ void registerCombustionBindings(py::module_& m);
 void registerVofBindings(py::module_& m);
 void registerDpmBindings(py::module_& m);
 void registerPbmBindings(py::module_& m);
+void registerQmomBindings(py::module_& m);
 void registerFields3dBindings(py::module_& m);
 
 PYBIND11_MODULE(chflow_core, m)
@@ -408,5 +409,6 @@ PYBIND11_MODULE(chflow_core, m)
     registerVofBindings(m);
     registerDpmBindings(m);
     registerPbmBindings(m);
+    registerQmomBindings(m);
     registerFields3dBindings(m);
 }

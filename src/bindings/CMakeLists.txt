@@ -8,6 +8,7 @@ pybind11_add_module(chflow_core
     src/vof_bind.cpp
     src/dpm_bind.cpp
     src/pbm_bind.cpp
+    src/qmom_bind.cpp
     src/fields3d_bind.cpp)
 # cfcoupling pulls cf1d + cf3d transitively (PUBLIC link), which is what the
 # coupling and 3D binding families need.

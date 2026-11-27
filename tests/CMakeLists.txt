@@ -2536,6 +2536,13 @@ if(CHFLOW_PYTHON_BINDINGS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_pbm.py)
     set_tests_properties(python.pbm PROPERTIES
         ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # QMOM family: two-node Gaussian quadrature, constant-kernel Smoluchowski
+    # moment replay, closed forms, quadrature identity and loud refusals.
+    add_test(
+        NAME python.qmom
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_qmom.py)
+    set_tests_properties(python.qmom PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
     # 3D family: mesh -> field -> built-in P1 solve -> NumPy arrays.
     add_test(
         NAME python.solver3d

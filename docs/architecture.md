@@ -6457,6 +6457,38 @@ Actions 日志由用户回贴）与 Kaggle GPU 实跑输出；两者齐后 F14 �
 云端脚本；③ 逐位判据依赖 `i*1.5+0.25` 在 `n < 2^23` 的精确性，换 kernel 表达式需重推 FMA
 口径；④ Kokkos 版本钉 4.4.01 与 §5.126 本机验证同源。
 
+### 5.240 Windows 移植修复（远端 117 提交合入后）：响亮 cfFatal 四 app + GUI 路径/图标
+
+**差距**。ff-merge 远端后本机 MSVC 全量 ctest 262 项里 6 项红（Linux/mac 开发机上全绿）：
+`verify.lesSgs` / `verify.rsmShear` / `verify.cavitationTransport` / `verify.meltingFront` 的
+拒收臂 + `gui.unit` / `gui.build` 全部。
+
+**根因与修复**（三类，全是平台差异、零数值改动）：
+- **裸抛 cfFatal 在 MSVC 上死得无声**：四个 3D app 的 `main` 不 catch，靠 Linux/macOS
+  terminate handler 把 `cf::Error ... what()` 打到 stderr 满足 checker 的「loudly」判据；
+  MSVC 未捕获异常直接 fail-fast（rc=0xC0000409、管道空）。按 adaptiveRefineApp 惯例给
+  les/rsm/cavitation/melting 四 app 的 main 套 `try { appRun } catch (std::exception) {
+  log::error("cf::Error: ", e.what()); return 1; }`。合法算例路径逐字节不变，拒收消息跨平台统一。
+- **GUI 引擎路径缺 `.exe` 且反斜杠撕裂断言**：`commands.rs` 的 resolve_default_engines /
+  resolve_three_d_engine_named / resolve_coupled_engine_named 直接 join 裸 target 名（Windows
+  上 `chflow-1d-steady` 不存在，实际是 `.exe`），`PathBuf` 字符串化又带 `\`，checker 式断言
+  `ends_with("<id>/case.dict")` 落空。新增 `exe_file()`（`std::env::consts::EXE_SUFFIX`，
+  posix 空串零影响）与 `path_text()`（统一正斜杠，Windows 两种分隔符都接受），应用到全部
+  packaged/dev 解析点与模板路径；相应测试断言改为带后缀比较。
+- **tauri Windows 资源图标缺失**：`gui/icons` 只有 mac 的 `.icns`/`.png`，`tauri-build` 在
+  Windows 需要 `icons/icon.ico`；且本机 SDK 的 rc.exe 拒收 PNG 内嵌 ICO（RC2176 "old DIB"）。
+  新增 `gui/icons/make_ico.py`（PIL，与 make_icon.py 同依赖）产出 16–256 标准 32-bpp BMP-DIB
+  多尺寸 `icon.ico` 并入库。`run_nodal_texts` 测试的假引擎原为 `/bin/sh` 脚本，Windows 换
+  `.cmd + PowerShell` 等价 stub（同样的三行报表与浮点乘），断言不动。
+
+**判据与状态（2026-11-28）**。四 app ctest 4/4 Passed；`gui.unit` cargo 30/30、ctest gui 3/3
+Passed；全量 262 项本机后台重跑中（`build/ctest_full3.log`）。blockMesh `<algorithm>`（§5.239
+顺带条）同批。CI 的 windows-msvc job 首跑将独立见证这批修复。
+
+**边界**。① fail-fast 的 rc 从 0xC0000409 变 1——checker 只要求 `returncode != 0`，无锚依赖
+精确 rc；② `icon.ico` 由 PNG 重采样生成，非 Tauri CLI `tauri icon` 的全尺寸集（Windows 资源
+只要求可解析 DIB）；③ GUI 路径统一正斜杠对 macOS/Linux 输出逐字符不变（本来就没有反斜杠）。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

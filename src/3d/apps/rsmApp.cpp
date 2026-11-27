@@ -24,7 +24,7 @@
 
 using namespace cf;
 
-int main(int argc, char** argv)
+static int appRun(int argc, char** argv)
 {
     if (argc < 2)
     {
@@ -174,4 +174,19 @@ int main(int argc, char** argv)
         }
     }
     return 0;
+}
+
+// Uncaught cfFatal dies silently on MSVC (fail-fast, nothing on the pipe the
+// checkers read); catch and report, the adaptiveRefineApp convention.
+int main(int argc, char** argv)
+{
+    try
+    {
+        return appRun(argc, argv);
+    }
+    catch (const std::exception& e)
+    {
+        log::error("cf::Error: ", e.what());
+        return 1;
+    }
 }

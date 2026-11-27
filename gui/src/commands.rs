@@ -1114,6 +1114,19 @@ pub fn write_text_file(path: String, content: String) -> Result<(), String> {
 // Commands
 // ---------------------------------------------------------------------------
 
+/// Engine binary file name with the target OS executable suffix (empty on
+/// macOS/Linux, ".exe" on Windows).
+fn exe_file(name: &str) -> String {
+    format!("{name}{}", std::env::consts::EXE_SUFFIX)
+}
+
+/// Stringify a resolved path for the frontend: always forward slashes so
+/// `ends_with("<id>/case.dict")`-style checks and Command::spawn behave
+/// identically on Windows (which accepts both separators).
+fn path_text(p: &Path) -> String {
+    p.to_string_lossy().replace('\\', "/")
+}
+
 /// Resolve the default engine executables for this installation.
 ///
 /// A packaged .app carries the solvers in `Contents/Resources/bin/` and the
@@ -1141,12 +1154,12 @@ pub fn resolve_default_engines() -> (String, String, String, String, String, Str
                 if ancestor.file_name().map(|n| n == "Contents").unwrap_or(false) {
                     let bin = ancestor.join("Resources/bin");
                     let cases = ancestor.join("Resources/cases");
-                    let steady = bin.join(steady_name);
-                    let transient = bin.join(transient_name);
-                    let coupled = bin.join(coupled_name);
-                    let twofluid = bin.join(twofluid_name);
-                    let nodal = bin.join(nodal_name);
-                    let pvt = bin.join(pvt_name);
+                    let steady = bin.join(exe_file(steady_name));
+                    let transient = bin.join(exe_file(transient_name));
+                    let coupled = bin.join(exe_file(coupled_name));
+                    let twofluid = bin.join(exe_file(twofluid_name));
+                    let nodal = bin.join(exe_file(nodal_name));
+                    let pvt = bin.join(exe_file(pvt_name));
                     if steady.exists() && transient.exists() {
                         let template = if cases.join("coupled1d3d.dict").exists() {
                             cases.join("coupled1d3d.dict")
@@ -1163,13 +1176,13 @@ pub fn resolve_default_engines() -> (String, String, String, String, String, Str
 
     if let Some((steady, transient, coupled, template, twofluid, nodal, pvt)) = packaged {
         return (
-            steady.to_string_lossy().into_owned(),
-            transient.to_string_lossy().into_owned(),
-            coupled.to_string_lossy().into_owned(),
-            template.to_string_lossy().into_owned(),
-            twofluid.to_string_lossy().into_owned(),
-            nodal.to_string_lossy().into_owned(),
-            pvt.to_string_lossy().into_owned(),
+            path_text(&steady),
+            path_text(&transient),
+            path_text(&coupled),
+            path_text(&template),
+            path_text(&twofluid),
+            path_text(&nodal),
+            path_text(&pvt),
         );
     }
 
@@ -1179,13 +1192,13 @@ pub fn resolve_default_engines() -> (String, String, String, String, String, Str
         .unwrap()
         .join("build");
     (
-        dev.join("src/1d/apps").join(steady_name).to_string_lossy().into_owned(),
-        dev.join("src/1d/apps").join(transient_name).to_string_lossy().into_owned(),
-        dev.join("src/coupling/apps").join(coupled_name).to_string_lossy().into_owned(),
-        dev.parent().unwrap().join(template_rel).to_string_lossy().into_owned(),
-        dev.join("src/1d/apps").join(twofluid_name).to_string_lossy().into_owned(),
-        dev.join("src/1d/apps").join(nodal_name).to_string_lossy().into_owned(),
-        dev.join("src/pvt/apps").join(pvt_name).to_string_lossy().into_owned(),
+        path_text(&dev.join("src/1d/apps").join(exe_file(steady_name))),
+        path_text(&dev.join("src/1d/apps").join(exe_file(transient_name))),
+        path_text(&dev.join("src/coupling/apps").join(exe_file(coupled_name))),
+        path_text(&dev.parent().unwrap().join(template_rel)),
+        path_text(&dev.join("src/1d/apps").join(exe_file(twofluid_name))),
+        path_text(&dev.join("src/1d/apps").join(exe_file(nodal_name))),
+        path_text(&dev.join("src/pvt/apps").join(exe_file(pvt_name))),
     )
 }
 
@@ -1196,18 +1209,18 @@ pub fn resolve_three_d_engine_named(bin_name: &str) -> String {
     let packaged = std::env::current_exe().ok().and_then(|exe| {
         exe.ancestors()
             .find(|a| a.file_name().map(|n| n == "Contents").unwrap_or(false))
-            .map(|c| c.join("Resources/bin").join(bin_name))
+            .map(|c| c.join("Resources/bin").join(exe_file(bin_name)))
             .filter(|p| p.exists())
     });
     match packaged {
-        Some(p) => p.to_string_lossy().into_owned(),
+        Some(p) => path_text(&p),
         None => {
             let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap()
                 .join("build/src/3d/apps")
-                .join(bin_name);
-            dev.to_string_lossy().into_owned()
+                .join(exe_file(bin_name));
+            path_text(&dev)
         }
     }
 }
@@ -1279,7 +1292,7 @@ pub fn resolve_three_d_family() -> Vec<ThreeDEngineEntry> {
             label: (*label).to_string(),
             exe: resolve_three_d_engine_named(bin),
             case_id: (*case_id).to_string(),
-            case_path: resolve_case_path(case_id).to_string_lossy().into_owned(),
+            case_path: path_text(&resolve_case_path(case_id)),
         })
         .collect()
 }
@@ -1312,18 +1325,18 @@ pub fn resolve_coupled_engine_named(bin_name: &str) -> String {
     let packaged = std::env::current_exe().ok().and_then(|exe| {
         exe.ancestors()
             .find(|a| a.file_name().map(|n| n == "Contents").unwrap_or(false))
-            .map(|c| c.join("Resources/bin").join(bin_name))
+            .map(|c| c.join("Resources/bin").join(exe_file(bin_name)))
             .filter(|p| p.exists())
     });
     match packaged {
-        Some(p) => p.to_string_lossy().into_owned(),
+        Some(p) => path_text(&p),
         None => {
             let dev = Path::new(env!("CARGO_MANIFEST_DIR"))
                 .parent()
                 .unwrap()
                 .join("build/src/coupling/apps")
-                .join(bin_name);
-            dev.to_string_lossy().into_owned()
+                .join(exe_file(bin_name));
+            path_text(&dev)
         }
     }
 }
@@ -1337,7 +1350,7 @@ pub fn resolve_coupled_family() -> Vec<ThreeDEngineEntry> {
             label: (*label).to_string(),
             exe: resolve_coupled_engine_named(bin),
             case_id: (*case_id).to_string(),
-            case_path: resolve_case_path(case_id).to_string_lossy().into_owned(),
+            case_path: path_text(&resolve_case_path(case_id)),
         })
         .collect()
 }
@@ -1418,7 +1431,7 @@ pub fn resolve_case_templates() -> Vec<TemplateEntry> {
         out.push(TemplateEntry {
             id: (*id).to_string(),
             name: (*name).to_string(),
-            path: chosen.to_string_lossy().into_owned(),
+            path: path_text(&chosen),
         });
     }
     out
@@ -1918,9 +1931,10 @@ mod tests {
         // (always present after a CMake build in CI/dev).
         let dev_root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("build");
         if dev_root.exists() {
-            assert!(steady.ends_with("chflow-1d-steady"));
-            assert!(transient.ends_with("chflow-1d-transient"));
-            assert!(coupled.ends_with("chflow-coupled-1d3d"));
+            let stem = |n: &str| format!("{n}{}", std::env::consts::EXE_SUFFIX);
+            assert!(steady.ends_with(&stem("chflow-1d-steady")));
+            assert!(transient.ends_with(&stem("chflow-1d-transient")));
+            assert!(coupled.ends_with(&stem("chflow-coupled-1d3d")));
             assert!(Path::new(&steady).exists(), "dev fallback {steady} must exist");
             assert!(Path::new(&transient).exists(), "dev fallback {transient} must exist");
             assert!(Path::new(&coupled).exists(), "dev fallback {coupled} must exist");
@@ -1972,15 +1986,35 @@ mod tests {
 
     #[test]
     fn run_nodal_texts_keeps_order_and_reports_errors() {
-        let tmp = std::env::temp_dir().join(format!("chflow_gui_nodal_fake_{}.sh", std::process::id()));
-        std::fs::write(
-            &tmp,
-            "#!/bin/sh\ncat \"$1\" | grep -o 'productivityIndex [0-9.eE+-]*' | awk \
-             '{printf \"nodal: ipr linear p_res 2e7 qmax 1, well 1 m x 1 m, wellhead 1 Pa\\n\"; \
-             printf \"well q %s pwf 1234 pth 1\\n\", $2*100; \
-             printf \"nodal solved: iterations=1 flows=true (converged)\\n\"}'\n",
-        )
-        .unwrap();
+        // Fake engine: /bin/sh on Unix; on Windows an equivalent .cmd stub
+        // (findstr gate + PowerShell float math) replays the same three
+        // report lines so the order/error contract is tested identically.
+        #[cfg(windows)]
+        let (tmp, stub) = {
+            (
+                std::env::temp_dir().join(format!("chflow_gui_nodal_fake_{}.cmd", std::process::id())),
+                "@echo off\r\nset \"CFSTUB=%~1\"\r\n\
+                 powershell -NoProfile -Command \"$s=Select-String -Path $env:CFSTUB -Pattern 'productivityIndex ([0-9.eE+-]+)' | Select-Object -First 1; \
+                 if (-not $s) { exit 0 }; \
+                 $j=[double]$s.Matches[0].Groups[1].Value*100; \
+                 Write-Output 'nodal: ipr linear p_res 2e7 qmax 1, well 1 m x 1 m, wellhead 1 Pa'; \
+                 Write-Output ('well q ' + $j + ' pwf 1234 pth 1'); \
+                 Write-Output 'nodal solved: iterations=1 flows=true (converged)'\"\r\n"
+                    .to_string(),
+            )
+        };
+        #[cfg(not(windows))]
+        let (tmp, stub) = {
+            (
+                std::env::temp_dir().join(format!("chflow_gui_nodal_fake_{}.sh", std::process::id())),
+                "#!/bin/sh\ncat \"$1\" | grep -o 'productivityIndex [0-9.eE+-]*' | awk \
+                 '{printf \"nodal: ipr linear p_res 2e7 qmax 1, well 1 m x 1 m, wellhead 1 Pa\\n\"; \
+                 printf \"well q %s pwf 1234 pth 1\\n\", $2*100; \
+                 printf \"nodal solved: iterations=1 flows=true (converged)\\n\"}'\n"
+                    .to_string(),
+            )
+        };
+        std::fs::write(&tmp, stub).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1989,7 +2023,7 @@ mod tests {
         let mk = |j: &str| format!("ipr {{ form linear; reservoirPressure 2e7; productivityIndex {j}; }}\n");
         let rows = run_nodal_texts(
             vec![mk("0.001"), "not a case".to_string(), mk("0.002")],
-            tmp.to_string_lossy().into_owned(),
+            path_text(&tmp),
         );
         let _ = std::fs::remove_file(&tmp);
         assert_eq!(rows.len(), 3);
@@ -2047,8 +2081,10 @@ mod tests {
         sorted_bins.dedup();
         assert_eq!(sorted_bins.len(), bins.len(), "family binaries must be unique");
         for e in &family {
-            assert!(e.exe.ends_with(THREE_D_FAMILY.iter()
-                .find(|(k, ..)| *k == e.key).map(|(_, b, ..)| *b).unwrap()));
+            assert!(e.exe.ends_with(&format!("{}{}",
+                THREE_D_FAMILY.iter()
+                    .find(|(k, ..)| *k == e.key).map(|(_, b, ..)| *b).unwrap(),
+                std::env::consts::EXE_SUFFIX)));
             assert!(
                 Path::new(&e.case_path).exists(),
                 "family case {} must exist: {}",
@@ -2059,7 +2095,7 @@ mod tests {
             assert!(!e.label.is_empty());
         }
         let piso = family.iter().find(|e| e.key == "threeD").unwrap();
-        assert!(piso.exe.ends_with("chflow-piso-foam"));
+        assert!(piso.exe.ends_with(&format!("chflow-piso-foam{}", std::env::consts::EXE_SUFFIX)));
         assert!(piso.case_path.ends_with("startedChannel/case.dict"));
     }
 
@@ -2076,8 +2112,10 @@ mod tests {
             );
         }
         // the default 3D resolve still points at PISO (frontends persist it)
-        assert!(resolve_default_3d_engine().ends_with("chflow-piso-foam"));
-        assert!(resolve_three_d_engine_named("chflow-simple-foam").ends_with("chflow-simple-foam"));
+        assert!(resolve_default_3d_engine()
+            .ends_with(&format!("chflow-piso-foam{}", std::env::consts::EXE_SUFFIX)));
+        assert!(resolve_three_d_engine_named("chflow-simple-foam")
+            .ends_with(&format!("chflow-simple-foam{}", std::env::consts::EXE_SUFFIX)));
     }
 
     /// E1 (§5.181): every coupling family member must resolve a non-empty
@@ -2105,7 +2143,9 @@ mod tests {
                 .find(|(k, ..)| *k == e.key)
                 .unwrap();
             assert!(!e.exe.is_empty(), "coupled family member {} resolved no binary", e.key);
-            assert!(e.exe.ends_with(bin), "{} exe {} does not end with {bin}", e.key, e.exe);
+            assert!(
+                e.exe.ends_with(&format!("{bin}{}", std::env::consts::EXE_SUFFIX)),
+                "{} exe {} does not end with {bin}", e.key, e.exe);
             assert!(
                 Path::new(&e.case_path).exists(),
                 "coupled family case {} must exist: {}",
@@ -2116,7 +2156,7 @@ mod tests {
             assert!(!e.label.is_empty());
         }
         let steady = family.iter().find(|e| e.key == "coupled").unwrap();
-        assert!(steady.exe.ends_with("chflow-coupled-1d3d"));
+        assert!(steady.exe.ends_with(&format!("chflow-coupled-1d3d{}", std::env::consts::EXE_SUFFIX)));
         assert!(steady.case_path.ends_with("coupled1d3d/case.dict"));
     }
 
@@ -2137,7 +2177,7 @@ mod tests {
     #[test]
     fn resolve_default_3d_engine_points_at_piso() {
         let p = resolve_default_3d_engine();
-        assert!(p.ends_with("chflow-piso-foam"), "got {p}");
+        assert!(p.ends_with(&format!("chflow-piso-foam{}", std::env::consts::EXE_SUFFIX)), "got {p}");
         // developer tree fallback must exist when this checkout has a CMake
         // build; an isolated worktree (no build/) still resolves the right
         // name, mirroring the resolve_default_engines test convention.
@@ -2472,7 +2512,7 @@ random banner text
         // End-to-end smoke test against the actual C++ engine when it has
         // already been built by the top-level CMake project.
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
-        let exe = root.join("build/src/1d/apps/chflow-1d-steady");
+        let exe = root.join("build/src/1d/apps").join(exe_file("chflow-1d-steady"));
         let case = root.join("tests/cases/steadyAllBelowThreshold/case.dict");
         if !exe.exists() || !case.exists() {
             return;

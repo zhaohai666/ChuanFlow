@@ -15,6 +15,7 @@
 namespace py = pybind11;
 
 void registerCouplingBindings(py::module_& m);
+void registerCouplingTransientBindings(py::module_& m);
 void registerFields3dBindings(py::module_& m);
 
 PYBIND11_MODULE(chflow_core, m)
@@ -394,5 +395,6 @@ PYBIND11_MODULE(chflow_core, m)
 
     // ---- 1D<->3D coupling family and 3D FVM fields ----
     registerCouplingBindings(m);
+    registerCouplingTransientBindings(m);
     registerFields3dBindings(m);
 }

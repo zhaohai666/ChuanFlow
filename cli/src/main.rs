@@ -69,6 +69,15 @@ enum Command2 {
     Run { engine: String, case: String },
 }
 
+/// Parsed outcome. `Help` is its own path: usage on stdout, exit 0, never the
+/// same code as an argument error (exit 2).
+#[derive(Debug, PartialEq)]
+enum ParseResult {
+    Ok(Command2),
+    Help,
+    Err(String),
+}
+
 fn lookup_engine(key: &str) -> Option<&'static str> {
     ENGINES
         .iter()
@@ -103,30 +112,32 @@ fn usage() -> String {
     out
 }
 
-fn parse(args: &[String]) -> Result<Command2, String> {
+fn parse(args: &[String]) -> ParseResult {
     match args.first().map(String::as_str) {
-        None | Some("help") | Some("--help") => Err(usage()),
-        Some("version") => Ok(Command2::Version),
+        None => ParseResult::Err("missing command".to_string()),
+        Some("help") | Some("--help") | Some("-h") => ParseResult::Help,
+        Some("version") => ParseResult::Ok(Command2::Version),
         Some("run") => {
             let engine = match args.get(1).map(String::as_str) {
                 Some(key) => match lookup_engine(key) {
                     Some(exe) => exe,
                     None => {
-                        return Err(format!(
+                        return ParseResult::Err(format!(
                             "unknown engine '{}': expected one of {}",
                             key,
                             available_keys()
                         ))
                     }
                 },
-                None => return Err("missing <engine>".to_string()),
+                None => return ParseResult::Err("missing <engine>".to_string()),
             };
-            let case = args
-                .get(2)
-                .ok_or_else(|| "missing <case.dict>".to_string())?;
-            Ok(Command2::Run { engine: engine.to_string(), case: case.clone() })
+            let case = match args.get(2) {
+                Some(case) => case,
+                None => return ParseResult::Err("missing <case.dict>".to_string()),
+            };
+            ParseResult::Ok(Command2::Run { engine: engine.to_string(), case: case.clone() })
         }
-        other => Err(format!("unknown command '{}'", other.unwrap_or("<empty>"))),
+        other => ParseResult::Err(format!("unknown command '{}'", other.unwrap_or("<empty>"))),
     }
 }
 
@@ -141,8 +152,12 @@ fn engine_path(engine: &str) -> PathBuf {
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let cmd = match parse(&args) {
-        Ok(cmd) => cmd,
-        Err(msg) => {
+        ParseResult::Help => {
+            print!("{}", usage());
+            process::exit(0);
+        }
+        ParseResult::Ok(cmd) => cmd,
+        ParseResult::Err(msg) => {
             eprintln!("chuanflow: {msg}");
             process::exit(2);
         }
@@ -216,7 +231,7 @@ mod tests {
 
     #[test]
     fn version_parses() {
-        assert_eq!(parse(&["version".to_string()]), Ok(Command2::Version));
+        assert_eq!(parse(&["version".to_string()]), ParseResult::Ok(Command2::Version));
     }
 
     #[test]
@@ -228,7 +243,7 @@ mod tests {
         ]);
         assert_eq!(
             got,
-            Ok(Command2::Run { engine: "chflow-1d-steady".into(), case: "case.dict".into() })
+            ParseResult::Ok(Command2::Run { engine: "chflow-1d-steady".into(), case: "case.dict".into() })
         );
     }
 
@@ -241,7 +256,7 @@ mod tests {
         ]);
         assert_eq!(
             got,
-            Ok(Command2::Run { engine: "chflow-1d-transient".into(), case: "case.dict".into() })
+            ParseResult::Ok(Command2::Run { engine: "chflow-1d-transient".into(), case: "case.dict".into() })
         );
     }
 
@@ -254,7 +269,7 @@ mod tests {
         ]);
         assert_eq!(
             got,
-            Ok(Command2::Run { engine: "chflow-pvt".into(), case: "case.dict".into() })
+            ParseResult::Ok(Command2::Run { engine: "chflow-pvt".into(), case: "case.dict".into() })
         );
     }
 
@@ -287,7 +302,7 @@ mod tests {
             ]);
             assert_eq!(
                 got,
-                Ok(Command2::Run { engine: exe.to_string(), case: "case.dict".to_string() }),
+                ParseResult::Ok(Command2::Run { engine: exe.to_string(), case: "case.dict".to_string() }),
                 "key {key} did not map to {exe}"
             );
         }
@@ -295,7 +310,11 @@ mod tests {
 
     #[test]
     fn unknown_engine_is_rejected_with_key_hint() {
-        let err = parse(&["run".to_string(), "nonsense".to_string(), "x".to_string()]).unwrap_err();
+        let ParseResult::Err(err) =
+            parse(&["run".to_string(), "nonsense".to_string(), "x".to_string()])
+        else {
+            panic!("unknown engine must be an error outcome");
+        };
         assert!(err.contains("unknown engine 'nonsense'"));
         assert!(err.contains("steady"), "hint should list existing keys");
         assert!(err.contains("3d-vof"), "hint should list 3D keys");
@@ -304,11 +323,51 @@ mod tests {
 
     #[test]
     fn rejects_bad_usage() {
-        assert!(parse(&[]).is_err());
-        assert!(parse(&["run".to_string()]).is_err());
-        assert!(parse(&["run".to_string(), "mesh".to_string()]).is_err());
-        assert!(parse(&["run".to_string(), "steady".to_string()]).is_err());
-        assert!(parse(&["transient".to_string(), "case".to_string()]).is_err());
+        assert!(matches!(parse(&[]), ParseResult::Err(_)));
+        assert!(matches!(parse(&["run".to_string()]), ParseResult::Err(_)));
+        assert!(matches!(
+            parse(&["run".to_string(), "mesh".to_string()]),
+            ParseResult::Err(_)
+        ));
+        assert!(matches!(
+            parse(&["run".to_string(), "steady".to_string()]),
+            ParseResult::Err(_)
+        ));
+        assert!(matches!(
+            parse(&["transient".to_string(), "case".to_string()]),
+            ParseResult::Err(_)
+        ));
+    }
+
+    /// Help is its own outcome with exit 0; unknown engine and missing argument
+    /// stay exit 2. The three codes must not collapse onto one return value.
+    #[test]
+    fn help_unknown_engine_missing_arg_have_distinct_codes() {
+        let help = parse(&["--help".to_string()]);
+        let help_short = parse(&["-h".to_string()]);
+        let unknown = parse(&["run".to_string(), "bogus".to_string(), "x.dict".to_string()]);
+        let missing_arg = parse(&["run".to_string(), "steady".to_string()]);
+
+        assert_eq!(help, ParseResult::Help);
+        assert_eq!(help_short, ParseResult::Help);
+        assert!(matches!(unknown, ParseResult::Err(_)));
+        assert!(matches!(missing_arg, ParseResult::Err(_)));
+
+        let code = |r: &ParseResult| match r {
+            ParseResult::Help => 0,
+            ParseResult::Ok(_) => 0,
+            ParseResult::Err(_) => 2,
+        };
+        assert_ne!(code(&help), code(&unknown));
+        assert_ne!(code(&help), code(&missing_arg));
+        assert_eq!(code(&unknown), code(&missing_arg));
+    }
+
+    #[test]
+    fn help_lists_usage_on_stdout_path() {
+        // Help must carry the usage text, not an error message.
+        assert_eq!(parse(&["help".to_string()]), ParseResult::Help);
+        assert!(usage().starts_with("usage:"));
     }
 
     #[test]
@@ -332,5 +391,36 @@ mod tests {
             .expect("chuanflow binary");
         assert!(out.status.success());
         assert!(String::from_utf8_lossy(&out.stdout).contains("chuanflow"));
+    }
+
+    #[test]
+    fn cli_help_exits_zero() {
+        let Some(exe) = option_env!("CARGO_BIN_EXE_chuanflow") else { return };
+        for arg in ["--help", "-h"] {
+            let out = Command::new(exe)
+                .arg(arg)
+                .output()
+                .expect("chuanflow binary");
+            assert_eq!(out.status.code(), Some(0), "{arg} must exit 0");
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("usage:"),
+                "{arg} usage text on stdout"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_unknown_engine_and_missing_arg_exit_two() {
+        let Some(exe) = option_env!("CARGO_BIN_EXE_chuanflow") else { return };
+        let unknown = Command::new(exe)
+            .args(["run", "bogus", "x.dict"])
+            .output()
+            .expect("chuanflow binary");
+        assert_eq!(unknown.status.code(), Some(2), "unknown engine must exit 2");
+        let missing = Command::new(exe)
+            .args(["run", "steady"])
+            .output()
+            .expect("chuanflow binary");
+        assert_eq!(missing.status.code(), Some(2), "missing <case.dict> must exit 2");
     }
 }

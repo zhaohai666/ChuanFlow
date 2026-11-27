@@ -20,9 +20,9 @@
 #   machine produces and verifies both slices natively.
 #
 # Bundle: steady + transient + coupled-1d3d + two-fluid engines in Resources/bin,
-#         the coupled template case and the editor template dictionaries in
-#         Resources/cases (case_templates / default_engines find all of them
-#         relative to the running binary).
+#         the coupled template case, the editor template dictionaries and the
+#         3D-family template dictionaries in Resources/cases (case_templates /
+#         default_engines find all of them relative to the running binary).
 set -eu
 
 UNIVERSAL=0
@@ -82,6 +82,13 @@ for tpl in steadyNetwork steadyEquipmentValve steadyEquipmentPump \
            steadyNetworkMultiphase transientBlowdown twoFluidTerrainSlug \
            nodalVogel pvtFlash transientCoupled1d3d coupled1d3dMulti \
            transientCoupledMulti1d3d; do
+    cp "$ROOT/tests/cases/$tpl/case.dict" "$APP/Contents/Resources/cases/$tpl.dict"
+done
+# 3D 族模板字典（THREE_D_FAMILY in gui/frontend/dist/templates.js），与既有
+# 耦合/1D 模板同布局：tests/cases/<template>/case.dict -> Resources/cases/<template>.dict。
+for tpl in startedChannel poiseuilleChannel vofDroplet compressibleNsSod \
+           advectionDiffusion dpmChannel radiationP1Slab combustionFixedOxidiser \
+           lesSgs meltingFront cavitationVenturi; do
     cp "$ROOT/tests/cases/$tpl/case.dict" "$APP/Contents/Resources/cases/$tpl.dict"
 done
 

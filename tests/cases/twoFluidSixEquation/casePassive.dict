@@ -1,0 +1,21 @@
+// 5.221 (H1b): the passive twin - case.dict without sixEquation{}. The
+// lumped mixture row + dynamic slip relaxation run, the report carries no
+// uG/uL keys and no sixEquation header line. The enable-false variant of the
+// main arm must be byte-identical to this run, and the two standing decks
+// (5.183 acoustics, 5.163 inhibitor equilibrium) witness that the undeclared
+// path of every existing case is untouched.
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; gasR 470; }
+
+pipe { length 100; diameter 0.2; roughness 1e-4; angleDeg 0; sections 10; }
+
+closure { model dynamic; interfacialDrag 2.0; }
+
+initial { alpha 0.5; water 0.3; temperature 300; }
+
+boundaries
+{
+    inlet  { type fixedPressure; p 6.0e6; }
+    outlet { type fixedPressure; p 5.0e6; }
+}
+
+time { dt 0.01; endTime 1.0; reportEvery 1; }

@@ -1,0 +1,38 @@
+// 5.221 (H1b): the two-way write-back arm. acoustics{} + sixEquation{} with
+// writeBack true: after every acoustic step the linear face velocity u' is
+// superposed onto BOTH phase momenta (the cell takes the average of its two
+// face velocities, the gas weighted (1 - alpha), the liquid alpha), the slip
+// state rides along and the mixture velocity is re-derived from the fed-back
+// phase state. The checker re-derives the momentum result from the previous
+// frame (the same 2x2 recursion as the main arm) and then the write-back
+// increment from the reported aunode lines, and asserts the reported uG/uL
+// equal the sum.
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; gasR 470; }
+
+pipe { length 100; diameter 0.2; roughness 1e-4; angleDeg 0; sections 10; }
+
+closure { model dynamic; interfacialDrag 2.0; }
+
+initial { alpha 0.5; water 0.3; temperature 300; }
+
+boundaries
+{
+    inlet  { type fixedPressure; p 6.0e6; }
+    outlet { type fixedPressure; p 5.0e6; }
+}
+
+acoustics
+{
+    initialGauge 1e6;   // Pa, uniform acoustic overpressure venting at t = 0
+    cfl 0.5;            // Wood mixture speed a ~ 96 m/s: a dt/dx = 0.096
+    openEnd outlet;
+}
+
+sixEquation
+{
+    writeBack true;
+    uG0 2.0;
+    uL0 1.0;
+}
+
+time { dt 0.01; endTime 1.0; reportEvery 1; }

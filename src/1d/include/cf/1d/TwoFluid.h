@@ -659,6 +659,29 @@ struct TwoFluidAcoustics
                               // end is a hard wall u' = 0.
 };
 
+/// 5.221 (H1b): six-equation distributed phase momentum. The lumped single
+/// mixture velocity row is replaced by one momentum row PER PHASE per cell
+/// (the two-fluid six-equation model reduced to pressure + friction LAGGED
+/// at the old state and the dynamic closure's interfacialDrag K = C|uG-uL|
+/// semi-implicit through the origin secant, the same pricing the dynamic
+/// closure slip row already uses). The phase rows drive on the cell's OWN
+/// EOS pressure gradient (needs the gas EOS), so the mixture velocity is no
+/// longer solved lumped: it is the arc-weighted mass-weighted average of the
+/// phase velocities. With acoustics{} also declared, writeBack true lets the
+/// linear acoustic face velocity superpose onto BOTH phase velocities after
+/// each acoustic step (two-way coupling: the mean state feeds the acoustic
+/// wave speed, the wave feeds back the phase momenta). Undeclared, the
+/// whole path is byte-identical to the lumped row.
+struct TwoFluidSixEquation
+{
+    bool writeBack = false; // superpose the acoustic face velocity onto the
+                            // phase momenta after each acousticsStep
+                            // (needs acoustics{} enabled)
+    bool hasU0 = false;     // a phase-velocity initial condition was declared
+    double uG0 = 0;         // m/s, initial gas velocity (with hasU0)
+    double uL0 = 0;         // m/s, initial liquid velocity (with hasU0)
+};
+
 struct TwoFluidPigEvent
 {
     double t = 0;           // s, event time (ARRIVE)
@@ -1184,6 +1207,10 @@ struct TwoFluidCase
     // Opt-in: undeclared, the constant/geothermal wall is byte-identical.
     bool ambientScheduleOn = false;
     TwoFluidAmbientSchedule ambientSchedule;
+    // 5.221 (H1b): six-equation distributed phase momentum. Opt-in:
+    // undeclared, the lumped mixture-momentum row is byte-identical.
+    bool sixEquationOn = false;
+    TwoFluidSixEquation sixEquation;
     bool networkMode = false;    // branch-network member: the junction end
                                  // boundary is owned by the TwoFluidNetwork
                                  // (mutated every step), so the constructor
@@ -1462,6 +1489,20 @@ public:
     {
         return cfg_.acousticsOn ? uA_ : std::vector<double>();
     }
+    /// 5.221 (H1b): the per-cell gas phase velocity uG (m/s), the six-equation
+    /// momentum row's own state (empty unless sixEquation{} is declared and
+    /// enabled). The closure slip `s` column keeps its meaning; these are the
+    /// DISTRIBUTED phase velocities behind it.
+    std::vector<double> cellGasVelocity() const
+    {
+        return cfg_.sixEquationOn ? uG_ : std::vector<double>();
+    }
+    /// 5.221 (H1b): the per-cell liquid phase velocity uL (m/s) (empty unless
+    /// sixEquation{} is declared and enabled).
+    std::vector<double> cellLiquidVelocity() const
+    {
+        return cfg_.sixEquationOn ? uL_ : std::vector<double>();
+    }
     /// Slug tracking events (GEN/MERGE/OUT) in occurrence order, so the
     /// app can report every event even between two sampled frames.
     const std::vector<TwoFluidSlugTrackEvent>& slugTrackEvents() const
@@ -1623,6 +1664,11 @@ public:
 private:
     void momentumSolve(double dt);
     void slipStep(double dt);
+    /// 5.221 (H1b): the distributed per-cell two-phase momentum rows that
+    /// replace the lumped mixture row + slip relaxation when sixEquation{}
+    /// is on; vM_ is then the arc-weighted mass-weighted mixture velocity.
+    void sixEquationMomentumSolve(double dt);
+    double mixtureVelocityFromPhases() const;
     void transportStep(double dt);
     void terrainSlugStep(double dt);
     /// O2 (5.161): advance/generate/merge/retire the Lagrangian slug
@@ -1802,6 +1848,9 @@ private:
                                   // (Pa); allocated only when acoustics on
     std::vector<double> uA_;      // E7c: face acoustic velocity (m/s), one
                                   // entry per face (n_ + 1)
+    std::vector<double> uG_;      // 5.221: cell gas phase velocity (m/s);
+                                  // allocated only when sixEquation on
+    std::vector<double> uL_;      // 5.221: cell liquid phase velocity (m/s)
     std::vector<double> slip_;    // dynamic closure: vG - vL per section
     std::vector<double> sDotOld_; // last step's ds/dt, the lagged slip
                                   // inertia the mixture momentum feels

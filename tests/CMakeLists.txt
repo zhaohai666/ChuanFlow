@@ -2742,6 +2742,23 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidAmbientSchedule/case.dict
         ${CMAKE_CURRENT_BINARY_DIR}/twoFluidSchedule_tmp)
 
+# 5.221 (H1b): six-equation distributed phase momentum. The checker re-derives
+# the exact 2x2 per-phase implicit-Euler recursion (Churchill wall friction
+# per phase, dynamic-closure drag K = C|uG-uL| semi-implicit through the
+# origin secant, EOS pressure gradient face-centred) frame by frame from the
+# reported alpha/p/uG/uL columns; the uniform arm witnesses the dp/dx = 0
+# slip relaxation onto its lagged terminal value; the write-back arm adds the
+# acoustic face-velocity superposition from the reported aunode lines; the
+# passive twin and the enable-false variant stay byte-identical to the
+# undeclared path; loud refusals.
+add_test(
+    NAME verify.twoFluidSixEquation
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_two_fluid_six_equation.py
+        $<TARGET_FILE:chflow-1d-twofluid>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/twoFluidSixEquation/case.dict
+        ${CMAKE_CURRENT_BINARY_DIR}/twoFluidSixEquation_tmp)
+
 # README M5: Tauri GUI (command-layer Rust unit tests, offline build, and the
 # DOM-free frontend pure-function tests). Only registered when cargo / node
 # exist, so a bare environment keeps every CTest green.

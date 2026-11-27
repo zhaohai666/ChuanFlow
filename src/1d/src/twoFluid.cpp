@@ -291,6 +291,20 @@ TwoFluidPipe::TwoFluidPipe(const TwoFluidCase& c)
         uA_.assign(n_ + 1, 0.0);
     }
 
+    // 5.221 (H1b): the six-equation phase velocities start from the declared
+    // uG0/uL0, or from the initial mixture velocity when undeclared (the
+    // line starts at rest with no slip). The slip state rides the phase
+    // difference from the first frame. Allocated only on the declared path,
+    // so the undeclared constructor keeps the old footprint verbatim.
+    if (cfg_.sixEquationOn)
+    {
+        const TwoFluidSixEquation& se = cfg_.sixEquation;
+        uG_.assign(n_, se.hasU0 ? se.uG0 : vM_);
+        uL_.assign(n_, se.hasU0 ? se.uL0 : vM_);
+        for (int i = 0; i < n_; ++i) slip_[i] = uG_[i] - uL_[i];
+        vM_ = vMOld_ = mixtureVelocityFromPhases();
+    }
+
     if (cfg_.thermalOn)
     {
         const TwoFluidThermal& th = cfg_.thermal;
@@ -1257,6 +1271,114 @@ void TwoFluidPipe::slipStep(double dt)
     }
 }
 
+// 5.221 (H1b): one implicit-Euler step of the DISTRIBUTED two-phase momentum
+// rows that replace the lumped mixture row when sixEquation{} is declared.
+// Per cell i (holdup and EOS density frozen at the old time level):
+//   ag rhoG duG/dt = -ag dp/dx - ag rhoG g sinT - ag rG - K (uG - uL)
+//   a  rhoL duL/dt = -a  dp/dx - a  rhoL g sinT - a  rL  + K (uG - uL)
+// with the cell-centred pressure gradient taken from the section's own EOS
+// pressures (face pressures are the neighbour averages; a boundary face
+// carries the adjacent cell's pressure, so the imposed end level adds no
+// spurious gradient), and the SIGNED per-phase wall resistance r_k =
+// churchillFriction(Re_k, rr) 0.5 rho_k u_k |u_k| / d lagged at the old
+// phase velocity - the same Churchill law and the same d/rr ownership as
+// cellFriction, priced on each phase's own Reynolds number with the liquid
+// share read through liquidViscosityAt (exactly muL when emulsion is off).
+// The interfacial drag is the dynamic closure's own pricing K = C|uG-uL|
+// linearised semi-implicit through the origin secant (unconditionally
+// stable, the same identity the closure slip row has always used). The 2x2
+// solve is exact; a single-phase cell carries no interface (K = 0) and
+// marches its surviving row, the absent phase riding along - the exact
+// limit of the general solve as the vanished phase's mass goes to zero.
+// The slip state and its lagged rate ride the phase difference, and the
+// mixture velocity the transport reads is the arc-weighted mass-weighted
+// average of the phase velocities (a uniform phase field reads back that
+// field exactly).
+void TwoFluidPipe::sixEquationMomentumSolve(double dt)
+{
+    const TwoFluidFluid& f = cfg_.fluid;
+    const double C = cfg_.closure.interfacialDrag;
+    const std::vector<double> p = cellPressure();
+    std::vector<double> oldG = uG_, oldL = uL_;
+    for (int i = 0; i < n_; ++i)
+    {
+        const double a = alpha_[i];
+        const double ag = 1.0 - a;
+        const double rhoG = cellGasDensity(i);
+        const double rhoL = f.rhoL;
+        const double pFaceL = i == 0 ? p[0] : 0.5 * (p[i - 1] + p[i]);
+        const double pFaceR = i == n_ - 1 ? p[n_ - 1]
+                                          : 0.5 * (p[i] + p[i + 1]);
+        const double dpdx = (pFaceR - pFaceL) / dxs_[i];
+        // the same bore and roughness ownership cellFriction uses (5.98 /
+        // 5.219 / 5.220): a deposit, blockage or wear layer moves the wall
+        const bool depositFb = (cfg_.waxOn && cfg_.wax.feedback)
+                            || (cfg_.sandOn && cfg_.sand.feedback);
+        const bool fb = depositFb || cfg_.blockageOn
+                     || cfg_.hydraulicFeedbackOn;
+        const double d = fb ? dEff_[i] : diameter_;
+        const double rr = depositFb ? cfg_.wax.depositRoughness / d
+                                    : relrough_[i];
+        // signed resistance gradient (Pa/m), odd in the phase velocity
+        auto phaseFriction = [&](double rho, double mu, double u)
+        {
+            const double v = std::abs(u);
+            if (v == 0) return 0.0;
+            const double re = rho * v * d / mu;
+            return churchillFriction(re, rr) * 0.5 * rho * v * u / d;
+        };
+        const double rG = phaseFriction(rhoG, f.muG, oldG[i]);
+        const double rL = phaseFriction(rhoL, liquidViscosityAt(i), oldL[i]);
+        const double grav = kGravity * sinT_[i];
+        if (a <= 1e-12)
+        {
+            // gas-only cell: no interface, the gas marches its own row and
+            // the absent liquid rides along (the K -> general-solve limit)
+            uG_[i] = oldG[i] + dt * (-dpdx - rhoG * grav - rG) / rhoG;
+            uL_[i] = uG_[i];
+        }
+        else if (ag <= 1e-12)
+        {
+            uL_[i] = oldL[i] + dt * (-dpdx - rhoL * grav - rL) / rhoL;
+            uG_[i] = uL_[i];
+        }
+        else
+        {
+            const double mG = ag * rhoG / dt;
+            const double mL = a * rhoL / dt;
+            const double K = C * std::abs(oldG[i] - oldL[i]);
+            const double bG = mG * oldG[i] - ag * (dpdx + rhoG * grav + rG);
+            const double bL = mL * oldL[i] - a * (dpdx + rhoL * grav + rL);
+            const double det = mG * mL + K * (mG + mL);
+            uG_[i] = ((mL + K) * bG + K * bL) / det;
+            uL_[i] = (K * bG + (mG + K) * bL) / det;
+        }
+        const double sNew = uG_[i] - uL_[i];
+        sDotOld_[i] = (sNew - slip_[i]) / dt;
+        slip_[i] = sNew;
+    }
+    vM_ = mixtureVelocityFromPhases();
+}
+
+// 5.221 (H1b): the mixture velocity the transport reads, as the arc-weighted
+// mass-weighted average of the phase velocities (total phase momentum per
+// unit area over total phase mass per unit area along the chain). A uniform
+// phase field reads back that field; a uniform mixture velocity with equal
+// phase velocities reads back itself.
+double TwoFluidPipe::mixtureVelocityFromPhases() const
+{
+    double mom = 0, mass = 0;
+    for (int i = 0; i < n_; ++i)
+    {
+        const double a = alpha_[i];
+        const double ag = 1.0 - a;
+        const double rhoG = cellGasDensity(i);
+        mom += (ag * rhoG * uG_[i] + a * cfg_.fluid.rhoL * uL_[i]) * dxs_[i];
+        mass += (ag * rhoG + a * cfg_.fluid.rhoL) * dxs_[i];
+    }
+    return mass > 0 ? mom / mass : 0.0;
+}
+
 void TwoFluidPipe::transportStep(double dt)
 {
     double qa = 0, qb = 0, qc = 0;
@@ -2199,9 +2321,17 @@ void TwoFluidPipe::step(double dt)
     applySchedule(dt);
     // junction branches have their mixture velocity imposed by the
     // network's coupled Newton (externalMomentum_ is a one-shot flag)
-    if (externalMomentum_) externalMomentum_ = false;
-    else momentumSolve(dt);
-    slipStep(dt);
+    // 5.221 (H1b): with sixEquation{} the distributed per-cell phase rows
+    // own the momentum and the slip state rides the phase velocities
+    // directly - the lumped row and the slip relaxation are skipped; the
+    // undeclared path below is untouched verbatim
+    if (cfg_.sixEquationOn) sixEquationMomentumSolve(dt);
+    else
+    {
+        if (externalMomentum_) externalMomentum_ = false;
+        else momentumSolve(dt);
+        slipStep(dt);
+    }
     transportStep(dt);
     terrainSlugStep(dt);
     purgeWaveStep(dt); // O3 (5.162): the blowdown front rides the final field
@@ -3291,7 +3421,11 @@ void TwoFluidPipe::piggingStep(double dt)
 // volume next to the boundary), the closed end pins u' = 0 (a rate or
 // sealed boundary imposes its velocity, so acoustically it is a wall).
 // No write-back: the mean state (momentum, holdup, gas mass) is untouched,
-// the acoustic layer is superposed reporting only.
+// the acoustic layer is superposed reporting only - with one exception:
+// 5.221 (H1b) sixEquation{} + writeBack superposes the face velocity onto
+// the distributed phase momenta after the step (see below); without the
+// six-equation declaration this row is byte-identical to the report-only
+// layer it always was.
 void TwoFluidPipe::acousticsStep(double dt)
 {
     if (!cfg_.acousticsOn) return;
@@ -3413,6 +3547,25 @@ void TwoFluidPipe::acousticsStep(double dt)
                 - rho[i] * a2[i] * dt / dxs_[i] * (uNew[i + 1] - uNew[i]);
     uA_.swap(uNew);
     pA_.swap(pNew);
+
+    // 5.221 (H1b): two-way coupling. With sixEquation{} + writeBack the
+    // acoustic face velocity superposes onto BOTH phase momenta - the cell
+    // takes the average of its two face velocities, weighted by the phase
+    // fractions it carries (the gas rides (1 - alpha), the liquid alpha) -
+    // the slip state rides along and the mixture velocity is re-derived
+    // from the fed-back phase state. Guarded by sixEquationOn, so the
+    // acoustics-only (report-only) path stays byte-identical.
+    if (cfg_.sixEquationOn && cfg_.sixEquation.writeBack)
+    {
+        for (int i = 0; i < n_; ++i)
+        {
+            const double up = 0.5 * (uA_[i] + uA_[i + 1]);
+            uG_[i] += up * (1.0 - alpha_[i]);
+            uL_[i] += up * alpha_[i];
+            slip_[i] = uG_[i] - uL_[i];
+        }
+        vM_ = mixtureVelocityFromPhases();
+    }
 }
 
 namespace
@@ -4429,6 +4582,97 @@ TwoFluidCase loadTwoFluidCase(const Dictionary& caseDict)
         && c.inlet.type != TwoFluidBoundary::Type::phaseRates)
         cfFatal("twoFluid: a rate schedule needs a phaseRates inlet");
 
+    // ---- 5.221 (H1b): six-equation distributed phase momentum -----------
+    // The lumped mixture row is replaced by per-cell phase rows driven on
+    // the cell's own EOS pressure gradient; the drag pricing is the dynamic
+    // closure's interfacialDrag. Every key is read loudly; the boundary and
+    // closure combinations that would fight the distributed solve are
+    // refused, not silently overridden.
+    if (caseDict.has("sixEquation"))
+    {
+        const Dictionary& sd = caseDict.getDict("sixEquation");
+        static const char* kSixKeys[] = {
+            "enable", "writeBack", "uG0", "uL0"};
+        for (const std::string& k : sd.keys())
+        {
+            bool known = false;
+            for (const char* w : kSixKeys)
+                if (k == w) { known = true; break; }
+            if (!known)
+                cfFatal("twoFluid: sixEquation declares unknown key '" + k
+                        + "' (enable, writeBack, uG0, uL0)");
+        }
+        bool enable = true;
+        if (sd.has("enable"))
+        {
+            const std::string w = sd.getWord("enable");
+            if (w == "true") enable = true;
+            else if (w == "false") enable = false;
+            else cfFatal("twoFluid: sixEquation enable must be true or"
+                         " false");
+        }
+        c.sixEquation.writeBack = false;
+        if (sd.has("writeBack"))
+        {
+            const std::string w = sd.getWord("writeBack");
+            if (w == "true") c.sixEquation.writeBack = true;
+            else if (w == "false") c.sixEquation.writeBack = false;
+            else cfFatal("twoFluid: sixEquation writeBack must be true or"
+                         " false");
+        }
+        // the initial slip is the difference of the two declared phase
+        // velocities: declaring one without the other is a half condition
+        const bool hasG = sd.has("uG0"), hasL = sd.has("uL0");
+        if (hasG != hasL)
+            cfFatal("twoFluid: sixEquation uG0 and uL0 come as a pair (the"
+                    " initial slip is the difference of the two declared"
+                    " phase velocities)");
+        c.sixEquation.hasU0 = hasG;
+        if (hasG)
+        {
+            c.sixEquation.uG0 = sd.getScalar("uG0");
+            c.sixEquation.uL0 = sd.getScalar("uL0");
+        }
+        if (!enable && c.sixEquation.writeBack)
+            cfFatal("twoFluid: sixEquation writeBack needs the six-equation"
+                    " rows: enable false leaves no phase momenta to feed"
+                    " back into");
+        if (enable && c.sixEquation.writeBack && !c.acousticsOn)
+            cfFatal("twoFluid: sixEquation writeBack needs an enabled"
+                    " acoustics{} block: the write-back superposes the"
+                    " acoustic face velocity");
+        if (enable)
+        {
+            // the phase rows drive on the cell's own pressure gradient:
+            // without the gas law there is no p field to take a gradient of
+            if (!(c.fluid.gasR > 0))
+                cfFatal("twoFluid: sixEquation needs the gas EOS (fluid"
+                        " gasR > 0): the phase rows drive on the cell"
+                        " pressure gradient");
+            // the drag pricing reuses the dynamic closure's K = C|uG-uL|
+            // (interfacialDrag > 0 is already enforced for that closure)
+            if (c.closure.model != 2)
+                cfFatal("twoFluid: sixEquation reuses the dynamic closure"
+                        " interfacialDrag K pricing: declare closure model"
+                        " dynamic");
+            // a rate boundary imposes the mixture velocity the six-equation
+            // row derives from its own phase state; a sealed end pins it to
+            // zero - both are the imposed-velocity family the distributed
+            // solve replaces
+            if (c.inlet.type == TwoFluidBoundary::Type::phaseRates
+                || c.outlet.type == TwoFluidBoundary::Type::phaseRates)
+                cfFatal("twoFluid: sixEquation conflicts with a phaseRates"
+                        " boundary: the rate row imposes the mixture"
+                        " velocity the phase rows own");
+            if (c.inlet.type == TwoFluidBoundary::Type::sealed
+                || c.outlet.type == TwoFluidBoundary::Type::sealed)
+                cfFatal("twoFluid: sixEquation conflicts with a sealed"
+                        " boundary: the same imposed-velocity family pins"
+                        " the mixture row the phase rows derive");
+        }
+        c.sixEquationOn = enable;
+    }
+
     return c;
 }
 
@@ -4458,6 +4702,12 @@ TwoFluidNetworkCase loadTwoFluidNetworkCase(const Dictionary& caseDict)
     if (caseDict.has("ambientSchedule"))
         cfFatal("twoFluid: ambientSchedule is a serial-row feature; the"
                 " branch network row carries no wallT report columns yet");
+    // 5.221 (H1b): same rule for the six-equation block - the network frame
+    // carries no uG/uL columns and the junction Newton owns the branch
+    // velocity, so a declaration there would run unreported physics.
+    if (caseDict.has("sixEquation"))
+        cfFatal("twoFluid: sixEquation is a serial-row feature; the branch"
+                " network row carries no phase velocity report columns yet");
     TwoFluidNetworkCase nc;
     nc.perPipe.networkMode = true;
     loadTwoFluidCommon(caseDict, nc.perPipe);

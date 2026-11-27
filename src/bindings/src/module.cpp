@@ -24,6 +24,7 @@ void registerDpmBindings(py::module_& m);
 void registerPbmBindings(py::module_& m);
 void registerQmomBindings(py::module_& m);
 void registerLesBindings(py::module_& m);
+void registerRsmBindings(py::module_& m);
 void registerFields3dBindings(py::module_& m);
 
 PYBIND11_MODULE(chflow_core, m)
@@ -412,5 +413,6 @@ PYBIND11_MODULE(chflow_core, m)
     registerPbmBindings(m);
     registerQmomBindings(m);
     registerLesBindings(m);
+    registerRsmBindings(m);
     registerFields3dBindings(m);
 }

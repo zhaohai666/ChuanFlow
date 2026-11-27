@@ -249,12 +249,12 @@ function parseBlock(caseText, name) {
   const lines = caseText.split('\n');
   const nameRe = new RegExp(`^\\s*${name}\\b`);
   for (let i = 0; i < lines.length; i++) {
-    const code = lines[i].replace(/\/\/.*$/, '');
+    const code = lines[i].replace(/\/\/.*$/, '').replace(/#.*$/, '');
     if (!nameRe.test(code)) continue;
     let openIdx = code.includes('{') ? i : -1;
     if (openIdx < 0) {
       for (let j = i + 1; j < lines.length; j++) {
-        const nxt = lines[j].replace(/\/\/.*$/, '').trim();
+        const nxt = lines[j].replace(/\/\/.*$/, '').replace(/#.*$/, '').trim();
         if (!nxt) continue;
         if (nxt === '{') openIdx = j;
         break;
@@ -264,7 +264,7 @@ function parseBlock(caseText, name) {
     const values = {};
     let depth = 0;
     for (let k = openIdx; k < lines.length; k++) {
-      const c = lines[k].replace(/\/\/.*$/, '');
+      const c = lines[k].replace(/\/\/.*$/, '').replace(/#.*$/, '');
       for (const ch of c) {
         if (ch === '{') depth++;
         else if (ch === '}') depth--;

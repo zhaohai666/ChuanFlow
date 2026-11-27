@@ -148,7 +148,7 @@ export function blackoilRangeAdvisory(values) {
 // ---------------------------------------------------------------------------
 
 function stripComment(line) {
-  return line.replace(/\/\/.*$/, '');
+  return line.replace(/\/\/.*$/, '').replace(/#.*$/, '');
 }
 
 /** Index of the matching close brace for the opener at `open`; -1 on mismatch. */

@@ -899,18 +899,14 @@ pub struct JobRegistry {
     jobs: Mutex<HashMap<u64, Job>>,
 }
 
-/// Keep the tail bounded: GUI log only ever shows the most recent output.
-const OUTPUT_CAP: usize = 512 * 1024;
-
+/// Append a chunk to the job's output. The buffer is APPEND-ONLY: the frontend
+/// reconstructs the complete solve output by concatenating the incremental
+/// deltas it polls, and parses the full series from that. Draining a bounded
+/// tail here (the old behaviour) silently dropped the head of every long solve
+/// and broke the frontend's byte-offset cursor, truncating its results.
 fn append_output(buf: &Mutex<String>, chunk: &str) {
     let mut s = buf.lock().unwrap();
     s.push_str(chunk);
-    if s.len() > OUTPUT_CAP {
-        let cut = s.len() - OUTPUT_CAP;
-        // cut at a line boundary so a tail never starts mid-token
-        let drop_to = s[cut..].find('\n').map(|p| cut + p + 1).unwrap_or(s.len());
-        s.drain(..drop_to);
-    }
 }
 
 /// Spawn an engine job. The inner logic is Tauri-free so it is unit-testable.
@@ -1003,39 +999,39 @@ pub fn spawn_job(
     Ok(id)
 }
 
-/// One poll result: whether the job finished, its exit code (once finished)
-/// and the recent output tail.
+/// One poll result: whether the job finished, its exit code (once finished),
+/// the output delta since the caller's byte offset, and the new total byte
+/// length to pass as the next offset.
 #[derive(Serialize)]
 pub struct JobStatus {
     pub finished: bool,
     pub exit: Option<i32>,
     pub output: String,
+    pub total: usize,
 }
 
-const OUTPUT_TAIL: usize = 8000;
-
-fn poll_job_inner(registry: &JobRegistry, id: u64) -> Option<JobStatus> {
+/// Return the output written since byte offset `from` (the incremental delta),
+/// plus the new total length. The buffer is append-only, so a cursor that starts
+/// at 0 and advances by each delta reconstructs the complete output exactly --
+/// no head is ever dropped, however long the solve runs.
+fn poll_job_inner(registry: &JobRegistry, id: u64, from: usize) -> Option<JobStatus> {
     let jobs = registry.jobs.lock().unwrap();
     let job = jobs.get(&id)?;
     let finished = job.finished.load(Ordering::SeqCst);
-    let output = {
+    let (output, total) = {
         let s = job.output.lock().unwrap();
-        let start = s.len().saturating_sub(OUTPUT_TAIL);
-        // when the cap truncated, land the tail on a line boundary; when the
-        // whole output fits, keep it from the very beginning
-        let start = if start > 0 {
-            s[start..].find('\n').map(|p| start + p + 1).unwrap_or(start)
-        } else {
-            0
-        };
-        s[start..].to_string()
+        // exact byte delta since the caller's cursor: every byte is delivered
+        // once, in order. No line alignment here -- that would skip bytes and
+        // lose data; the frontend's monitor buffers partial lines itself.
+        let start = from.min(s.len());
+        (s[start..].to_string(), s.len())
     };
     let exit = if finished {
         *job.exit.lock().unwrap()
     } else {
         None
     };
-    Some(JobStatus { finished, exit, output })
+    Some(JobStatus { finished, exit, output, total })
 }
 
 fn stop_job_inner(registry: &JobRegistry, id: u64) -> Result<bool, String> {
@@ -1071,11 +1067,12 @@ pub fn start_case(
     spawn_job(&state, &label, &exe_path, &case_path)
 }
 
-/// Poll a job: recent output tail, finished flag and exit code (when done).
-/// A finished job is removed from the registry by this call.
+/// Poll a job: the output delta since `offset` (bytes), the new total length,
+/// finished flag and exit code (when done). A finished job is removed by this
+/// call, so the final poll still carries the last delta before the drop.
 #[tauri::command]
-pub fn poll_job(id: u64, state: tauri::State<JobRegistry>) -> Result<JobStatus, String> {
-    let status = poll_job_inner(&state, id).ok_or_else(|| format!("unknown job id {id}"))?;
+pub fn poll_job(id: u64, offset: usize, state: tauri::State<JobRegistry>) -> Result<JobStatus, String> {
+    let status = poll_job_inner(&state, id, offset).ok_or_else(|| format!("unknown job id {id}"))?;
     if status.finished {
         drop_job_inner(&state, id);
     }
@@ -2234,7 +2231,7 @@ mod tests {
         // poll until finished (bounded so a broken pipe cannot hang the test)
         let mut status = None;
         for _ in 0..200 {
-            status = poll_job_inner(&reg, id);
+            status = poll_job_inner(&reg, id, 0);
             if status.as_ref().map(|s| s.finished).unwrap_or(false) {
                 break;
             }
@@ -2245,6 +2242,46 @@ mod tests {
         assert_eq!(status.exit, Some(0));
         assert!(status.output.contains("node A p 30000"), "tail: {}", status.output);
         assert!(status.output.contains("done-line"));
+        let _ = std::fs::remove_file(&script);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn job_long_output_incremental_poll_keeps_the_head() {
+        // Regression: a solve whose output exceeds the old 8 KB tail must still
+        // deliver its HEAD. The frontend advances a byte cursor by each delta;
+        // concatenating the deltas must reconstruct the complete output.
+        let script = fake_script(
+            "joblong",
+            "#!/bin/sh\necho HEAD-MARK\ni=0\nwhile [ $i -lt 500 ]; do\n\
+             echo \"[chflow] node A p $i padding-xxxxxxxxxxxxxxxxxxxx\"\n\
+             i=$((i+1))\ndone\necho TAIL-MARK\n",
+        );
+        let reg = JobRegistry::default();
+        let id = spawn_job(&reg, "transient", script.to_str().unwrap(), "case.dict")
+            .expect("job starts");
+        let mut cursor = 0usize;
+        let mut full = String::new();
+        let mut finished = false;
+        for _ in 0..400 {
+            let st = poll_job_inner(&reg, id, cursor).expect("job exists");
+            full.push_str(&st.output);
+            cursor = st.total;
+            if st.finished {
+                finished = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(finished, "long job must finish");
+        assert!(full.contains("HEAD-MARK"), "head dropped: {} bytes", full.len());
+        assert!(full.contains("TAIL-MARK"), "tail missing");
+        assert!(full.len() > 8000, "output must exceed the old tail cap ({})", full.len());
+        // every one of the 500 numbered lines survived, in order
+        let count = full.lines().filter(|l| l.contains("padding-")).count();
+        assert_eq!(count, 500, "line count {count}");
+        assert!(full.contains("node A p 0 "), "first numbered line lost");
+        assert!(full.contains("node A p 499 "), "last numbered line lost");
         let _ = std::fs::remove_file(&script);
     }
 
@@ -2261,7 +2298,7 @@ mod tests {
         // the stop command wrapper drops the registry entry; emulate it here
         drop_job_inner(&reg, id);
         // the inner poll would now return None
-        assert!(poll_job_inner(&reg, id).is_none());
+        assert!(poll_job_inner(&reg, id, 0).is_none());
         let _ = std::fs::remove_file(&script);
     }
 
@@ -2269,7 +2306,7 @@ mod tests {
     #[test]
     fn job_registry_poll_unknown_id_is_none() {
         let reg = JobRegistry::default();
-        assert!(poll_job_inner(&reg, 999).is_none());
+        assert!(poll_job_inner(&reg, 999, 0).is_none());
         assert!(stop_job_inner(&reg, 999).is_err());
     }
 

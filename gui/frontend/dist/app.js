@@ -10,7 +10,7 @@ import { invoke } from './tauri-api.js';
 import {
   emptyModel, addNode, moveNode, removeNode, setNodePressure, addPipe,
   removePipe, addSource, removeSource, setTime, hitTestNode,
-  networkToCaseText, setPipeFields, updateSourceRate, setFluid,
+  networkToCaseText, modelToTransientCaseText, setPipeFields, updateSourceRate, setFluid,
   clipKeepsByPlane, adaptiveVectorIndices, upsertOutputVtk,
   applyWhatIfOverrides, TRANSIENT_WHAT_IF_PARAMS, iprLinearVariant,
   applyScenarioOverrides, deviceGlyphCommands, pipeDeviceFieldsFrom,
@@ -1422,15 +1422,19 @@ setInterval(async () => {
   if (!state.job.running) return;
   let st;
   try {
-    st = await invoke('poll_job', { id: state.job.id });
+    st = await invoke('poll_job', { id: state.job.id, offset: state.job.offset });
   } catch (_) {
     return;
   }
-  if (st.output && st.output.length > state.job.offset) {
-    const chunk = st.output.slice(state.job.offset);
+  // poll_job returns the incremental delta since our byte cursor (st.output)
+  // and the new total (st.total). Concatenating deltas reconstructs the complete
+  // output even for long solves -- the old sliding-tail + offset-slice dropped
+  // the head once output exceeded the tail window.
+  if (st.output) {
+    const chunk = st.output;
     appendLog(chunk);
     state.job.full += chunk;
-    state.job.offset = st.output.length;
+    state.job.offset = st.total;
     // F17: incremental ITER/MONITOR parsing off the same stream
     feedMonitor(state.monitorStream, chunk);
     if (document.querySelector('#btab-monitor.active')) renderMonitorPanel();
@@ -1545,6 +1549,7 @@ function onTransientDone(fullOutput) {
     return;
   }
   state.transient = t;
+  renderTree();
   renderCharts();
   renderConvergence();
   renderWellControlPanel(t);
@@ -4134,6 +4139,18 @@ function applyUnits(system) {
   renderCharts();
   renderConvergence();
   renderCoupled();
+  // Every other panel that paints unit-converted values must refresh too; these
+  // were omitted, so nodal / scenario / template-compare / 3D-field / sweep
+  // readouts kept the old units until an unrelated re-render. Each guards its
+  // own empty state, so calling them on a fresh workspace is a no-op.
+  renderNodal();
+  renderScenarioResults();
+  renderTemplateCompare();
+  renderField();
+  if (state.sweep.rows.length) {
+    if (state.sweep.engine === 'transient') renderTransientSweepResults();
+    else renderSweepResults(Math.max(...state.sweep.rows.map((r) => r.value), 0));
+  }
 }
 
 function applyTheme(theme) {
@@ -4771,7 +4788,15 @@ $('tbRunPointElements')?.addEventListener('click', () => {
 });
 $('menuRunPointElements')?.addEventListener('click', () => $('tbRunPointElements').click());
 $('tbRunTransient').addEventListener('click', () => {
-  const text = state.rawDictText || networkToCaseText(state.model);
+  // From the drag editor (no raw dict) the steady serialization would emit free
+  // nodes as `{}` with no compliance and a steadyNetwork solver -- a singular
+  // transient matrix. Serialize as a transient case with default node compliance
+  // instead; a raw dict the user authored stays the run authority untouched.
+  const fromModel = !state.rawDictText;
+  const text = state.rawDictText || modelToTransientCaseText(state.model);
+  if (fromModel) {
+    appendLog('[transient] 由编辑器模型生成瞬态算例：自由节点已赋默认柔度（volume/bulkModulus），可在字典页覆盖。');
+  }
   startJob('transient', text);
 });
 $('tbRunCoupled').addEventListener('click', () => $('runCoupledBtn').click());

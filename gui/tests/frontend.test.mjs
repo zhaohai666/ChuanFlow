@@ -47,6 +47,7 @@ import {
   removeDictBlock,
   ALL_DEVICE_FIELDS, E4_DEVICE_FAMILIES, deviceGlyphCommands,
   deviceBlocksFromModel, pipeDeviceFieldsFrom,
+  modelToTransientCaseText, TRANSIENT_NODE_DEFAULTS,
 } from '../frontend/dist/editor.js';
 import {
   UNIT_SYSTEMS,
@@ -293,6 +294,24 @@ test('editor: networkToCaseText 可被 validateCaseText 接受', () => {
   assert.ok(text.includes('time {'), '必须输出 time 块');
 });
 
+test('editor: modelToTransientCaseText 自由节点带默认柔度（防奇异矩阵）', () => {
+  // The default drag model has a fixed node A and a free node B. The steady
+  // serialization emits B as `{}` (no compliance) -> a singular transient
+  // pressure matrix. The transient serialization must give B a storage term.
+  const text = modelToTransientCaseText(buildModel());
+  assert.ok(text.includes('type transientNetwork'), '瞬态求解器类型');
+  assert.ok(text.includes('A { fixedPressure 500000'), '固定节点用 fixedPressure');
+  assert.ok(/B \{[^}]*bulkModulus/.test(text), '自由节点 B 必须带 bulkModulus');
+  assert.ok(/B \{[^}]*volume/.test(text), '自由节点 B 必须带 volume');
+  assert.ok(!/B \{\}/.test(text), '自由节点不得为空块');
+  assert.ok(text.includes('time {'), '必须输出 time 块');
+  const D = TRANSIENT_NODE_DEFAULTS;
+  assert.ok(D.bulkModulus > 0 && D.volume > 0, '默认柔度为正');
+  const r = validateCaseText(text);
+  assert.equal(r.valid, true, r.errors.join('; '));
+  assert.equal(r.nodes.length, 2);
+});
+
 test('editor: 源/管/时间编辑反映到序列化文本', () => {
   let m = buildModel();
   m = removeSource(m, m.sources[0].name);
@@ -414,6 +433,18 @@ test('workspace: buildProjectTree 分层覆盖流体/1D/监测/结果', () => {
   assert.equal(steady.ok, true);
   const transient = results.children.find((c) => c.id === 'res.transient');
   assert.equal(transient.ok, false);
+});
+
+test('workspace: buildProjectTree 瞬态求解后结果叶刷新为 ✓（hasTransient）', () => {
+  // onTransientDone must call renderTree() so this leaf actually repaints after
+  // a transient solve (it used to stay "未求解" until some unrelated re-render).
+  const m = buildModel();
+  const leaf = (extras) => buildProjectTree(m, extras).find((n) => n.id === 'results')
+    .children.find((c) => c.id === 'res.transient');
+  assert.equal(leaf({}).ok, false);
+  assert.ok(leaf({}).label.includes('未求解'));
+  assert.equal(leaf({ hasTransient: true }).ok, true);
+  assert.ok(leaf({ hasTransient: true }).label.includes('✓'));
 });
 
 test('workspace: buildProjectTree 有耦合边时出现耦合接口组', () => {
@@ -799,6 +830,23 @@ test('upsertDictBlock: 整块替换 / 追加 / 未知名追加（E2）', () => {
   const appended = upsertDictBlock('a\n', 'inhibitor', ['kDepression 0.1;']);
   assert.ok(appended.trimEnd().endsWith('}'));
   assert.ok(appended.includes('inhibitor\n{'));
+});
+
+test('upsertDictBlock/removeDictBlock: # 注释与内核一致（含 { 或块名的注释不扰乱定位）', () => {
+  // The kernel lexer treats '#' as a line comment exactly like '//'; a '#'
+  // comment that mentions the block name or carries a brace must not be mistaken
+  // for the block opener (the dict parser used to strip only '//').
+  const t = '# hydrate { 注释里的假块\nsolver { type t; }\nhydrate\n{\n    curveA 1;\n}\n'
+          + 'time { dt 1; } # 尾注释 { }\n';
+  const replaced = upsertDictBlock(t, 'hydrate', ['curveA 9;']);
+  assert.ok(replaced.includes('curveA 9;'), 'real block replaced');
+  assert.ok(!replaced.includes('curveA 1;'), 'old key gone');
+  assert.ok(replaced.includes('solver { type t; }'), 'sibling survives');
+  assert.ok(replaced.includes('# hydrate { 注释里的假块'), 'comment kept verbatim');
+  assert.ok(replaced.includes('time { dt 1; }'), 'trailing-comment sibling intact');
+  const removed = removeDictBlock(t, 'hydrate');
+  assert.ok(!removed.includes('curveA 1;'), 'real block removed');
+  assert.ok(removed.includes('solver { type t; }'), 'sibling survives removal');
 });
 
 test('clipKeepsByPlane: 轴对齐等价旧语义 + 任意法向 + 退化', () => {

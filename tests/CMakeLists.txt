@@ -2438,6 +2438,15 @@ if(MPI_CXX_FOUND AND TARGET chflow-mpi-linear-solver)
             ${MPIEXEC_EXECUTABLE}
             $<TARGET_FILE:chflow-mpi-linear-solver>
             ${CMAKE_CURRENT_SOURCE_DIR}/cases/mpiLinearSolver/case.dict)
+else()
+    if(NOT MPI_CXX_FOUND)
+        message(STATUS "tests: verify.mpiLinearSolver skipped: no MPI CXX "
+                       "toolchain found (install OpenMPI/MPICH or set MPI_PREFIX); "
+                       "the distributed CSR CG test is registered only in MPI-enabled builds")
+    else()
+        message(STATUS "tests: verify.mpiLinearSolver skipped: the "
+                       "chflow-mpi-linear-solver target was not built")
+    endif()
 endif()
 
 # A11 / §5.133 cross-check: PETSc's own MPI machinery (MatCreateAIJ + KSPCG,
@@ -2458,6 +2467,19 @@ if(MPI_CXX_FOUND
             $<TARGET_FILE:chflow-3d-petsc-distributed>
             $<TARGET_FILE:chflow-mpi-linear-solver>
             ${CMAKE_CURRENT_SOURCE_DIR}/cases/petscDistributed/case.dict)
+else()
+    set(_petsc_skip_reasons "")
+    if(NOT MPI_CXX_FOUND)
+        set(_petsc_skip_reasons "${_petsc_skip_reasons}no MPI CXX toolchain found; ")
+    endif()
+    if(NOT TARGET chflow-3d-petsc-distributed)
+        set(_petsc_skip_reasons "${_petsc_skip_reasons}PETSc distributed target not built (needs CHFLOW_WITH_PETSC=ON and a real PETSc installation); ")
+    endif()
+    if(NOT TARGET chflow-mpi-linear-solver)
+        set(_petsc_skip_reasons "${_petsc_skip_reasons}MPI linear-solver target not built; ")
+    endif()
+    message(STATUS "tests: verify.petscDistributed skipped: ${_petsc_skip_reasons}"
+                   "the PETSc cross-check is registered only in MPI+PETSc enabled builds")
 endif()
 
 if(CHFLOW_PYTHON_BINDINGS)

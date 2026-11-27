@@ -249,6 +249,31 @@ double espHeadSlope(double stages, double h0, double hq, double qr, double q)
     return -stages * 2.0 * (h0 - hq) * q / (qr * qr);
 }
 
+// ---- 5.218 (§5.218) distributed well control: the BOP ram schedule ---------
+
+/// The ram's closure position at time t: 0 while open, a linear ramp over
+/// [closeTime, closeTime + strokeTime], 1 once shut. strokeTime 0 is the
+/// instant step at closeTime. The end points answer exactly (openKv before,
+/// closedKv after), so a checker can assert the sealed value, not a
+/// near-sealed one.
+double bopPosAt(double closeTime, double strokeTime, double t)
+{
+    if (t < closeTime) return 0.0;
+    if (!(strokeTime > 0) || t >= closeTime + strokeTime) return 1.0;
+    return (t - closeTime) / strokeTime;
+}
+
+/// The ram's flow coefficient at time t, the ramp between the two declared
+/// Kv values. Same shape of schedule as valveKAt, in the flow-coefficient
+/// convention instead of the loss-coefficient one: q = kv * sqrt(|dp|).
+double bopKvAt(double openKv, double closedKv, double closeTime,
+               double strokeTime, double t)
+{
+    if (t < closeTime) return openKv;
+    if (!(strokeTime > 0) || t >= closeTime + strokeTime) return closedKv;
+    return openKv + (t - closeTime) / strokeTime * (closedKv - openKv);
+}
+
 } // namespace
 
 void hydrateKineticsStep(double& liquidVolume, double& hydrateVolume,
@@ -598,6 +623,152 @@ TransientNetwork::TransientNetwork(const TransientCase& c)
     }
     q_.assign(pipes_.size(), 0.0);
     for (std::size_t k = 0; k < pipes_.size(); ++k) q_[k] = pipes_[k].qPrev;
+
+    // ---- 5.218: the distributed well-control column -------------------------
+    // Built after the network state exists: the column reads node pressures
+    // and writes none, so an undeclared case advances the 5.185 march bit for
+    // bit. Every mistake is loud: a bore that is not a bore, a column of no
+    // cells, a name that shadows a node or a pipe, a ram without a column.
+    for (const TransientAnnulusConfig& ac : c.annulus)
+    {
+        for (const std::string& nn : net_.nodeNames)
+            if (nn == ac.name)
+                cfFatal("transient: annulus '" + ac.name + "' collides with a"
+                        " node name: the readout tokens must be distinct");
+        for (const std::string& pn : pipeNames_)
+            if (pn == ac.name)
+                cfFatal("transient: annulus '" + ac.name + "' collides with a"
+                        " pipe name: the readout tokens must be distinct");
+        if (ac.segments.empty())
+            cfFatal("transient: annulus '" + ac.name + "' declares zero"
+                    " segments: a column of no cells marches nothing");
+        AnnulusDyn a;
+        a.name = ac.name;
+        a.nodeIndex = ac.useNode
+            ? static_cast<int>(net_.nodeIndex(ac.nodeName)) : -1;
+        a.bottomPressure = ac.bottomPressure;
+        a.drift = ac.driftVelocity;
+        a.rhoG = ac.gasDensity;
+        a.pSurface = ac.surfacePressure;
+        a.temperature = ac.temperature;
+        a.influx = ac.influx;
+        a.influxGasFraction = ac.influxGasFraction;
+        a.frictionFactor = ac.frictionFactor;
+        a.hasPi = ac.useReservoir;
+        if (ac.useReservoir)
+        {
+            bool found = false;
+            for (const TransientReservoirConfig& rc : c.reservoirs)
+                if (rc.name == ac.reservoirName)
+                {
+                    a.piPressure = rc.pressure;
+                    a.piJ = rc.productivityIndex;
+                    a.piFg = rc.gasFraction;
+                    found = true;
+                    break;
+                }
+            if (!found)
+                cfFatal("transient: annulus '" + ac.name + "' takes its influx"
+                        " from unknown reservoir '" + ac.reservoirName + "'");
+        }
+        double z = 0.0;
+        for (const TransientAnnulusSegment& sg : ac.segments)
+        {
+            if (!(sg.outerD > 0))
+                cfFatal("transient: annulus '" + ac.name + "' segment has a"
+                        " non-positive outerD");
+            if (sg.innerD < 0)
+                cfFatal("transient: annulus '" + ac.name + "' segment has a"
+                        " negative innerD");
+            if (sg.innerD >= sg.outerD)
+                cfFatal("transient: annulus '" + ac.name + "' segment declares"
+                        " innerD >= outerD: the annulus has no bore");
+            if (!(sg.length > 0))
+                cfFatal("transient: annulus '" + ac.name + "' segment has a"
+                        " non-positive length");
+            if (sg.roughness < 0)
+                cfFatal("transient: annulus '" + ac.name + "' segment has a"
+                        " negative roughness");
+            if (!(sg.initialGasFraction >= 0 && sg.initialGasFraction < 1))
+                cfFatal("transient: annulus '" + ac.name + "' segment"
+                        " initialGasFraction must be in [0,1)");
+            AnnulusCell cell;
+            cell.area = 0.25 * M_PI * (sg.outerD * sg.outerD
+                                      - sg.innerD * sg.innerD);
+            cell.de = sg.outerD - sg.innerD;
+            cell.length = sg.length;
+            cell.roughness = sg.roughness;
+            cell.z = z + 0.5 * sg.length;
+            z += sg.length;
+            // The declared holdup seeds the hydrostatic profile; the march
+            // then carries the gas as standard volume (pV = const).
+            cell.alphaG = sg.initialGasFraction;
+            a.cells.push_back(cell);
+        }
+        annuli_.push_back(a);
+    }
+    for (const TransientBopConfig& bc : c.bops)
+    {
+        if (annuli_.empty())
+            cfFatal("transient: bop '" + bc.name + "' without annulus{}: a ram"
+                    " needs a column to seal");
+        std::size_t idx = annuli_.size();
+        for (std::size_t i = 0; i < annuli_.size(); ++i)
+            if (annuli_[i].name == bc.annulusName) { idx = i; break; }
+        if (idx == annuli_.size())
+            cfFatal("transient: bop '" + bc.name + "' targets unknown annulus '"
+                    + bc.annulusName + "'");
+        if (annuli_[idx].bopIndex >= 0)
+            cfFatal("transient: annulus '" + bc.annulusName + "' carries two"
+                    " rams: one BOP per column");
+        if (bc.closeTime < 0)
+            cfFatal("transient: bop '" + bc.name + "' closeTime must be >= 0"
+                    " (the march starts at t = 0)");
+        if (bc.strokeTime < 0)
+            cfFatal("transient: bop '" + bc.name + "' strokeTime must be >= 0"
+                    " (0 is the instant step)");
+        if (bc.openKv < 0 || bc.closedKv < 0)
+            cfFatal("transient: bop '" + bc.name + "' Kv must be >= 0");
+        if (bc.sealPressure < 0)
+            cfFatal("transient: bop '" + bc.name + "' sealPressure must be"
+                    " >= 0");
+        BopDyn b;
+        b.name = bc.name;
+        b.annulusIndex = idx;
+        b.closeTime = bc.closeTime;
+        b.strokeTime = bc.strokeTime;
+        b.openKv = bc.openKv;
+        b.closedKv = bc.closedKv;
+        b.sealPressure = bc.sealPressure;
+        annuli_[idx].bopIndex = static_cast<int>(bops_.size());
+        bops_.push_back(b);
+    }
+
+    // Seed the inventory: the declared holdups price the initial hydrostatic
+    // profile at rest (q = 0), and the gas is booked as standard volume so the
+    // march conserves it exactly. Then evaluate the t = 0 readout.
+    for (AnnulusDyn& a : annuli_)
+    {
+        const std::size_t n = a.cells.size();
+        double pf = a.pSurface;
+        if (a.bopIndex >= 0) pf += bops_[static_cast<std::size_t>(a.bopIndex)]
+                                     .sealPressure;
+        for (std::size_t k = n; k-- > 0;)
+        {
+            AnnulusCell& c = a.cells[k];
+            const double rhoM = c.alphaG * a.rhoG + (1.0 - c.alphaG) * fluid_.rho;
+            const double head = rhoM * kGravity * c.length;
+            c.p = pf + 0.5 * head;
+            pf += head;
+        }
+        a.pTop = a.pSurface
+               + (a.bopIndex >= 0
+                      ? bops_[static_cast<std::size_t>(a.bopIndex)].sealPressure
+                      : 0.0);
+        for (AnnulusCell& c : a.cells)
+            c.vs = c.alphaG * c.p * c.area * c.length;
+    }
+    if (!annuli_.empty()) annulusStep(0.0);
 }
 
 std::vector<ReservoirReadout> TransientNetwork::reservoirReadouts() const
@@ -619,6 +790,159 @@ std::vector<ReservoirReadout> TransientNetwork::reservoirReadouts() const
         o.underbalanced = p_[r.nodeIndex] < r.pressure;
         o.killMudWeight = r.pressure / (kGravity * r.depth);
         o.sidpp = r.pressure - fluid_.rho * kGravity * r.depth;
+        out.push_back(o);
+    }
+    return out;
+}
+
+// 5.218: one explicit Euler march of every annulus column. The scheme is
+// closed form in the case's own numbers, so a checker re-derives it without
+// reading any kernel state:
+//
+//   pBot   = node pressure (committed) or the declared bottomPressure
+//   q      = influx, or J*max(p_res - pBot, 0) for a reservoir-fed column;
+//            a sealed ram (kv == 0) stops the string: q = 0
+//   alphaG = clamp(vs / (p * A * L), 0, 1)          [pV = const expansion]
+//   rhoM   = alphaG rhoG + (1 - alphaG) rhoL
+//   vM     = q / A
+//   dpf    = f rhoM |vM| vM L / (2 De),  f = declared or Churchill(rr = e/De)
+//   pTopFace = pSurface (+ sealPressure + (q/kv)^2 under a ram)
+//   p[cell]  = face pressure stepped down by head + signed friction
+//   vG     = vM + vdrift (1 - alphaG)               [graded drift-flux slip]
+//   flux   = vG * vs / L                            [upwind, A*alpha*p = vs/L]
+//   vs[k] += dt (flux_in - flux_out), the boundary fluxes being the influx's
+//   gas share at the bottom and the top holdup's share of the vented rate.
+//
+// Nothing here writes a node, a pipe row or a rate: the column is the
+// distributed companion of the 5.185 lumped readout, not a coupled phase.
+void TransientNetwork::annulusStep(double dt)
+{
+    if (annuli_.empty()) return;
+    bopStep(t_ + dt);
+    for (AnnulusDyn& a : annuli_)
+    {
+        const std::size_t n = a.cells.size();
+        const double pBot = a.nodeIndex >= 0
+            ? p_[static_cast<std::size_t>(a.nodeIndex)] : a.bottomPressure;
+        double q = a.hasPi ? a.piJ * std::max(a.piPressure - pBot, 0.0)
+                           : a.influx;
+        if (a.bopIndex >= 0
+            && bops_[static_cast<std::size_t>(a.bopIndex)].kv <= 0.0)
+            q = 0.0; // a sealed ram stops the string
+        const double fgIn = a.hasPi ? a.piFg : a.influxGasFraction;
+        a.q = q;
+
+        std::vector<double> alpha(n), rhoM(n), vM(n), dpf(n), flux(n);
+        for (std::size_t k = 0; k < n; ++k)
+        {
+            const AnnulusCell& c = a.cells[k];
+            const double vc = c.area * c.length;
+            double al = (c.p > 0 && vc > 0) ? c.vs / (c.p * vc) : 0.0;
+            al = std::min(std::max(al, 0.0), 1.0);
+            alpha[k] = al;
+            rhoM[k] = al * a.rhoG + (1.0 - al) * fluid_.rho;
+            vM[k] = q / c.area;
+            dpf[k] = 0.0;
+            if (q != 0.0)
+            {
+                const double f = a.frictionFactor > 0
+                    ? a.frictionFactor
+                    : churchillFriction(
+                          rhoM[k] * std::abs(vM[k]) * c.de / fluid_.mu,
+                          c.roughness / c.de);
+                dpf[k] = f * rhoM[k] * std::abs(vM[k]) * vM[k] * c.length
+                       / (2.0 * c.de);
+            }
+        }
+
+        // The ram sees the top face at the surface reference plus its seal
+        // stand-in plus the drop it passes at this rate (q = kv sqrt(dp)
+        // inverted); an open column without a ram vents at the reference.
+        double pf = a.pSurface;
+        if (a.bopIndex >= 0)
+        {
+            const BopDyn& b = bops_[static_cast<std::size_t>(a.bopIndex)];
+            pf += b.sealPressure;
+            if (b.kv > 0.0) pf += (q / b.kv) * (q / b.kv);
+        }
+        a.pTop = pf;
+        for (std::size_t k = n; k-- > 0;)
+        {
+            AnnulusCell& c = a.cells[k];
+            const double head = rhoM[k] * kGravity * c.length + dpf[k];
+            c.p = pf + 0.5 * head;
+            pf += head;
+        }
+
+        // Graded slip advection of the standard-volume inventory.
+        for (std::size_t k = 0; k < n; ++k)
+        {
+            const AnnulusCell& c = a.cells[k];
+            const double vG = vM[k] + a.drift * (1.0 - alpha[k]);
+            flux[k] = vG * c.vs / c.length;
+        }
+        for (std::size_t k = 0; k < n; ++k)
+        {
+            AnnulusCell& c = a.cells[k];
+            const double in = k == 0 ? q * fgIn * c.p : flux[k - 1];
+            const double out = k + 1 == n ? q * alpha[k] * c.p : flux[k];
+            c.vs += dt * (in - out);
+            if (c.vs < 0.0) c.vs = 0.0; // a cell cannot give more than it holds
+            const double vc = c.area * c.length;
+            c.alphaG = (c.p > 0 && vc > 0)
+                ? std::min(std::max(c.vs / (c.p * vc), 0.0), 1.0) : 0.0;
+            c.vM = vM[k];
+            c.dpf = dpf[k];
+        }
+        if (a.bopIndex >= 0)
+            bops_[static_cast<std::size_t>(a.bopIndex)].q = q;
+    }
+}
+
+// 5.218: the ram schedule at the implicit new time: the closure position and
+// the flow coefficient the step's outflow law will read.
+void TransientNetwork::bopStep(double tNew)
+{
+    for (BopDyn& b : bops_)
+    {
+        b.pos = bopPosAt(b.closeTime, b.strokeTime, tNew);
+        b.kv = bopKvAt(b.openKv, b.closedKv, b.closeTime, b.strokeTime, tNew);
+    }
+}
+
+std::vector<AnnulusSegReadout> TransientNetwork::annulusReadouts() const
+{
+    std::vector<AnnulusSegReadout> out;
+    for (const AnnulusDyn& a : annuli_)
+        for (std::size_t k = 0; k < a.cells.size(); ++k)
+        {
+            const AnnulusCell& c = a.cells[k];
+            AnnulusSegReadout o;
+            o.name = a.name;
+            o.seg = static_cast<int>(k);
+            o.z = c.z;
+            o.alphaG = c.alphaG;
+            o.vM = c.vM;
+            o.p = c.p;
+            o.T = a.temperature;
+            o.dpf = c.dpf;
+            out.push_back(o);
+        }
+    return out;
+}
+
+std::vector<BopReadout> TransientNetwork::bopReadouts() const
+{
+    std::vector<BopReadout> out;
+    for (const BopDyn& b : bops_)
+    {
+        BopReadout o;
+        o.name = b.name;
+        o.t = t_;
+        o.pos = b.pos;
+        o.kv = b.kv;
+        o.q = b.q;
+        o.pTop = annuli_[b.annulusIndex].pTop;
         out.push_back(o);
     }
     return out;
@@ -1003,6 +1327,11 @@ void TransientNetwork::commitStep()
                     + "' liquid exceeds its volume - reduce dt");
         hydrateKineticsStep(nd.vL, nd.vH, nd.rate, dt);
     }
+
+    // 5.218: the distributed well-control column marches on the committed
+    // state. It reads node pressures and writes none, so an undeclared case
+    // advances exactly as before and a declared one adds only its own lines.
+    annulusStep(dt);
 
     t_ += dt;
     pending_ = false;
@@ -1930,6 +2259,143 @@ TransientCase loadTransientFromDict(const Dictionary& caseDict)
                         " positive (the node's TVD): the kill-mud weight is"
                         " p_res / (g depth)");
             c.reservoirs.push_back(r);
+        }
+    }
+
+    // ---- 5.218: the opt-in distributed well control ------------------------
+    // The annulus column: a vertical string of segments (bottom to top), each
+    // a cell of the marched column. The grammar's own numbers are priced here;
+    // the wiring (name collisions, the ram's column) is checked by the
+    // constructor, which both entry points go through.
+    if (caseDict.has("annulus"))
+    {
+        const Dictionary& blk = caseDict.getDict("annulus");
+        for (const std::string& name : blk.keys())
+        {
+            const Dictionary& ad = blk.getDict(name);
+            TransientAnnulusConfig a;
+            a.name = name;
+            if (!ad.has("segments"))
+                cfFatal("transient: annulus '" + name + "' has no segments{}"
+                        " block: the column is a string of at least one"
+                        " segment");
+            const Dictionary& segs = ad.getDict("segments");
+            if (segs.size() == 0)
+                cfFatal("transient: annulus '" + name + "' declares an empty"
+                        " segments{} block: zero segments is not a column");
+            for (const std::string& sn : segs.keys())
+            {
+                const Dictionary& sd = segs.getDict(sn);
+                TransientAnnulusSegment sg;
+                sg.innerD = sd.getScalar("innerD");
+                sg.outerD = sd.getScalar("outerD");
+                sg.length = sd.getScalar("length");
+                sg.roughness = sd.getScalarOr("roughness", 0.0);
+                sg.initialGasFraction = sd.getScalarOr("initialGasFraction", 0.0);
+                if (!(sg.outerD > 0))
+                    cfFatal("transient: annulus '" + name + "' segment '" + sn
+                            + "' needs a positive outerD");
+                if (sg.innerD < 0)
+                    cfFatal("transient: annulus '" + name + "' segment '" + sn
+                            + "' has a negative innerD");
+                if (sg.innerD >= sg.outerD)
+                    cfFatal("transient: annulus '" + name + "' segment '" + sn
+                            + "' declares innerD >= outerD: the annulus has no"
+                              " bore");
+                if (!(sg.length > 0))
+                    cfFatal("transient: annulus '" + name + "' segment '" + sn
+                            + "' needs a positive length");
+                if (sg.roughness < 0)
+                    cfFatal("transient: annulus '" + name + "' segment '" + sn
+                            + "' has a negative roughness");
+                if (!(sg.initialGasFraction >= 0 && sg.initialGasFraction < 1))
+                    cfFatal("transient: annulus '" + name + "' segment '" + sn
+                            + "' initialGasFraction must be in [0,1)");
+                a.segments.push_back(sg);
+            }
+            a.useNode = ad.has("node");
+            if (a.useNode) a.nodeName = ad.getWord("node");
+            a.bottomPressure = ad.getScalarOr("bottomPressure", 0.0);
+            if (!a.useNode && !(a.bottomPressure > 0))
+                cfFatal("transient: annulus '" + name + "' needs a node or a"
+                        " positive bottomPressure: the column's bottom cell"
+                          " must be anchored to a pressure");
+            a.driftVelocity = ad.getScalarOr("driftVelocity", 0.0);
+            if (a.driftVelocity < 0)
+                cfFatal("transient: annulus '" + name + "' driftVelocity must"
+                        " be >= 0: the slip is upward by declaration");
+            a.gasDensity = ad.getScalarOr("gasDensity", 1.2);
+            if (a.gasDensity < 0)
+                cfFatal("transient: annulus '" + name + "' gasDensity must be"
+                        " >= 0");
+            a.surfacePressure = ad.getScalarOr("surfacePressure", 1.0e5);
+            if (a.surfacePressure < 0)
+                cfFatal("transient: annulus '" + name + "' surfacePressure must"
+                        " be >= 0");
+            a.temperature = ad.getScalarOr("temperature", 288.15);
+            if (!(a.temperature > 0))
+                cfFatal("transient: annulus '" + name + "' temperature must be"
+                        " positive (K, the column is isothermal)");
+            a.influx = ad.getScalarOr("influx", 0.0);
+            if (a.influx < 0)
+                cfFatal("transient: annulus '" + name + "' influx must be >= 0");
+            a.influxGasFraction = ad.getScalarOr("influxGasFraction", 0.0);
+            if (!(a.influxGasFraction >= 0 && a.influxGasFraction <= 1))
+                cfFatal("transient: annulus '" + name + "' influxGasFraction"
+                        " must be in [0,1]");
+            a.useReservoir = ad.has("reservoir");
+            if (a.useReservoir)
+            {
+                a.reservoirName = ad.getWord("reservoir");
+                if (a.influx > 0)
+                    cfFatal("transient: annulus '" + name + "' declares both a"
+                            " constant influx and a reservoir PI law: one"
+                              " influx account per column");
+                bool found = false;
+                for (const TransientReservoirConfig& rc : c.reservoirs)
+                    if (rc.name == a.reservoirName) { found = true; break; }
+                if (!found)
+                    cfFatal("transient: annulus '" + name + "' takes its influx"
+                            " from unknown reservoir '" + a.reservoirName + "'");
+            }
+            a.frictionFactor = ad.getScalarOr("frictionFactor", 0.0);
+            if (a.frictionFactor < 0)
+                cfFatal("transient: annulus '" + name + "' frictionFactor must"
+                        " be >= 0 (0 means Churchill from the roughness)");
+            c.annulus.push_back(a);
+        }
+    }
+
+    if (caseDict.has("bop"))
+    {
+        if (!caseDict.has("annulus"))
+            cfFatal("transient: bop{} without annulus{}: a ram needs a column"
+                    " to seal");
+        const Dictionary& blk = caseDict.getDict("bop");
+        for (const std::string& name : blk.keys())
+        {
+            const Dictionary& bd = blk.getDict(name);
+            TransientBopConfig b;
+            b.name = name;
+            b.annulusName = bd.getWord("annulus");
+            b.closeTime = bd.getScalar("closeTime");
+            if (b.closeTime < 0)
+                cfFatal("transient: bop '" + name + "' closeTime must be >= 0"
+                        " (the march starts at t = 0)");
+            b.strokeTime = bd.getScalarOr("strokeTime", 0.0);
+            if (bd.has("strokeTime") && !(b.strokeTime > 0))
+                cfFatal("transient: bop '" + name + "' strokeTime must be"
+                        " positive when declared (omit it for the instant"
+                        " step)");
+            b.openKv = bd.getScalarOr("openKv", 0.0);
+            b.closedKv = bd.getScalarOr("closedKv", 0.0);
+            if (b.openKv < 0 || b.closedKv < 0)
+                cfFatal("transient: bop '" + name + "' Kv must be >= 0");
+            b.sealPressure = bd.getScalarOr("sealPressure", 0.0);
+            if (b.sealPressure < 0)
+                cfFatal("transient: bop '" + name + "' sealPressure must be"
+                        " >= 0");
+            c.bops.push_back(b);
         }
     }
     return c;

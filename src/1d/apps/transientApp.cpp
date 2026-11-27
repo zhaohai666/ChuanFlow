@@ -124,6 +124,23 @@ int main(int argc, char** argv)
                           " killmud ", num(r.killMudWeight),
                           " sidpp ", num(r.sidpp));
             }
+            // 5.218: the distributed well-control readout, one line per cell
+            // of every declared annulus and one per declared BOP (absent when
+            // the case declares none, so untouched traces print exactly what
+            // they printed before).
+            for (const AnnulusSegReadout& sg : s.annulusReadouts())
+            {
+                log::info("annulus ", sg.name, " seg ", sg.seg, " z ",
+                          num(sg.z), " alphaG ", num(sg.alphaG), " vM ",
+                          num(sg.vM), " p ", num(sg.p), " T ", num(sg.T),
+                          " dpf ", num(sg.dpf));
+            }
+            for (const BopReadout& b : s.bopReadouts())
+            {
+                log::info("bop ", b.name, " t ", num(b.t), " pos ", num(b.pos),
+                          " kv ", num(b.kv), " q ", num(b.q),
+                          " pTop ", num(b.pTop));
+            }
             const std::vector<double> q = s.pipeFlows();            for (std::size_t k = 0; k < q.size(); ++k)
             {
                 log::info("pipe ", s.pipeNames()[k], " Q ", num(q[k]));

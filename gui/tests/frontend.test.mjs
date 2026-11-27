@@ -519,6 +519,78 @@ test('workspace: parseCoupledOutput 多边解析成数组，逐条残差与原�
   assert.equal(c.solved.edge, 'X1');
 });
 
+// Transient single-edge coupling (chflow-coupled-1d3d-transient): the engine
+// prints a per-layer `transient step` ledger plus `nodes step` / `pipes step`
+// rows and a final `transient coupled seed` summary — none of the steady
+// `coupled solved` / `pipe final` lines. Numbers verbatim from the kernel.
+const COUPLED_TRANSIENT_SAMPLE = `[chflow] transient step 1: t 0.02 q 0.00013865138031903315 dpNetwork 540.60483238135987 dpBlock 540.57505401839342 R 3899022.361965979 residual 5.508645422147137e-05 passes 2 subPasses 2 sweeps 20 newton 7.18e-12 M 1273239.5 blockConverged 1 thermal 0
+[chflow] nodes step 1: Src 1000700 J1 1000650 J2 1000048.8 Snk 1000000
+[chflow] pipes step 1: A 0.00024 X 0.00013865138031903315 By 0.00010134861968096685 B 0.00024
+[chflow] transient step 2: t 0.04 q 0.00014004999534007306 dpNetwork 546.37837394078656 dpBlock 546.3773862991419 R 3901309.4760485804 residual 1.8076180849021979e-06 passes 2 subPasses 2 sweeps 16 newton 5.39e-12 M 1273239.5 blockConverged 1 thermal 0
+[chflow] nodes step 2: Src 1000718.4 J1 1000669.5 J2 1000048.8923985178 Snk 1000000
+[chflow] pipes step 2: A 0.00024 X 0.00014004999534007306 By 8.2478456179386006e-05 B 0.00024
+[chflow] transient coupled seed 0: edge X steps 2 q 0.00014004999534007306 dp 546.3773862991419 R 3901309.4760485804 residual 1.8076180849021979e-06 t 0.04
+`;
+
+test('workspace: parseCoupledOutput 瞬态单边时序与末态（transient step/seed）', () => {
+  const c = parseCoupledOutput(COUPLED_TRANSIENT_SAMPLE);
+  // final summary becomes the solved edge (the onCoupledDone guard reads this)
+  assert.ok(c.solved, 'transient coupled seed must populate solved');
+  assert.equal(c.solved.edge, 'X');
+  assert.equal(c.solved.q, 0.00014004999534007306);
+  assert.equal(c.solved.dp, 546.3773862991419);
+  assert.equal(c.solved.r, 3901309.4760485804);
+  assert.equal(c.solved.residual, 1.8076180849021979e-06);
+  assert.equal(c.solved.steps, 2);
+  assert.equal(c.edges.length, 1);
+  // per-layer time series, verbatim
+  assert.equal(c.steps.length, 2);
+  assert.equal(c.steps[0].t, 0.02);
+  assert.equal(c.steps[0].q, 0.00013865138031903315);
+  assert.equal(c.steps[0].dpNetwork, 540.60483238135987);
+  assert.equal(c.steps[0].dpBlock, 540.57505401839342);
+  assert.equal(c.steps[0].sweeps, 20);
+  assert.equal(c.steps[1].t, 0.04);
+  // last layer wins for the node/pipe tables
+  assert.equal(c.nodes.length, 4);
+  assert.equal(c.nodes[0].name, 'Src');
+  assert.equal(c.nodes[0].p, 1000718.4);
+  assert.equal(c.pipes.length, 4);
+  assert.equal(c.pipes[1].name, 'X');
+  assert.equal(c.pipes[1].q, 0.00014004999534007306);
+});
+
+test('workspace: parseCoupledOutput 稳态算例不受瞬态分支影响（steps 为空）', () => {
+  const c = parseCoupledOutput(COUPLED_SAMPLE);
+  assert.deepEqual(c.steps, []);
+  assert.equal(c.solved.edge, 'X');
+});
+
+// Multi-edge transient final ledger (`transient coupled start <label> edge ..`),
+// plus the q-less per-step summary that must NOT become a NaN time sample.
+const COUPLED_TRANSIENT_MULTI_SAMPLE = `[chflow] transient step 12: t 0.6 passes 1 subPasses 1 newton 4.89e-13
+[chflow] transient step 12 edge 0 name X1 q 1.978e-05 dpNetwork 72.88 dpBlock 72.89 R 3684657 residual 7.9e-05 sweeps 19
+[chflow] transient coupled start mix edge X1 name X1 q 1.9780001892585152e-05 dp 72.888290762998665 R 3684657.4422045774 residual 7.9019313031804142e-05 M 1273239.5447351625
+[chflow] transient coupled start mix edge X2 name X2 q 3.0000000000000004e-05 dp 467.71922919320474 R 15590640.820012888 residual 9.8196048591012352e-09 M 1810829.5747344538
+[chflow] transient coupled start mix: steps 12 worst residual 7.9019313031804142e-05 t 0.6
+`;
+
+test('workspace: parseCoupledOutput 多边瞬态末态逐边，q-less 汇总不入时序', () => {
+  const c = parseCoupledOutput(COUPLED_TRANSIENT_MULTI_SAMPLE);
+  assert.equal(c.edges.length, 2);
+  const x1 = c.edges.find((e) => e.edge === 'X1');
+  const x2 = c.edges.find((e) => e.edge === 'X2');
+  assert.ok(x1 && x2);
+  assert.equal(x1.q, 1.9780001892585152e-05);
+  assert.equal(x1.dp, 72.888290762998665);
+  assert.equal(x1.residual, 7.9019313031804142e-05);
+  assert.equal(x2.q, 3.0000000000000004e-05);
+  assert.equal(x2.residual, 9.8196048591012352e-09);
+  assert.equal(c.solved.edge, 'X1');
+  // the q-less `transient step 12: t .. passes ..` summary must not push NaN
+  assert.deepEqual(c.steps, []);
+});
+
 // ---------------------------------------------------------------------------
 // M7：稳态/瞬态 stdout 解析（JS 侧，作业式运行）
 // ---------------------------------------------------------------------------

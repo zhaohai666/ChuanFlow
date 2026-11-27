@@ -177,6 +177,7 @@ export function parseCoupledOutput(out) {
     edges: [], // one { edge, q, dp, r, iterations, residual, sweeps } per edge
     seeds: [], // { seed, iterations, converged, dp, q }
     interfaces: [], // { seed, iteration, q, dp, resistance }
+    steps: [], // transient single-edge time series { step, t, q, dpNetwork, dpBlock, r, residual, sweeps }
   };
   const edgeByName = new Map();
 
@@ -235,6 +236,68 @@ export function parseCoupledOutput(out) {
         iterations: Number(m[2]),
         converged: m[3].includes('converged') && !m[3].includes('not converged'),
       });
+      continue;
+    }
+    // Transient single-edge coupled engine (chflow-coupled-1d3d-transient):
+    // per-time-layer ledger `transient step N: t .. q .. dpNetwork .. dpBlock ..
+    // R .. residual .. sweeps ..`, the final summary `transient coupled seed N:
+    // edge X steps .. q .. dp .. R .. residual .. t ..`, and the per-layer node
+    // pressures / pipe rates. Without these the transient coupled run reported
+    // "解析失败" because none of the steady `coupled solved` / `pipe final` lines
+    // are printed (§5.181 transient coupling).
+    m = /^transient step (\d+): (.*)$/.exec(line);
+    if (m) {
+      const rest = m[2];
+      const grab = (key) => {
+        const a = after(rest, `${key} `);
+        return a ? Number(a.split(/\s+/)[0]) : NaN;
+      };
+      const q = grab('q');
+      // The multi-edge app also prints a `transient step N: t .. passes ..`
+      // summary with no per-edge q; only the single-edge ledger carries q, so
+      // skip the q-less summary rather than pushing a NaN sample.
+      if (Number.isFinite(q)) {
+        result.steps.push({
+          step: Number(m[1]), t: grab('t'), q,
+          dpNetwork: grab('dpNetwork'), dpBlock: grab('dpBlock'),
+          r: grab('R'), residual: grab('residual'), sweeps: grab('sweeps'),
+        });
+      }
+      continue;
+    }
+    m = /^transient coupled seed (\d+): edge (\S+) steps (\d+) q (\S+) dp (\S+) R (\S+) residual (\S+) t (\S+)$/.exec(line);
+    if (m) {
+      upsertEdge({
+        edge: m[2], q: Number(m[4]), dp: Number(m[5]), r: Number(m[6]),
+        iterations: null, residual: Number(m[7]), sweeps: null,
+        steps: Number(m[3]), t: Number(m[8]),
+      });
+      continue;
+    }
+    // Multi-edge transient final ledger: `transient coupled start <label> edge
+    // <name> name <name> q .. dp .. R .. residual .. M ..` (one per edge).
+    m = /^transient coupled start \S+ edge (\S+) name (\S+) q (\S+) dp (\S+) R (\S+) residual (\S+)/.exec(line);
+    if (m) {
+      upsertEdge({
+        edge: m[1], q: Number(m[3]), dp: Number(m[4]), r: Number(m[5]),
+        iterations: null, residual: Number(m[6]), sweeps: null,
+      });
+      continue;
+    }
+    m = /^nodes step (\d+): (.*)$/.exec(line);
+    if (m) {
+      const toks = m[2].trim().split(/\s+/);
+      const nodes = [];
+      for (let i = 0; i + 1 < toks.length; i += 2) nodes.push({ name: toks[i], p: Number(toks[i + 1]) });
+      if (nodes.length) result.nodes = nodes; // last layer wins
+      continue;
+    }
+    m = /^pipes step (\d+): (.*)$/.exec(line);
+    if (m) {
+      const toks = m[2].trim().split(/\s+/);
+      const pipes = [];
+      for (let i = 0; i + 1 < toks.length; i += 2) pipes.push({ name: toks[i], q: Number(toks[i + 1]) });
+      if (pipes.length) result.pipes = pipes; // last layer wins
       continue;
     }
     m = /^interface seed (\S+) iter (\d+) (.*)$/.exec(line);

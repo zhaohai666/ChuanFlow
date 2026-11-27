@@ -1635,6 +1635,23 @@ function renderCoupled() {
     }).join('');
   }
 
+  // Transient single-edge coupling: show the exchanged rate q over time (the
+  // per-layer ledger), which is the physically meaningful curve for a startup
+  // ramp; the steady interface-iteration chart below is the fallback.
+  if (c.steps && c.steps.length >= 2) {
+    const pts = toTimeSeriesPoints(
+      c.steps.map((x) => ({ t: x.t, v: x.q })),
+      (s) => s.v, 560, 90,
+    );
+    const last = c.steps.at(-1);
+    $('coupledChart').innerHTML =
+      `<svg class="chart" viewBox="0 0 600 100" preserveAspectRatio="none">` +
+      `<polyline points="${pts.points}" fill="none" stroke="var(--coupled)" stroke-width="2"/></svg>` +
+      `<p class="hint">瞬态耦合 ${c.steps.length} 层：q ${fmtDisplay(c.steps[0].q, 'rate', u)} → ${fmtDisplay(last.q, 'rate', u)}，` +
+      `dp ${fmtDisplay(last.dpBlock, 'pressure', u)}（t=${last.t.toPrecision(4)} s，残差 ${Number.isFinite(last.residual) ? last.residual.toExponential(2) : '—'}）</p>`;
+    return;
+  }
+
   // interface exchange convergence: dp per outer iteration (last seed)
   const seeds = [...new Set(c.interfaces.map((x) => x.seed))];
   const lastSeed = seeds.at(-1);

@@ -6186,6 +6186,231 @@ pipes{P}
 通过面传输）。③ 只在 `energy{ phaseChange{} }` 且 `dt > 0` 时生效；稳态（`dt <= 0`）分支不动。
 ④ 凝固与熔化走同一条逆映射（`h` 下降即释放潜热）。
 
+### 5.218 井控分布式升级：环空气运移 | BOP 关闭行程 | 分布式环空摩阻（§5.185 集总 reservoir 的分布式对手）
+
+**差距**。§5.185 的 `reservoir{}` 是节点级集总 PI 流入，文档明确"无 BOP、无环空摩阻、气侵气体
+膨胀与上移不建模"。
+
+**实现**。`annulus{}` 声明多段垂直环空柱（每段 `innerD/outerD/length/roughness/initialGasFraction`，
+底锚 `bottomPressure` 或 `node`，可选 §5.185 PI 流入复用），`bop{}` 声明环空顶可控边界
+（`closeTime/strokeTime/openKv/closedKv`，可选 `sealPressure`）。`annulusStep(dt)` 在 `commitStep`
+水合物动力学环之后运行：气侵按**标准体积库存**（`pV = const`）播种，分级滑移
+`vG = vM + vdrift·(1−alphaG)`，保守迎风平流库存，膨胀由 `alphaG = vs/(p·A·L)` 给出；分布式
+Darcy-Weisbach `dpf = f·rhoM·|vM|·vM·L/(2·De)`，`De = outerD − innerD`，f 取声明值或共享
+`churchillFriction`。BOP 的 kv 按 `openKv → 线性行程 → closedKv`（端点精确，镜像 `valveKAt`），
+`q = kv·sqrt(|dp|)`，密封 ram  ⇒ q = 0。柱只**读**节点压力、不写——与 §5.185 的单向口径一致。
+
+**读数**。每帧每段 `annulus <name> seg <k> z alphaG vM p T dpf`；每个 BOP `bop <name> t pos kv q pTop`。
+未声明时一行不打印。
+
+**判据**。`verify.transientWellControlDistributed`，41 判据：气运移臂逐格重推（alphaG 最差 4.7e-12、
+库存守恒 2.9e-12、质心按漂移速上移）；BOP 臂 kv 端点精确、行程线性、`q == kv·sqrt(|dp|)` 逐帧；
+摩擦臂单相稳态总压降 == Churchill Darcy-Weisbach 闭式和（4.7e-12）；被动孪生逐字节；8 项拒收
+（`innerD >= outerD`、`closeTime < 0`、`sealPressure < 0`、与节点/管名冲突等）。
+
+**边界**。① 环空柱不改写节点压力（气侵对井筒水力是读数级反馈）；② 气为理想标准体积库存，
+不做组分；③ BOP 关闭后环空顶封死，库存留在柱内；④ 全部改动纯增量（676 行 0 删除）。
+
+### 5.219 水合物阻塞：沉积层 + 颗粒架桥（§5.186 非阻塞读数的 opt-in 对手）
+
+**差距**。§5.186 明确水合物 `h` 不入 `dEff`、不增黏（非阻塞）。
+
+**实现**。`blockage{}` 块（`TwoFluidBlockage`：`packingFraction` 缺省 0.6、`depositionRate`、
+`erosionRate`）。`hydrateBlockageStep(dt)` 挂在 `refreshDepositDiameter(dt)` 内：沉积层走隐式
+Euler 层平衡 `delta_n = (delta_{n-1}/dt + dep·h)/(1/dt + ero)`，孔径 `dEff = d_deposit − 2·delta`
+进入既有 `w` 求和之后的独立通道；架桥臂当任一截面终态 `h >= packingFraction` 时当场 `vM = 0`
+并在 `momentumSolve` 锁存 `blocked_`（每步重读，解离即释放）。
+
+**判据**。`verify.twoFluidHydrateBlockage`，28 判据：沉积臂逐帧 `dEff == D − 2·delta`（5e-13）、
+层平衡重推（9e-12）；架桥臂 `h >= 0.6` 帧 `vm == 0` 精确；被动孪生与 §5.186 无阻塞臂逐字节；
+8 项拒收（`packingFraction <= 0 或 > 1`、速率为负、无 `hydrate{}` 声明 `blockage{}` 等）。
+
+**边界**。架桥 case 用小的声明 `latentHeat`（1e3 J/m³）——真实 4.2e8 使成核自限（T 升到 T_eq 前
+h 到不了堆积极限），沉积臂保留物理潜热。
+
+### 5.220 冲蚀/腐蚀水力反馈：riskReport 从只读变成写回（§5.187 的 opt-in 对手）
+
+**差距**。§5.187 的 `riskReport` 只读（API RP 14E `Ve` 比值、sour 分压），不反馈水力。
+
+**实现**。`hydraulicFeedback{}` 块（`erosionC/erosionRate/h2s/corrosionRate`），
+`erosionCorrosionFeedbackStep(dt)` 在 `refreshDepositDiameter` 之后跑：本截面自身 `Ve =
+0.3048·C/√(ρm/16.0184634)` 被 `|vm|` 越限时孔径增 `erosionRate·dt`；`h2s·pmax >= 3447 Pa`
+（0.5 psia）期间增 `corrosionRate·dt`。长大后的 `dEff` 进壁面律——摩阻看见更宽的孔。
+
+**判据**。`verify.twoFluidErosionCorrosionFeedback`，25 判据：两臂逐帧增量 == `rate·dt`（1e-16）；
+被动孪生与 §5.187 纯读数臂逐字节；8 项拒收（速率为负、`erosionC <= 0`、`h2s` 越界 [0,1]、
+腐蚀无 `gasR` 等）。
+
+**边界**。磨损率本身是声明常数（不接 De Waard–Milliams 动态速率——那是 §5.187 读数侧的账）。
+
+### 5.221 六方程分布式动量 + 声学双向回馈（四方程 vM_ 的相速度对手）
+
+**差距**。两流体引擎是四方程（气/液质量 + 混合物动量 `vM_` + 能量）；§5.183 的 `acoustics{}`
+report-only，注释写明 "No write-back"。
+
+**实现**。`sixEquation{}` 块启用后引入 `uG_[i]`、`uL_[i]` 与各相隐式 Euler 动量行：面心差分
+`dp/dx`、重力、各相自身 Re 的 Churchill 壁摩阻（滞后）、动态闭合拖曳 `K = C|uG−uL|` 经原点
+割线半隐式的 2×2 精确解；`vM_` 由相速度重导，报告口径不变。声学写回：`acoustics{}` 与
+`sixEquation{}` 同时声明时，声学步的面速度均值按 `(1−α)/α` 叠加到两相再重导 `vM_`；仅
+`acoustics{}` 时保持 report-only 逐字节不变。
+
+**判据**。`verify.twoFluidSixEquation`，40 判据：主臂逐帧复现 2×2 递归（1.29e-10）；均匀臂
+`dp/dx = 0` 下滑移 2.0→0.0704 单调逼近滞后终值；写回臂递归 + 声学叠加复现（1.44e-10）且声学
+增量非零；`vm` 恒等式（4.5e-12，注意动量求解时 `vm` 由**上一帧** α/p 与本帧相速度导出）；
+`enable false` 与被动孪生逐字节；§5.183/§5.163 存量 deck 逐字节；9 项拒收。
+
+**边界**。① 单相极限按 2×2 通式在 α→0 的数学一致方式实现；② 写回权重用同帧输运后的 α；
+③ 与混合物入口速度边界冲突时拒收，不做静默换算。
+
+### 5.222 时变环境温度：ambientSchedule 进壁温（§5.144 常数壁温的推广）
+
+**差距**。§5.144/§5.188 的 `thermal{}` 壁温是常数或地温梯度，不随时变。
+
+**实现**。`ambientSchedule{}` 块（`times[]`/`ambientT[]`）；`wallTemperature(i)` 委托
+`wallTemperatureAt(i, t)`——未声明时旧表达式原样返回；声明时按分段线性（窗口外钳位）在步末时刻
+（隐式 Euler 源点）取值，同时驱动热矩阵、壁热流与地层远场。
+
+**判据**。`verify.twoFluidAmbientSchedule`，20 判据：逐帧 `wallT` 对插值闭式（1e-12）、温度场
+按隐式 Euler 弛豫到移动壁温（2e-12）；常数 schedule == 被动孪生逐字节；8 项拒收（`times`
+非单调、长度不匹配、<2 点、负时间、无 `thermal{}` 等）。
+
+### 5.223 分离器入管网联立：派生节点精确约束（§5.156 "not a network row" 的兑现）
+
+**差距**。§5.156 的分离器是独立 closed-form 元素，明确"不是管网的一行"。
+
+**实现**。分离器点元素（`Separator.h`/`separatorSolve`）接进 `solveSteadyNetwork`，取**派生节点
+精确约束**而非罚链接：出口节点（液相 `to` 与 `gasNode`）按恒等式 `p(outlet) := p(inlet) − dP`
+钳位，于是解出的上下游差**就是** `dP`（机器精度），Jacobian 条件数与纯 march 行相同。链式法则
+（`dp_outlet/dp_inlet = 1`）由把每条触界行的电导全部记到入口节点未知量（`unk[master[node]]`）
+实现——这正是 `dP` 进 Jacobian 的方式。行本身不记残差；其边流量是派生压力上的管线需求
+（`nodeTake`），feed = 边和，闪蒸按解出的 feed 经 `separatorRowOf → separatorSolve` 定价。
+（先试过罚链接方案，数值奇异/振荡，弃。）
+
+**判据**。`verify.networkSeparatorRow`，29 判据：质量闭合 `liquid + gas == feed` 精确 0；与独立
+`chflow-separator` app 的孪生 case **逐位相同**（rs/bo/bg/gasLiberated 17 位）；解出
+`dp == dP` 精确 10000 Pa；8 项拒收（出口定压、出口带外部流量、双重派生、分离器串联、
+efficiency ∉ [0,1]、`dP < 0`、未知气节点、收敛行无 feed 速率）。
+
+**边界**。稳态黑油网络；分离器压降 `dP` 是声明常数（不接两相位差/液位动态）。
+
+### 5.224 3D Euler-Euler 双流体：各相动量 + PISO 压力耦合（3D 多相从 VOF 单流体到两流体）
+
+**差距**。3D 多相只有 VOF（单流体界面），无双流体欧拉-欧拉。
+
+**实现**。新模块 `src/3d/src/multiphase/eulerEuler.cpp` + app `chflow-3d-euler-euler`。场：
+`alphaG`、`UG`、`UL`、格心 `p`；`alphaL = 1 − alphaG` 是恒等式不参与输运。相连续性走既有
+`vof::advectAlpha`（迎风、M-矩阵、无裁剪）；相动量用项目自己的 FVM 算子层：alpha 加权 ddt +
+相通量 `alpha_k(Uk·Sf)` 的对流 + `alpha_k·mu_k` 扩散 + `−alpha_k·grad p` + `alpha_k·rho_k·g`。
+拖曳是 1D 动态滑移闭合（§4.3 `sigma = C s|s|`）的 3D 重写：逐格 2×2 闭式耦合对，冲量等值反号
+⇒ 混合物动量精确无拖曳；`constant`（`K = beta`）与 `schillerNaumann`（复用
+`cf::sphereDragCoefficient`，|s| 因子使其恰为 1D 二次型）。压力耦合 PISO 镜像：逐相无压 HbyA →
+每校正步拖曳 2×2 + 混合物连续性 `div(alphaG·UG + alphaL·UL) = 0` 上的**全 p** Poisson（面相迁移度
+`alpha_k·dt/rho_k`）。声明 `fields{dpdz}` 支撑开放柱的混合物重量，使浮力-滑移态是精确不动点。
+
+**判据**。`verify.eulerEuler3d`：均匀臂常数到 9.4e-15；拖曳臂逐步复现隐式对闭式
+`UG'=((1+b)UG+aUL)/(1+a+b)`（~1e-20）、逐相配对恒等式（1e-17）、混合物动量不变量（1e-13）；
+滑移臂终端滑移 `alphaG·alphaL·Δrho·g/K` 与 `dpdz = −rho_mix·g`（1e-6 相对）；α∈[0,1] 逐格逐帧、
+相质量守恒 1e-10；10 项拒收。VOF/PLIC 回归 10/10 不受影响。
+
+**边界**。① 全封闭柱持不住均匀滑移（壁面分别钉住两相 ⇒ 相分离），滑移臂用开放柱 + 声明 dpdz；
+② 不可压两相、无传质；③ 一阶时间。
+
+### 5.225 MPI 流动求解器域分解：SIMPLE 循环跑在分解网格上（§5.136 只分解线性求解器）
+
+**差距**。§5.136 的 MPI 分解仅覆盖线性求解器（PETSc/全局 CSR），`simpleSolver`/`pisoSolver`
+是本地串行。
+
+**实现**。新 app `chflow-3d-mpi-flow`：完整 SIMPLE 循环（动量 → HbyA blend → 预测通量 → 全 p
+Poisson → Rhie-Chow 通量闭合 + 速度响应）在 `Decomposition` 中位数切分的 rank 本地块上运行；
+grad/div/laplacian 是 simpleSolver 同一公式的 per-domain 版本（orthoCoeff、ownerWeight、upwind、
+correctFluxes），每次 stencil 应用前经 `MPI_Sendrecv` halo 交换。全局归约全部 `MPI_Allreduce`
+（Poisson 残差 MAX、连续性误差 MAX、adjustPhi 体积流量 SUM、收敛停止 MIN/MAX）。界面不共享
+fvMatrix——halo 同步后本地 Gauss 扫掠，与 §5.136 的全局 Krylov 是不同路径（头注释写明）。
+
+**判据**。`verify.mpiFlowSolver`（gated：MPI + mpiexec 找到才注册，TIMEOUT 900）：np=1/2/4
+gather 后 p/Ux/Uy 逐格 ≤2e-11（容差 1e-8，末位差异来自归约/GS 扫掠顺序）、Uz 对称零 <1e-12；
+Python 从 phi dump 独立重推 `div(phi)` max ≈5e-15；耦合面 phi 两 rank 逐位相等；halo 每 slot
+与 owner 精确相等；2 项拒收（np ≠ 声明 domains、domains 多于网格分段）。
+
+### 5.226 PBM/QMOM 群平衡进 1D 管网（§5.107 空间均匀群平衡的对流推广）
+
+**差距**。§5.107 的 QMOM 是空间均匀的群平衡，未接入管网。
+
+**实现**。每根 PVT 管一个 `qmom{}` 块（beta、M0..M3、dThreshold、phi|phiFromM0）：24 段 PVT
+march（`marchPvtPipe`）中每段按停留时间 `dt = ds/|v|` 推进矩，源项即 §5.107 常数核 Smoluchowski
+（`dm0 = −βM0²/2, dm1 = 0, dm2 = βM1², dm3 = 3βM1M2`，一阶显式），随后定价反馈：
+`d32 = M3/M2 > dThreshold` → Brinkman `mu_eff = mu(1 + 2.5·phi)` 计入该段 Churchill 摩阻
+（先推进后定价）。
+
+**判据**。`verify.networkQmom`，29 判据：无流臂速率精确 0、矩冻结；M0 单调降（1e10 →
+9999994390.016）、M1 守恒精确（≤1e-10）；Python 重放整条矩+摩阻 march 对上 app
+（`dp 1011937.83102` vs `1011937.8310286`，矩 1e-10）；越限臂 `muEff == muBase·1.25`、未越限
+`muEff == muBase`；phiFromM0 定价可用；未声明孪生不打印 qmom 行（逐字节惰性）。5 项拒收
+（`M0 < 0`、beta 缺/非正、`dThreshold ≤ 0`、无 phi 声明、黑油网络挂 qmom）。
+
+**边界**。一阶显式矩推进（停留时间步长内）；常数聚并核；反馈只进摩阻不进断面。
+
+### 5.227 DO 辐射 3D：box 几何 + 水平对称方向集（§5.169 F9 的 1D slab 推广）
+
+**差距**。`radiationDoS2s` 的 `solveDoSlab` 是 1D slab 几何。
+
+**实现**。给现有 app 加 `geometry{slab|box}` 开关（缺省 slab 逐字节不变）。`solveDo3d`：blockMesh
+box 上逐方向 FVM 输运 `div(s·I) = −(κ+σ)I + κIb + σ/4π·ΣwI`，一阶迎风按方向符号选上游邻格；
+水平对称方向集 order 2 = 8 向 (±1,±1,±1)/√3（w=π/2）、order 4 = 24 向 (±2,±1,±1)/√6 闭轨
+（w=π/6），Σw=4π、二阶矩各向同性；壁面灰体发射/漫反射（ε 声明，反射滞后一拍随源迭代收敛）；
+symmetry/empty 面精确消掉该轴。S2S/1D slab 路径未动。
+
+**判据**。`verify.radiationDo3d`，126 断言：退化臂 nx×1×1 + 横向 symmetry 与 1D slab 迎风闭式
+逐格一致（4.14e-12）；光学厚臂 βL≈400 中心净热流 262 对 Rosseland 闭式 261.9（<5%）；均匀温度
+每格 `G = 4σT⁴` 精确；封闭等温腔六壁净通量与散度 <1e-10、balance ~1e-11；6 项拒收（order 3/5、
+ε 越界、κ_a/κ_s < 0）。
+
+### 5.228 6DOF 流体应力积分：真实表面应力替换声明式 bodyForce（§5.169 的 opt-in 对手）
+
+**差距**。`dynamicMesh6Dof` 用声明的 `bodyForce` + drag closure 驱动 6DOF，未积分真实流体应力。
+
+**实现**。`fluidStress{}` 块启用后对物体表面网格积分 `F = Σ(−p·Sf + μ(∇U+∇Uᵀ)·Sf)`、
+`M = Σ x_c×F`，替换声明式合力/合力矩进入既有 RK4 6DOF 推进。
+
+**判据**。`verify.3dDynamicMesh6DofStress`，6648 断言：静止水柱臂压力合力 == 浮力 (0,0,98.1) =
+ρgV、`M = r_c(t)×Fp`、黏性项 Fv=0、volume=0.01 精确；应力替换后平动 x=v=0 且转动走闭式；
+GCL 不回归；被动孪生与 F11 bodyForce 基线逐字节；耦合臂 x=24.525t²、θ=−4.905t²；剪切臂零合力矩；
+3 项响亮拒收（表面不封闭等）。
+
+**边界**。应力取物体表面场的当前近似（不动网格 FVM 值），非移动物体上的精确瞬态边界层解。
+
+### 5.229 AMR remeshing：粗化 + 场量迁移 + 循环（§5.169 F13 纯细化的补全）
+
+**差距**。`adaptiveRefine` 只有 dyadic 细化，无粗化、无显式场量迁移、无循环。
+
+**实现**。`amr{}` 块（`AmrConfig`：refineThreshold/coarsenThreshold/every/…）：`remesh` 循环每
+N 步评估逐轴梯度指示子 → 细化（父值复制到子格）/ 粗化（子格体积加权平均回父格）→ 守恒修正；
+`AMR_CYCLE/AMR_CELL/AMR_DONE` 读数（`dumpCells yes` 时逐格），无 `amr{}` 时输出逐字节不变。
+修复一处真实 bug：指示子数组误用初始 `nCells` 导致 cycle2 越界写、非确定性 SIGABRT。
+
+**判据**。`verify.3dAmrRemesh`，223 断言：Python 完整镜像逐 cycle 对比；cycle1 细化 88 格、
+子格体积和 == 父格（1e-14）、同父两子 φ 相等（shift<1e-12）；cycle2 粗化回 64 格、父 φ ==
+扩散后两子体积加权平均（1e-10，镜像与 C++ 浮点序差 ~1e-13）；cycle3 惰性；总质量 0.045 恒定、
+massError ≤1e-10；caseTwin 与剥块逐字节；4 项拒收（`coarsen >= refine`、`every 0` 等）。
+
+**边界**。指示子按逐轴 g_a 决策（非 √Σg² 模）；dyadic 层级、一阶迁移。
+
+### 5.230 PR78 kappa 分支：ω > 0.491 切换 1978 修正（§5.104 声明边界的兑现）
+
+**差距**。[pengRobinson.cpp](file:///Users/haizai/project/ChuanFlow/src/pvt/src/pengRobinson.cpp)
+与 [enthalpy.cpp](file:///Users/haizai/project/ChuanFlow/src/pvt/src/enthalpy.cpp) 注释明确只写
+PR76（ω ≤ 0.491 分支），ω > 0.491 仍沿用 PR76 公式。
+
+**实现**。新 `prKappa(scalar omega)`：`ω ≤ 0.491` 走 PR76
+`0.37464 + 1.54226ω − 0.26992ω²`；`ω > 0.491` 走 PR78
+`0.379642 + 1.48503ω − 0.164423ω² + 0.016666ω³`。`mixtureParameters`（a(T)，`kappaI`/`alphaI`
+存入 `PengRobinsonParams`）与 `enthalpy.cpp` 的 `prDaDT` 调**同一个函数**——a 与 da/dT 不可能
+分店。`pvtCase.cpp` 装载守卫拒非正 Tc/Pc/molarMass/fraction 与非有限 ω；`pvtApp.cpp` 加门控
+`prAlpha { temperature T; }` 读数供直接检视 kappa/alpha/a/b/dadT。
+
+**判据**。`verify.pvtPr78`，23 判据：ω=0.5 臂对 PR78 闭式 1e-14；ω=0.4 臂与改动前内核**逐位
+相同**（含运算次序）；闪蒸/焓孪生跨 ω 0.5→0.491 连续；装载拒收点名。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

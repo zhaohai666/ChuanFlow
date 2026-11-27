@@ -1,0 +1,34 @@
+// 5.221 (H1b): six-equation distributed phase momentum - the main arm.
+// Declaring sixEquation{} replaces the lumped mixture-momentum row (and the
+// dynamic closure's slip relaxation) by one implicit-Euler momentum row PER
+// PHASE PER CELL, driven on the cell's own EOS pressure gradient with
+// pressure + friction LAGGED at the old state and the dynamic closure's
+// interfacialDrag K = C|uG-uL| semi-implicit through the origin secant. The
+// phases start from the declared uG0/uL0 (a sheared line: the gas rides the
+// liquid), the drag + wall friction relax it, the transport moves the gas
+// mass and the EOS p field, and the developing pressure gradient feeds the
+// rows back. The checker re-derives the whole 2x2 recursion frame by frame
+// from the reported (alpha, p, uG, uL) columns alone.
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; gasR 470; }
+
+pipe { length 100; diameter 0.2; roughness 1e-4; angleDeg 0; sections 10; }
+
+// the six rows price the drag with THIS closure's interfacialDrag
+closure { model dynamic; interfacialDrag 2.0; }
+
+initial { alpha 0.5; water 0.3; temperature 300; }
+
+// pressure-driven ends (no imposed velocity: the phase rows own it)
+boundaries
+{
+    inlet  { type fixedPressure; p 6.0e6; }
+    outlet { type fixedPressure; p 5.0e6; }
+}
+
+sixEquation
+{
+    uG0 3.0;
+    uL0 1.0;
+}
+
+time { dt 0.01; endTime 1.0; reportEvery 1; }

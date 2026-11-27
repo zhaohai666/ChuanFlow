@@ -1,0 +1,34 @@
+// 5.221 (H1b): the uniform limit of the six rows. Horizontal line, both
+// ends at the EOS-consistent pressure (p = rhoG gasR T = 15 * 470 * 300 =
+// 2.115e6 Pa, so the ghost density equals the cell density and the uniform
+// state is an exact solution of the transport), uniform holdup: dp/dx = 0
+// and the gravity term vanishes, leaving the drag + wall-friction slip
+// relaxation alone. The stiff interfacialDrag (C = 50) drags the declared
+// initial slip uG0 - uL0 = 2 m/s onto its terminal value
+//     s* = sign(R) sqrt(|R| / (C (1/(ag rhoG) + 1/(a rhoL))))
+// with R = -(rG/rhoG - rL/rhoL) the lagged friction imbalance - the checker
+// re-derives s* from the previous frame and witnesses the monotone
+// approach, on top of the exact 2x2 recursion.
+fluid { rhoL 900; rhoG 15; muL 0.002; muG 1.2e-5; gasR 470; }
+
+pipe { length 100; diameter 0.2; roughness 0; angleDeg 0; sections 10; }
+
+closure { model dynamic; interfacialDrag 50; }
+
+initial { alpha 0.5; water 0.3; temperature 300; }
+
+// the inlet carries the line's own holdup and cut: the uniform state is
+// then an exact solution of the transport (no boundary jump to smear)
+boundaries
+{
+    inlet  { type fixedPressure; p 2.115e6; alpha 0.5; waterFraction 0.3; }
+    outlet { type fixedPressure; p 2.115e6; }
+}
+
+sixEquation
+{
+    uG0 2.0;
+    uL0 0.0;
+}
+
+time { dt 0.01; endTime 2.0; reportEvery 1; }

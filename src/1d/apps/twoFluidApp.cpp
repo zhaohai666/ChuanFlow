@@ -211,6 +211,14 @@ int main(int argc, char** argv)
                       " uCrit ", num(c.sand.criticalVelocity), " erodeRate ",
                       num(c.sand.erodeRate), " feedback ",
                       c.sand.feedback ? "true" : "false");
+        // 5.221 (H1b): the distributed phase momentum names its own mode
+        if (c.sixEquationOn)
+            log::info("twoFluid sixEquation: writeBack ",
+                      c.sixEquation.writeBack ? "true" : "false",
+                      c.sixEquation.hasU0
+                          ? (" uG0 " + num(c.sixEquation.uG0)
+                             + " uL0 " + num(c.sixEquation.uL0))
+                          : std::string());
         if (c.compositionOn) log::info(compositionDecl(c)); // G1
 
         TwoFluidPipe sim(c);
@@ -312,6 +320,15 @@ int main(int argc, char** argv)
             const std::vector<double> uAc
                 = c.acousticsOn ? s.faceAcousticVelocity()
                                 : std::vector<double>();
+            // 5.221 (H1b): the distributed phase velocities ride the cell
+            // rows as `uG`/`uL` keys - absent unless sixEquation{} was
+            // declared and enabled
+            const std::vector<double> ug
+                = c.sixEquationOn ? s.cellGasVelocity()
+                                  : std::vector<double>();
+            const std::vector<double> ul
+                = c.sixEquationOn ? s.cellLiquidVelocity()
+                                  : std::vector<double>();
             // one face acoustic velocity line per face (same idiom as the
             // node pressure lines), gated on the acoustics{} block
             if (!uAc.empty())
@@ -355,6 +372,9 @@ int main(int argc, char** argv)
                           sa.empty() ? "" : (" sand " + num(sa[i])),
                           be.empty() ? "" : (" bed " + num(be[i])),
                           wt.empty() ? "" : (" wallT " + num(wt[i])),
+                          ug.empty() ? ""
+                                     : (" uG " + num(ug[i])
+                                        + " uL " + num(ul[i])),
                           compositionReport(s, i));
             }
             // 5.195 (G10 fix): the clamp that used to drop sand silently. It

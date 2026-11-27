@@ -1,0 +1,60 @@
+// 5.218 (W-class): distributed well control -- a gas kick that MIGRATES up a
+// segmented vertical annulus under a BOP that closes at a declared time.
+//
+// The annulus block is a marched column beside the network (it reads node
+// pressures and writes none). Each cell books a gas standard-volume
+// inventory (pV = const, so the gas EXPANDS as the hydrostatic head drops)
+// and migrates upward by the declared graded drift-flux slip
+//     vG = vM + vdrift (1 - alphaG).
+// Here the column is sealed and fed nothing (q = 0): the gas placed in the
+// bottom segment climbs by slip alone, and the BOP (openKv 0.05 until
+// closeTime 5, a 2 s stroke, closedKv 0 after) closes mid-run. The inventory
+// sum(alphaG * A * L * p) is conserved to machine precision.
+//
+// The network below is the 5.185 well held shut from t = 0, so the twin deck
+// with annulus{}/bop{} deleted must print exactly the same node/pipe lines.
+fluid { rho 1200; mu 0.05; }
+
+nodes
+{
+    BH   { volume 50; bulkModulus 2.0e9; pressure 3.7e7; liquidFraction 0.8; }
+    SURF { fixedPressure 1.0e5; }
+}
+
+pipes
+{
+    WELL { from BH; to SURF; length 3000; diameter 0.25; roughness 1.0e-4;
+           elevation 3000; valve 20;
+           valveClose { start 0; end 0; closedK 1.0e12; } }
+}
+
+annulus
+{
+    ANN
+    {
+        bottomPressure 6.0e6;
+        driftVelocity 0.5;
+        gasDensity 30;
+        surfacePressure 5.0e6;
+        temperature 300;
+        segments
+        {
+            S1 { innerD 0.2; outerD 0.4; length 10; roughness 1.0e-4;
+                 initialGasFraction 0.2; }
+            S2 { innerD 0.2; outerD 0.4; length 10; roughness 1.0e-4; }
+            S3 { innerD 0.2; outerD 0.4; length 10; roughness 1.0e-4; }
+            S4 { innerD 0.2; outerD 0.4; length 10; roughness 1.0e-4; }
+            S5 { innerD 0.2; outerD 0.4; length 10; roughness 1.0e-4; }
+            S6 { innerD 0.2; outerD 0.4; length 10; roughness 1.0e-4; }
+            S7 { innerD 0.2; outerD 0.4; length 10; roughness 1.0e-4; }
+            S8 { innerD 0.2; outerD 0.4; length 10; roughness 1.0e-4; }
+        }
+    }
+}
+
+bop
+{
+    B1 { annulus ANN; closeTime 5; strokeTime 2; openKv 0.05; closedKv 0; }
+}
+
+time { dt 0.2; endTime 40; reportEvery 1; }

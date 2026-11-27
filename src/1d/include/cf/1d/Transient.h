@@ -302,6 +302,119 @@ struct ReservoirReadout
     double sidpp = 0;           // Pa, p_res - rho_mud g depth (static)
 };
 
+// ---- 5.218 (W-class): opt-in distributed well control ---------------------
+//
+// HONEST BOUNDARIES (a marched annulus string, not a coupled two-fluid
+// wellbore):
+//  * The annulus is a vertical string of segments discretised into cells along
+//    depth. Each cell books a gas standard-volume inventory (pV = const, the
+//    ideal expansion law) and a mixture velocity. Gas migrates upward by the
+//    declared graded drift-flux slip vG = vM + vdrift*(1 - alphaG) and expands
+//    as the hydrostatic head drops; the liquid counter-flow that keeps the
+//    column full is implicit (the cell volume is fixed, the gas fills pV of
+//    it). This is the distributed upgrade of the 5.185 lumped node: the gas
+//    now MOVES up the column and EXPANDS, which is what turns a kick into a
+//    pressure build at the top.
+//  * The march is explicit and reads the network (the bottom cell pressure,
+//    or a declared bottom pressure) but never writes back into the node/pipe
+//    solve -- exactly the reduced-model idiom the 5.190 pig uses. A case that
+//    declares no annulus advances the 5.185 node bit for bit and prints no
+//    annulus line.
+//  * Annular friction is distributed per cell by Darcy-Weisbach on the
+//    hydraulic diameter De = outerD - innerD, with a declared friction factor
+//    or the same Churchill blend the steady kernel and the transient row read.
+//  * The BOP is a Kv schedule at the annulus top: open before closeTime, a
+//    linear Kv ramp over [closeTime, closeTime+strokeTime], sealed after. Its
+//    outflow obeys the declared flow-coefficient law q = kv*sqrt(|dp|). It is
+//    a control declaration, not an actuator model (the same stand-in the 5.177
+//    SSSV is).
+//  * The column is anchored at the top: the profile steps down from the face
+//    pressure the ram passes (surface reference + seal stand-in + (q/kv)^2),
+//    which is the well-control control point. The declared `bottomPressure`
+//    (or the linked node's committed pressure) is what the PI influx law is
+//    evaluated against, not a second Dirichlet end for the column.
+//
+// Grammar (top-level blocks):
+//   annulus
+//   {
+//       ANN { bottomPressure 4.0e7; driftVelocity 0.2; gasDensity 30;
+//             surfacePressure 1.0e5; temperature 350;
+//             influx 0.002; influxGasFraction 0.5; frictionFactor 0.02;
+//             segments
+//             {
+//                 S1 { innerD 0.2; outerD 0.4; length 100; roughness 1e-4;
+//                      initialGasFraction 0.3; }
+//                 S2 { innerD 0.2; outerD 0.4; length 100; roughness 1e-4; }
+//             }
+//       }
+//   }
+//   bop { B1 { annulus ANN; closeTime 20; strokeTime 2; openKv 0.05;
+//              closedKv 0; sealPressure 0; } }
+// The annulus may instead read a network node's committed pressure for its
+// bottom cell with `node <name>` (the 5.185 PI law is then re-used against
+// that node); `bottomPressure` and `node` are mutually exclusive.
+struct TransientAnnulusSegment
+{
+    double innerD = 0;
+    double outerD = 0;
+    double length = 0;
+    double roughness = 0;
+    double initialGasFraction = 0; // alphaG of this cell at t = 0, [0,1)
+};
+
+struct TransientAnnulusConfig
+{
+    std::string name;
+    std::string nodeName;          // optional: bottom cell reads this node p
+    double bottomPressure = 0;     // Pa, fixed bottom pressure (alt. to node)
+    bool useNode = false;          // true when `node` is declared
+    std::string reservoirName;     // optional: PI influx from a reservoir{}
+    bool useReservoir = false;     // true when `reservoir` is declared
+    double driftVelocity = 0;      // m/s, vdrift of the graded slip law
+    double gasDensity = 0;         // kg/m3, gas phase density of the mixture
+    double surfacePressure = 0;    // Pa, back pressure at the annulus top
+    double temperature = 0;        // K, reported per cell (isothermal column)
+    double influx = 0;             // m3/s constant volumetric influx at bottom
+    double influxGasFraction = 0;  // gas fraction of the influx, [0,1]
+    double frictionFactor = 0;     // declared f; 0 = Churchill from roughness
+    std::vector<TransientAnnulusSegment> segments; // bottom -> top
+};
+
+struct TransientBopConfig
+{
+    std::string name;
+    std::string annulusName;       // the column this ram seals, by name
+    double closeTime = 0;          // s, when the ram starts to close (>= 0)
+    double strokeTime = 0;         // s, ramp width; 0 = instant step
+    double openKv = 0;             // flow coefficient while open
+    double closedKv = 0;           // flow coefficient at full close
+    double sealPressure = 0;       // Pa, optional stand-in seal rating (report)
+};
+
+/// Per-cell distributed readout at the last committed step.
+struct AnnulusSegReadout
+{
+    std::string name;
+    int seg = 0;
+    double z = 0;        // m, cell centre TVD (depth below the top)
+    double alphaG = 0;   // gas holdup of the cell
+    double vM = 0;       // m/s, mixture velocity (positive up)
+    double p = 0;        // Pa, cell pressure
+    double T = 0;        // K, declared column temperature
+    double dpf = 0;      // Pa, distributed friction drop across the cell
+};
+
+/// One BOP readout line at the last committed step.
+struct BopReadout
+{
+    std::string name;
+    double t = 0;        // s
+    double pos = 0;      // 0 = open, 1 = fully closed (ramp fraction)
+    double kv = 0;       // flow coefficient actually used
+    double q = 0;        // m3/s, kv*sqrt(|dp|)
+    double pTop = 0;     // Pa, annulus top cell pressure
+};
+
 struct TransientCase
 {
     FluidProperties fluid;
@@ -317,6 +430,10 @@ struct TransientCase
     std::vector<TransientEspConfig> esps;
     // 5.185: opt-in well-control reservoir inflows; each targets one free node.
     std::vector<TransientReservoirConfig> reservoirs;
+    // 5.218: opt-in distributed well control; the annulus strings and the BOP
+    // rams that seal them.
+    std::vector<TransientAnnulusConfig> annulus;
+    std::vector<TransientBopConfig> bops;
 };
 
 struct TransientSample
@@ -459,6 +576,12 @@ public:
     // so the app prints nothing and the undeclared path is untouched.
     std::vector<ReservoirReadout> reservoirReadouts() const;
 
+    // ---- 5.218: the distributed well-control readout. One line per cell of
+    // every declared annulus, one line per declared BOP. Both empty when the
+    // case declares none, so an undeclared run prints byte-identical output.
+    std::vector<AnnulusSegReadout> annulusReadouts() const;
+    std::vector<BopReadout> bopReadouts() const;
+
     /// 5.190: the live pig states and the ARRIVE journal. Empty when the
     /// case declares no pig, so an undeclared run reports nothing new.
     const std::vector<TransientPigState>& pigStates() const { return pigs_; }
@@ -579,6 +702,50 @@ private:
         double volume = 0, gasVolume = 0; // cumulative m3 injected
     };
 
+    // 5.218: one cell of a marched annulus. `vs` is the gas standard-volume
+    // inventory (Pa.m3, conserved by the advection); the readout fields are
+    // the values the last march step actually priced.
+    struct AnnulusCell
+    {
+        double area = 0, length = 0, de = 0, roughness = 0;
+        double z = 0;            // m, cell centre height above the bottom
+        double vs = 0;           // Pa.m3, gas standard-volume inventory
+        double alphaG = 0;       // last step's holdup
+        double vM = 0;           // m/s, last step's mixture velocity
+        double p = 0;            // Pa, last step's cell pressure
+        double dpf = 0;          // Pa, last step's friction drop
+    };
+    struct AnnulusDyn
+    {
+        std::string name;
+        std::vector<AnnulusCell> cells; // bottom -> top
+        int nodeIndex = -1;             // bottom cell reads this node, or -1
+        double bottomPressure = 0;      // fixed when nodeIndex < 0
+        double drift = 0, rhoG = 0, pSurface = 0, temperature = 0;
+        double influx = 0, influxGasFraction = 0, frictionFactor = 0;
+        // 5.218: the optional PI influx account (a declared reservoir's own
+        // law numbers, evaluated against the column's bottom pressure).
+        bool hasPi = false;
+        double piPressure = 0, piJ = 0, piFg = 0;
+        double q = 0;                   // m3/s, last step's string rate
+        double pTop = 0;                // Pa, last step's top cell pressure
+        int bopIndex = -1;              // the ram on this column, or -1
+    };
+    struct BopDyn
+    {
+        std::string name;
+        std::size_t annulusIndex = 0;
+        double closeTime = 0, strokeTime = 0;
+        double openKv = 0, closedKv = 0, sealPressure = 0;
+        double pos = 0, kv = 0, q = 0;  // last step's values
+    };
+
+    /// 5.218: one explicit march step of every annulus string and every BOP
+    /// ram, after the network state has been committed. Inert when the case
+    /// declares none.
+    void annulusStep(double dt);
+    void bopStep(double tNew);
+
     OneDNetwork net_; // node names + resolved pipe endpoints (from/to)
     std::vector<std::string> pipeNames_;
     std::vector<PipeDyn> pipes_;
@@ -603,6 +770,10 @@ private:
     std::vector<SourceEntry> sourceEntries_;
     // 5.185: the declared reservoir inflows, in declaration order.
     std::vector<ReservoirEntry> reservoirs_;
+    // 5.218: the marched annulus strings and the rams on them, in declaration
+    // order. Both empty on every undeclared case.
+    std::vector<AnnulusDyn> annuli_;
+    std::vector<BopDyn> bops_;
 
     /// 5.190: one live pig per declared block (index into pipes_), plus the
     /// ARRIVE journal. Both empty on every undeclared case.
@@ -658,6 +829,15 @@ TransientSeries runTransient(const TransientCase& c, double dt,
 /// a `coupledResistance`; anything else is refused at load time. The three
 /// blocks are declarative stand-ins (see the honest-boundary note above), not
 /// actuator/motor models; undeclared cases are byte-identical to pre-E7a.
+/// 5.218 adds two opt-in top-level blocks: `annulus { NAME { segments
+/// { SEG { innerD ..; outerD ..; length ..; roughness ..; initialGasFraction
+/// ..; } .. }; bottomPressure ..; driftVelocity ..; .. } }` (a marched
+/// vertical column beside the network: drift-flux gas migration, pV=const
+/// expansion, distributed Darcy-Weisbach friction) and `bop { NAME { annulus
+/// ..; closeTime ..; strokeTime ..; openKv ..; closedKv ..; } }` (a Kv
+/// schedule at the column top, q = kv*sqrt(|dp|)). A ram needs its column;
+/// every other mistake is refused at load time; undeclared cases are
+/// byte-identical to pre-5.218.
 TransientCase loadTransientFromDict(const Dictionary& caseDict);
 struct TransientTimeControls
 {

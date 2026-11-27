@@ -2676,6 +2676,19 @@ add_test(
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientWellControl/case.dict
         ${CMAKE_CURRENT_BINARY_DIR}/transientWellControl_tmp)
 
+# 5.218 (W-class): distributed well control. A gas kick migrates up a marched
+# segmented annulus (graded drift-flux slip, pV=const expansion, distributed
+# Darcy-Weisbach friction) under a BOP ram that closes on a declared Kv
+# schedule; the friction arm re-derives the closed-form segment sum, the
+# passive twin proves the column is byte-inert, and eight refusals are loud.
+add_test(
+    NAME verify.transientWellControlDistributed
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_transient_well_control_distributed.py
+        $<TARGET_FILE:chflow-1d-transient>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/transientWellControlDistributed/case.dict
+        ${CMAKE_CURRENT_BINARY_DIR}/transientWellControlDistributed_tmp)
+
 # 5.186 (F-class): hydrate as a NON-BLOCKING flow-assurance field. In the
 # growing arm h moves while d_eff stays D sqrt(1 - wax) and the liquid
 # viscosity stays muL (1 + 2.5 water cut) on every section of every frame; the

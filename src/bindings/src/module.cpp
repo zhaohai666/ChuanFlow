@@ -28,6 +28,7 @@ void registerRsmBindings(py::module_& m);
 void registerRadiationDoBindings(py::module_& m);
 void registerAleBindings(py::module_& m);
 void registerDynMeshBindings(py::module_& m);
+void registerNsBindings(py::module_& m);
 void registerFields3dBindings(py::module_& m);
 
 PYBIND11_MODULE(chflow_core, m)
@@ -420,5 +421,6 @@ PYBIND11_MODULE(chflow_core, m)
     registerRadiationDoBindings(m);
     registerAleBindings(m);
     registerDynMeshBindings(m);
+    registerNsBindings(m);
     registerFields3dBindings(m);
 }

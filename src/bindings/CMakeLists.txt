@@ -14,6 +14,7 @@ pybind11_add_module(chflow_core
     src/radiation_do_bind.cpp
     src/ale_bind.cpp
     src/dynmesh_bind.cpp
+    src/ns_bind.cpp
     src/fields3d_bind.cpp)
 # cfcoupling pulls cf1d + cf3d transitively (PUBLIC link), which is what the
 # coupling and 3D binding families need.

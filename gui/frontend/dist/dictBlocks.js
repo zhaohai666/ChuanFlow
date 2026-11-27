@@ -80,15 +80,20 @@ export const PIPE_BLOCK_NAMES = Object.keys(PIPE_BLOCKS);
 
 export const BLACKOIL_SPEC = {
   label: '黑油 PVT（fluid.blackoil{}）',
-  // network.cpp:3048-3053 reads these six keys; the only kernel-fatal range
-  // check is oilDensity > 0 (3054-3055). The remaining GUI guards are
-  // conservative (positive/non-negative, fraction bounds); flagged in the
-  // delivery report for the author to relax if the kernel later allows it.
+  // network.cpp:3048-3053 reads these six keys via getScalarOr (defaults only,
+  // no range fatal); the ONLY kernel-fatal range guard is oilDensity > 0
+  // (3054-3055: cfFatal "steadyNetwork: blackoil needs positive oilDensity").
+  // The other five fields have NO kernel range rejection: their frontend
+  // plausibility bounds live in blackoilRangeAdvisory() below as non-blocking
+  // hints, not here. (Old frontend hard rejects on gasGravity>0 / gor>=0 /
+  // waterCut in [0,1) / temperature>0 / surfaceTension>=0 were conservative
+  // guesses with no kernel source; relaxed to advisory per the kernel-first
+  // guard policy.)
   fields: [
     { key: 'gasGravity', kind: 'num', required: false,
       hint: '天然气相对密度（空气=1），默认 0.65' },
     { key: 'oilDensity', kind: 'num', required: true,
-      hint: '储罐油密度 (kg/m³)，必须 >0' },
+      hint: '储罐油密度 (kg/m³)，内核硬性要求 >0' },
     { key: 'gor', kind: 'num', required: false,
       hint: '生产气油比 (sm³/sm³)，默认 0' },
     { key: 'waterCut', kind: 'num', required: false,
@@ -99,22 +104,44 @@ export const BLACKOIL_SPEC = {
       hint: '气液表面张力 (N/m)，默认 0.03' },
   ],
   check: (v) => {
+    // Kernel-fatal only: network.cpp:3054-3055 "steadyNetwork: blackoil needs
+    // positive oilDensity". Every other field's plausibility check is advisory.
     if (!(Number(v.oilDensity) > 0)) return 'blackoil.oilDensity 必须为正';
-    if (v.gasGravity !== undefined && !(Number(v.gasGravity) > 0)) {
-      return 'blackoil.gasGravity 必须为正';
-    }
-    if (v.gor !== undefined && !(Number(v.gor) >= 0)) return 'blackoil.gor 不可为负';
-    const wc = v.waterCut === undefined ? 0 : Number(v.waterCut);
-    if (!(wc >= 0 && wc < 1)) return 'blackoil.waterCut 必须在 [0,1)';
-    if (v.temperature !== undefined && !(Number(v.temperature) > 0)) {
-      return 'blackoil.temperature 必须为正';
-    }
-    if (v.surfaceTension !== undefined && !(Number(v.surfaceTension) >= 0)) {
-      return 'blackoil.surfaceTension 不可为负';
-    }
     return null;
   },
 };
+
+/**
+ * Non-blocking plausibility hints for the five blackoil fields the kernel does
+ * NOT hard-reject (network.cpp:3048-3053 getScalarOr; BlackOil.h:82-89 holds
+ * defaults only, no cfFatal). Returned as a list of readable strings; empty
+ * list means "no hint". These never block write-back — the panel shows them
+ * inline before the user runs the kernel, which stays the final guard.
+ *
+ * Bounds kept here are conservative frontend guesses, not kernel contracts;
+ * if the kernel later accepts other ranges, drop the matching hint.
+ */
+export function blackoilRangeAdvisory(values) {
+  const v = values || {};
+  const hints = [];
+  if (v.gasGravity !== undefined && !(Number(v.gasGravity) > 0)) {
+    hints.push('blackoil.gasGravity 建议为正（空气=1，默认 0.65）；内核不硬性拒绝，仅提示。');
+  }
+  if (v.gor !== undefined && !(Number(v.gor) >= 0)) {
+    hints.push('blackoil.gor 建议非负；内核不硬性拒绝负值，仅提示。');
+  }
+  const wc = v.waterCut === undefined ? 0 : Number(v.waterCut);
+  if (!(wc >= 0 && wc < 1)) {
+    hints.push('blackoil.waterCut 建议在 [0,1)；内核不硬性拒绝越界值，仅提示。');
+  }
+  if (v.temperature !== undefined && !(Number(v.temperature) > 0)) {
+    hints.push('blackoil.temperature 建议为正 (K)；内核不硬性拒绝非正值，仅提示。');
+  }
+  if (v.surfaceTension !== undefined && !(Number(v.surfaceTension) >= 0)) {
+    hints.push('blackoil.surfaceTension 建议非负；内核不硬性拒绝负值，仅提示。');
+  }
+  return hints;
+}
 
 // ---------------------------------------------------------------------------
 // Brace-aware dictionary scanning (skips // comments), mirroring editor.js.
@@ -333,4 +360,129 @@ export function parseBlackoil(caseText) {
 export function fluidHasPvt(caseText) {
   const fluid = sectionSpan(caseText, 'fluid');
   return fluid ? /\bpvt\s*\{/.test(fluid.body) : false;
+}
+
+/** Whether `fluid {}` already declares a `blackoil {}` sub-block. */
+export function fluidHasBlackoil(caseText) {
+  const fluid = sectionSpan(caseText, 'fluid');
+  return fluid ? /\bblackoil\s*\{/.test(fluid.body) : false;
+}
+
+/**
+ * Blackoil ↔ pvt mutex advisory, one consistent message for BOTH directions.
+ * Kernel: network.cpp:3040-3041
+ *   cfFatal("steadyNetwork: fluid cannot be both blackoil and pvt")
+ * Returns null unless the dictionary carries both sub-blocks; the warning is
+ * advisory (write-back not blocked) — the kernel keeps rejecting at solve.
+ */
+export function blackoilPvtMutexWarning(caseText) {
+  if (fluidHasPvt(caseText) && fluidHasBlackoil(caseText)) {
+    return 'blackoil 与 pvt 同时声明：内核报错 "steadyNetwork: fluid cannot be both blackoil and pvt"，请先清除其中之一（提示不阻断写回，求解时内核仍会拒绝）。';
+  }
+  return null;
+}
+
+/**
+ * Correlations/flowPattern scope advisory: an alternative holdup law or a
+ * forced flowPattern prices a marched black-oil two-phase pipe, so it may only
+ * appear on a network whose `fluid {}` declares a `blackoil {}` sub-block.
+ * Kernel guards (network.cpp:1246-1258):
+ *   flowPattern >= 0 && !hasBlackOil:
+ *     cfFatal("network: pipe '<name>' declares flowPattern <n> on a
+ *       single-phase network: the flow-pattern map is a Beggs-Brill two-phase
+ *       dispatch surface, a single-phase pipe has no pattern to force")
+ *   correlation != 0 && !hasBlackOil:
+ *     cfFatal("network: pipe '<name>' declares correlation <law> on a
+ *       single-phase network: the alternative holdup laws (5.143, 5.155)
+ *       replace the liquid holdup of the two-phase march; this pipe has no
+ *       two-phase holdup to reprice")
+ * Returns a newline-joined advisory string locating the pipe and the offending
+ * key(s), or null on a blackoil network / an entry with no such declaration.
+ * Advisory only — write-back is not blocked; the kernel keeps rejecting.
+ */
+export function correlationScopeWarning(caseText, pipeName) {
+  if (fluidHasBlackoil(caseText)) return null;
+  const entry = parsePipeEntry(caseText, pipeName) || {};
+  const msgs = [];
+  const law = entry.correlation === undefined ? '' : String(entry.correlation).trim();
+  // 0 / beggsBrill is the kernel default law and passes the scope guard.
+  if (law && law !== 'beggsBrill') {
+    msgs.push(`network: pipe '${pipeName}' declares correlation ${law} on a single-phase network: the alternative holdup laws replace the liquid holdup of the two-phase march; this pipe has no two-phase holdup to reprice（当前 fluid{} 未声明 blackoil{}，提示不阻断写回，求解时内核仍会拒绝）。`);
+  }
+  const fpRaw = entry.flowPattern === undefined ? '' : String(entry.flowPattern).trim();
+  if (fpRaw !== '') {
+    const fp = Number(fpRaw);
+    if (Number.isFinite(fp) && fp >= 0) {
+      msgs.push(`network: pipe '${pipeName}' declares flowPattern ${fpRaw} on a single-phase network: the flow-pattern map is a Beggs-Brill two-phase dispatch surface, a single-phase pipe has no pattern to force（当前 fluid{} 未声明 blackoil{}，提示不阻断写回，求解时内核仍会拒绝）。`);
+    }
+  }
+  return msgs.length ? msgs.join('\n') : null;
+}
+
+// ---------------------------------------------------------------------------
+// Two-fluid scope/dependency advisories (wax / acoustics). These belong to
+// flowAssurance.js's FA_BLOCKS schema, but live here together with the other
+// panel advisory helpers so flowAssurance.js stays a pure schema/round-trip
+// module. Same double-layer contract: visible at panel render time,
+// non-blocking; the kernel keeps the fatal guard at solve time.
+// ---------------------------------------------------------------------------
+
+/** Parse a top-level `name { ... }` block into its key/value map; null if absent. */
+function topLevelKv(caseText, name) {
+  const sec = sectionSpan(caseText, name);
+  return sec ? parseBodyKv(sec.body).kv : null;
+}
+
+/** Top-level `thermal {}` block declared? (twoFluid.cpp:3434-3436 sets thermalOn). */
+export function caseHasThermal(caseText) {
+  return sectionSpan(caseText, 'thermal') !== null;
+}
+
+/** fluid.gasR scalar, default 0 (twoFluid.cpp:3357 getScalarOr("gasR", 0.0)). */
+export function fluidGasR(caseText) {
+  const f = topLevelKv(caseText, 'fluid');
+  const g = f ? Number(f.gasR) : NaN;
+  return Number.isFinite(g) ? g : 0;
+}
+
+/**
+ * wax{} needs a declared thermal{} block. Kernel: twoFluid.cpp:398-399
+ *   cfFatal("twoFluid: wax precipitation needs a thermal{} block")
+ * Returns the aligned advisory when wax{} is present but thermal{} is absent;
+ * null otherwise. Advisory only — write-back is not blocked.
+ */
+export function waxThermalWarning(caseText) {
+  if (sectionSpan(caseText, 'wax') === null) return null;
+  if (!caseHasThermal(caseText)) {
+    return 'twoFluid: wax precipitation needs a thermal{} block（wax{} 依赖 thermal{} 热场；提示不阻断写回，求解时内核仍会拒绝）。';
+  }
+  return null;
+}
+
+/**
+ * enabled acoustics needs a positive fluid.gasR: the wave speed is the EOS
+ * density derivative, and without the EOS there is no a to take. Kernel:
+ * twoFluid.cpp:3995-3999
+ *   cfFatal("twoFluid: acoustics needs the gas EOS (fluid gasR > 0): the wave
+ *     speed is the EOS density derivative")
+ * enable defaults true (twoFluid.cpp:3913-3921); an explicit `enable false`
+ * opts out. Advisory only.
+ */
+export function acousticsGasRWarning(caseText) {
+  const ad = topLevelKv(caseText, 'acoustics');
+  if (ad === null) return null;
+  const enable = ad.enable === undefined ? true : ad.enable !== 'false';
+  if (!enable) return null;
+  if (!(fluidGasR(caseText) > 0)) {
+    return 'twoFluid: acoustics needs the gas EOS (fluid gasR > 0): the wave speed is the EOS density derivative（提示不阻断写回，求解时内核仍会拒绝）。';
+  }
+  return null;
+}
+
+/** Combined per-block advisories for the FA panel: { wax, acoustics }. */
+export function flowAssuranceAdvisories(caseText) {
+  return {
+    wax: waxThermalWarning(caseText),
+    acoustics: acousticsGasRWarning(caseText),
+  };
 }

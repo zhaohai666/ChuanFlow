@@ -66,6 +66,8 @@ import {
 import {
   PIPE_BLOCKS, parsePipeEntry, applyPipeBlock,
   BLACKOIL_SPEC, parseBlackoil, applyBlackoil, fluidHasPvt,
+  blackoilPvtMutexWarning, correlationScopeWarning,
+  blackoilRangeAdvisory, flowAssuranceAdvisories,
 } from './dictBlocks.js';
 
 // ---------------------------------------------------------------------------
@@ -489,6 +491,15 @@ function collectDictValues(fields, inputs) {
   return values;
 }
 
+/** Inline panel advisory paragraph (kernel-aligned, non-blocking); no alert(). */
+function warnPara(msg) {
+  const warn = document.createElement('p');
+  warn.className = 'note';
+  warn.style.color = '#e0a800';
+  warn.textContent = msg;
+  return warn;
+}
+
 /** Per-pipe correlations + rheology groups in the selected pipe's panel. */
 function renderPipeDictGroups(p) {
   const entry = parsePipeEntry(caseText.value, p.name) || {};
@@ -498,6 +509,13 @@ function renderPipeDictGroups(p) {
     head.className = 'note';
     head.textContent = `${spec.label}（留空 = 未设置）：`;
     propsEl.appendChild(head);
+    // Scope advisory: alternative holdup laws / forced flowPattern need a
+    // blackoil two-phase network (network.cpp:1246-1258). Visible at render
+    // time; non-blocking, kernel still guards at solve.
+    if (blockId === 'correlations') {
+      const scopeWarn = correlationScopeWarning(caseText.value, p.name);
+      if (scopeWarn) propsEl.appendChild(warnPara(scopeWarn));
+    }
     const inputs = {};
     for (const f of spec.fields) {
       const wrap = document.createElement('label');
@@ -537,21 +555,25 @@ function renderPipeDictGroups(p) {
   }
 }
 
-/** fluid.blackoil group in the fluid panel; warns on the pvt mutex. */
+/** fluid.blackoil group in the fluid panel; warns on the pvt mutex both ways. */
 function renderBlackoilGroup() {
   const head = document.createElement('p');
   head.className = 'note';
   head.textContent = '黑油 PVT（fluid.blackoil{}，留空 = 未设置）：';
   propsEl.appendChild(head);
-  if (fluidHasPvt(caseText.value)) {
-    const warn = document.createElement('p');
-    warn.className = 'note';
-    warn.style.color = '#e0a800';
-    warn.textContent = '当前 fluid 已声明 pvt{}：blackoil 与 pvt 互斥，内核将拒绝同时声明，请先清除 pvt。';
-    propsEl.appendChild(warn);
-    return;
+  const text = caseText.value;
+  // Mutex advisory — one consistent wording for both directions
+  // (network.cpp:3040-3041 "steadyNetwork: fluid cannot be both blackoil and pvt").
+  const mutex = blackoilPvtMutexWarning(text);
+  if (mutex) {
+    propsEl.appendChild(warnPara(mutex));
+  } else if (fluidHasPvt(text)) {
+    propsEl.appendChild(warnPara('当前 fluid 已声明 pvt{}：blackoil 与 pvt 互斥，内核报错 "steadyNetwork: fluid cannot be both blackoil and pvt"，请先清除 pvt。'));
   }
-  const bo = parseBlackoil(caseText.value) || {};
+  const bo = parseBlackoil(text) || {};
+  // Non-blocking plausibility hints for fields the kernel does not hard-reject
+  // (only oilDensity > 0 is kernel-fatal; network.cpp:3054-3055).
+  for (const hint of blackoilRangeAdvisory(bo)) propsEl.appendChild(warnPara(hint));
   const inputs = {};
   for (const f of BLACKOIL_SPEC.fields) {
     const wrap = document.createElement('label');
@@ -2502,6 +2524,26 @@ function renderFlowAssuranceForm(form) {
   }
 }
 
+/**
+ * Refresh the per-block scope/dependency advisories in the FA grid (wax needs
+ * thermal{}; enabled acoustics needs fluid.gasR > 0). Visible at render time,
+ * non-blocking; the kernel keeps the fatal guard at solve time.
+ */
+function renderFlowAssuranceAdvisories() {
+  const adv = flowAssuranceAdvisories(caseText.value);
+  for (const name of ['wax', 'acoustics']) {
+    const box = $(`fa-${name}-on`)?.closest('.fa-block');
+    if (!box) continue;
+    box.querySelectorAll('.fa-warn').forEach((el) => el.remove());
+    const msg = adv[name];
+    if (msg) {
+      const warn = warnPara(msg);
+      warn.classList.add('fa-warn');
+      box.appendChild(warn);
+    }
+  }
+}
+
 /** Apply the current form to the case dictionary textarea. */
 function applyFlowAssuranceToCase() {
   const form = readFlowAssuranceForm();
@@ -2586,10 +2628,14 @@ function renderFlowAssuranceTimeline() {
 buildFlowAssuranceGrid();
 $('faLoadBtn')?.addEventListener('click', () => {
   renderFlowAssuranceForm(parseFlowAssurance($('caseText').value));
+  renderFlowAssuranceAdvisories();
   setStatus('已从 case 字典载入流动保障声明。');
 });
 $('faApplyBtn')?.addEventListener('click', () => {
-  if (applyFlowAssuranceToCase() !== null) setStatus('已应用流动保障声明到 case 字典。', 'ok');
+  if (applyFlowAssuranceToCase() !== null) {
+    renderFlowAssuranceAdvisories();
+    setStatus('已应用流动保障声明到 case 字典。', 'ok');
+  }
 });
 $('faRunBtn')?.addEventListener('click', () => { applyAndRunSlug(); });
 // form initialization happens at startup, after caseText gets its default
@@ -4756,6 +4802,7 @@ caseText.value = DEFAULT_CASE;
 // E2: initialize the flow-assurance form from the case dictionary now that
 // it carries its default text (the grid was built earlier at module load).
 renderFlowAssuranceForm(parseFlowAssurance(caseText.value));
+renderFlowAssuranceAdvisories();
 
 // Audit fix (P2-6): the schedule panel must initialize from the case dictionary
 // too — an empty form applied by click would removeDictBlock the dictionary's

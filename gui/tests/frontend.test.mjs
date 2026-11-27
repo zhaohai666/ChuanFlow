@@ -6,6 +6,8 @@ import {
 } from '../frontend/dist/flowAssurance.js';
 import {
   PIPE_BLOCKS, PIPE_BLOCK_NAMES, BLACKOIL_SPEC,
+  waxThermalWarning, acousticsGasRWarning, flowAssuranceAdvisories,
+  caseHasThermal, fluidGasR,
 } from '../frontend/dist/dictBlocks.js';
 
 import {
@@ -2211,6 +2213,84 @@ test('E2 applyFlowAssurance: inhibitorEquilibrium 缺 inhibitor{} 时拒收', ()
   const out = applyFlowAssurance(FA_CASE, form);
   assert.ok(out.includes('activityK 8;'));
   assert.ok(out.includes('kDepression 5;'));
+});
+
+// ---------------------------------------------------------------------------
+// E2d: scope/dependency advisories (double layer). Visible in the panel at
+// render time, non-blocking; the kernel keeps the fatal guard at solve time.
+// Each message carries the kernel cfFatal fragment verbatim, copied below.
+// ---------------------------------------------------------------------------
+
+test('E2d 依赖提示: wax{} 缺 thermal{} 提示；有 thermal / 无 wax 不提示', () => {
+  // Kernel verbatim: twoFluid.cpp:398-399
+  //   cfFatal("twoFluid: wax precipitation needs a thermal{} block")
+  const waxOnly = FA_CASE + 'wax { meltingTemperature 323.75; fusionEnthalpy 54890; }\n';
+  const w = waxThermalWarning(waxOnly);
+  assert.ok(w, 'wax 存在而无 thermal 应提示');
+  assert.ok(w.includes('twoFluid: wax precipitation needs a thermal{} block'));
+  // positive counterpart: thermal{} declared -> no advisory
+  const withThermal = waxOnly + 'thermal { surfaceTemperature 300; geothermalGradient 0.03; }\n';
+  assert.equal(waxThermalWarning(withThermal), null);
+  // negative: no wax block at all -> null, even without thermal
+  assert.equal(waxThermalWarning(FA_CASE), null);
+  assert.equal(caseHasThermal(withThermal), true);
+  assert.equal(caseHasThermal(FA_CASE), false);
+});
+
+test('E2d 依赖提示: 启用 acoustics 缺 gasR>0 提示；gasR 为正 / enable false 不提示', () => {
+  // Kernel verbatim: twoFluid.cpp:3995-3999
+  //   cfFatal("twoFluid: acoustics needs the gas EOS (fluid gasR > 0): the
+  //     wave speed is the EOS density derivative")
+  const noGasR = FA_CASE + 'acoustics { enable true; initialGauge 1e6; }\n';
+  const w = acousticsGasRWarning(noGasR);
+  assert.ok(w, '启用 acoustics 而无正 gasR 应提示');
+  assert.ok(w.includes('twoFluid: acoustics needs the gas EOS (fluid gasR > 0)'));
+  assert.ok(w.includes('the wave speed is the EOS density derivative'));
+  // positive counterpart: gasR declared and positive -> no advisory
+  const withGasR = [
+    'fluid { rhoL 1000; rhoG 20; muL 0.01; muG 1e-5; gasR 1.2; }',
+    'acoustics { enable true; initialGauge 1e6; }',
+    '',
+  ].join('\n');
+  assert.equal(acousticsGasRWarning(withGasR), null);
+  // explicit enable false opts out even without gasR
+  const disabled = FA_CASE + 'acoustics { enable false; }\n';
+  assert.equal(acousticsGasRWarning(disabled), null);
+  // absent block -> null
+  assert.equal(acousticsGasRWarning(FA_CASE), null);
+  assert.equal(fluidGasR(withGasR), 1.2);
+  assert.equal(fluidGasR(FA_CASE), 0);
+  // gasR declared but zero is not a positive EOS gas either -> still warns
+  const zeroGasR = [
+    'fluid { rhoL 1000; rhoG 20; muL 0.01; muG 1e-5; gasR 0; }',
+    'acoustics { enable true; initialGauge 1e6; }',
+    '',
+  ].join('\n');
+  assert.ok(acousticsGasRWarning(zeroGasR), 'gasR=0 仍缺正气相，应提示');
+});
+
+test('E2d 依赖提示: acoustics enable false 不进 gasR 汇总；wax 随 thermal 出现时静默', () => {
+  const disabledBoth = FA_CASE
+    + 'wax { meltingTemperature 323.75; fusionEnthalpy 54890; }\n'
+    + 'acoustics { enable false; }\n';
+  const adv = flowAssuranceAdvisories(disabledBoth);
+  assert.ok(adv.wax, 'wax 缺 thermal 仍应提示');
+  assert.equal(adv.acoustics, null, 'enable false 的 acoustics 不要求 gasR');
+  const thermalAndWax = disabledBoth + 'thermal { surfaceTemperature 300; geothermalGradient 0.03; }\n';
+  assert.equal(waxThermalWarning(thermalAndWax), null);
+});
+
+test('E2d 依赖提示: flowAssuranceAdvisories 汇总 wax/acoustics；默认算例全空', () => {
+  const adv = flowAssuranceAdvisories(FA_CASE);
+  assert.deepEqual(Object.keys(adv), ['wax', 'acoustics']);
+  assert.equal(adv.wax, null);
+  assert.equal(adv.acoustics, null);
+  const both = FA_CASE
+    + 'wax { meltingTemperature 323.75; fusionEnthalpy 54890; }\n'
+    + 'acoustics { enable true; initialGauge 1e6; }\n';
+  const adv2 = flowAssuranceAdvisories(both);
+  assert.ok(adv2.wax, '缺 thermal 的 wax 应进汇总');
+  assert.ok(adv2.acoustics, '缺 gasR 的 acoustics 应进汇总');
 });
 
 // ===========================================================================

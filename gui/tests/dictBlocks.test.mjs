@@ -31,6 +31,10 @@ import {
   applyBlackoil,
   parseBlackoil,
   fluidHasPvt,
+  fluidHasBlackoil,
+  blackoilPvtMutexWarning,
+  correlationScopeWarning,
+  blackoilRangeAdvisory,
 } from '../frontend/dist/dictBlocks.js';
 
 // Kernel keys copied verbatim from the source reads:
@@ -284,14 +288,58 @@ test('拒绝: rheology n>0 缺 K / n=0 带 K / 负屈服应力', () => {
   }), 'yieldStress');
 });
 
-test('拒绝: blackoil 油密度非正 / 含水率越界', () => {
+test('拒绝: blackoil 油密度非正（内核唯一硬性守卫）', () => {
+  // Kernel: network.cpp:3054-3055 cfFatal("steadyNetwork: blackoil needs
+  // positive oilDensity") — the only range guard the kernel enforces.
   expectReject(() => applyBlackoil('fluid { rho 850; }\n', {
     ...FIXTURES.blackoil, oilDensity: 0,
   }), 'oilDensity');
   expectReject(() => applyBlackoil('fluid { rho 850; }\n', {
-    ...FIXTURES.blackoil, waterCut: 1,
-  }), 'waterCut');
+    ...FIXTURES.blackoil, oilDensity: -100,
+  }), 'oilDensity');
 });
+
+test('提示(不阻断): 其余五字段越界不拒收，仅出可读 advisory', () => {
+  // network.cpp:3048-3053 read these via getScalarOr; BlackOil.h:82-89 holds
+  // defaults only, no cfFatal. The frontend keeps conservative hints but must
+  // NOT block write-back. Each out-of-range value still lands in the dict.
+  const borderline = {
+    gasGravity: 0, gor: -5, waterCut: 1, temperature: 0, surfaceTension: -0.01,
+  };
+  let out;
+  assert.doesNotThrow(() => {
+    out = applyBlackoil('fluid { rho 850; }\n', { ...FIXTURES.blackoil, ...borderline });
+  });
+  for (const k of Object.keys(borderline)) assert.match(out, new RegExp(`\\b${k}\\b`));
+  const hints = blackoilRangeAdvisory(parseBlackoil(out));
+  for (const k of Object.keys(borderline)) {
+    assert.ok(hints.some((h) => h.includes(k)), `advisory 应提示 ${k}`);
+  }
+  // valid fixture -> no advisory at all
+  assert.deepEqual(blackoilRangeAdvisory(FIXTURES.blackoil), []);
+});
+
+// Per-field正反例: each relaxed field flags its own out-of-expected value,
+// and stays silent on the valid side. Kernel does not reject either side.
+const RANGE_CASES = [
+  { key: 'gasGravity', bad: 0, good: 0.75 },
+  { key: 'gor', bad: -5, good: 80 },
+  { key: 'waterCut', bad: 1, good: 0.2 },
+  { key: 'temperature', bad: 0, good: 340 },
+  { key: 'surfaceTension', bad: -0.01, good: 0.025 },
+];
+
+for (const { key, bad, good } of RANGE_CASES) {
+  test(`提示(不阻断): blackoil.${key} 越界出 advisory、合法值静默`, () => {
+    const badHints = blackoilRangeAdvisory({ ...FIXTURES.blackoil, [key]: bad });
+    assert.ok(badHints.some((h) => h.includes(key)), `越界 ${key} 应有提示`);
+    // bad value still writes back through applyBlackoil without throwing
+    assert.doesNotThrow(() => applyBlackoil('fluid { rho 850; }\n',
+      { ...FIXTURES.blackoil, [key]: bad }));
+    const goodHints = blackoilRangeAdvisory({ ...FIXTURES.blackoil, [key]: good });
+    assert.ok(!goodHints.some((h) => h.includes(key)), `合法 ${key} 应静默`);
+  });
+}
 
 test('拒绝: 未知块 id 被拒绝（不静默写坏字典）', () => {
   assert.throws(() => applyPipeBlock(BASE_STEADY, 'P1', 'nope', {}), /unknown/);
@@ -380,4 +428,95 @@ test('互斥提示: fluidHasPvt 识别 pvt 子块，blackoil 不算 pvt', () => 
   assert.equal(fluidHasPvt('fluid { rho 850; }\n'), false);
   assert.equal(fluidHasPvt('fluid { pvt { pressure 1e6; }\n }\n'), true);
   assert.equal(fluidHasPvt('fluid { blackoil { oilDensity 850; }\n }\n'), false);
+});
+
+// ---------------------------------------------------------------------------
+// 4. Scope / mutex advisories (double layer): visible in the panel at render
+// time, non-blocking; the kernel keeps the fatal guard at solve time. Messages
+// carry the kernel cfFatal fragment verbatim so the two stay aligned.
+// ---------------------------------------------------------------------------
+
+const BLACKOIL_STEADY = [
+  'fluid { blackoil { oilDensity 850; } }',
+  'nodes { A { pressure 1.005e6; } B { pressure 1.0e6; } }',
+  'pipes {',
+  '    P1 { from A; to B; length 100; diameter 0.05; }',
+  '}',
+  '',
+].join('\n');
+
+test('互斥提示: blackoil 与 pvt 同时声明时双向同一口径；单边存在不提示', () => {
+  // Kernel verbatim: network.cpp:3040-3041
+  //   cfFatal("steadyNetwork: fluid cannot be both blackoil and pvt")
+  const both = 'fluid { blackoil { oilDensity 850; } pvt { pressure 1e6; }\n }\n';
+  const w = blackoilPvtMutexWarning(both);
+  assert.ok(w, 'blackoil 与 pvt 同时存在应给出提示');
+  assert.ok(w.includes('steadyNetwork: fluid cannot be both blackoil and pvt'));
+  // reverse direction: pvt first, blackoil appears later — same message
+  const reverse = 'fluid { pvt { pressure 1e6; } blackoil { oilDensity 850; }\n }\n';
+  assert.equal(blackoilPvtMutexWarning(reverse), w);
+  // negative: either one alone, or neither -> no mutex advisory
+  assert.equal(blackoilPvtMutexWarning('fluid { pvt { pressure 1e6; }\n }\n'), null);
+  assert.equal(blackoilPvtMutexWarning('fluid { blackoil { oilDensity 850; }\n }\n'), null);
+  assert.equal(blackoilPvtMutexWarning('fluid { rho 850; }\n'), null);
+  assert.equal(fluidHasBlackoil('fluid { blackoil { oilDensity 850; }\n }\n'), true);
+  assert.equal(fluidHasBlackoil('fluid { pvt { pressure 1e6; }\n }\n'), false);
+});
+
+test('作用域提示: 非黑油网络挂 correlation/flowPattern 提示到管名；黑油网络无提示', () => {
+  // negative direction: blackoil network tolerates the alternative law
+  const bo = applyPipeBlock(BLACKOIL_STEADY, 'P1', 'correlations',
+    { correlation: 'hagedornBrown' });
+  assert.equal(correlationScopeWarning(bo, 'P1'), null);
+
+  // positive: single-phase network + alternative holdup law.
+  // Kernel verbatim fragment: network.cpp:1258-1263
+  //   cfFatal("network: pipe '<name>' declares correlation <law> on a
+  //     single-phase network: the alternative holdup laws ...")
+  const sp = applyPipeBlock(BASE_STEADY, 'P1', 'correlations',
+    { correlation: 'hagedornBrown' });
+  const w1 = correlationScopeWarning(sp, 'P1');
+  assert.ok(w1, '单相网络挂关联式应提示');
+  assert.ok(w1.includes('P1'), '提示定位到具体管名');
+  assert.ok(w1.includes('hagedornBrown'));
+  assert.ok(w1.includes('on a single-phase network'));
+  assert.ok(w1.includes('alternative holdup laws'));
+
+  // positive: forced flowPattern >= 0.
+  // Kernel verbatim fragment: network.cpp:1246-1251
+  //   cfFatal("network: pipe '<name>' declares flowPattern <n> on a
+  //     single-phase network: the flow-pattern map is a Beggs-Brill two-phase
+  //     dispatch surface, a single-phase pipe has no pattern to force")
+  const fp = applyPipeBlock(BASE_STEADY, 'P1', 'correlations', { flowPattern: 2 });
+  const w2 = correlationScopeWarning(fp, 'P1');
+  assert.ok(w2, '单相网络强制流型应提示');
+  assert.ok(w2.includes('P1'));
+  assert.ok(w2.includes('flowPattern 2'));
+  assert.ok(w2.includes('flow-pattern map is a Beggs-Brill two-phase dispatch surface'));
+
+  // negative: default law beggsBrill and flowPattern -1 (ask the map) pass the
+  // kernel scope guard, so no advisory either.
+  const def = applyPipeBlock(BASE_STEADY, 'P1', 'correlations',
+    { correlation: 'beggsBrill' });
+  assert.equal(correlationScopeWarning(def, 'P1'), null);
+  const minus1 = applyPipeBlock(BASE_STEADY, 'P1', 'correlations', { flowPattern: -1 });
+  assert.equal(correlationScopeWarning(minus1, 'P1'), null);
+  // entry carries no such keys -> null
+  assert.equal(correlationScopeWarning(BASE_STEADY, 'P1'), null);
+});
+
+test('作用域提示: 其余两条替代定律与流型 0/3 同样在单相网络被提示', () => {
+  for (const law of ['dunsRos', 'olgasSteady']) {
+    const t = applyPipeBlock(BASE_STEADY, 'P1', 'correlations', { correlation: law });
+    const w = correlationScopeWarning(t, 'P1');
+    assert.ok(w, `${law} 应提示`);
+    assert.ok(w.includes(law));
+    assert.ok(w.includes('on a single-phase network'));
+  }
+  for (const fp of [0, 3]) {
+    const t = applyPipeBlock(BASE_STEADY, 'P1', 'correlations', { flowPattern: fp });
+    const w = correlationScopeWarning(t, 'P1');
+    assert.ok(w, `flowPattern ${fp} 应提示`);
+    assert.ok(w.includes(`flowPattern ${fp}`));
+  }
 });

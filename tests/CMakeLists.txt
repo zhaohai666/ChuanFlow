@@ -2557,6 +2557,13 @@ if(CHFLOW_PYTHON_BINDINGS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_rsm.py)
     set_tests_properties(python.rsm PROPERTIES
         ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # Radiation DO/S2S/P1 family: analytic exponential slab, closed-form wall
+    # fluxes and discrete balance, S2S view-factor limit, P1 trend, refusals.
+    add_test(
+        NAME python.radiation_do
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_radiation_do.py)
+    set_tests_properties(python.radiation_do PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
     # 3D family: mesh -> field -> built-in P1 solve -> NumPy arrays.
     add_test(
         NAME python.solver3d

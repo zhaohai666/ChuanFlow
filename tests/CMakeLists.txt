@@ -2564,6 +2564,20 @@ if(CHFLOW_PYTHON_BINDINGS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_radiation_do.py)
     set_tests_properties(python.radiation_do PROPERTIES
         ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # ALE family: rigid translation / expansion vertex motion, GCL residual and
+    # mesh-volume/length laws, first-order-in-dt GCL convergence, refusals.
+    add_test(
+        NAME python.ale
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_ale.py)
+    set_tests_properties(python.ale PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # Dynamic-mesh 6DoF: GCL-corrected relative-flux scalar transport, closed-form
+    # translation/rotation body ODEs, static twin, validation refusals.
+    add_test(
+        NAME python.dynmesh
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_dynmesh.py)
+    set_tests_properties(python.dynmesh PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
     # 3D family: mesh -> field -> built-in P1 solve -> NumPy arrays.
     add_test(
         NAME python.solver3d

@@ -2453,6 +2453,15 @@ if(MPI_CXX_FOUND AND TARGET chflow-mpi-linear-solver)
             ${MPIEXEC_EXECUTABLE}
             $<TARGET_FILE:chflow-mpi-linear-solver>
             ${CMAKE_CURRENT_SOURCE_DIR}/cases/mpiLinearSolver/case.dict)
+else()
+    if(NOT MPI_CXX_FOUND)
+        message(STATUS "tests: verify.mpiLinearSolver skipped: no MPI CXX "
+                       "toolchain found (install OpenMPI/MPICH or set MPI_PREFIX); "
+                       "the distributed CSR CG test is registered only in MPI-enabled builds")
+    else()
+        message(STATUS "tests: verify.mpiLinearSolver skipped: the "
+                       "chflow-mpi-linear-solver target was not built")
+    endif()
 endif()
 
 # 5.233 / G7: the full SIMPLE pressure-velocity coupling distributed over
@@ -2491,6 +2500,19 @@ if(MPI_CXX_FOUND
             $<TARGET_FILE:chflow-3d-petsc-distributed>
             $<TARGET_FILE:chflow-mpi-linear-solver>
             ${CMAKE_CURRENT_SOURCE_DIR}/cases/petscDistributed/case.dict)
+else()
+    set(_petsc_skip_reasons "")
+    if(NOT MPI_CXX_FOUND)
+        set(_petsc_skip_reasons "${_petsc_skip_reasons}no MPI CXX toolchain found; ")
+    endif()
+    if(NOT TARGET chflow-3d-petsc-distributed)
+        set(_petsc_skip_reasons "${_petsc_skip_reasons}PETSc distributed target not built (needs CHFLOW_WITH_PETSC=ON and a real PETSc installation); ")
+    endif()
+    if(NOT TARGET chflow-mpi-linear-solver)
+        set(_petsc_skip_reasons "${_petsc_skip_reasons}MPI linear-solver target not built; ")
+    endif()
+    message(STATUS "tests: verify.petscDistributed skipped: ${_petsc_skip_reasons}"
+                   "the PETSc cross-check is registered only in MPI+PETSc enabled builds")
 endif()
 
 if(CHFLOW_PYTHON_BINDINGS)
@@ -2561,6 +2583,62 @@ if(CHFLOW_PYTHON_BINDINGS)
         NAME python.dpm
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_dpm.py)
     set_tests_properties(python.dpm PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # Mixture PBM family: monodisperse moment balance + drift-flux slip, Euler
+    # replay, closed forms, no-growth twin and loud refusals.
+    add_test(
+        NAME python.pbm
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_pbm.py)
+    set_tests_properties(python.pbm PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # QMOM family: two-node Gaussian quadrature, constant-kernel Smoluchowski
+    # moment replay, closed forms, quadrature identity and loud refusals.
+    add_test(
+        NAME python.qmom
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_qmom.py)
+    set_tests_properties(python.qmom PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # LES family: algebraic Smagorinsky/WALE SGS viscosity on the seeded shear,
+    # analytic filter width, strain and kinetic-energy anchors, refusals.
+    add_test(
+        NAME python.les
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_les.py)
+    set_tests_properties(python.les PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # RSM family: six Reynolds-stress components, epsilon/k/nut/production,
+    # isotropic-start and realizability invariants, validation refusals.
+    add_test(
+        NAME python.rsm
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_rsm.py)
+    set_tests_properties(python.rsm PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # Radiation DO/S2S/P1 family: analytic exponential slab, closed-form wall
+    # fluxes and discrete balance, S2S view-factor limit, P1 trend, refusals.
+    add_test(
+        NAME python.radiation_do
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_radiation_do.py)
+    set_tests_properties(python.radiation_do PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # ALE family: rigid translation / expansion vertex motion, GCL residual and
+    # mesh-volume/length laws, first-order-in-dt GCL convergence, refusals.
+    add_test(
+        NAME python.ale
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_ale.py)
+    set_tests_properties(python.ale PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # Dynamic-mesh 6DoF: GCL-corrected relative-flux scalar transport, closed-form
+    # translation/rotation body ODEs, static twin, validation refusals.
+    add_test(
+        NAME python.dynmesh
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_dynmesh.py)
+    set_tests_properties(python.dynmesh PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # Incompressible NS: laminar transient PISO start-up series and steady SIMPLE
+    # Poiseuille profile/flux conservation, BC defaults, missing-block refusals.
+    add_test(
+        NAME python.ns
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_ns.py)
+    set_tests_properties(python.ns PROPERTIES
         ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
     # 3D family: mesh -> field -> built-in P1 solve -> NumPy arrays.
     add_test(

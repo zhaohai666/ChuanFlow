@@ -21,6 +21,14 @@ void registerMeltingBindings(py::module_& m);
 void registerCombustionBindings(py::module_& m);
 void registerVofBindings(py::module_& m);
 void registerDpmBindings(py::module_& m);
+void registerPbmBindings(py::module_& m);
+void registerQmomBindings(py::module_& m);
+void registerLesBindings(py::module_& m);
+void registerRsmBindings(py::module_& m);
+void registerRadiationDoBindings(py::module_& m);
+void registerAleBindings(py::module_& m);
+void registerDynMeshBindings(py::module_& m);
+void registerNsBindings(py::module_& m);
 void registerFields3dBindings(py::module_& m);
 
 PYBIND11_MODULE(chflow_core, m)
@@ -406,5 +414,13 @@ PYBIND11_MODULE(chflow_core, m)
     registerCombustionBindings(m);
     registerVofBindings(m);
     registerDpmBindings(m);
+    registerPbmBindings(m);
+    registerQmomBindings(m);
+    registerLesBindings(m);
+    registerRsmBindings(m);
+    registerRadiationDoBindings(m);
+    registerAleBindings(m);
+    registerDynMeshBindings(m);
+    registerNsBindings(m);
     registerFields3dBindings(m);
 }

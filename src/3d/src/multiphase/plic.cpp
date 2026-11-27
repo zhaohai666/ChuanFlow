@@ -1092,9 +1092,20 @@ scalar diskRectangleArea(scalar x1, scalar x2, scalar y1, scalar y2, scalar radi
         const scalar bottom = std::max(y1, -chord);
         if (top <= bottom) continue;
 
+        // The arc/line branch turns on whether the chord at the segment midpoint
+        // lies below the box side. Between consecutive knots the chord does not
+        // cross that side (the crossings are themselves knots), so the midpoint
+        // decides the whole segment. An exact `top == chord` test, however, flips
+        // on round-off when the chord grazes the side, picking the wrong branch
+        // and leaving a ~1e-7 area error against the closed-form quadrant
+        // integral the checker writes. A relative tolerance keeps the decision
+        // stable; it can only flip where chord and side agree to ~tol, and there
+        // the two branches' integrals differ by O(tol * segment width) -- far
+        // below the cell fraction, so the fill stays exact to round-off.
+        const scalar tol = 1e-13 * radius;
         const scalar seg = circleAntiderivative(q, radius) - circleAntiderivative(p, radius);
-        const scalar intTop = (top == chord) ? seg : y2 * (q - p);
-        const scalar intBottom = (bottom == -chord) ? -seg : y1 * (q - p);
+        const scalar intTop = (chord <= y2 + tol) ? seg : y2 * (q - p);
+        const scalar intBottom = (-chord >= y1 - tol) ? -seg : y1 * (q - p);
         area += intTop - intBottom;
     }
     return std::max(0.0, area);

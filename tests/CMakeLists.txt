@@ -2728,3 +2728,38 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/verify_1dtransient.cmake OPTIONAL)
 include(${CMAKE_CURRENT_SOURCE_DIR}/verify_3dturb.cmake OPTIONAL)
 include(${CMAKE_CURRENT_SOURCE_DIR}/verify_3dphys.cmake OPTIONAL)
 include(${CMAKE_CURRENT_SOURCE_DIR}/verify_3dmesh.cmake OPTIONAL)
+
+# 5.228 (H6): 3D 6DOF 流体应力积分。checker 独立推导封闭面上的柯西合力:
+# 静水压力闭包给出精确浮力 Fp = -rho g V (0,0,98.1)、零粘性力(无梯度声明)、
+# 力矩 M = r_c(t) x Fp 随网格平移、散度定理体积 == 0.01;应力载荷替换
+# bodyForce/drag 后 x=v=0 而转动 DOF 保持阻尼振荡闭式;GCL 质量平衡与均匀标量
+# 不回归;剥掉 fluidStress 块后与 F11 基线 stdout 逐字节相同;耦合臂
+# (gravity 沿 x、固体闭包清零)验证 x=F/(2m)t^2 与 theta=Mz/(2I)t^2;剪切臂
+# (常梯度)合力合力矩为零;开放面 / 负密度 / 未知 patch 名响亮拒收。
+add_test(
+    NAME verify.3dDynamicMesh6DofStress
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_3d_dynamicMesh6DofStress.py
+        $<TARGET_FILE:chflow-3d-dynamic-mesh>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/3dDynamicMesh6DofStress/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/dynamicMesh6Dof/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/3dDynamicMesh6DofStress/caseReject.dict)
+
+# 5.229 (H6): AMR 粗化 + 场量迁移 + remeshing 循环。checker 用 Python 完整镜像
+# 循环(显式保守扩散 -> 逐轴 slab 指示子 -> 箱交集体积加权迁移 -> 均匀守恒
+# 平移),逐 cycle 对比 AMR_CELL 集合、AMR_CYCLE 计数与 AMR_DONE 质量;判据:
+# cycle1 细化 bins3,4,5 至 88 cell 且子格体积和==父格(1e-14)、同父两子 phi
+# 相等=父种子 phi(shift<1e-12);cycle2 扩散抹平后粗化回 64 cell 且父 phi==
+# 两子体积加权平均(1e-10);cycle3 惰性;mass 恒等于精确积分 0.045、
+# massError<=1e-10;剥掉 amr 块的 caseTwin 逐字节不变;coarsen>=refine、
+# 负 refineThreshold、cycles/every<1 响亮拒收。
+add_test(
+    NAME verify.3dAmrRemesh
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_3d_amrRemesh.py
+        $<TARGET_FILE:chflow-3d-adaptive-refine>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/3dAmrRemesh/case.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/3dAmrRemesh/caseRefine.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/3dAmrRemesh/caseCoarsen.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/3dAmrRemesh/caseTwin.dict
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/3dAmrRemesh/caseReject.dict)

@@ -1,0 +1,27 @@
+// 5.229 (H6) passive twin: the same seed without any amr{} block. The app
+// must print no AMR line and stay byte-identical to the F13-only output; the
+// checker also compares it against the amr block stripped from case.dict.
+block
+{
+    min  (0 0 0);
+    max  (1 1 0.1);
+    cells (8 8 1);
+    xmin { name left;   type wall; }
+    xmax { name right;  type wall; }
+    ymin { name bottom; type wall; }
+    ymax { name top;    type wall; }
+    zmin { name front;  type symmetry; }
+    zmax { name back;   type symmetry; }
+}
+
+adapt
+{
+    gradientThreshold 1e9;
+    maxDepth 2;
+    field step;
+    axis x;
+    interface 0.55;
+    low 0.0;
+    high 1.0;
+    dumpCells yes;
+}

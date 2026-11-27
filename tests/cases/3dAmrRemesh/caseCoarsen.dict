@@ -1,0 +1,40 @@
+// 5.229 (H6) coarsen arm: two cycles. Cycle 1 refines bins 3,4,5 (88 cells);
+// 400 conservative diffusion steps smooth the step below the coarsen
+// threshold, so cycle 2 merges every refined bin back: the parent phi must
+// equal the volume-weighted average of its two (diffused) children and the
+// cell count must return to the 64-cell seed.
+block
+{
+    min  (0 0 0);
+    max  (1 1 0.1);
+    cells (8 8 1);
+    xmin { name left;   type wall; }
+    xmax { name right;  type wall; }
+    ymin { name bottom; type wall; }
+    ymax { name top;    type wall; }
+    zmin { name front;  type symmetry; }
+    zmax { name back;   type symmetry; }
+}
+
+adapt
+{
+    gradientThreshold 1e9;
+    maxDepth 2;
+    field step;
+    axis x;
+    interface 0.55;
+    low 0.0;
+    high 1.0;
+    dumpCells yes;
+}
+
+amr
+{
+    refineThreshold  2;
+    coarsenThreshold 0.5;
+    cycles           2;
+    every            400;
+    diffusion        0.05;
+    dt               0.01;
+    dumpCells        yes;
+}

@@ -93,6 +93,49 @@ struct AdaptResult
     scalar maxVolume = 0;
 };
 
+/// Opt-in AMR remeshing loop controls, parsed from `amr{}` (§5.229).
+///
+/// Without the block `enabled` stays false and the app output is byte-identical
+/// to the F13 reference. The loop refines / coarsens base bins by the cell
+/// gradient indicator of the stored field, transfers the field conservatively
+/// through the geometry change and (optionally) relaxes it with explicit
+/// conservative diffusion between cycles.
+struct AmrConfig
+{
+    bool enabled = false;
+    scalar refineThreshold = 0;   // > 0, finite
+    scalar coarsenThreshold = 0;  // >= 0, finite, strictly below refineThreshold
+    label cycles = 0;             // >= 1
+    label every = 1;              // diffusion steps between cycles, >= 1
+    scalar diffusion = 0;         // D >= 0
+    scalar dt = 0;                // > 0 when diffusion > 0
+    bool dumpCells = false;
+
+    static AmrConfig fromDict(const Dictionary& caseDict);
+};
+
+/// One remesh cycle of the AMR loop.
+struct AmrCycleReport
+{
+    label cycle = 0;
+    label nCells = 0;
+    label nRefined = 0;   // base bins deepened this cycle
+    label nCoarsened = 0; // base bins shallowened this cycle
+    scalar mass = 0;      // sum phi_c V_c after the conservation shift
+    std::vector<AdaptCell> cells;
+};
+
+/// Whole remesh loop: cell counts and the mass drift across all cycles.
+struct AmrLoopResult
+{
+    label initialCells = 0;
+    label finalCells = 0;
+    scalar massInitial = 0;
+    scalar massFinal = 0;
+    scalar massError = 0; // |massFinal - massInitial|
+    std::vector<AmrCycleReport> cycles;
+};
+
 /// Adaptive Cartesian refinement operator.
 ///
 /// The base block mesh is a structured hex grid. A cell is marked when the
@@ -107,6 +150,14 @@ class AdaptiveRefine
 {
 public:
     static AdaptResult refine(const Dictionary& caseDict, const std::string& casePath);
+
+    /// Opt-in AMR remeshing loop over the seed produced by `refine` (§5.229).
+    /// Per cycle: (c>1) `every` explicit conservative diffusion steps, a
+    /// per-axis gradient indicator, slab refine / coarsen of base bins within
+    /// the adapt{} maxDepth, a conservative field transfer through the box
+    /// intersections of old and new cells and a uniform conservation shift that
+    /// pins sum(phi V) to the seed integral.
+    static AmrLoopResult remesh(const Dictionary& caseDict, const AdaptResult& seed);
 };
 
 } // namespace cf

@@ -89,6 +89,41 @@ int main(int argc, char** argv)
             }
         }
 
+        // §5.229 opt-in AMR remeshing loop. Without the block the output above
+        // is byte-identical to the F13 reference.
+        if (caseDict.has("amr"))
+        {
+            const AmrConfig amr = AmrConfig::fromDict(caseDict);
+            const AmrLoopResult loop = AdaptiveRefine::remesh(caseDict, r);
+            for (const AmrCycleReport& rep : loop.cycles)
+            {
+                log::info("AMR_CYCLE cycle=", rep.cycle,
+                          " cells=", rep.nCells,
+                          " refined=", rep.nRefined,
+                          " coarsened=", rep.nCoarsened,
+                          " mass=", num(rep.mass));
+                if (amr.dumpCells)
+                {
+                    for (std::size_t c = 0; c < rep.cells.size(); ++c)
+                    {
+                        const AdaptCell& cell = rep.cells[c];
+                        log::info("AMR_CELL cycle=", rep.cycle,
+                                  " c=", static_cast<label>(c),
+                                  " level=", cell.level,
+                                  " lo=", vec(cell.lo),
+                                  " hi=", vec(cell.hi),
+                                  " phi=", num(cell.phi),
+                                  " vol=", num(cell.volume));
+                    }
+                }
+            }
+            log::info("AMR_DONE initialCells=", loop.initialCells,
+                      " finalCells=", loop.finalCells,
+                      " massInitial=", num(loop.massInitial),
+                      " massFinal=", num(loop.massFinal),
+                      " massError=", num(loop.massError));
+        }
+
         return 0;
     }
     catch (const std::exception& e)

@@ -1,5 +1,8 @@
 #pragma once
 
+#include <string>
+#include <vector>
+
 #include "cf/common/Dictionary.h"
 #include "cf/common/Field.h"
 #include "cf/common/Vector.h"
@@ -7,6 +10,50 @@
 
 namespace cf
 {
+
+/// Opt-in fluid-stress load on a closed body surface (§5.228, batch H6).
+///
+/// When a `fluidStress{}` block is declared, the app integrates the Cauchy
+/// traction
+///
+///     f = -p Sf + mu (grad U + grad U^T) Sf
+///
+/// over the faces of the selected surface patches (default: the whole mesh
+/// boundary, which for a block mesh is a closed box) and reports the net
+/// force, the net moment about the origin and the enclosed volume. The
+/// pressure follows the hydrostatic closure p(x) = pressureRef +
+/// rho * dot(gravity, x) (grad p = rho g, so a fully submerged closed
+/// surface feels exactly the buoyancy -rho g V) and the velocity is the
+/// declared linear field U(x) = gradU . x (uniform `fluidVelocity` adds no
+/// stress because grad U = 0 there).
+///
+/// The integrated load REPLACES the declarative bodyForce / drag closure in
+/// the existing RK4 body advance: the translational DOF feels force.x and the
+/// rotational DOF feels moment.z (the solid rotDrag / rotStiffness terms stay
+/// active as mechanical closures). Without the block every output line is
+/// byte-identical to the F11 reference.
+struct FluidStressConfig
+{
+    bool enabled = false;
+    scalar density = 0;                   // rho, kg/m3 (> 0)
+    scalar viscosity = 0;                 // mu, Pa s (>= 0)
+    Vector gravity = Vector::zero();      // g, m/s2; hydrostatic grad p = rho g
+    scalar pressureRef = 0;               // p at the origin, Pa
+    std::vector<scalar> velocityGradient; // optional 9 entries, row-major dUi/dxj
+    std::vector<std::string> surface;     // patch names; empty = whole boundary
+    void validate() const;
+};
+
+/// Integrated traction over a closed body surface (§5.228).
+struct StressLoad
+{
+    Vector forcePressure = Vector::zero(); // sum -p Sf, N
+    Vector forceViscous = Vector::zero();  // sum mu (gradU+gradU^T) Sf, N
+    Vector moment = Vector::zero();        // sum x x f about the origin, N m
+    Vector normalSum = Vector::zero();     // sum Sf; must vanish for a closed surface
+    scalar volume = 0;                     // (1/3) sum x.Sf, m3 (divergence theorem)
+    scalar area = 0;                       // sum |Sf|, m2
+};
 
 /// Moving-mesh relative-flux transport + a rigid-body "6DOF" update.
 ///
@@ -37,6 +84,7 @@ namespace cf
 struct DynamicMeshConfig
 {
     bool enabled = false;
+    FluidStressConfig stress;            // opt-in fluidStress{} (§5.228)
     Vector meshVelocity = Vector::zero();  // prescribed constant mesh translation, m/s
     Vector bodyForce = Vector::zero();     // constant force on the body, N (x used)
     scalar mass = 0;                       // translational mass, kg (> 0)
@@ -89,5 +137,17 @@ Field<scalar> transportStep(const polyMesh& mesh, const Field<scalar>& phi,
 
 /// RK4 integration of the translational + rotational rigid-body ODE over dt.
 BodyState advanceBody(const BodyState& s, const DynamicMeshConfig& cfg, scalar dt);
+
+/// Integrate the Cauchy traction over the declared closed body surface
+/// (§5.228). Refuses loudly (cfFatal) when the selected face set is not a
+/// closed outward surface: sum Sf must vanish and the divergence-theorem
+/// volume must be positive.
+StressLoad integrateFluidStress(const polyMesh& mesh, const FluidStressConfig& cfg);
+
+/// RK4 integration of the rigid-body ODE driven by the integrated fluid
+/// stress: m v' = force.x, I theta'' = moment.z - c theta' - K theta. The
+/// declarative bodyForce / drag closures are replaced by the stress load.
+BodyState advanceBodyStress(const BodyState& s, const DynamicMeshConfig& cfg,
+                            const StressLoad& load, scalar dt);
 
 } // namespace cf

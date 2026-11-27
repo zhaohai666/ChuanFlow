@@ -1,0 +1,4 @@
+# Cloud/Linux shell entry points must stay LF: core.autocrlf=true on the
+# Windows dev box would otherwise hand bash a CRLF script (scripts/gpu, CI).
+*.sh text eol=lf
+*.yml text eol=lf

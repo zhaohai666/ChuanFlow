@@ -6411,6 +6411,52 @@ PR76（ω ≤ 0.491 分支），ω > 0.491 仍沿用 PR76 公式。
 **判据**。`verify.pvtPr78`，23 判据：ω=0.5 臂对 PR78 闭式 1e-14；ω=0.4 臂与改动前内核**逐位
 相同**（含运算次序）；闪蒸/焓孪生跨 ω 0.5→0.491 连续；装载拒收点名。
 
+### 5.239 D13 余项 · Kokkos CUDA 编译门（CI）+ 云端 GPU 实跑脚本（组合拳）
+
+**差距**。§5.126 把 `cf::backend::parallelFor` 接进五处纯映射 kernel 后，Kokkos 分支只在本机
+用真实 Kokkos 4.4.01（Serial host 执行空间）编译+实跑验证过；CUDA/HIP 真 GPU 执行一直挂在
+D13 余项 / 对标矩阵 F14 的 🟡 上。本机复核过硬件边界：唯一 GPU 是 AMD RX 590（Polaris，无
+CUDA；ROCm/HIP 不支持该代且 Windows 无 SDK；无 WSL；Kokkos 4.x 已删 OpenCL 后端），GPU 实跑
+物理上不可能在本机完成。
+
+**关键事实（决定门的范围）**。五处接入 kernel 与 `backendApp` 全部是 host `[ & ]` 闭包 + host
+内存：`KOKKOS_LAMBDA` 在 CUDA 下展开为 `__host__ __device__` 包装层，调用 `__host__`-only 闭包
+会被 nvcc 拒绝——所以「cf3d 全库在 CUDA 下编译」不是配置问题，而是要把 kernel 改写为按值捕获
+的 device-callable 函子 + 设备内存，属于未来的设备化增量。本格验证的是**接口契约本身**在 CUDA
+工具链下编译、并在真 GPU 上执行逐位正确。
+
+**实现**。三层：
+- `scripts/ci/kokkos_cuda_probe.cpp` + `scripts/ci/CMakeLists.txt`（独立工程，不进主构建）：
+  `ScaleKernel{ double* out; KOKKOS_FUNCTION void operator()(int i) }` 写 `i*1.5+0.25`——两步在
+  `i < 2^23` 内均为 IEEE 精确运算，nvcc 的 FMA 收缩不可能引入逐位分歧；经 `parallelFor` 写入
+  `Kokkos::View<double*>`（CUDA 分支）或 host 数组（其余分支），与 `serialFor` 参照 `memcmp`
+  逐位对照，输出 `PROBE PASS/FAIL`。CMake 三态：无 SDK 主机冒烟（默认，`verify.kokkosProbeHost`
+  PASS_REGULAR_EXPRESSION）、`-DPROBE_WITH_KOKKOS=ON`（Serial/OMP 宿主）、CUDA 下 `enable_language(CUDA)`
+  + 源文件 `LANGUAGE CUDA` 强制 nvcc 编译该 TU（`Kokkos::parallel_for` 的 launcher 必须由 nvcc
+  生成；`-x cuda` 标志不随 `Kokkos::kokkos` 接口目标传播，CMake 层面必须显式）。
+- `.github/workflows/ci.yml` 四个 job：`linux-gcc` / `windows-msvc` 全量 ctest（MSVC 用
+  ilammy/msvc-dev-cmd + Ninja，CXX flags 与 build/configure.bat 同参）；`kokkos-serial` 源码构建
+  Kokkos 4.4.01（Serial）后以 `-DCHFLOW_WITH_KOKKOS=ON` 配置全库并跑 `backendCpu|solverBackend`，
+  并 grep 根 CMake 的「no Kokkos SDK found」降级 WARNING——命中即红，防门空转；
+  `kokkos-cuda-compile` 用 runner 预装 nvcc 构建 Kokkos（`Kokkos_ENABLE_CUDA=ON`，ARCH=70）后
+  **只编译不执行** probe（ubuntu runner 无 GPU 设备）。
+- `scripts/gpu/kokkos_gpu_verify.sh`：Kaggle/Colab T4/P100 粘贴即跑——`nvidia-smi` 探测
+  compute_cap 动态定 ARCH，conda/pip 兜底 cmake≥3.24，源码构建 Kokkos CUDA，编译并**实跑**
+  probe，GPU 写回 vs serial 逐位判据。
+
+**顺带修复**。`src/3d/src/mesh/blockMesh.cpp` 缺 `#include <algorithm>`（远端 117 提交合入后
+MSVC 报 C2039 `std::sort`：GCC/clang 经别的头传递包含，MSVC 不带）；本机全量重建 165/165 绿。
+
+**判据与状态（2026-11-28）**。本地已验：probe 主机模式 MSVC 编译 + `verify.kokkosProbeHost`
+1/1 Passed（cpu-serial 逐位 PASS）+ n≥2^23 越界拒收（rc=2）；本机全量 ctest 262 项后台回归
+进行中。**待回填**：CI 四 job 首跑结果（本机 GitHub HTTPS/api 被网络阻断，push 走 SSH、
+Actions 日志由用户回贴）与 Kaggle GPU 实跑输出；两者齐后 F14 的 GPU 🟡 才有升 ✅ 的证据。
+
+**边界**。① 本格不做 cf3d kernel 的设备化（host 内存 + `[ & ]` 闭包原样保留，默认构建逐位
+不变不受影响）；② CI 的 CUDA job 是编译门——GitHub hosted runner 无 GPU，执行验证只能走
+云端脚本；③ 逐位判据依赖 `i*1.5+0.25` 在 `n < 2^23` 的精确性，换 kernel 表达式需重推 FMA
+口径；④ Kokkos 版本钉 4.4.01 与 §5.126 本机验证同源。
+
 ## 6. 概念映射速查（OpenFOAM → ChuanFlow）
 
 | OpenFOAM-dev | ChuanFlow |

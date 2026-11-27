@@ -1,0 +1,131 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Four layers (2026-11-28 combo for the D13 GPU remainder):
+#   linux-gcc / windows-msvc : full ctest regression on both toolchains
+#   kokkos-serial            : real Kokkos 4.4.01 (Serial host space) build
+#                              + the backend checkers, so §5.126's "真库编译
+#                              + 实跑" stays machine-verified, not anecdotal
+#   kokkos-cuda-compile      : nvcc compile gate for the device-callable slice
+#                              of the parallelFor contract (scripts/ci probe).
+#                              ubuntu-latest has the CUDA toolkit but NO GPU
+#                              device, and cf3d's five wired kernels are
+#                              host [ & ] lambdas over host memory (they are
+#                              rejected by the __host__ __device__ wrapper),
+#                              so this job compiles only; execution belongs to
+#                              scripts/gpu/ on a real cloud GPU.
+
+jobs:
+  linux-gcc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build-ci -j 3
+      - name: ctest (full)
+        run: ctest --test-dir build-ci --output-on-failure
+      - name: Probe host smoke (scripts/ci without any SDK)
+        run: |
+          cmake -S scripts/ci -B probe-host -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build probe-host -j 3
+          ctest --test-dir probe-host --output-on-failure
+
+  windows-msvc:
+    runs-on: windows-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enter MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+      - name: Configure
+        # Same flags as build/configure.bat (msvc-env.bat + Ninja + Release).
+        run: >
+          cmake -S . -B build-ci -G Ninja -DCMAKE_BUILD_TYPE=Release
+          "-DCMAKE_CXX_FLAGS=/D_USE_MATH_DEFINES /DWIN32 /D_WINDOWS /EHsc"
+        shell: bash
+      - name: Build
+        run: cmake --build build-ci -j 3
+      - name: ctest (full)
+        run: ctest --test-dir build-ci --output-on-failure
+
+  kokkos-serial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Kokkos 4.4.01 (Serial host execution space)
+        run: |
+          set -euo pipefail
+          git clone --branch 4.4.01 --depth 1 https://github.com/kokkos/kokkos.git "$RUNNER_TEMP"/kokkos
+          cmake -S "$RUNNER_TEMP"/kokkos -B "$RUNNER_TEMP"/kokkos-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKokkos_ENABLE_SERIAL=ON \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP"/kokkos-install
+          cmake --build "$RUNNER_TEMP"/kokkos-build -j 3
+          cmake --install "$RUNNER_TEMP"/kokkos-build
+        shell: bash
+      - name: Configure ChuanFlow with the Kokkos backend
+        run: |
+          set -euo pipefail
+          cmake -S . -B build-kokkos -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCHFLOW_WITH_KOKKOS=ON \
+            -DKokkos_DIR="$RUNNER_TEMP"/kokkos-install/lib/cmake/Kokkos \
+            2>&1 | tee configure.log
+          # The root CMake QUIET-degrades (CPU backend + WARNING) when the SDK
+          # is not found; that would make this whole job pass vacuously.
+          if grep -q "no Kokkos SDK found" configure.log; then
+            echo "::error::CHFLOW_WITH_KOKKOS=ON but Kokkos was not found"
+            exit 1
+          fi
+        shell: bash
+      - name: Build (cf3d KOKKOS_LAMBDA paths under a real Kokkos)
+        run: cmake --build build-kokkos -j 3
+      - name: Backend checkers on the Kokkos backend
+        run: ctest --test-dir build-kokkos -R "backendCpu|solverBackend" --output-on-failure
+
+  kokkos-cuda-compile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show nvcc (preinstalled on ubuntu-latest images)
+        run: /usr/local/cuda/bin/nvcc --version
+      - name: Build Kokkos 4.4.01 with CUDA enabled (compile-only, no GPU)
+        run: |
+          set -euo pipefail
+          git clone --branch 4.4.01 --depth 1 https://github.com/kokkos/kokkos.git "$RUNNER_TEMP"/kokkos-cuda
+          cmake -S "$RUNNER_TEMP"/kokkos-cuda -B "$RUNNER_TEMP"/kokkos-cuda-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DKokkos_ENABLE_CUDA=ON \
+            -DKokkos_ENABLE_SERIAL=ON \
+            -DCMAKE_CUDA_COMPILER=/usr/local/cuda/bin/nvcc \
+            -DCMAKE_CUDA_ARCHITECTURES=70 \
+            -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP"/kokkos-cuda-install
+          cmake --build "$RUNNER_TEMP"/kokkos-cuda-build -j 3
+          cmake --install "$RUNNER_TEMP"/kokkos-cuda-build
+        shell: bash
+      - name: Compile the parallelFor device contract probe
+        run: |
+          set -euo pipefail
+          cmake -S scripts/ci -B probe-build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPROBE_WITH_KOKKOS=ON \
+            -DKokkos_DIR="$RUNNER_TEMP"/kokkos-cuda-install/lib/cmake/Kokkos \
+            -DCMAKE_CUDA_ARCHITECTURES=70
+          cmake --build probe-build -j 3
+          echo "compile gate green: KOKKOS_LAMBDA parallelFor contract builds under nvcc"
+          echo "NOT executed: GitHub-hosted ubuntu runners have no CUDA device;"
+          echo "run scripts/gpu/kokkos_gpu_verify.sh on a GPU machine for execution."
+        shell: bash

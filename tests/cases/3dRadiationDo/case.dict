@@ -1,0 +1,48 @@
+// 5.227 DO 3D case: a grey participating box between two black walls,
+// geometry box, level-symmetric S2 (order 2). Transverse faces are
+// symmetry/empty, so the 3D upwind sweep must reproduce the 1D slab
+// discrete recursion cell by cell (the degenerate arm). The checker
+// derives the Rosseland, isothermal-cavity and refusal arms from this
+// file by declared mutations; every physical constant lives here.
+//
+// RTE per direction: div(s I) = -(kappa_a + kappa_s) I + kappa_a I_b
+//                     + kappa_s/(4 pi) sum w I
+// sigmaSB is the CODATA 2019 exact constant, declared in radiation3d{}.
+geometry box;
+
+block
+{
+    min   (0 0 0);
+    max   (1 0.1 0.1);
+    cells (20 1 1);
+
+    xmin  { name left;   type wall;     }
+    xmax  { name right;  type wall;     }
+    ymin  { name bottom; type symmetry; }
+    ymax  { name top;    type symmetry; }
+    zmin  { name front;  type empty;    }
+    zmax  { name back;   type empty;    }
+}
+
+radiation3d
+{
+    order 2;
+    absorption 1.0;
+    scattering 0;
+    mediumT1 1200;
+    mediumT2 1200;
+    sigmaSB 5.670374419e-8;
+    sourceTol 1e-14;
+    maxIterations 5000;
+}
+
+patches
+{
+    left  { wallTemperature 1500; emissivity 1.0; }
+    right { wallTemperature 900;  emissivity 1.0; }
+}
+
+output
+{
+    vtk out_radiationDo3d.vtu;
+}

@@ -257,6 +257,392 @@ RadSlabResult solveDoSlab(int nCells, scalar length, scalar TL, scalar TR,
     return out;
 }
 
+// =====================================================================
+// 5.227: 3D level-symmetric DO on a blockMesh box. The slab functions
+// above are untouched; everything below is the new arm.
+// =====================================================================
+
+namespace
+{
+
+bool wallAllowsInflow(const Do3dWall& w) { return w.type != "symmetry" && w.type != "empty"; }
+
+} // namespace
+
+void Do3dConfig::validate() const
+{
+    if (order != 2 && order != 4)
+        cfFatal("radiation DO 3D: direction set order must be 2 or 4 (got " +
+                std::to_string(order) + ")");
+    if (!std::isfinite(absorption) || absorption < 0)
+        cfFatal("radiation DO 3D: absorption kappa_a cannot be negative or non-finite");
+    if (!std::isfinite(scattering) || scattering < 0)
+        cfFatal("radiation DO 3D: scattering kappa_s cannot be negative or non-finite");
+    if (!std::isfinite(extinction()) || !(extinction() > 0))
+        cfFatal("radiation DO 3D: extinction beta = kappa_a + kappa_s must be positive");
+    if (!std::isfinite(sbConstant) || !(sbConstant > 0))
+        cfFatal("radiation DO 3D: sigmaSB must be finite and positive");
+    if (!(mediumT1 > 0) || !(mediumT2 > 0) || !std::isfinite(mediumT1) || !std::isfinite(mediumT2))
+        cfFatal("radiation DO 3D: medium temperatures must be finite and positive");
+    for (int i = 0; i < 6; ++i)
+    {
+        const Do3dWall& w = walls[i];
+        if (w.type == "wall")
+        {
+            if (!(w.temperature > 0) || !std::isfinite(w.temperature))
+                cfFatal("radiation DO 3D: wall temperature must be finite and positive");
+            if (!(w.emissivity >= 0) || !(w.emissivity <= 1))
+                cfFatal("radiation DO 3D: wall emissivity must lie in [0,1] (got " +
+                        std::to_string(w.emissivity) + ")");
+        }
+        else if (w.type != "symmetry" && w.type != "empty")
+            cfFatal("radiation DO 3D: unknown wall type '" + w.type +
+                    "'; expected wall, symmetry or empty");
+    }
+}
+
+Do3dConfig readDo3dConfig(const Dictionary& caseDict)
+{
+    Do3dConfig cfg;
+    if (!caseDict.has("radiation3d"))
+        cfFatal("radiation DO 3D: needs a radiation3d{} declaration");
+    const Dictionary& rd = caseDict.getDict("radiation3d");
+
+    if (rd.has("order")) cfg.order = rd.getInt("order");
+    cfg.absorption = rd.getScalarOr("absorption", 0.0);
+    cfg.scattering = rd.getScalarOr("scattering", 0.0);
+    cfg.mediumT1 = rd.getScalarOr("mediumT1", 0.0);
+    cfg.mediumT2 = rd.getScalarOr("mediumT2", cfg.mediumT1);
+    if (rd.has("sigmaSB")) cfg.sbConstant = rd.getScalar("sigmaSB");
+    cfg.sourceTol = rd.getScalarOr("sourceTol", cfg.sourceTol);
+    cfg.maxIterations = static_cast<int>(rd.getScalarOr("maxIterations",
+                                                        static_cast<double>(cfg.maxIterations)));
+    // The walls are filled by the caller; validate() runs in solveDo3d. The
+    // medium-side refusals (order, negative kappa, sigmaSB, medium T) fire
+    // here so a bad radiation3d{} block is rejected before any geometry read.
+    if (cfg.order != 2 && cfg.order != 4)
+        cfFatal("radiation DO 3D: direction set order must be 2 or 4 (got " +
+                std::to_string(cfg.order) + ")");
+    if (!std::isfinite(cfg.absorption) || cfg.absorption < 0)
+        cfFatal("radiation DO 3D: absorption kappa_a cannot be negative or non-finite");
+    if (!std::isfinite(cfg.scattering) || cfg.scattering < 0)
+        cfFatal("radiation DO 3D: scattering kappa_s cannot be negative or non-finite");
+    if (!std::isfinite(cfg.sbConstant) || !(cfg.sbConstant > 0))
+        cfFatal("radiation DO 3D: sigmaSB must be finite and positive");
+    return cfg;
+}
+
+std::vector<Ordinate3d> levelSymOrdinates(int order)
+{
+    std::vector<Ordinate3d> out;
+    if (order == 2)
+    {
+        const scalar c = 1.0 / std::sqrt(3.0);
+        for (int sx = -1; sx <= 1; sx += 2)
+            for (int sy = -1; sy <= 1; sy += 2)
+                for (int sz = -1; sz <= 1; sz += 2)
+                    out.push_back({Vector{sx * c, sy * c, sz * c}, kPi / 2.0});
+        return out; // 8 dirs, sum w = 4 pi
+    }
+    if (order == 4)
+    {
+        // the closed orbit of (2,1,1)/sqrt(6): 24 dirs, equal weight pi/6
+        const scalar n = 1.0 / std::sqrt(6.0);
+        const int perms[3][3] = {{2, 1, 1}, {1, 2, 1}, {1, 1, 2}};
+        for (const auto& p : perms)
+            for (int sx = -1; sx <= 1; sx += 2)
+                for (int sy = -1; sy <= 1; sy += 2)
+                    for (int sz = -1; sz <= 1; sz += 2)
+                        out.push_back({Vector{sx * p[0] * n, sy * p[1] * n, sz * p[2] * n},
+                                       kPi / 6.0});
+        return out; // 24 dirs, sum w = 4 pi
+    }
+    cfFatal("radiation DO 3D: direction set order must be 2 or 4 (got " +
+            std::to_string(order) + ")");
+}
+
+RadBoxResult solveDo3d(int nx, int ny, int nz, scalar Lx, scalar Ly, scalar Lz,
+                       const Do3dConfig& cfg)
+{
+    cfg.validate();
+    if (!(nx > 0) || !(ny > 0) || !(nz > 0))
+        cfFatal("radiation DO 3D: box needs positive cell counts");
+    if (!(Lx > 0) || !(Ly > 0) || !(Lz > 0))
+        cfFatal("radiation DO 3D: box needs positive lengths");
+
+    const std::vector<Ordinate3d> ord = levelSymOrdinates(cfg.order);
+    const int M = static_cast<int>(ord.size());
+    const int nC = nx * ny * nz;
+    const scalar dx = Lx / nx, dy = Ly / ny, dz = Lz / nz;
+    const scalar beta = cfg.extinction();
+    const scalar ka = cfg.absorption, ks = cfg.scattering;
+    const scalar sigma = cfg.sbConstant;
+
+    // mirror direction indices for grey reflection at each wall normal
+    auto findDir = [&](const Vector& s)
+    {
+        for (int m = 0; m < M; ++m)
+            if (std::abs(ord[m].s.x - s.x) < 1e-12 && std::abs(ord[m].s.y - s.y) < 1e-12 &&
+                std::abs(ord[m].s.z - s.z) < 1e-12)
+                return m;
+        return -1;
+    };
+    std::vector<int> mx(M), my(M), mz(M);
+    for (int m = 0; m < M; ++m)
+    {
+        mx[m] = findDir(Vector{-ord[m].s.x, ord[m].s.y, ord[m].s.z});
+        my[m] = findDir(Vector{ord[m].s.x, -ord[m].s.y, ord[m].s.z});
+        mz[m] = findDir(Vector{ord[m].s.x, ord[m].s.y, -ord[m].s.z});
+    }
+
+    // blackbody intensity per cell: linear in x between T1 and T2
+    Field<scalar> Ib(static_cast<std::size_t>(nC), 0.0);
+    for (int i = 0; i < nx; ++i)
+    {
+        const scalar fx = (i + 0.5) / nx;
+        const scalar T = cfg.mediumT1 + (cfg.mediumT2 - cfg.mediumT1) * fx;
+        const scalar ib = sigma * T * T * T * T / kPi;
+        for (int j = 0; j < ny; ++j)
+            for (int k = 0; k < nz; ++k)
+                Ib[static_cast<std::size_t>(i * ny * nz + j * nz + k)] = ib;
+    }
+    scalar IbWall[6];
+    for (int w = 0; w < 6; ++w)
+    {
+        const scalar T = cfg.walls[w].temperature;
+        IbWall[w] = T > 0 ? sigma * T * T * T * T / kPi : 0.0;
+    }
+
+    // I[m][cell], H = sum w I (the scattering source), previous iterate for
+    // the lagged wall reflection.
+    std::vector<Field<scalar>> I(static_cast<std::size_t>(M));
+    for (int m = 0; m < M; ++m)
+        I[static_cast<std::size_t>(m)] = Field<scalar>(static_cast<std::size_t>(nC), 0.0);
+    Field<scalar> H(static_cast<std::size_t>(nC), 0.0);
+
+    const auto cellAt = [&](int i, int j, int k)
+    { return static_cast<std::size_t>(i * ny * nz + j * nz + k); };
+
+    RadBoxResult out;
+    out.nx = nx; out.ny = ny; out.nz = nz;
+    out.directions = M;
+
+    int iter = 0;
+    scalar residual = 0;
+    for (; iter < cfg.maxIterations; ++iter)
+    {
+        std::fill(H.begin(), H.end(), 0.0);
+        for (int m = 0; m < M; ++m)
+            for (int c = 0; c < nC; ++c)
+                H[static_cast<std::size_t>(c)] += ord[static_cast<std::size_t>(m)].w
+                                                * I[static_cast<std::size_t>(m)][static_cast<std::size_t>(c)];
+
+        scalar maxChange = 0;
+        for (int m = 0; m < M; ++m)
+        {
+            const Vector s = ord[static_cast<std::size_t>(m)].s;
+            Field<scalar>& Im = I[static_cast<std::size_t>(m)];
+            const scalar ax = std::abs(s.x) / dx;
+            const scalar ay = std::abs(s.y) / dy;
+            const scalar az = std::abs(s.z) / dz;
+            const bool symX0 = !wallAllowsInflow(cfg.walls[0]);
+            const bool symX1 = !wallAllowsInflow(cfg.walls[1]);
+            const bool symY0 = !wallAllowsInflow(cfg.walls[2]);
+            const bool symY1 = !wallAllowsInflow(cfg.walls[3]);
+            const bool symZ0 = !wallAllowsInflow(cfg.walls[4]);
+            const bool symZ1 = !wallAllowsInflow(cfg.walls[5]);
+
+            const auto iStart = s.x > 0 ? 0 : nx - 1, iStep = s.x > 0 ? 1 : -1;
+            const auto jStart = s.y > 0 ? 0 : ny - 1, jStep = s.y > 0 ? 1 : -1;
+            const auto kStart = s.z > 0 ? 0 : nz - 1, kStep = s.z > 0 ? 1 : -1;
+
+            for (int i = iStart; s.x > 0 ? i < nx : i >= 0; i += iStep)
+                for (int j = jStart; s.y > 0 ? j < ny : j >= 0; j += jStep)
+                    for (int k = kStart; s.z > 0 ? k < nz : k >= 0; k += kStep)
+                    {
+                        const std::size_t c = cellAt(i, j, k);
+                        scalar num = 0, den = beta;
+
+                        // x axis
+                        if (s.x > 0 && i == 0)
+                        {
+                            if (!symX0)
+                            {
+                                const scalar refl = I[static_cast<std::size_t>(mx[m])][cellAt(0, j, k)];
+                                num += ax * (cfg.walls[0].emissivity * IbWall[0]
+                                           + (1.0 - cfg.walls[0].emissivity) * refl);
+                                den += ax;
+                            }
+                        }
+                        else if (s.x < 0 && i == nx - 1)
+                        {
+                            if (!symX1)
+                            {
+                                const scalar refl = I[static_cast<std::size_t>(mx[m])][cellAt(nx - 1, j, k)];
+                                num += ax * (cfg.walls[1].emissivity * IbWall[1]
+                                           + (1.0 - cfg.walls[1].emissivity) * refl);
+                                den += ax;
+                            }
+                        }
+                        else
+                        {
+                            num += ax * Im[cellAt(i + (s.x > 0 ? -1 : 1), j, k)];
+                            den += ax;
+                        }
+                        // y axis
+                        if (s.y > 0 && j == 0)
+                        {
+                            if (!symY0)
+                            {
+                                const scalar refl = I[static_cast<std::size_t>(my[m])][cellAt(i, 0, k)];
+                                num += ay * (cfg.walls[2].emissivity * IbWall[2]
+                                           + (1.0 - cfg.walls[2].emissivity) * refl);
+                                den += ay;
+                            }
+                        }
+                        else if (s.y < 0 && j == ny - 1)
+                        {
+                            if (!symY1)
+                            {
+                                const scalar refl = I[static_cast<std::size_t>(my[m])][cellAt(i, ny - 1, k)];
+                                num += ay * (cfg.walls[3].emissivity * IbWall[3]
+                                           + (1.0 - cfg.walls[3].emissivity) * refl);
+                                den += ay;
+                            }
+                        }
+                        else
+                        {
+                            num += ay * Im[cellAt(i, j + (s.y > 0 ? -1 : 1), k)];
+                            den += ay;
+                        }
+                        // z axis
+                        if (s.z > 0 && k == 0)
+                        {
+                            if (!symZ0)
+                            {
+                                const scalar refl = I[static_cast<std::size_t>(mz[m])][cellAt(i, j, 0)];
+                                num += az * (cfg.walls[4].emissivity * IbWall[4]
+                                           + (1.0 - cfg.walls[4].emissivity) * refl);
+                                den += az;
+                            }
+                        }
+                        else if (s.z < 0 && k == nz - 1)
+                        {
+                            if (!symZ1)
+                            {
+                                const scalar refl = I[static_cast<std::size_t>(mz[m])][cellAt(i, j, nz - 1)];
+                                num += az * (cfg.walls[5].emissivity * IbWall[5]
+                                           + (1.0 - cfg.walls[5].emissivity) * refl);
+                                den += az;
+                            }
+                        }
+                        else
+                        {
+                            num += az * Im[cellAt(i, j, k + (s.z > 0 ? -1 : 1))];
+                            den += az;
+                        }
+
+                        const scalar b = ka * Ib[c] + ks * H[c] / (4.0 * kPi);
+                        const scalar newI = (num + b) / den;
+                        maxChange = std::max(maxChange, std::abs(newI - Im[c]) / std::max(Ib[c], 1e-300));
+                        Im[c] = newI;
+                    }
+        }
+
+        residual = maxChange;
+        if (residual < cfg.sourceTol) { ++iter; break; }
+    }
+
+    out.iterations = iter;
+    out.residual = residual;
+    out.converged = residual < cfg.sourceTol * 100.0;
+    if (!out.converged)
+        cfFatal("radiation DO 3D: source iteration did not converge (residual " +
+                std::to_string(residual) + ")");
+
+    // final scattering sum and the reported fields
+    std::fill(H.begin(), H.end(), 0.0);
+    for (int m = 0; m < M; ++m)
+        for (int c = 0; c < nC; ++c)
+            H[static_cast<std::size_t>(c)] += ord[static_cast<std::size_t>(m)].w
+                                            * I[static_cast<std::size_t>(m)][static_cast<std::size_t>(c)];
+
+    out.G.assign(static_cast<std::size_t>(nC), 0.0);
+    out.q.assign(static_cast<std::size_t>(nC), Vector::zero());
+    out.S.assign(static_cast<std::size_t>(nC), 0.0);
+    for (int c = 0; c < nC; ++c)
+    {
+        const std::size_t u = static_cast<std::size_t>(c);
+        out.G[u] = H[u];
+        Vector qq = Vector::zero();
+        for (int m = 0; m < M; ++m)
+            qq += ord[static_cast<std::size_t>(m)].s * (ord[static_cast<std::size_t>(m)].w * I[static_cast<std::size_t>(m)][u]);
+        out.q[u] = qq;
+        out.S[u] = ka * (out.G[u] - 4.0 * kPi * Ib[u]);
+    }
+
+    // wall net fluxes, INTO the medium (i.e. along the inward normal)
+    const auto faceIn = [&](int axisWall, int m, int i, int j, int k) -> scalar
+    {
+        const Vector s = ord[static_cast<std::size_t>(m)].s;
+        const Do3dWall& w = cfg.walls[axisWall];
+        const bool inward = (axisWall == 0 && s.x > 0) || (axisWall == 1 && s.x < 0)
+                         || (axisWall == 2 && s.y > 0) || (axisWall == 3 && s.y < 0)
+                         || (axisWall == 4 && s.z > 0) || (axisWall == 5 && s.z < 0);
+        if (!inward)
+            return I[static_cast<std::size_t>(m)][cellAt(i, j, k)]; // leaving face = upwind cell
+        const int mirror = axisWall <= 1 ? mx[m] : axisWall <= 3 ? my[m] : mz[m];
+        const scalar refl = I[static_cast<std::size_t>(mirror)][cellAt(i, j, k)];
+        return w.emissivity * IbWall[axisWall] + (1.0 - w.emissivity) * refl;
+    };
+    // net flux into the medium per wall: sum w (n_in . s) I_face. A
+    // symmetry/empty face returns the outgoing intensity unchanged, so its
+    // net is exactly zero and it is skipped.
+    out.qX0 = out.qX1 = out.qY0 = out.qY1 = out.qZ0 = out.qZ1 = 0;
+    const bool open[6] = {wallAllowsInflow(cfg.walls[0]), wallAllowsInflow(cfg.walls[1]),
+                          wallAllowsInflow(cfg.walls[2]), wallAllowsInflow(cfg.walls[3]),
+                          wallAllowsInflow(cfg.walls[4]), wallAllowsInflow(cfg.walls[5])};
+    for (int m = 0; m < M; ++m)
+    {
+        const Vector s = ord[static_cast<std::size_t>(m)].s;
+        const scalar w = ord[static_cast<std::size_t>(m)].w;
+        if (open[0] || open[1])
+            for (int j = 0; j < ny; ++j)
+                for (int k = 0; k < nz; ++k)
+                {
+                    if (open[0]) out.qX0 += w * s.x * faceIn(0, m, 0, j, k);
+                    if (open[1]) out.qX1 -= w * s.x * faceIn(1, m, nx - 1, j, k);
+                }
+        if (open[2] || open[3])
+            for (int i = 0; i < nx; ++i)
+                for (int k = 0; k < nz; ++k)
+                {
+                    if (open[2]) out.qY0 += w * s.y * faceIn(2, m, i, 0, k);
+                    if (open[3]) out.qY1 -= w * s.y * faceIn(3, m, i, ny - 1, k);
+                }
+        if (open[4] || open[5])
+            for (int i = 0; i < nx; ++i)
+                for (int j = 0; j < ny; ++j)
+                {
+                    if (open[4]) out.qZ0 += w * s.z * faceIn(4, m, i, j, 0);
+                    if (open[5]) out.qZ1 -= w * s.z * faceIn(5, m, i, j, nz - 1);
+                }
+    }
+
+    // Energy bookkeeping in watts: the six wall fluxes are per unit area of
+    // their own wall, the volumetric source integrates over the box.
+    const scalar vol = Lx * Ly * Lz;
+    scalar srcTotal = 0;
+    for (int c = 0; c < nC; ++c)
+        srcTotal += out.S[static_cast<std::size_t>(c)] * (vol / nC);
+    out.volSrc = srcTotal / vol; // volume-averaged source [W/m3]
+    const scalar wallW = out.qX0 * Ly * Lz + out.qX1 * Ly * Lz
+                       + out.qY0 * Lx * Lz + out.qY1 * Lx * Lz
+                       + out.qZ0 * Lx * Ly + out.qZ1 * Lx * Ly;
+    out.balance = wallW - srcTotal; // ~0 by the discrete RTE identity
+    return out;
+}
+
 RadSlabResult solveS2sSlab(int nCells, scalar length, scalar TL, scalar TR,
                            const DoS2sConfig& cfg)
 {

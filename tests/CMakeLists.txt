@@ -2507,6 +2507,13 @@ if(CHFLOW_PYTHON_BINDINGS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_melting.py)
     set_tests_properties(python.melting PROPERTIES
         ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # Combustion family: Arrhenius rate, sinh closed-form fuel profile, rate
+    # law, pinned oxidiser, discrete fuel balance and loud refusals.
+    add_test(
+        NAME python.combustion
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_combustion.py)
+    set_tests_properties(python.combustion PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
     # 3D family: mesh -> field -> built-in P1 solve -> NumPy arrays.
     add_test(
         NAME python.solver3d

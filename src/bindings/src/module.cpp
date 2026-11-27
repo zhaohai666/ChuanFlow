@@ -18,6 +18,7 @@ void registerCouplingBindings(py::module_& m);
 void registerCouplingTransientBindings(py::module_& m);
 void registerScalarTransportBindings(py::module_& m);
 void registerMeltingBindings(py::module_& m);
+void registerCombustionBindings(py::module_& m);
 void registerFields3dBindings(py::module_& m);
 
 PYBIND11_MODULE(chflow_core, m)
@@ -400,5 +401,6 @@ PYBIND11_MODULE(chflow_core, m)
     registerCouplingTransientBindings(m);
     registerScalarTransportBindings(m);
     registerMeltingBindings(m);
+    registerCombustionBindings(m);
     registerFields3dBindings(m);
 }

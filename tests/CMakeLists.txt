@@ -2521,6 +2521,14 @@ if(CHFLOW_PYTHON_BINDINGS)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_vof.py)
     set_tests_properties(python.vof PROPERTIES
         ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
+    # DPM family: one-way frozen-carrier trajectory (SN drag / explicit Euler)
+    # and two-way Picard feedback; per-cell drag impulse reconciled to the
+    # particle drag integral.
+    add_test(
+        NAME python.dpm
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/python/test_bindings_dpm.py)
+    set_tests_properties(python.dpm PROPERTIES
+        ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/python${cf_path_sep}$<TARGET_FILE_DIR:chflow_core>")
     # 3D family: mesh -> field -> built-in P1 solve -> NumPy arrays.
     add_test(
         NAME python.solver3d

@@ -299,6 +299,21 @@ add_test(
         $<TARGET_FILE:chflow-vof>
         ${CMAKE_CURRENT_SOURCE_DIR}/cases/vofOscillating/case.dict)
 
+# 5.224: the 3D Euler-Euler (two-fluid) kernel. The checker derives the
+# uniform / drag / buoyancy-slip / Schiller-Naumann arms from the case in its
+# tmp directory and re-derives every one in closed form: the implicit drag
+# pair per step (tau_k = alpha_k rho_k / K) with the mixture-momentum
+# invariant, the terminal slip alphaG alphaL drho g / K with the hydrostatic
+# dp/dz, alpha bounded and phase masses conserved every frame, and the
+# loader refusals.
+add_test(
+    NAME verify.eulerEuler3d
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_3d_euler_euler.py
+        $<TARGET_FILE:chflow-3d-euler-euler>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/3dEulerEuler/case.dict
+        ${CMAKE_CURRENT_BINARY_DIR}/eulerEuler3d_tmp)
+
 # the same droplet cell-sharp, with the interface reconstructed as a plane in every
 # band cell: the band, the fraction each plane reads back, the area of a one-cell
 # band and the volume of the exact filling all have closed forms

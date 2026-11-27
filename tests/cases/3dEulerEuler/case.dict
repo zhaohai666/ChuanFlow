@@ -1,0 +1,82 @@
+// 5.224 drag arm: uniform alphaG, initial UG != UL, no gravity, no pressure
+// gradient. The coupled implicit drag pair relaxes the slip to zero with each
+// phase's own response time tau_k = alpha_k rho_k / K, and the mixture
+// momentum alphaG rhoG UG + alphaL rhoL UL is invariant because the drag
+// impulses are equal and opposite on the same velocity pair. The column is
+// open at both ends (zeroGradient velocities, zeroGradient alpha, p anchored
+// at the top): the initial total momentum is zero, so the mixture flux is
+// zero, p stays zero and every cell replays the closed form exactly.
+//
+// tests/check_3d_euler_euler.py derives the other arms (uniform, slip,
+// schillerNaumann) and every refusal from this file in its tmp directory.
+block
+{
+    min   (0 0 0);
+    max   (0.1 0.1 0.5);
+    cells (2 2 10);
+
+    xmin  { name west;   type wall;   }
+    xmax  { name east;   type wall;   }
+    ymin  { name south;  type wall;   }
+    ymax  { name north;  type wall;   }
+    zmin  { name bottom; type outlet; }
+    zmax  { name top;    type outlet; }
+}
+
+fluid
+{
+    rhoG 1.2;
+    rhoL 998.0;
+    muG  1.8e-5;
+    muL  1.0e-3;
+}
+
+drag
+{
+    model constant;
+    beta  1200.0;
+}
+
+fields
+{
+    alphaG0 0.4;
+    UG (0 0 0.3);
+    // zero total momentum: -alphaG rhoG UGz / (alphaL rhoL)
+    UL (0 0 -0.000240480961923848);
+    gravity (0 0 0);
+    dpdz 0;
+}
+
+bounds
+{
+    inlet  { patches (); }
+    outlet { patches (bottom top); p 0; }
+    walls  { patches (west east south north); }
+}
+
+run
+{
+    steps 200;
+    dt 0.001;
+    reportEvery 1;
+}
+
+schemes
+{
+    ddt Euler;
+    div upwind;
+    laplacian corrected;
+    grad corrected;
+}
+
+solver
+{
+    linearTol 1e-14;
+    maxIter 8000;
+    correctors 2;
+}
+
+output
+{
+    vtk "";
+}

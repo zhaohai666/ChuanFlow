@@ -39,6 +39,7 @@ add_library(cf3d STATIC
     src/dpm/cht.cpp
     src/dpm/ale.cpp
     src/multiphase/vof.cpp
+    src/multiphase/eulerEuler.cpp
     src/multiphase/plic.cpp
     src/multiphase/plicAdvect.cpp
     ${CF3D_TURB_SRCS}

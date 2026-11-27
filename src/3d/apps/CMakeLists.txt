@@ -28,6 +28,11 @@ target_link_libraries(chflow-piso-foam PRIVATE cf3d)
 add_executable(chflow-vof vofApp.cpp)
 target_link_libraries(chflow-vof PRIVATE cf3d cf_pvt)
 
+# 5.224: the two-fluid Euler-Euler kernel (per-phase velocities, shared
+# pressure, interphase drag) and its case-driven app.
+add_executable(chflow-3d-euler-euler eulerEulerApp.cpp)
+target_link_libraries(chflow-3d-euler-euler PRIVATE cf3d)
+
 add_executable(chflow-3d-compressible compressibleApp.cpp)
 target_link_libraries(chflow-3d-compressible PRIVATE cf3d)
 

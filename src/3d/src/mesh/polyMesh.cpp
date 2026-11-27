@@ -93,12 +93,9 @@ void polyMesh::calcGeometry() const
     for (label f = 0; f < nF; ++f)
     {
         const auto& verts = faces_[static_cast<std::size_t>(f)];
-        Vector c = Vector::zero();
-        for (const label v : verts) c += points_[static_cast<std::size_t>(v)];
-        faceCentres_[static_cast<std::size_t>(f)] = c / static_cast<scalar>(verts.size());
+        const Vector& v0 = points_[static_cast<std::size_t>(verts[0])];
 
         Vector n = Vector::zero();
-        const Vector& v0 = points_[static_cast<std::size_t>(verts[0])];
         for (std::size_t i = 1; i + 1 < verts.size(); ++i)
         {
             const Vector a = points_[verts[i]] - v0;
@@ -106,6 +103,58 @@ void polyMesh::calcGeometry() const
             n += cross(a, b);
         }
         sf_[static_cast<std::size_t>(f)] = n * 0.5;
+
+        // Face centroid. For a general polygon the vertex average is NOT the
+        // centroid (e.g. a quad with one dense corner), which biases every
+        // interpolation and boundary distance built on it; the true centroid
+        // is the fan-triangle area-weighted mean below. Two families are the
+        // exception where the vertex average IS the exact centroid and is kept
+        // verbatim: triangles (3 verts) and parallelograms (4 verts whose
+        // diagonals bisect, p0+p2 == p1+p3 -- which holds bit-for-bit for the
+        // axis-aligned rectangles of a Cartesian mesh). Keeping the vertex
+        // average for those preserves coplanar faces' identical coordinates, so
+        // plane grouping and flux summation stay reproducible to the bit.
+        const std::size_t nv = verts.size();
+        const bool exactMean =
+            nv == 3
+            || (nv == 4
+                && (points_[static_cast<std::size_t>(verts[0])]
+                    + points_[static_cast<std::size_t>(verts[2])])
+                       == (points_[static_cast<std::size_t>(verts[1])]
+                           + points_[static_cast<std::size_t>(verts[3])]));
+        if (exactMean)
+        {
+            Vector c = Vector::zero();
+            for (const label v : verts) c += points_[static_cast<std::size_t>(v)];
+            faceCentres_[static_cast<std::size_t>(f)] = c / static_cast<scalar>(nv);
+        }
+        else
+        {
+            // Each fan triangle contributes its centroid weighted by its signed
+            // area projected on the raw normal, so concave planar polygons come
+            // out exact and non-planar faces get a consistent area-weighted
+            // estimate. The weights sum to dot(n, n) = |n|^2.
+            const scalar wSum = dot(n, n);
+            if (wSum > 0)
+            {
+                Vector c = Vector::zero();
+                for (std::size_t i = 1; i + 1 < nv; ++i)
+                {
+                    const Vector& vi = points_[static_cast<std::size_t>(verts[i])];
+                    const Vector& vj = points_[static_cast<std::size_t>(verts[i + 1])];
+                    const scalar w = dot(cross(vi - v0, vj - v0), n);
+                    c += w * (v0 + vi + vj);
+                }
+                faceCentres_[static_cast<std::size_t>(f)] = c / (3.0 * wSum);
+            }
+            else
+            {
+                // degenerate (zero-area) face: fall back to the vertex average
+                Vector c = Vector::zero();
+                for (const label v : verts) c += points_[static_cast<std::size_t>(v)];
+                faceCentres_[static_cast<std::size_t>(f)] = c / static_cast<scalar>(nv);
+            }
+        }
     }
 
     // provisional cell centre estimate from face-centre averages
@@ -132,21 +181,29 @@ void polyMesh::calcGeometry() const
         }
     }
 
-    // orient: internal faces owner -> neighbour; boundary faces outward
+    // orient: internal faces owner -> neighbour; boundary faces outward.
+    // The sign test carries a relative tolerance: when the owner-neighbour
+    // line is (nearly) perpendicular to the face normal -- e.g. the y-normal
+    // faces of x-adjacent cells on a Cartesian grid -- the dot product is
+    // zero up to round-off in the centre estimates, and flipping on its
+    // noise would randomly reverse perfectly good normals.
     for (label f = 0; f < nF; ++f)
     {
         const label o = owner_[static_cast<std::size_t>(f)];
         scalar side = 0;
+        Vector d = Vector::zero();
         if (f < nInternalFaces())
         {
             const label nb = neighbour_[static_cast<std::size_t>(f)];
-            side = dot(sf_[static_cast<std::size_t>(f)], est[static_cast<std::size_t>(nb)] - est[static_cast<std::size_t>(o)]);
+            d = est[static_cast<std::size_t>(nb)] - est[static_cast<std::size_t>(o)];
         }
         else
         {
-            side = dot(sf_[static_cast<std::size_t>(f)], faceCentres_[static_cast<std::size_t>(f)] - est[static_cast<std::size_t>(o)]);
+            d = faceCentres_[static_cast<std::size_t>(f)] - est[static_cast<std::size_t>(o)];
         }
-        if (side < 0)
+        side = dot(sf_[static_cast<std::size_t>(f)], d);
+        const scalar tol = 1e-12 * mag(sf_[static_cast<std::size_t>(f)]) * mag(d);
+        if (side < -tol)
         {
             sf_[static_cast<std::size_t>(f)] = -sf_[static_cast<std::size_t>(f)];
         }

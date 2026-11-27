@@ -89,19 +89,39 @@ void correctFluxes(const polyMesh& mesh,
 
 scalar continuityError(const polyMesh& mesh, const surfaceScalarField& phi)
 {
-    scalar scale = 0;
+    // Per-cell continuity imbalance normalised by the cell's OWN largest face
+    // area, not the global max|Sf|. The old metric max|div(phi)| / max_f|Sf|
+    // divides every cell by the single largest face in the whole mesh: on a
+    // graded or mixed-element mesh a small cell's real leak is diluted by a
+    // big face elsewhere, so SIMPLE reads a falsely small error and converges
+    // while that cell still leaks. Normalising each cell by its own face scale
+    // removes that dilution -- the local estimate is never smaller than the
+    // global one (local max area <= global max area), so the criterion is
+    // strictly stronger. On a uniform mesh every cell's max face area equals
+    // the global max, and the metric reduces exactly to the old value, keeping
+    // the velocity-scale meaning of continuityTol intact.
+    const auto& areas = mesh.faceAreas();
+    Field<scalar> localScale(static_cast<std::size_t>(mesh.nCells()), 0.0);
     for (label f = 0; f < mesh.nFaces(); ++f)
     {
-        scale = std::max(scale, mesh.faceAreas()[static_cast<std::size_t>(f)]);
+        const std::size_t u = static_cast<std::size_t>(f);
+        const scalar a = areas[u];
+        localScale[static_cast<std::size_t>(mesh.owner()[u])] =
+            std::max(localScale[static_cast<std::size_t>(mesh.owner()[u])], a);
+        if (f < mesh.nInternalFaces())
+        {
+            localScale[static_cast<std::size_t>(mesh.neighbour()[u])] =
+                std::max(localScale[static_cast<std::size_t>(mesh.neighbour()[u])], a);
+        }
     }
-    scale = std::max(scale, 1e-300);
     const Field<scalar> divPhi = fvc::divPhi(mesh, phi.values());
     scalar err = 0;
     for (label c = 0; c < mesh.nCells(); ++c)
     {
-        err = std::max(err, std::abs(divPhi[static_cast<std::size_t>(c)]));
+        const std::size_t u = static_cast<std::size_t>(c);
+        err = std::max(err, std::abs(divPhi[u]) / std::max(localScale[u], 1e-300));
     }
-    return err / scale;
+    return err;
 }
 
 } // namespace cf

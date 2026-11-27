@@ -150,7 +150,16 @@ std::vector<Vector> orderCapPolygon(std::vector<Vector> pts, const Vector& unitN
         ? Vector{1, 0, 1}
         : Vector{1, 0, 0};
     e1 = e1 - unitNormal * dot(e1, unitNormal);
-    if (mag2(e1) <= 0) e1 = Vector{0, 1, 0} - unitNormal * unitNormal.y;
+    // A relative tolerance, not == 0: when the trial axis is parallel to the
+    // normal up to round-off (e.g. n = (-1 + 1e-16, 0, 0)), the projection is
+    // a noise vector of magnitude ~1e-16 that normalises back to the normal
+    // itself - a "tangent" basis along the normal sorts the cap polygon into
+    // garbage. Fall back to another axis whenever the projection is tiny.
+    if (mag2(e1) <= 1e-12)
+    {
+        e1 = Vector{0, 1, 0} - unitNormal * unitNormal.y;
+        if (mag2(e1) <= 1e-12) e1 = Vector{0, 0, 1} - unitNormal * unitNormal.z;
+    }
     e1 = e1 * (1.0 / mag(e1));
     const Vector e2 = cross(unitNormal, e1);
 

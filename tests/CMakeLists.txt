@@ -2722,6 +2722,51 @@ if(CHFLOW_GUI_CARGO AND CHFLOW_GUI_NODE)
     set_tests_properties(gui.unit gui.build PROPERTIES TIMEOUT 900)
 endif()
 
+# 5.223 (H3): the separator AS a network row. The row clamps both outlet node
+# pressures to the inlet minus dP (derived unknowns, exact), the lines take
+# their demand there, and the arriving feed is flashed by the Separator.h
+# allocation function. Checker re-derives the mass closure (1e-10), the edge
+# volume sum, the dP statement from the node pressures, and the twin case
+# against the independent chflow-separator app on rs/bo/bg/gasLiberated
+# (1e-9); efficiency out of [0,1], negative dP, a non-positive declared
+# feedRate, an unknown gasNode and a converged row with no feed are refused.
+add_test(
+    NAME verify.networkSeparatorRow
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_network_separator_row.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/networkSeparatorRow/case.dict
+        $<TARGET_FILE:chflow-separator>)
+
+# 5.226 (H3): the 5.107 two-point QMOM as a pipe block on the steady network.
+# Each of the march's 24 segments advances M0..M3 by its residence time
+# against the constant-kernel Smoluchowski source, and past dThreshold the
+# segment pays Brinkman mu (1 + 2.5 phi). Checker replays the whole moment
+# and friction march in Python from the case text and the solved rate
+# (M1 conserved to 1e-10, M0 monotonically down), checks the no-flow arm
+# freezes the population, the threshold gate and the phi slope on muEff, an
+# undeclared twin with no qmom line, and the five loader rejections.
+add_test(
+    NAME verify.networkQmom
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_network_qmom.py
+        $<TARGET_FILE:chflow-1d-steady>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/networkQmom/case.dict)
+
+# 5.230 (H3): the PR1978 alpha branch. kappa switches at omega = 0.491 from
+# the PR76 quadratic to the PR78 cubic, in ONE prKappa function shared by
+# a(T) and prDaDT. Checker re-derives both closed forms in Python: the
+# omega = 0.4 arm bitwise (the pre-5.230 kernel, operation order included),
+# the omega = 0.5 arm at 1e-14, dadT on the same branch, and the
+# flash/enthalpy twin continuity across the switch; custom components with a
+# non-positive Tc or fraction are refused.
+add_test(
+    NAME verify.pvtPr78
+    COMMAND ${Python3_EXECUTABLE}
+        ${CMAKE_CURRENT_SOURCE_DIR}/check_pvt_pr78.py
+        $<TARGET_FILE:chflow-pvt>
+        ${CMAKE_CURRENT_SOURCE_DIR}/cases/pvtPr78/case.dict)
+
 # Per-batch verification hooks (parallel development); missing hooks are no-ops.
 include(${CMAKE_CURRENT_SOURCE_DIR}/verify_1dsteady.cmake OPTIONAL)
 include(${CMAKE_CURRENT_SOURCE_DIR}/verify_1dtransient.cmake OPTIONAL)

@@ -714,6 +714,11 @@ int main(int argc, char** argv)
                       + " power " + num(f.card.hydraulicPower)
                       + " cbe " + num(f.card.counterbalance);
             }
+            else if (f.separatorState >= 0)
+            {
+                // 5.223 (H3): a separator row has no wall law and no marched
+                // station -- its own line below carries the whole statement.
+            }
             else
             {
                 // Re is re-derived by the steady checkers from the station
@@ -765,6 +770,43 @@ int main(int argc, char** argv)
                                                        : " belowTransition");
             }
             log::info(line);
+            // 5.223 (H3): the separator row's own line -- the allocation the
+            // flash made at the stage pressure the network solved. Round-trip
+            // precision: the twin case against the chflow-separator app and
+            // the mass closure are both checked tighter than 1e-9.
+            if (f.separatorState >= 0)
+            {
+                log::info("separator " + f.name
+                          + " stageP " + num17(f.sepStagePressure)
+                          + " outletP " + num17(f.sepOutletPressure)
+                          + " feed " + num17(f.sepFeedMassRate)
+                          + " liquid " + num17(f.sepLiquidMassRate)
+                          + " gas " + num17(f.sepGasMassRate)
+                          + " entrained " + num17(f.sepEntrainedMassRate)
+                          + " closure " + num17(f.sepClosure)
+                          + " rs " + num17(f.sepRs)
+                          + " bo " + num17(f.sepBo)
+                          + " bg " + num17(f.sepBg)
+                          + " gasLiberated " + num17(f.sepGasLiberated)
+                          + " qLiq " + num17(f.sepLiquidRate)
+                          + " qGas " + num17(f.sepGasEdgeRate)
+                          + " qGasStd " + num17(f.sepGasStdRate));
+            }
+            // 5.226 (H3): the QMOM march's own line -- the outlet population,
+            // the Sauter diameter it reached and the viscosities the last
+            // segment charged, so a checker can replay the residence-time
+            // march from the case text and the solved rate alone.
+            if (f.qmomState >= 0)
+            {
+                log::info("qmom " + f.name
+                          + " m0 " + num17(f.qmomM0)
+                          + " m1 " + num17(f.qmomM1)
+                          + " m2 " + num17(f.qmomM2)
+                          + " m3 " + num17(f.qmomM3)
+                          + " d32 " + num17(f.qmomD32)
+                          + " muBase " + num17(f.qmomMuBase)
+                          + " muEff " + num17(f.qmomMuEff));
+            }
             // 5.194 (G6d): the entry state a feedback march booked its mass at,
             // and that mass itself -- so a checker closes rho v A = m from the
             // case text and the station readouts without trusting an internal.

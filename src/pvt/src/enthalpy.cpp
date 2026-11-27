@@ -51,8 +51,10 @@ scalar prDaDT(const Component& c, scalar T)
     if (!(T > 0) || !(c.Tc > 0))
         cfFatal("pvt: prDaDT needs positive T and Tc");
     const scalar w = c.acentric;
-    // PR76 alpha function (omega <= 0.491 branch): kappa = 0.37464 + 1.54226 w - 0.26992 w^2.
-    const scalar kappa = 0.37464 + 1.54226 * w - 0.26992 * w * w;
+    // 5.230: the same prKappa branch the EOS alpha uses (PR76 for
+    // omega <= 0.491, PR1978 for omega > 0.491) -- dadT is the derivative of
+    // exactly the a(T) the cubic was built from, never a second kappa.
+    const scalar kappa = prKappa(w);
     const scalar sqrtTr = std::sqrt(T / c.Tc);
     const scalar f = 1.0 + kappa * (1.0 - sqrtTr);
     // alpha = f^2, d alpha/dT = 2 f * (-kappa/(2 sqrt(T Tc))) = -kappa f / sqrt(T Tc)
